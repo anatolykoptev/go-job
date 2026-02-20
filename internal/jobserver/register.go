@@ -35,6 +35,8 @@ func RegisterTools(server *mcp.Server) {
 	registerJobTrackerAdd(server)
 	registerJobTrackerList(server)
 	registerJobTrackerUpdate(server)
+	// Person research
+	registerPersonResearch(server)
 }
 
 func registerJobSearch(server *mcp.Server) {
@@ -917,6 +919,23 @@ func registerJobTrackerUpdate(server *mcp.Server) {
 			return nil, nil, fmt.Errorf("id is required")
 		}
 		result, err := jobs.UpdateTrackedJob(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerPersonResearch(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "person_research",
+		Description: "Research a person (hiring manager, interviewer, recruiter) from open sources: LinkedIn, GitHub, web, Habr, and Twitter/X via go-hully. Returns background, skills, interests, recent activity, common ground, and specific interview tips. Use before interviews to build rapport and prepare relevant talking points.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.PersonResearchInput) (*mcp.CallToolResult, *jobs.PersonProfile, error) {
+		if input.Name == "" {
+			return nil, nil, fmt.Errorf("name is required")
+		}
+		result, err := jobs.ResearchPerson(ctx, input.Name, input.Company, input.JobTitle)
 		if err != nil {
 			return nil, nil, err
 		}

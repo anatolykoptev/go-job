@@ -154,3 +154,10 @@ type ResumeTailorInput struct {
 	Resume         string `json:"resume"`
 	JobDescription string `json:"job_description"`
 }
+
+// PersonResearchInput is the input for person_research.
+type PersonResearchInput struct {
+	Name     string `json:"name" jsonschema:"Full name of the person to research"`
+	Company  string `json:"company,omitempty" jsonschema:"Company they work at (helps narrow search)"`
+	JobTitle string `json:"job_title,omitempty" jsonschema:"Their job title (helps narrow search)"`
+}
