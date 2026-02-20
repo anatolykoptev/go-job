@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/anatolykoptev/go-search/pkg/engine"
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // NormLang normalises a language field: empty string → "all".

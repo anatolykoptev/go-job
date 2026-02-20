@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anatolykoptev/go-search/pkg/engine"
-	"github.com/anatolykoptev/go-search/pkg/jobs"
-	"github.com/anatolykoptev/go-search/pkg/sources"
+	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/engine/sources"
 	"github.com/anatolykoptev/go_job/internal/toolutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

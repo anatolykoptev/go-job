@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anatolykoptev/go-search/pkg/engine"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
