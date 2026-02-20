@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -12,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 const remoteOKAPI = "https://remoteok.com/api"
@@ -61,12 +62,12 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 		limit = 20
 	}
 
-	// Extract primary tag from query (first word, lowercase).
+	// Extract best tag from query: prefer tech/role keywords over generic words.
 	fields := strings.Fields(strings.ToLower(query))
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("query cannot be empty")
 	}
-	tag := fields[0]
+	tag := pickBestRemoteOKTag(fields)
 
 	u, err := url.Parse(remoteOKAPI)
 	if err != nil {
@@ -308,6 +309,8 @@ func parseWWRTitle(raw string) (title, company string) {
 }
 
 // filterRemoteJobs filters job listings by keyword match in title/company/tags.
+// For single-keyword queries uses OR logic; for multi-keyword uses AND logic
+// (all keywords must appear somewhere in the job's text).
 func filterRemoteJobs(jobs []engine.RemoteJobListing, query string) []engine.RemoteJobListing {
 	if query == "" {
 		return jobs
@@ -321,18 +324,52 @@ func filterRemoteJobs(jobs []engine.RemoteJobListing, query string) []engine.Rem
 	var filtered []engine.RemoteJobListing
 	for _, j := range jobs {
 		haystack := strings.ToLower(j.Title + " " + j.Company + " " + strings.Join(j.Tags, " "))
-		matched := false
-		for _, kw := range keywords {
-			if strings.Contains(haystack, kw) {
-				matched = true
-				break
-			}
-		}
-		if matched {
+		if matchesAllKeywords(haystack, keywords) {
 			filtered = append(filtered, j)
 		}
 	}
+	// If AND-match returns nothing, fall back to OR-match.
+	if len(filtered) == 0 {
+		for _, j := range jobs {
+			haystack := strings.ToLower(j.Title + " " + j.Company + " " + strings.Join(j.Tags, " "))
+			for _, kw := range keywords {
+				if strings.Contains(haystack, kw) {
+					filtered = append(filtered, j)
+					break
+				}
+			}
+		}
+	}
 	return filtered
+}
+
+// matchesAllKeywords returns true if haystack contains ALL keywords.
+func matchesAllKeywords(haystack string, keywords []string) bool {
+	for _, kw := range keywords {
+		if !strings.Contains(haystack, kw) {
+			return false
+		}
+	}
+	return true
+}
+
+// stopWords are common words that make poor RemoteOK API tags.
+var remoteOKStopWords = map[string]bool{
+	"senior": true, "junior": true, "lead": true, "staff": true,
+	"principal": true, "remote": true, "job": true, "jobs": true,
+	"developer": true, "engineer": true, "position": true, "role": true,
+	"and": true, "or": true, "the": true, "for": true, "with": true,
+}
+
+// pickBestRemoteOKTag picks the most specific keyword from the query for the RemoteOK tag filter.
+// Skips generic stop words and prefers tech/language names.
+func pickBestRemoteOKTag(fields []string) string {
+	for _, f := range fields {
+		if !remoteOKStopWords[f] && len(f) > 2 {
+			return f
+		}
+	}
+	return fields[0]
 }
 
 // RemoteJobsToSearxngResults converts remote job listings to engine.SearxngResult for LLM pipeline.

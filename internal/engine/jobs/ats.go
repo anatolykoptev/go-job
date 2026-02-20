@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // --- Greenhouse ---
@@ -102,10 +103,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 				content += " | **Updated:** " + job.UpdatedAt[:10]
 			}
 			if job.Content != "" {
-				desc := engine.CleanHTML(job.Content)
-				if len(desc) > 600 {
-					desc = desc[:600] + "..."
-				}
+				desc := engine.TruncateRunes(engine.CleanHTML(job.Content), 600, "...")
 				content += "\n\n" + desc
 			}
 			allResults = append(allResults, engine.SearxngResult{
@@ -288,10 +286,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 				}
 			}
 			if p.DescriptionPlain != "" {
-				desc := p.DescriptionPlain
-				if len(desc) > 600 {
-					desc = desc[:600] + "..."
-				}
+				desc := engine.TruncateRunes(p.DescriptionPlain, 600, "...")
 				content += "\n\n" + desc
 			}
 			allResults = append(allResults, engine.SearxngResult{

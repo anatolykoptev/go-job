@@ -105,7 +105,9 @@ func fetchHNItem(ctx context.Context, id int64) (*hnItemResponse, error) {
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req)
+	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		return engine.Cfg.HTTPClient.Do(req)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +155,15 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 			defer func() { <-sem }()
 
 			// Stagger requests slightly to avoid hammering Firebase.
-			time.Sleep(time.Duration(i/10) * 200 * time.Millisecond)
+			delay := time.Duration(i/10) * 200 * time.Millisecond
+			if delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					ch <- result{i, ""}
+					return
+				}
+			}
 
 			item, err := fetchHNItem(ctx, id)
 			if err != nil || item == nil || item.Dead || item.Deleted || item.Text == "" {

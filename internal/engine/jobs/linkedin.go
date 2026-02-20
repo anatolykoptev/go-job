@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"golang.org/x/net/html"
@@ -79,8 +80,21 @@ func ExtractJobID(jobURL string) string {
 	return ""
 }
 
+// salaryMap maps human-readable salary thresholds to LinkedIn f_SB2 filter codes.
+var salaryMap = map[string]string{
+	"40k+":  "1",
+	"60k+":  "2",
+	"80k+":  "3",
+	"100k+": "4",
+	"120k+": "5",
+	"140k+": "6",
+	"160k+": "7",
+	"180k+": "8",
+	"200k+": "9",
+}
+
 // SearchLinkedInJobs queries the LinkedIn Guest API and returns parsed job cards.
-func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobType, remote, timeRange string) ([]LinkedInJob, error) {
+func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobType, remote, timeRange, salary string) ([]LinkedInJob, error) {
 	u, err := url.Parse(linkedInGuestAPI)
 	if err != nil {
 		return nil, err
@@ -104,6 +118,9 @@ func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobTyp
 	}
 	if v, ok := timeRangeMap[strings.ToLower(timeRange)]; ok {
 		q.Set("f_TPR", v)
+	}
+	if v, ok := salaryMap[strings.ToLower(strings.TrimSpace(salary))]; ok {
+		q.Set("f_SB2", v)
 	}
 	u.RawQuery = q.Encode()
 
@@ -145,15 +162,14 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	}
 
 	// Fallback: standard HTTP client
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", engine.UserAgentChrome)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", engine.UserAgentChrome)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		return engine.Cfg.HTTPClient.Do(req)
 	})
 	if err != nil {
@@ -368,9 +384,7 @@ func extractJSONLD(html string) string {
 		if err == nil {
 			desc = md
 		}
-		if len(desc) > 3000 {
-			desc = desc[:3000] + "..."
-		}
+		desc = engine.TruncateRunes(desc, 3000, "...")
 		parts = append(parts, "**Description:**\n"+desc)
 	}
 	if org, ok := data["hiringOrganization"].(map[string]interface{}); ok {
@@ -462,7 +476,14 @@ func LinkedInJobsToSearxngResults(ctx context.Context, jobs []LinkedInJob, fetch
 	detailCh := make(chan detailResult, fetchDetailCount)
 	for i := 0; i < fetchDetailCount && i < len(jobs); i++ {
 		go func(idx int, jobURL string) {
-			time.Sleep(time.Duration(idx) * time.Second) // staggered: 0s, 1s, 2s, 3s, 4s
+			if idx > 0 {
+				select {
+				case <-time.After(time.Duration(idx) * time.Second):
+				case <-ctx.Done():
+					detailCh <- detailResult{idx, ""}
+					return
+				}
+			}
 			details, err := FetchJobDetails(ctx, jobURL)
 			if err != nil {
 				slog.Debug("linkedin: failed to fetch job details", slog.String("url", jobURL), slog.Any("error", err))

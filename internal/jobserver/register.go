@@ -82,7 +82,7 @@ func registerJobSearch(server *mcp.Server) {
 			go func(name string) {
 				switch name {
 				case "linkedin":
-					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange)
+					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Salary)
 					if err != nil {
 						slog.Warn("job_search: linkedin error", slog.Any("error", err))
 						ch <- sourceResult{name: name, err: err}
