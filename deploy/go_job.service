@@ -1,0 +1,22 @@
+[Unit]
+Description=go_job — Job & Freelance Search MCP
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/user/go_job/bin/go_job
+EnvironmentFile=/home/user/go-search/deploy/go-search.env
+EnvironmentFile=/home/user/deploy-config/.env
+Environment=SEARXNG_URL=http://127.0.0.1:8888
+Environment=LLM_API_BASE=https://generativelanguage.googleapis.com/v1beta/openai
+Environment=LLM_MODEL=gemini-2.5-flash
+Environment=MCP_PORT=8891
+Environment=MAX_FETCH_URLS=8
+Environment=MAX_CONTENT_CHARS=6000
+Environment=REDIS_URL=redis://172.18.0.3:6379/2
+Environment=CACHE_TTL=900
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
