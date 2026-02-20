@@ -273,65 +273,59 @@ func SummarizeDeep(ctx context.Context, query, instruction string, contentLimit 
 	return &out, nil
 }
 
-// SummarizeFreelanceResults calls the LLM with freelance-specific prompt and parses structured projects.
-// Uses its own prompt format (not promptBase) since the output is structured JSON, not {"answer": "..."}.
-func SummarizeFreelanceResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*FreelanceSearchOutput, error) {
+// SummarizeToJSON builds an LLM prompt from search results and parses the response as JSON into T.
+// Returns (parsed, "", nil) on success, (nil, raw, nil) on parse failure (caller handles fallback),
+// or (nil, "", err) on LLM error.
+func SummarizeToJSON[T any](ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*T, string, error) {
 	sources := BuildSourcesText(results, contents, contentLimit)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
 
 	raw, err := CallLLM(ctx, prompt)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	var out llmFreelanceOutput
+	var out T
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		// Fallback: return raw as summary
+		return nil, raw, nil
+	}
+	return &out, "", nil
+}
+
+// SummarizeFreelanceResults calls the LLM with freelance-specific prompt and parses structured projects.
+func SummarizeFreelanceResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*FreelanceSearchOutput, error) {
+	parsed, raw, err := SummarizeToJSON[llmFreelanceOutput](ctx, query, instruction, contentLimit, results, contents)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
 		return &FreelanceSearchOutput{Query: query, Summary: raw}, nil
 	}
 
-	// Fill URLs from search results for projects that don't have them
-	for i := range out.Projects {
-		if out.Projects[i].URL == "" && i < len(results) {
-			out.Projects[i].URL = results[i].URL
+	for i := range parsed.Projects {
+		if parsed.Projects[i].URL == "" && i < len(results) {
+			parsed.Projects[i].URL = results[i].URL
 		}
 	}
-
-	return &FreelanceSearchOutput{
-		Query:    query,
-		Projects: out.Projects,
-		Summary:  out.Summary,
-	}, nil
+	return &FreelanceSearchOutput{Query: query, Projects: parsed.Projects, Summary: parsed.Summary}, nil
 }
 
 // SummarizeJobResults calls the LLM with job-specific prompt and parses structured job listings.
 func SummarizeJobResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*JobSearchOutput, error) {
-	sources := BuildSourcesText(results, contents, contentLimit)
-	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
-
-	raw, err := CallLLM(ctx, prompt)
+	parsed, raw, err := SummarizeToJSON[llmJobOutput](ctx, query, instruction, contentLimit, results, contents)
 	if err != nil {
 		return nil, err
 	}
-
-	var out llmJobOutput
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		// Fallback: return raw as summary
+	if parsed == nil {
 		return &JobSearchOutput{Query: query, Summary: raw}, nil
 	}
 
-	// Fill URLs from search results for jobs that don't have them
-	for i := range out.Jobs {
-		if out.Jobs[i].URL == "" && i < len(results) {
-			out.Jobs[i].URL = results[i].URL
+	for i := range parsed.Jobs {
+		if parsed.Jobs[i].URL == "" && i < len(results) {
+			parsed.Jobs[i].URL = results[i].URL
 		}
 	}
-
-	return &JobSearchOutput{
-		Query:   query,
-		Jobs:    out.Jobs,
-		Summary: out.Summary,
-	}, nil
+	return &JobSearchOutput{Query: query, Jobs: parsed.Jobs, Summary: parsed.Summary}, nil
 }
 
 // ExtractJSONAnswer extracts the "answer" field from malformed JSON

@@ -525,36 +525,25 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 // llmRemoteWorkOutput is the JSON structure expected from the LLM for remote work search.
 type llmRemoteWorkOutput struct {
 	Jobs    []engine.RemoteJobListing `json:"jobs"`
-	Summary string             `json:"summary"`
+	Summary string                   `json:"summary"`
 }
 
 // SummarizeRemoteWorkResults calls the LLM with remote-work-specific prompt and parses structured jobs.
 func SummarizeRemoteWorkResults(ctx context.Context, query, instruction string, contentLimit int, results []engine.SearxngResult, contents map[string]string) (*engine.RemoteWorkSearchOutput, error) {
-	sources := engine.BuildSourcesText(results, contents, contentLimit)
-	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
-
-	raw, err := engine.CallLLM(ctx, prompt)
+	parsed, raw, err := engine.SummarizeToJSON[llmRemoteWorkOutput](ctx, query, instruction, contentLimit, results, contents)
 	if err != nil {
 		return nil, err
 	}
-
-	var out llmRemoteWorkOutput
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if parsed == nil {
 		return &engine.RemoteWorkSearchOutput{Query: query, Summary: raw}, nil
 	}
 
-	// Fill URLs from search results for jobs that don't have them (immutable).
-	enrichedJobs := make([]engine.RemoteJobListing, len(out.Jobs))
-	for i, job := range out.Jobs {
+	enrichedJobs := make([]engine.RemoteJobListing, len(parsed.Jobs))
+	for i, job := range parsed.Jobs {
 		if job.URL == "" && i < len(results) {
 			job.URL = results[i].URL
 		}
 		enrichedJobs[i] = job
 	}
-
-	return &engine.RemoteWorkSearchOutput{
-		Query:   query,
-		Jobs:    enrichedJobs,
-		Summary: out.Summary,
-	}, nil
+	return &engine.RemoteWorkSearchOutput{Query: query, Jobs: enrichedJobs, Summary: parsed.Summary}, nil
 }
