@@ -123,3 +123,34 @@ type JobMatchScoreOutput struct {
 	Jobs    []JobMatchResult `json:"jobs"`
 	Summary string           `json:"summary"`
 }
+
+// SalaryResearchInput is the input for salary_research.
+type SalaryResearchInput struct {
+	Role       string `json:"role"`
+	Location   string `json:"location,omitempty"`
+	Experience string `json:"experience,omitempty"`
+}
+
+// CompanyResearchInput is the input for company_research.
+type CompanyResearchInput struct {
+	Company string `json:"company"`
+}
+
+// ResumeAnalyzeInput is the input for resume_analyze.
+type ResumeAnalyzeInput struct {
+	Resume          string `json:"resume"`
+	JobDescription  string `json:"job_description"`
+}
+
+// CoverLetterInput is the input for cover_letter_generate.
+type CoverLetterInput struct {
+	Resume         string `json:"resume"`
+	JobDescription string `json:"job_description"`
+	Tone           string `json:"tone,omitempty"`
+}
+
+// ResumeTailorInput is the input for resume_tailor.
+type ResumeTailorInput struct {
+	Resume         string `json:"resume"`
+	JobDescription string `json:"job_description"`
+}

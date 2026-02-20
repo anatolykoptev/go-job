@@ -17,13 +17,24 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// RegisterTools registers all work-related search tools on the given MCP server:
-// job_search, remote_work_search, freelance_search, job_match_score.
+// RegisterTools registers all work-related search tools on the given MCP server.
 func RegisterTools(server *mcp.Server) {
+	// Search
 	registerJobSearch(server)
 	registerRemoteWorkSearch(server)
 	registerFreelanceSearch(server)
 	registerJobMatchScore(server)
+	// Research
+	registerSalaryResearch(server)
+	registerCompanyResearch(server)
+	// Resume
+	registerResumeAnalyze(server)
+	registerCoverLetterGenerate(server)
+	registerResumeTailor(server)
+	// Tracker
+	registerJobTrackerAdd(server)
+	registerJobTrackerList(server)
+	registerJobTrackerUpdate(server)
 }
 
 func registerJobSearch(server *mcp.Server) {
@@ -770,6 +781,146 @@ func registerJobMatchScore(server *mcp.Server) {
 			Jobs:    scored,
 			Summary: summary,
 		}, nil
+	})
+}
+
+func registerSalaryResearch(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "salary_research",
+		Description: "Research salary ranges for a role and location. Returns p25/median/p75 percentiles with sources (levels.fyi, Glassdoor, LinkedIn, hh.ru, Хабр). For Russian locations returns RUB, otherwise USD.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.SalaryResearchInput) (*mcp.CallToolResult, *jobs.SalaryResearchResult, error) {
+		if input.Role == "" {
+			return nil, nil, fmt.Errorf("role is required")
+		}
+		result, err := jobs.ResearchSalary(ctx, input.Role, input.Location, input.Experience)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerCompanyResearch(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "company_research",
+		Description: "Research a company for interview preparation or job evaluation. Returns size, funding, tech stack, culture notes, recent news, Glassdoor rating, and an overall summary for job seekers.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.CompanyResearchInput) (*mcp.CallToolResult, *jobs.CompanyResearchResult, error) {
+		if input.Company == "" {
+			return nil, nil, fmt.Errorf("company is required")
+		}
+		result, err := jobs.ResearchCompany(ctx, input.Company)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerResumeAnalyze(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "resume_analyze",
+		Description: "Analyze a resume against a job description. Returns ATS score (0-100), matching/missing keywords, experience gaps, and specific recommendations to improve match rate.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeAnalyzeInput) (*mcp.CallToolResult, *jobs.ResumeAnalysisResult, error) {
+		if input.Resume == "" {
+			return nil, nil, fmt.Errorf("resume is required")
+		}
+		if input.JobDescription == "" {
+			return nil, nil, fmt.Errorf("job_description is required")
+		}
+		result, err := jobs.AnalyzeResume(ctx, input.Resume, input.JobDescription)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerCoverLetterGenerate(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "cover_letter_generate",
+		Description: "Generate a tailored cover letter from a resume and job description. Tone options: professional (default), friendly, concise. Returns the cover letter text with word count.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.CoverLetterInput) (*mcp.CallToolResult, *jobs.CoverLetterResult, error) {
+		if input.Resume == "" {
+			return nil, nil, fmt.Errorf("resume is required")
+		}
+		if input.JobDescription == "" {
+			return nil, nil, fmt.Errorf("job_description is required")
+		}
+		result, err := jobs.GenerateCoverLetter(ctx, input.Resume, input.JobDescription, input.Tone)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerResumeTailor(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "resume_tailor",
+		Description: "Rewrite resume sections to better match a specific job description. Incorporates missing keywords naturally, reorders bullet points by relevance, quantifies achievements. Returns tailored resume + diff summary.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeTailorInput) (*mcp.CallToolResult, *jobs.ResumeTailorResult, error) {
+		if input.Resume == "" {
+			return nil, nil, fmt.Errorf("resume is required")
+		}
+		if input.JobDescription == "" {
+			return nil, nil, fmt.Errorf("job_description is required")
+		}
+		result, err := jobs.TailorResume(ctx, input.Resume, input.JobDescription)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerJobTrackerAdd(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "job_tracker_add",
+		Description: "Save a job to the local tracker (SQLite). Status options: saved (default), applied, interview, offer, rejected. Returns the assigned ID for future updates.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.JobTrackerAddInput) (*mcp.CallToolResult, *jobs.JobTrackerResult, error) {
+		if input.Title == "" || input.Company == "" {
+			return nil, nil, fmt.Errorf("title and company are required")
+		}
+		result, err := jobs.AddTrackedJob(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerJobTrackerList(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "job_tracker_list",
+		Description: "List tracked job applications. Optionally filter by status: saved, applied, interview, offer, rejected. Returns jobs sorted by most recently updated.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.JobTrackerListInput) (*mcp.CallToolResult, *jobs.JobTrackerListResult, error) {
+		result, err := jobs.ListTrackedJobs(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
+	})
+}
+
+func registerJobTrackerUpdate(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "job_tracker_update",
+		Description: "Update status or notes for a tracked job by ID. Status options: saved, applied, interview, offer, rejected. Get IDs from job_tracker_list.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.JobTrackerUpdateInput) (*mcp.CallToolResult, *jobs.JobTrackerResult, error) {
+		if input.ID <= 0 {
+			return nil, nil, fmt.Errorf("id is required")
+		}
+		result, err := jobs.UpdateTrackedJob(ctx, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
 	})
 }
 
