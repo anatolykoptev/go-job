@@ -128,6 +128,7 @@ func initEngine() {
 		GithubToken:          env("GITHUB_TOKEN", ""),
 		CacheMaxEntries:      envInt("CACHE_MAX_ENTRIES", 1000),
 		CacheCleanupInterval: envDuration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
+		IndeedAPIKey:         env("INDEED_API_KEY", ""),
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{

@@ -57,6 +57,33 @@ func TruncateRunes(s string, limit int, suffix string) string {
 	return string(runes[:limit]) + suffix
 }
 
+// CanonicalJobKey returns a normalized dedup key for cross-source job deduplication.
+// Same job from LinkedIn + SearXNG + ATS will have the same key (same title, same location).
+// Strips common company suffixes, normalizes whitespace, lowercases everything.
+func CanonicalJobKey(title, location string) string {
+	norm := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		// Strip " at CompanyName" suffix that LinkedIn prepends.
+		if idx := strings.LastIndex(s, " at "); idx > 0 {
+			s = s[:idx]
+		}
+		// Collapse all non-alpha-numeric chars to a single space.
+		var b strings.Builder
+		prevSpace := true
+		for _, r := range s {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				b.WriteRune(r)
+				prevSpace = false
+			} else if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		}
+		return strings.TrimRight(b.String(), " ")
+	}
+	return norm(title) + "|" + norm(location)
+}
+
 // TruncateAtWord truncates a string to maxLen runes at a word boundary.
 func TruncateAtWord(s string, maxLen int) string {
 	runes := []rune(s)

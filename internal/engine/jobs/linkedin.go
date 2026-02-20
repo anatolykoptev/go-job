@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,43 +94,126 @@ var salaryMap = map[string]string{
 	"200k+": "9",
 }
 
+// linkedInGeoIDs maps common location strings (lowercase) to LinkedIn geoId values.
+// Using geoId provides more precise geographic filtering than text-based location.
+var linkedInGeoIDs = map[string]string{
+	"united states":  "103644278",
+	"us":             "103644278",
+	"usa":            "103644278",
+	"united kingdom": "101165590",
+	"uk":             "101165590",
+	"great britain":  "101165590",
+	"germany":        "101282230",
+	"canada":         "101174742",
+	"france":         "105015875",
+	"netherlands":    "102890719",
+	"poland":         "105072130",
+	"india":          "102713980",
+	"australia":      "101452733",
+	"singapore":      "102454443",
+	"spain":          "105646813",
+	"sweden":         "105117694",
+	"switzerland":    "106693272",
+	"denmark":        "104514075",
+	"norway":         "103819153",
+	"finland":        "100456013",
+	"israel":         "101620260",
+	"brazil":         "106057199",
+	"ukraine":        "102264497",
+	"portugal":       "100364837",
+	"ireland":        "104738515",
+	"austria":        "103883259",
+	"czech republic": "104508036",
+	"czechia":        "104508036",
+	"romania":        "106670623",
+	"hungary":        "100288700",
+	"new york":       "105080838",
+	"san francisco":  "90000084",
+	"london":         "90009496",
+	"berlin":         "103035651",
+	"amsterdam":      "102011674",
+	"toronto":        "100025096",
+	"melbourne":      "105088671",
+	"sydney":         "104769905",
+	"bangalore":      "105214831",
+	"tel aviv":       "101822562",
+	"remote":         "91000001",
+}
+
 // SearchLinkedInJobs queries the LinkedIn Guest API and returns parsed job cards.
-func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobType, remote, timeRange, salary string) ([]LinkedInJob, error) {
+// maxResults controls how many jobs to fetch (rounds up to nearest 25). 0 means 25.
+// easyApply=true filters to Easy Apply jobs only (f_JIYN=true param).
+func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobType, remote, timeRange, salary string, maxResults int, easyApply bool) ([]LinkedInJob, error) {
+	if maxResults <= 0 {
+		maxResults = 25
+	}
+
 	u, err := url.Parse(linkedInGuestAPI)
 	if err != nil {
 		return nil, err
 	}
 
-	q := u.Query()
-	q.Set("keywords", query)
-	q.Set("sortBy", "DD") // sort by date
-	q.Set("start", "0")
+	// Build base query params (filters, no start offset yet).
+	baseQ := u.Query()
+	baseQ.Set("keywords", query)
+	baseQ.Set("sortBy", "DD") // sort by date
 	if location != "" {
-		q.Set("location", location)
+		baseQ.Set("location", location)
+		// Add geoId for precise geographic filtering when location is known.
+		if geoID, ok := linkedInGeoIDs[strings.ToLower(strings.TrimSpace(location))]; ok {
+			baseQ.Set("geoId", geoID)
+		}
 	}
 	if v, ok := experienceMap[strings.ToLower(experience)]; ok {
-		q.Set("f_E", v)
+		baseQ.Set("f_E", v)
 	}
 	if v, ok := jobTypeMap[strings.ToLower(jobType)]; ok {
-		q.Set("f_JT", v)
+		baseQ.Set("f_JT", v)
 	}
 	if v, ok := remoteMap[strings.ToLower(remote)]; ok {
-		q.Set("f_WT", v)
+		baseQ.Set("f_WT", v)
 	}
 	if v, ok := timeRangeMap[strings.ToLower(timeRange)]; ok {
-		q.Set("f_TPR", v)
+		baseQ.Set("f_TPR", v)
 	}
 	if v, ok := salaryMap[strings.ToLower(strings.TrimSpace(salary))]; ok {
-		q.Set("f_SB2", v)
+		baseQ.Set("f_SB2", v)
 	}
-	u.RawQuery = q.Encode()
-
-	body, err := linkedInRequest(ctx, u.String())
-	if err != nil {
-		return nil, err
+	if easyApply {
+		baseQ.Set("f_JIYN", "true")
 	}
 
-	return parseLinkedInHTML(string(body)), nil
+	// Paginate in steps of 25 until we have enough results or LinkedIn returns empty.
+	var allJobs []LinkedInJob
+	for start := 0; len(allJobs) < maxResults; start += 25 {
+		q := baseQ
+		q.Set("start", strconv.Itoa(start))
+		u.RawQuery = q.Encode()
+
+		body, err := linkedInRequest(ctx, u.String())
+		if err != nil {
+			if start == 0 {
+				return nil, err
+			}
+			// Already have some results from earlier pages.
+			break
+		}
+
+		page := parseLinkedInHTML(string(body))
+		if len(page) == 0 {
+			break // No more results.
+		}
+		allJobs = append(allJobs, page...)
+
+		if len(page) < 25 {
+			break // Last page (partial).
+		}
+	}
+
+	if len(allJobs) > maxResults {
+		allJobs = allJobs[:maxResults]
+	}
+	return allJobs, nil
 }
 
 // linkedInRequest fetches a LinkedIn URL using BrowserClient (Chrome TLS fingerprint)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,11 +18,12 @@ import (
 )
 
 // RegisterTools registers all work-related search tools on the given MCP server:
-// job_search, remote_work_search, freelance_search.
+// job_search, remote_work_search, freelance_search, job_match_score.
 func RegisterTools(server *mcp.Server) {
 	registerJobSearch(server)
 	registerRemoteWorkSearch(server)
 	registerFreelanceSearch(server)
+	registerJobMatchScore(server)
 }
 
 func registerJobSearch(server *mcp.Server) {
@@ -51,6 +53,8 @@ func registerJobSearch(server *mcp.Server) {
 		useLever := platform == "all" || platform == "lever" || platform == "ats" || platform == "startup"
 		useYC := platform == "all" || platform == "yc" || platform == "startup"
 		useHN := platform == "all" || platform == "hn" || platform == "startup"
+		useIndeed := platform == "all" || platform == "indeed"
+		useHabr := platform == "all" || platform == "habr"
 
 		type sourceResult struct {
 			name    string
@@ -75,6 +79,12 @@ func registerJobSearch(server *mcp.Server) {
 		if useHN {
 			srcs = append(srcs, "hn")
 		}
+		if useIndeed {
+			srcs = append(srcs, "indeed")
+		}
+		if useHabr {
+			srcs = append(srcs, "habr")
+		}
 
 		ch := make(chan sourceResult, len(srcs)+1)
 
@@ -82,7 +92,7 @@ func registerJobSearch(server *mcp.Server) {
 			go func(name string) {
 				switch name {
 				case "linkedin":
-					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Salary)
+					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Salary, 50, input.EasyApply)
 					if err != nil {
 						slog.Warn("job_search: linkedin error", slog.Any("error", err))
 						ch <- sourceResult{name: name, err: err}
@@ -118,6 +128,20 @@ func registerJobSearch(server *mcp.Server) {
 						slog.Warn("job_search: hn error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
+
+				case "indeed":
+					results, err := jobs.SearchIndeedJobsFiltered(ctx, input.Query, input.Location, input.JobType, input.TimeRange, 15)
+					if err != nil {
+						slog.Warn("job_search: indeed error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case "habr":
+					results, err := jobs.SearchHabrJobs(ctx, input.Query, input.Location, 10)
+					if err != nil {
+						slog.Warn("job_search: habr error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
 				}
 			}(src)
 		}
@@ -146,6 +170,7 @@ func registerJobSearch(server *mcp.Server) {
 			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No results found."}, nil
 		}
 
+		// Dedup pass 1: by URL.
 		seen := make(map[string]bool)
 		var deduped []engine.SearxngResult
 		for _, r := range merged {
@@ -154,6 +179,18 @@ func registerJobSearch(server *mcp.Server) {
 				deduped = append(deduped, r)
 			}
 		}
+
+		// Dedup pass 2: by canonical key (same job from different sources).
+		canonSeen := make(map[string]bool)
+		var canonDeduped []engine.SearxngResult
+		for _, r := range deduped {
+			key := engine.CanonicalJobKey(r.Title, "")
+			if !canonSeen[key] {
+				canonSeen[key] = true
+				canonDeduped = append(canonDeduped, r)
+			}
+		}
+		deduped = canonDeduped
 
 		top := engine.DedupByDomain(deduped, 15)
 		if len(top) > 15 {
@@ -274,6 +311,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		}
 		rokCh := make(chan apiResult, 1)
 		wwrCh := make(chan apiResult, 1)
+		remCh := make(chan apiResult, 1)
 
 		go func() {
 			j, err := jobs.SearchRemoteOK(ctx, input.Query, 20)
@@ -282,6 +320,10 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		go func() {
 			j, err := jobs.SearchWeWorkRemotely(ctx, input.Query, 20)
 			wwrCh <- apiResult{j, err}
+		}()
+		go func() {
+			j, err := jobs.SearchRemotive(ctx, input.Query, 15)
+			remCh <- apiResult{j, err}
 		}()
 
 		type searchResult struct {
@@ -301,13 +343,15 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		addQuery(input.Query+" remote job", "google")
 		addQuery(input.Query+" remote job", "bing")
 
-		var rokRes, wwrRes apiResult
-		for i := 0; i < 2; i++ {
+		var rokRes, wwrRes, remRes apiResult
+		for i := 0; i < 3; i++ {
 			select {
 			case r := <-rokCh:
 				rokRes = r
 			case r := <-wwrCh:
 				wwrRes = r
+			case r := <-remCh:
+				remRes = r
 			case <-ctx.Done():
 				return nil, engine.SmartSearchOutput{}, ctx.Err()
 			}
@@ -318,6 +362,9 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		}
 		if wwrRes.err != nil {
 			slog.Warn("remote_work_search: WWR error", slog.Any("error", wwrRes.err))
+		}
+		if remRes.err != nil {
+			slog.Warn("remote_work_search: Remotive error", slog.Any("error", remRes.err))
 		}
 
 		var apiSearxResults []engine.SearxngResult
@@ -332,6 +379,13 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		}
 		if len(wwrRes.jobList) > 0 {
 			converted := jobs.RemoteJobsToSearxngResults(wwrRes.jobList)
+			for _, r := range converted {
+				apiURLs[r.URL] = true
+			}
+			apiSearxResults = append(apiSearxResults, converted...)
+		}
+		if len(remRes.jobList) > 0 {
+			converted := jobs.RemoteJobsToSearxngResults(remRes.jobList)
 			for _, r := range converted {
 				apiURLs[r.URL] = true
 			}
@@ -357,7 +411,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		merged = append(merged, webResults...)
 
 		if len(merged) == 0 {
-			if rokRes.err != nil && wwrRes.err != nil {
+			if rokRes.err != nil && wwrRes.err != nil && remRes.err != nil {
 				return nil, engine.SmartSearchOutput{}, fmt.Errorf("all sources failed")
 			}
 			out := engine.RemoteWorkSearchOutput{Query: input.Query, Summary: "No remote jobs found."}
@@ -560,4 +614,190 @@ func registerFreelanceSearch(server *mcp.Server) {
 		toolutil.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
 		return nil, *freelanceOut, nil
 	})
+}
+
+// --- job_match_score ---
+
+func registerJobMatchScore(server *mcp.Server) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "job_match_score",
+		Description: "Score job listings against a resume using keyword overlap analysis (Jaccard similarity). Searches jobs across LinkedIn, Indeed, and YC, then ranks each result by how well it matches the resume text. Returns jobs sorted by match_score (0–100) with lists of matching and missing keywords.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobMatchScoreInput) (*mcp.CallToolResult, engine.JobMatchScoreOutput, error) {
+		if input.Resume == "" {
+			return nil, engine.JobMatchScoreOutput{}, fmt.Errorf("resume is required")
+		}
+		if input.Query == "" {
+			return nil, engine.JobMatchScoreOutput{}, fmt.Errorf("query is required")
+		}
+
+		resumeKW := jobs.ExtractResumeKeywords(input.Resume)
+
+		platform := strings.ToLower(strings.TrimSpace(input.Platform))
+		if platform == "" {
+			platform = "all"
+		}
+
+		type srcResult struct {
+			results []engine.SearxngResult
+			source  string
+		}
+
+		var mu sync.Mutex
+		var allResults []engine.SearxngResult
+		var wg sync.WaitGroup
+
+		if platform == "all" || platform == "linkedin" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, "", "", "", "", "", 50, false)
+				if err != nil {
+					slog.Warn("job_match_score: linkedin error", slog.Any("error", err))
+					return
+				}
+				rs := jobs.LinkedInJobsToSearxngResults(ctx, liJobs, 5)
+				mu.Lock()
+				allResults = append(allResults, rs...)
+				mu.Unlock()
+			}()
+		}
+
+		if platform == "all" || platform == "indeed" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rs, err := jobs.SearchIndeedJobsFiltered(ctx, input.Query, input.Location, "", "", 15)
+				if err != nil {
+					slog.Warn("job_match_score: indeed error", slog.Any("error", err))
+					return
+				}
+				mu.Lock()
+				allResults = append(allResults, rs...)
+				mu.Unlock()
+			}()
+		}
+
+		if platform == "all" || platform == "yc" || platform == "startup" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rs, err := jobs.SearchYCJobs(ctx, input.Query, input.Location, 10)
+				if err != nil {
+					slog.Warn("job_match_score: yc error", slog.Any("error", err))
+					return
+				}
+				mu.Lock()
+				allResults = append(allResults, rs...)
+				mu.Unlock()
+			}()
+		}
+
+		if platform == "all" || platform == "hn" || platform == "startup" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rs, err := jobs.SearchHNJobs(ctx, input.Query, 10)
+				if err != nil {
+					slog.Warn("job_match_score: hn error", slog.Any("error", err))
+					return
+				}
+				mu.Lock()
+				allResults = append(allResults, rs...)
+				mu.Unlock()
+			}()
+		}
+
+		wg.Wait()
+
+		if len(allResults) == 0 {
+			return nil, engine.JobMatchScoreOutput{Query: input.Query, Summary: "No jobs found."}, nil
+		}
+
+		// Dedup by URL.
+		seen := make(map[string]bool)
+		var deduped []engine.SearxngResult
+		for _, r := range allResults {
+			if r.URL != "" && !seen[r.URL] {
+				seen[r.URL] = true
+				deduped = append(deduped, r)
+			}
+		}
+
+		// Score each result against resume keywords.
+		scored := make([]engine.JobMatchResult, 0, len(deduped))
+		for _, r := range deduped {
+			jobText := r.Title + " " + r.Content
+			score, matching, missing := jobs.ScoreJobMatch(resumeKW, jobText)
+
+			// Split "Title at Company" LinkedIn format into separate fields.
+			title, company := r.Title, ""
+			if parts := strings.SplitN(r.Title, " at ", 2); len(parts) == 2 {
+				title = parts[0]
+				company = parts[1]
+			}
+
+			snippet := engine.TruncateRunes(r.Content, 300, "...")
+
+			scored = append(scored, engine.JobMatchResult{
+				Title:            title,
+				Company:          company,
+				URL:              r.URL,
+				Source:           extractSource(r.URL),
+				Snippet:          snippet,
+				MatchScore:       score,
+				MatchingKeywords: matching,
+				MissingKeywords:  missing,
+			})
+		}
+
+		// Sort by score descending.
+		sort.Slice(scored, func(i, j int) bool {
+			return scored[i].MatchScore > scored[j].MatchScore
+		})
+		if len(scored) > 15 {
+			scored = scored[:15]
+		}
+
+		topScore := 0.0
+		if len(scored) > 0 {
+			topScore = scored[0].MatchScore
+		}
+		summary := fmt.Sprintf("Scored %d jobs for %q. Top match: %.1f/100.", len(scored), input.Query, topScore)
+
+		return nil, engine.JobMatchScoreOutput{
+			Query:   input.Query,
+			Jobs:    scored,
+			Summary: summary,
+		}, nil
+	})
+}
+
+// extractSource guesses the job board name from a URL hostname.
+func extractSource(jobURL string) string {
+	u, err := url.Parse(jobURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	switch {
+	case strings.Contains(host, "linkedin"):
+		return "linkedin"
+	case strings.Contains(host, "indeed"):
+		return "indeed"
+	case strings.Contains(host, "workatastartup"):
+		return "yc"
+	case strings.Contains(host, "ycombinator"):
+		return "hn"
+	case strings.Contains(host, "greenhouse"):
+		return "greenhouse"
+	case strings.Contains(host, "lever"):
+		return "lever"
+	case strings.Contains(host, "remoteok"):
+		return "remoteok"
+	case strings.Contains(host, "remotive"):
+		return "remotive"
+	default:
+		return host
+	}
 }

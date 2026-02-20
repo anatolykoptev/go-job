@@ -11,6 +11,7 @@ type JobSearchInput struct {
 	TimeRange  string `json:"time_range,omitempty" jsonschema:"Time posted: day, week, month"`
 	Platform   string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, greenhouse, lever, ats (greenhouse+lever), yc (workatastartup.com), hn (HN Who is Hiring), indeed, habr (Хабр Карьера), startup (yc+hn+ats), all (default)"`
 	Salary     string `json:"salary,omitempty" jsonschema:"Minimum salary filter for LinkedIn: 40k+, 60k+, 80k+, 100k+, 120k+, 140k+, 160k+, 180k+, 200k+"`
+	EasyApply  bool   `json:"easy_apply,omitempty" jsonschema:"LinkedIn only: filter to Easy Apply jobs (one-click apply)"`
 	Language   string `json:"language,omitempty" jsonschema:"Language code for the answer (default: all)"`
 }
 
@@ -87,4 +88,34 @@ type RemoteWorkSearchOutput struct {
 	Query   string             `json:"query"`
 	Jobs    []RemoteJobListing `json:"jobs"`
 	Summary string             `json:"summary"`
+}
+
+// --- Job match score types ---
+
+// JobMatchScoreInput is the input for the job_match_score tool.
+type JobMatchScoreInput struct {
+	Resume   string `json:"resume" jsonschema:"Resume text to match against job listings"`
+	Query    string `json:"query" jsonschema:"Job search keywords (e.g. golang developer, data engineer)"`
+	Location string `json:"location,omitempty" jsonschema:"City, country, or Remote"`
+	Platform string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, indeed, yc, hn, all (default)"`
+}
+
+// JobMatchResult is a job listing annotated with a Jaccard keyword match score.
+type JobMatchResult struct {
+	Title            string   `json:"title"`
+	Company          string   `json:"company,omitempty"`
+	URL              string   `json:"url"`
+	Location         string   `json:"location,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	Snippet          string   `json:"snippet,omitempty"`
+	MatchScore       float64  `json:"match_score"`        // 0–100 Jaccard keyword overlap
+	MatchingKeywords []string `json:"matching_keywords"` // resume skills this job wants
+	MissingKeywords  []string `json:"missing_keywords"`  // job keywords absent from resume
+}
+
+// JobMatchScoreOutput is the structured output for job_match_score.
+type JobMatchScoreOutput struct {
+	Query   string           `json:"query"`
+	Jobs    []JobMatchResult `json:"jobs"`
+	Summary string           `json:"summary"`
 }

@@ -409,6 +409,119 @@ func RemoteJobsToSearxngResults(jobs []engine.RemoteJobListing) []engine.Searxng
 	return results
 }
 
+// --- Remotive API ---
+
+const remotiveAPI = "https://remotive.com/api/remote-jobs"
+
+type remotiveResponse struct {
+	JobCount int           `json:"job-count"`
+	Jobs     []remotiveJob `json:"jobs"`
+}
+
+type remotiveJob struct {
+	ID                        int      `json:"id"`
+	URL                       string   `json:"url"`
+	Title                     string   `json:"title"`
+	CompanyName               string   `json:"company_name"`
+	Tags                      []string `json:"tags"`
+	JobType                   string   `json:"job_type"`
+	PublicationDate           string   `json:"publication_date"`
+	CandidateRequiredLocation string   `json:"candidate_required_location"`
+	Salary                    string   `json:"salary"`
+}
+
+// SearchRemotive queries the Remotive public JSON API for remote job listings.
+// No auth required. Search results are filtered by the `search` param server-side.
+func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.RemoteJobListing, error) {
+	if limit <= 0 || limit > 30 {
+		limit = 15
+	}
+
+	u, err := url.Parse(remotiveAPI)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("search", query)
+	u.RawQuery = q.Encode()
+
+	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", engine.UserAgentBot)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		return engine.Cfg.HTTPClient.Do(req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("remotive API returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+
+	var rr remotiveResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, fmt.Errorf("remotive parse error: %w", err)
+	}
+
+	var jobs []engine.RemoteJobListing
+	for _, j := range rr.Jobs {
+		if j.Title == "" || j.URL == "" {
+			continue
+		}
+
+		// Parse date: Remotive uses "2024-01-15T10:00:00" format, take YYYY-MM-DD prefix.
+		posted := ""
+		if len(j.PublicationDate) >= 10 {
+			posted = j.PublicationDate[:10]
+		}
+
+		location := j.CandidateRequiredLocation
+		if location == "" {
+			location = "Worldwide"
+		}
+
+		jobType := strings.ReplaceAll(j.JobType, "_", " ")
+
+		salary := j.Salary
+		if salary == "" {
+			salary = "not specified"
+		}
+
+		jobs = append(jobs, engine.RemoteJobListing{
+			Title:    j.Title,
+			Company:  j.CompanyName,
+			URL:      j.URL,
+			Source:   "remotive",
+			Salary:   salary,
+			Location: location,
+			Tags:     j.Tags,
+			Posted:   posted,
+			JobType:  jobType,
+		})
+	}
+
+	if len(jobs) > limit {
+		jobs = jobs[:limit]
+	}
+
+	slog.Debug("remotive: search complete", slog.Int("results", len(jobs)))
+	return jobs, nil
+}
+
 // llmRemoteWorkOutput is the JSON structure expected from the LLM for remote work search.
 type llmRemoteWorkOutput struct {
 	Jobs    []engine.RemoteJobListing `json:"jobs"`

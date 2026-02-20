@@ -30,6 +30,7 @@ type Config struct {
 	BrowserClient        *BrowserClient // nil = direct scrapers disabled
 	DirectDDG            bool           // enable DuckDuckGo direct scraper
 	DirectStartpage      bool           // enable Startpage direct scraper
+	IndeedAPIKey         string         // hardcoded iOS app key; overrideable via INDEED_API_KEY env
 }
 
 var cfg Config
