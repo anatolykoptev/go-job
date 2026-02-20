@@ -121,9 +121,13 @@ Respond with valid JSON only (no markdown wrapping):
       "title": "job title",
       "company": "company name",
       "location": "city, country or Remote",
-      "source": "linkedin" or "greenhouse" or "lever" or "yc" or "hn" or "other",
+      "source": "linkedin" or "greenhouse" or "lever" or "yc" or "hn" or "indeed" or "habr" or "other",
       "url": "direct job listing URL",
-      "salary": "$X-Y USD/yr" or "not specified",
+      "salary": "$X–Y USD/yr" or "not specified",
+      "salary_min": 80000,
+      "salary_max": 120000,
+      "salary_currency": "USD",
+      "salary_interval": "year",
       "job_type": "full-time" or "contract" or "part-time" or "not specified",
       "remote": "remote" or "hybrid" or "onsite" or "not specified",
       "experience": "senior" or "mid" or "junior" or "not specified",
@@ -137,8 +141,11 @@ Respond with valid JSON only (no markdown wrapping):
 
 Rules:
 - Extract ALL jobs found in sources (up to 15)
-- Determine source from URL or content: boards.greenhouse.io→greenhouse, jobs.lever.co→lever, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin
-- Extract salary from description or structured data. If not found, use "not specified"
+- Determine source from URL or content: boards.greenhouse.io→greenhouse, jobs.lever.co→lever, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed
+- Extract salary from description or structured data. If not found, use "not specified" for salary string, omit salary_min/max/currency/interval
+- salary_min/salary_max: numeric annual amounts in the base currency unit (not thousands). E.g. 80000 not 80.
+- salary_currency: ISO 4217 code (USD, EUR, GBP, RUB, etc.)
+- salary_interval: "year", "month", or "hour"
 - Extract specific skills and technologies mentioned in the listing
 - Keep description concise — focus on key responsibilities and must-have requirements
 - Determine remote/onsite from content. If not found, use "not specified"

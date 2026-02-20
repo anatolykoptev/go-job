@@ -17,19 +17,23 @@ type JobSearchInput struct {
 
 // JobListing is a structured representation of a job listing.
 type JobListing struct {
-	Title       string   `json:"title"`
-	Company     string   `json:"company"`
-	URL         string   `json:"url"`
-	JobID       string   `json:"job_id,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Location    string   `json:"location"`
-	Salary      string   `json:"salary"`
-	JobType     string   `json:"job_type"`
-	Remote      string   `json:"remote"`
-	Experience  string   `json:"experience,omitempty"`
-	Skills      []string `json:"skills"`
-	Description string   `json:"description"`
-	Posted      string   `json:"posted"`
+	Title          string   `json:"title"`
+	Company        string   `json:"company"`
+	URL            string   `json:"url"`
+	JobID          string   `json:"job_id,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Location       string   `json:"location"`
+	Salary         string   `json:"salary"`          // human-readable: "$80k–120k USD/yr"
+	SalaryMin      *int     `json:"salary_min,omitempty"`      // numeric min (annual, in currency units)
+	SalaryMax      *int     `json:"salary_max,omitempty"`      // numeric max
+	SalaryCurrency string   `json:"salary_currency,omitempty"` // e.g. "USD", "EUR", "RUB"
+	SalaryInterval string   `json:"salary_interval,omitempty"` // "year", "month", "hour"
+	JobType        string   `json:"job_type"`
+	Remote         string   `json:"remote"`
+	Experience     string   `json:"experience,omitempty"`
+	Skills         []string `json:"skills"`
+	Description    string   `json:"description"`
+	Posted         string   `json:"posted"`
 }
 
 // JobSearchOutput is the structured output for job_search.
