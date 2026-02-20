@@ -48,7 +48,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	logger.Info("tools registered", slog.Int("count", 3))
+	logger.Info("tools registered", slog.Int("count", 11))
 
 	if stdio {
 		logger.Info("running in stdio mode")
