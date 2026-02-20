@@ -1,11 +1,29 @@
 # go_job MCP — Documentation
 
-**go_job** is a standalone Go MCP server exposing three tools for job, remote work, and freelance search across multiple platforms.
+**go_job** is a standalone Go MCP server exposing **11 tools** for job search, resume optimization, career research, and application tracking.
 
 - **MCP endpoint:** `http://localhost:8891/mcp`
 - **Health:** `http://localhost:8891/health`
 - **Metrics:** `http://localhost:8891/metrics`
 - **Transport:** HTTP (Streamable) or `--stdio`
+
+---
+
+## Tools Overview
+
+| Tool | Category | Description |
+|------|----------|-------------|
+| [`job_search`](#job_search) | Search | LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр (10+ sources) |
+| [`remote_work_search`](#remote_work_search) | Search | RemoteOK, WeWorkRemotely, SearXNG |
+| [`freelance_search`](#freelance_search) | Search | Upwork, Freelancer.com |
+| [`resume_analyze`](#resume_analyze) | Resume | ATS score (0-100), missing keywords, gaps, recommendations |
+| [`cover_letter_generate`](#cover_letter_generate) | Resume | Tailored cover letter (3 tones) |
+| [`resume_tailor`](#resume_tailor) | Resume | Rewrite resume sections to match JD |
+| [`salary_research`](#salary_research) | Research | p25/median/p75 salary benchmarks |
+| [`company_research`](#company_research) | Research | Size, funding, tech stack, culture, news |
+| [`job_tracker_add`](#job_tracker_add) | Tracker | Save job to local SQLite tracker |
+| [`job_tracker_list`](#job_tracker_list) | Tracker | List tracked jobs by status |
+| [`job_tracker_update`](#job_tracker_update) | Tracker | Update status/notes by ID |
 
 ---
 
@@ -166,6 +184,241 @@ Search for freelance projects on Upwork and Freelancer.com.
 
 ---
 
+### `resume_analyze`
+
+Analyze a resume against a job description. Returns ATS compatibility score, keyword analysis, and actionable recommendations.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `resume_text` | string | ✅ | Resume as plain text (paste directly, no PDF) |
+| `job_description` | string | ✅ | Full job description text |
+
+#### Output
+
+```json
+{
+  "ats_score": 72,
+  "matching_keywords": ["Go", "REST API", "PostgreSQL"],
+  "missing_keywords": ["gRPC", "Kubernetes", "Prometheus"],
+  "gaps": ["No distributed systems experience at scale", "Missing cloud certifications"],
+  "recommendations": [
+    "Add gRPC project to portfolio section",
+    "Mention Prometheus monitoring in experience bullets",
+    "Add Kubernetes deployment experience"
+  ],
+  "summary": "Strong backend match but missing cloud/container keywords. ATS score can be improved to 85+ by adding Kubernetes and gRPC."
+}
+```
+
+---
+
+### `cover_letter_generate`
+
+Generate a tailored cover letter from resume and job description.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `resume_text` | string | ✅ | Resume as plain text |
+| `job_description` | string | ✅ | Job description text |
+| `tone` | string | — | `professional` (default) \| `friendly` \| `concise` |
+
+#### Output
+
+```json
+{
+  "cover_letter": "Dear Hiring Manager,\n\nI am excited to apply for the Senior Go Engineer position at Stripe...",
+  "word_count": 287,
+  "tone": "professional"
+}
+```
+
+---
+
+### `resume_tailor`
+
+Rewrite resume sections to better match a specific job description. Returns tailored sections, keyword diff, and complete tailored resume.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `resume_text` | string | ✅ | Resume as plain text |
+| `job_description` | string | ✅ | Job description to tailor for |
+
+#### Output
+
+```json
+{
+  "tailored_sections": {
+    "Summary": "Results-driven Go engineer with 5+ years building distributed systems...",
+    "Skills": "Go, gRPC, Kubernetes, Prometheus, PostgreSQL, Terraform"
+  },
+  "added_keywords": ["gRPC", "Prometheus", "distributed systems"],
+  "removed_keywords": ["PHP", "jQuery"],
+  "diff_summary": "Added gRPC and Prometheus to skills, reordered experience bullets to highlight distributed systems work, removed legacy frontend stack.",
+  "tailored_resume": "John Doe\nSenior Go Engineer\n..."
+}
+```
+
+---
+
+### `salary_research`
+
+Research salary ranges for a role and location. Aggregates data from levels.fyi, Glassdoor, hh.ru, Хабр Карьера via SearXNG + LLM synthesis.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `role` | string | ✅ | Job title (e.g. `Senior Go Developer`, `Data Engineer`) |
+| `location` | string | — | City/country/region (e.g. `San Francisco`, `Remote`, `Москва`) |
+| `experience` | string | — | `junior` \| `mid` \| `senior` \| `lead` |
+
+#### Output
+
+```json
+{
+  "role": "Senior Go Developer",
+  "location": "San Francisco",
+  "currency": "USD",
+  "p25": 160000,
+  "median": 195000,
+  "p75": 230000,
+  "sources": ["levels.fyi", "glassdoor.com", "linkedin.com"],
+  "notes": "Equity not included. Varies significantly by company tier (FAANG vs startup).",
+  "updated_at": "2025"
+}
+```
+
+**Note:** For Russian locations (Москва, Россия, etc.) uses hh.ru and Хабр Карьера as primary sources and returns RUB.
+
+---
+
+### `company_research`
+
+Research a company before applying or interviewing. Returns size, funding, tech stack, culture notes, Glassdoor rating, and recent news.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `company_name` | string | ✅ | Company name (e.g. `Google`, `Яндекс`, `Stripe`) |
+
+#### Output
+
+```json
+{
+  "name": "Stripe",
+  "size": "8000-10000",
+  "founded": "2010",
+  "industry": "FinTech / Payments",
+  "funding": "Private, $95B valuation",
+  "tech_stack": ["Ruby", "Go", "Java", "React", "AWS", "Kafka"],
+  "culture_notes": "High-performance engineering culture. Strong emphasis on writing and documentation. Remote-friendly with offices in SF, NYC, Dublin.",
+  "recent_news": [
+    "Launched Stripe Tax globally in 2024",
+    "Expanded to 50 new countries"
+  ],
+  "glassdoor_rating": 4.1,
+  "website": "https://stripe.com",
+  "summary": "Stripe is a leading global payments infrastructure company..."
+}
+```
+
+---
+
+### `job_tracker_add`
+
+Save a job to the local SQLite tracker (`~/.go_job/tracker.db`).
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `title` | string | ✅ | Job title |
+| `company` | string | ✅ | Company name |
+| `url` | string | — | Job posting URL |
+| `status` | string | — | `saved` (default) \| `applied` \| `interview` \| `offer` \| `rejected` |
+| `notes` | string | — | Any notes (recruiter name, salary discussed, etc.) |
+| `salary` | string | — | Salary range if known |
+| `location` | string | — | Job location |
+
+#### Output
+
+```json
+{"id": 42, "message": "Job 'Senior Go Developer' at 'Stripe' saved with status 'applied' (id=42)"}
+```
+
+---
+
+### `job_tracker_list`
+
+List tracked jobs, optionally filtered by status.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | — | Filter: `saved` \| `applied` \| `interview` \| `offer` \| `rejected` (empty = all) |
+| `limit` | int | — | Max results (default: 50, max: 100) |
+
+#### Output
+
+```json
+{
+  "jobs": [
+    {
+      "id": 42,
+      "title": "Senior Go Developer",
+      "company": "Stripe",
+      "url": "https://stripe.com/jobs/123",
+      "status": "applied",
+      "notes": "Applied via LinkedIn. Recruiter: Jane Smith",
+      "salary": "$180k-$220k",
+      "location": "Remote",
+      "created_at": "2026-02-19T20:45:00Z",
+      "updated_at": "2026-02-19T20:45:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### `job_tracker_update`
+
+Update status and/or notes for a tracked job by ID.
+
+#### Input
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | int | ✅ | Job ID from `job_tracker_add` or `job_tracker_list` |
+| `status` | string | — | New status: `saved` \| `applied` \| `interview` \| `offer` \| `rejected` |
+| `notes` | string | — | Updated notes |
+
+At least one of `status` or `notes` must be provided.
+
+#### Output
+
+```json
+{"id": 42, "message": "Job #42 updated successfully"}
+```
+
+#### Application Pipeline
+
+```
+saved → applied → interview → offer
+                            ↘ rejected
+```
+
+---
+
 ## Architecture
 
 ```
@@ -181,25 +434,38 @@ go_job/
 │   │   ├── retry.go                 # HTTP retry with backoff
 │   │   ├── metrics.go               # Prometheus-style counters
 │   │   ├── types_jobs.go            # Job/Remote/Freelance input+output types
-│   │   ├── jobs/                    # Job source implementations
+│   │   ├── jobs/                    # Job source + career tool implementations
 │   │   │   ├── linkedin.go          # LinkedIn Guest API + JSON-LD detail fetch
 │   │   │   ├── ats.go               # Greenhouse + Lever public APIs
 │   │   │   ├── hnjobs.go            # HN "Who is Hiring?" via Algolia + Firebase
 │   │   │   ├── ycjobs.go            # YC workatastartup.com
 │   │   │   ├── remotejobs.go        # RemoteOK API + WeWorkRemotely RSS
-│   │   │   └── indeed.go            # Indeed via SearXNG + JSON-LD scrape
+│   │   │   ├── indeed.go            # Indeed via SearXNG + JSON-LD scrape
+│   │   │   ├── habr.go              # Хабр Карьера public JSON API
+│   │   │   ├── resume.go            # resume_analyze, cover_letter_generate, resume_tailor
+│   │   │   ├── research.go          # salary_research, company_research
+│   │   │   └── tracker.go           # job_tracker_add/list/update (SQLite)
 │   │   └── sources/
 │   │       └── freelancer.go        # Freelancer.com REST API
 │   ├── jobserver/
-│   │   └── register.go              # MCP tool registrations (3 tools)
+│   │   └── register.go              # MCP tool registrations (11 tools)
 │   └── toolutil/
 │       └── toolutil.go              # Shared helpers: cache, fetch, lang
 ├── docs/
 │   ├── README.md                    # This file
-│   └── compare.md                   # Comparison with competitors
+│   ├── compare.md                   # Comparison with competitors
+│   └── roadmap.md                   # Feature roadmap
 └── deploy/
     └── go_job.service               # systemd unit
 ```
+
+## Data Storage
+
+| Store | Location | Purpose |
+|-------|----------|---------|
+| Job tracker | `~/.go_job/tracker.db` | SQLite, persists across restarts |
+| L1 cache | in-memory (`sync.Map`) | Fast, lost on restart |
+| L2 cache | Redis (optional) | Persistent, shared across instances |
 
 ## Environment Variables
 
@@ -217,7 +483,7 @@ go_job/
 | `MAX_FETCH_URLS` | `8` | Max parallel URL fetches |
 | `MAX_CONTENT_CHARS` | `6000` | Max chars per fetched page |
 | `FETCH_TIMEOUT` | `10` | HTTP fetch timeout in seconds |
-| `GITHUB_TOKEN` | — | GitHub token (unused in go_job, reserved) |
+| `GITHUB_TOKEN` | — | GitHub token (reserved) |
 
 ## Caching
 
@@ -227,6 +493,8 @@ Results are cached at two levels:
 - **L2 (Redis):** Optional. Survives restarts, shared across instances.
 
 Cache key format: `sha256(tool_name + "|" + param1 + "|" + param2 + ...)`.
+
+**Note:** `resume_analyze`, `cover_letter_generate`, `resume_tailor`, `salary_research`, `company_research` are **not cached** (LLM-generated, context-dependent). Job tracker operations use SQLite directly.
 
 ## Rate Limiting & Anti-bot
 
