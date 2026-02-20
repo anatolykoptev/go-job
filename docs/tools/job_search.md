@@ -11,12 +11,13 @@ Search for job listings across 10+ sources: LinkedIn, Greenhouse, Lever, YC, HN,
 | Parameter    | Type   | Required | Description |
 |-------------|--------|----------|-------------|
 | `query`     | string | ✅       | Job search keywords (e.g. `golang developer`, `data engineer`) |
-| `location`  | string | —        | City, country, or `Remote` (e.g. `Berlin`, `United States`) |
+| `location`  | string | —        | City, country, or `Remote` (e.g. `Berlin`, `United States`). 42 locations map to LinkedIn geoId for precise filtering. |
 | `experience`| string | —        | `internship` \| `entry` \| `associate` \| `mid-senior` \| `director` \| `executive` |
 | `job_type`  | string | —        | `full-time` \| `part-time` \| `contract` \| `temporary` |
 | `remote`    | string | —        | `onsite` \| `hybrid` \| `remote` |
 | `time_range`| string | —        | `day` \| `week` \| `month` |
 | `salary`    | string | —        | Salary filter for LinkedIn: `40k+` \| `60k+` \| `80k+` \| `100k+` \| `120k+` \| `140k+` \| `160k+` \| `180k+` \| `200k+` |
+| `easy_apply`| bool   | —        | LinkedIn only: filter to Easy Apply jobs (`true`) |
 | `platform`  | string | —        | Source filter — see table below |
 | `language`  | string | —        | Answer language code (default: `all`) |
 
@@ -50,7 +51,11 @@ Search for job listings across 10+ sources: LinkedIn, Greenhouse, Lever, YC, HN,
       "job_id": "abc123",
       "source": "lever",
       "location": "Remote",
-      "salary": "$140,000 - $180,000 USD",
+      "salary": "$140k–180k USD/yr",
+      "salary_min": 140000,
+      "salary_max": 180000,
+      "salary_currency": "USD",
+      "salary_interval": "year",
       "job_type": "full-time",
       "remote": "remote",
       "experience": "mid-senior",
@@ -74,7 +79,7 @@ Search for job listings across 10+ sources: LinkedIn, Greenhouse, Lever, YC, HN,
 | **Lever** | Public postings API (`api.lever.co/v0/postings/{slug}`) | None | Same slug-discovery pattern as Greenhouse |
 | **YC** | SearXNG `site:workatastartup.com` + direct page scrape | None | Direct scrape requires BrowserClient |
 | **HN** | Algolia HN search within "Who is Hiring?" thread | None | Thread ID cached 6h; falls back to Firebase parallel fetch |
-| **Indeed** | SearXNG `site:indeed.com/viewjob` + page scrape | None | JSON-LD extraction for structured data |
+| **Indeed** | Internal iOS GraphQL API (`apis.indeed.com/graphql`) | `INDEED_API_KEY` env | Direct GraphQL with salary ranges; SearXNG fallback if API fails |
 | **Хабр Карьера** | Public JSON API (`career.habr.com/api/frontend/vacancies`) | None | Salary, skills, location, remote flag, employment type |
 
 ---

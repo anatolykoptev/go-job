@@ -1,0 +1,27 @@
+# Build output
+/bin/
+
+# Database files (job tracker SQLite)
+*.db
+*.sqlite
+
+# Environment files (secrets)
+.env
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test output
+*.test
+*.prof
+
+# Firecrawl
+.firecrawl/

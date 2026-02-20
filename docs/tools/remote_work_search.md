@@ -2,7 +2,7 @@
 
 > **Category:** Search | **Source:** `internal/engine/jobs/remotejobs.go`
 
-Search for remote-first job listings on RemoteOK, WeWorkRemotely, and via SearXNG.
+Search for remote-first job listings on RemoteOK, WeWorkRemotely, Remotive, and via SearXNG.
 
 ---
 
@@ -45,6 +45,7 @@ Search for remote-first job listings on RemoteOK, WeWorkRemotely, and via SearXN
 |--------|--------|-------|
 | **RemoteOK** | JSON API (`remoteok.com/api?tag=...`) | Filters by first significant keyword; AND-logic keyword filter applied post-fetch with OR fallback |
 | **WeWorkRemotely** | RSS feed (`weworkremotely.com/remote-jobs.rss`) | Full feed parsed, keyword-filtered client-side |
+| **Remotive** | JSON API (`remotive.com/api/remote-jobs?search=...`) | Free public API, server-side search filter, no auth |
 | **SearXNG** | `query + "remote job"` via Google + Bing engines | Parallel queries |
 
 ---
