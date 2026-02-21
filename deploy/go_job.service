@@ -13,7 +13,7 @@ Environment=LLM_MODEL=gemini-2.5-flash
 Environment=MCP_PORT=8891
 Environment=MAX_FETCH_URLS=8
 Environment=MAX_CONTENT_CHARS=6000
-Environment=REDIS_URL=redis://172.18.0.3:6379/2
+Environment=REDIS_URL=redis://127.0.0.1:6379/2
 Environment=CACHE_TTL=900
 Restart=always
 RestartSec=5
