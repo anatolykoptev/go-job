@@ -50,7 +50,7 @@ func FetchRepoMeta(ctx context.Context, owner, repo string) (*RepoMeta, error) {
 	defer cancel()
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func FetchRepoMeta(ctx context.Context, owner, repo string) (*RepoMeta, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github API status %d for %s/%s", resp.StatusCode, owner, repo)
 	}
 
@@ -106,7 +106,7 @@ func SearchGitHubRepos(ctx context.Context, query, sort string) ([]engine.Searxn
 
 	apiURL := "https://api.github.com/search/repositories?" + params.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func SearchGitHubRepos(ctx context.Context, query, sort string) ([]engine.Searxn
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github repo search API status %d", resp.StatusCode)
 	}
 
@@ -196,7 +196,7 @@ func SearchGitHubIssues(ctx context.Context, query string) ([]engine.IssueItem, 
 		"per_page": {"10"},
 	}.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func SearchGitHubIssues(ctx context.Context, query string) ([]engine.IssueItem, 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github issues search API status %d", resp.StatusCode)
 	}
 
@@ -291,7 +291,7 @@ func SearchGitHubCode(ctx context.Context, query string, repos []string) ([]engi
 		"per_page": {"10"},
 	}.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func SearchGitHubCode(ctx context.Context, query string, repos []string) ([]engi
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github code search API status %d", resp.StatusCode)
 	}
 

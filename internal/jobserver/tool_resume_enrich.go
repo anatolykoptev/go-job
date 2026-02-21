@@ -2,7 +2,7 @@ package jobserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -15,7 +15,7 @@ func registerResumeEnrich(server *mcp.Server) {
 		Description: "Interactively enrich your master resume. Use action='start' to get enrichment questions about gaps (missing metrics, hidden skills, unclear roles). Use action='answer' with your answers to apply enrichments to the knowledge graph.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeEnrichInput) (*mcp.CallToolResult, *jobs.ResumeEnrichResult, error) {
 		if input.Action == "" {
-			return nil, nil, fmt.Errorf("action is required ('start' or 'answer')")
+			return nil, nil, errors.New("action is required ('start' or 'answer')")
 		}
 
 		var answers []jobs.AnswerPair

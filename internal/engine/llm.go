@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,7 +87,7 @@ func callLLMWithKey(ctx context.Context, prompt string, temperature float64, max
 	})
 
 	apiURL := strings.TrimSuffix(cfg.LLMAPIBase, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		metrics.LLMErrors.Add(1)
 		return "", err
@@ -103,7 +104,7 @@ func callLLMWithKey(ctx context.Context, prompt string, temperature float64, max
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		metrics.LLMErrors.Add(1)
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("LLM API %d: %s", resp.StatusCode, string(respBody))
@@ -114,7 +115,7 @@ func callLLMWithKey(ctx context.Context, prompt string, temperature float64, max
 		return "", err
 	}
 	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no choices in LLM response")
+		return "", errors.New("no choices in LLM response")
 	}
 
 	raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)

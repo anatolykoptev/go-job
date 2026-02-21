@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"net/url"
 	"strings"
 	"sync"
@@ -136,7 +137,7 @@ func buildHFModelsURL(search, task, library, sort string, limit int) string {
 		q.Set("search", search)
 	}
 	q.Set("sort", sort)
-	q.Set("limit", fmt.Sprintf("%d", limit))
+	q.Set("limit", strconv.Itoa(limit))
 	q.Set("full", "false")
 	if task != "" {
 		q.Set("pipeline_tag", task)
@@ -172,7 +173,7 @@ func hfAuthor(id, author string) string {
 
 // fetchHFJSON performs a GET request to the HF API and decodes JSON into dst.
 func fetchHFJSON(ctx context.Context, rawURL string, dst any) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
@@ -189,7 +190,7 @@ func fetchHFJSON(ctx context.Context, rawURL string, dst any) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HuggingFace API status %d for %s", resp.StatusCode, rawURL)
 	}
 	return json.NewDecoder(resp.Body).Decode(dst)
@@ -324,7 +325,7 @@ func SearchHuggingFaceDatasets(ctx context.Context, input engine.HFDatasetSearch
 		q.Set("search", input.Query)
 	}
 	q.Set("sort", hfSortParam(input.Sort))
-	q.Set("limit", fmt.Sprintf("%d", hfLimit(input.Limit)))
+	q.Set("limit", strconv.Itoa(hfLimit(input.Limit)))
 	q.Set("full", "false")
 	u.RawQuery = q.Encode()
 

@@ -149,11 +149,12 @@ collectLoop:
 	// --- Mode: summary (default) ---
 	var llmOut *LLMStructuredOutput
 	var err error
-	if opts.Depth == "deep" {
+	switch {
+	case opts.Depth == "deep":
 		llmOut, err = SummarizeDeep(ctx, query, opts.Instruction, contentLimit, top, contents)
-	} else if opts.Instruction != "" {
+	case opts.Instruction != "":
 		llmOut, err = SummarizeWithInstruction(ctx, query, opts.Instruction, contentLimit, top, contents)
-	} else {
+	default:
 		llmOut, err = summarizeWithLLM(ctx, query, top, contents)
 	}
 	if err != nil {

@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -86,12 +87,12 @@ Return ONLY the JSON object, no markdown, no explanation.`
 func GenerateResume(ctx context.Context, jobDescription, company, format string) (*ResumeGenerateResult, error) {
 	db := GetResumeDB()
 	if db == nil {
-		return nil, fmt.Errorf("resume database not configured (set DATABASE_URL)")
+		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
 
 	personID := db.GetLatestPersonID(ctx)
 	if personID == 0 {
-		return nil, fmt.Errorf("no master resume found — run master_resume_build first")
+		return nil, errors.New("no master resume found — run master_resume_build first")
 	}
 
 	if format == "" {
@@ -118,7 +119,9 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	projIDSet := make(map[int]bool)
 	achvIDSet := make(map[int]bool)
 
-	allSkills := append(jd.RequiredSkills, jd.NiceToHave...)
+	allSkills := make([]string, 0, len(jd.RequiredSkills)+len(jd.NiceToHave))
+	allSkills = append(allSkills, jd.RequiredSkills...)
+	allSkills = append(allSkills, jd.NiceToHave...)
 	for _, skill := range allSkills {
 		// Experience by direct skill
 		expIDs, err := db.QueryExperienceIDsBySkill(ctx, skill)
@@ -228,13 +231,13 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		if err == nil && cr != nil {
 			var parts []string
 			if len(cr.TechStack) > 0 {
-				parts = append(parts, fmt.Sprintf("Tech stack: %s", strings.Join(cr.TechStack, ", ")))
+				parts = append(parts, "Tech stack: "+strings.Join(cr.TechStack, ", "))
 			}
 			if cr.CultureNotes != "" {
-				parts = append(parts, fmt.Sprintf("Culture: %s", cr.CultureNotes))
+				parts = append(parts, "Culture: "+cr.CultureNotes)
 			}
 			if cr.Industry != "" {
-				parts = append(parts, fmt.Sprintf("Industry: %s", cr.Industry))
+				parts = append(parts, "Industry: "+cr.Industry)
 			}
 			if len(parts) > 0 {
 				companyContext = fmt.Sprintf("COMPANY CONTEXT (%s):\n%s\n\n", company, strings.Join(parts, "\n"))

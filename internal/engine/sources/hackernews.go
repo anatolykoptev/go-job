@@ -53,7 +53,7 @@ func SearchHackerNews(ctx context.Context, input engine.HNSearchInput) ([]engine
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func SearchHackerNews(ctx context.Context, input engine.HNSearchInput) ([]engine
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HN Algolia API returned status %d", resp.StatusCode)
 	}
 
@@ -80,7 +80,7 @@ func SearchHackerNews(ctx context.Context, input engine.HNSearchInput) ([]engine
 	for _, hit := range data.Hits {
 		hnURL := hit.URL
 		if hnURL == "" {
-			hnURL = fmt.Sprintf("https://news.ycombinator.com/item?id=%s", hit.ObjectID)
+			hnURL = "https://news.ycombinator.com/item?id=" + hit.ObjectID
 		}
 
 		snippet := engine.CleanHTML(hit.StoryText)
@@ -109,7 +109,7 @@ func SearchHackerNews(ctx context.Context, input engine.HNSearchInput) ([]engine
 func fetchHNComments(ctx context.Context, storyID string, maxComments int) ([]string, error) {
 	u := fmt.Sprintf("https://hn.algolia.com/api/v1/search?tags=comment,story_%s&hitsPerPage=%d", storyID, maxComments*2)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func fetchHNComments(ctx context.Context, storyID string, maxComments int) ([]st
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HN comments API status %d", resp.StatusCode)
 	}
 
@@ -162,11 +162,6 @@ func SummarizeHNResults(ctx context.Context, query string, results []engine.HNRe
 	}
 
 	// Fetch top comments for the most-discussed stories (parallel, up to 3 stories)
-	type commentResult struct {
-		storyIdx int
-		comments []string
-	}
-
 	// Pick top stories by comment count
 	type storyIdx struct {
 		idx      int

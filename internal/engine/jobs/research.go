@@ -185,9 +185,9 @@ Return ONLY the JSON object, no markdown, no explanation.`
 // ResearchCompany fetches company overview from multiple sources via SearXNG + LLM.
 func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchResult, error) {
 	queries := []string{
-		fmt.Sprintf("%s company overview employees funding tech stack", companyName),
-		fmt.Sprintf("%s reviews culture glassdoor work life balance", companyName),
-		fmt.Sprintf("%s news 2024 2025 site:techcrunch.com OR site:crunchbase.com OR site:linkedin.com", companyName),
+		companyName + " company overview employees funding tech stack",
+		companyName + " reviews culture glassdoor work life balance",
+		companyName + " news 2024 2025 site:techcrunch.com OR site:crunchbase.com OR site:linkedin.com",
 	}
 
 	type searchRes struct {

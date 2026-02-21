@@ -1,7 +1,6 @@
 package sources
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,8 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 const freelancerAPIBase = "https://www.freelancer.com/api/projects/0.1/projects/active"
@@ -72,7 +74,7 @@ func SearchFreelancerAPI(ctx context.Context, query string, limit int) ([]engine
 
 	q := u.Query()
 	q.Set("query", query)
-	q.Set("limit", fmt.Sprintf("%d", limit))
+	q.Set("limit", strconv.Itoa(limit))
 	q.Set("compact", "true")
 	q.Set("job_details", "true")
 	q.Set("full_description", "true")
@@ -81,7 +83,7 @@ func SearchFreelancerAPI(ctx context.Context, query string, limit int) ([]engine
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +98,7 @@ func SearchFreelancerAPI(ctx context.Context, query string, limit int) ([]engine
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("freelancer API returned status %d", resp.StatusCode)
 	}
 
@@ -121,7 +123,7 @@ func parseFreelancerResponse(body []byte) ([]engine.FreelanceProject, error) {
 
 	projects := make([]engine.FreelanceProject, 0, len(apiResp.Result.Projects))
 	for _, p := range apiResp.Result.Projects {
-		projectURL := fmt.Sprintf("https://www.freelancer.com/projects/%s", p.SEOUrl)
+		projectURL := "https://www.freelancer.com/projects/" + p.SEOUrl
 
 		skills := make([]string, 0, len(p.Jobs))
 		for _, j := range p.Jobs {

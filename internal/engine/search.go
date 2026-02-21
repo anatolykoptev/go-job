@@ -31,7 +31,7 @@ func SearchSearXNG(ctx context.Context, query, language, timeRange, engines stri
 
 	metrics.SearchRequests.Add(1)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}

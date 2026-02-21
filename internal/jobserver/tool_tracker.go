@@ -2,7 +2,7 @@ package jobserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,7 +14,7 @@ func registerJobTrackerAdd(server *mcp.Server) {
 		Description: "Save a job to the local tracker (SQLite). Status options: saved (default), applied, interview, offer, rejected. Returns the assigned ID for future updates.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.JobTrackerAddInput) (*mcp.CallToolResult, *jobs.JobTrackerResult, error) {
 		if input.Title == "" || input.Company == "" {
-			return nil, nil, fmt.Errorf("title and company are required")
+			return nil, nil, errors.New("title and company are required")
 		}
 		result, err := jobs.AddTrackedJob(ctx, input)
 		if err != nil {
@@ -44,7 +44,7 @@ func registerJobTrackerUpdate(server *mcp.Server) {
 		Description: "Update status or notes for a tracked job by ID. Status options: saved, applied, interview, offer, rejected. Get IDs from job_tracker_list.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.JobTrackerUpdateInput) (*mcp.CallToolResult, *jobs.JobTrackerResult, error) {
 		if input.ID <= 0 {
-			return nil, nil, fmt.Errorf("id is required")
+			return nil, nil, errors.New("id is required")
 		}
 		result, err := jobs.UpdateTrackedJob(ctx, input)
 		if err != nil {

@@ -4,12 +4,13 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,17 +25,6 @@ const (
 	ytSearchFilter      = "EgIQAQ%3D%3D" // videos-only filter param
 	ytTranscriptMaxLen  = 8000           // max transcript chars sent to LLM
 )
-
-var videoIDRE = regexp.MustCompile(`(?:youtube\.com/watch\?(?:.*&)?v=|youtu\.be/)([a-zA-Z0-9_-]{11})`)
-
-// extractVideoID pulls the 11-char video ID from any YouTube URL format.
-func extractVideoID(rawURL string) string {
-	m := videoIDRE.FindStringSubmatch(rawURL)
-	if len(m) >= 2 {
-		return m[1]
-	}
-	return ""
-}
 
 // --- YouTube Data API v3 types ---
 
@@ -116,7 +106,7 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 	params.Set("part", "snippet")
 	params.Set("q", query)
 	params.Set("type", "video")
-	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("maxResults", strconv.Itoa(limit))
 	params.Set("key", apiKey)
 	if language != "" && language != "all" {
 		params.Set("relevanceLanguage", language)
@@ -124,7 +114,7 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 
 	apiURL := ytDataAPIBase + "/search?" + params.Encode()
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +126,7 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("youtube data API %d: %s", resp.StatusCode, string(body))
 	}
@@ -167,7 +157,7 @@ func searchYouTubeInitialData(ctx context.Context, query string, limit int) ([]e
 	searchURL := "https://www.youtube.com/results?search_query=" + url.QueryEscape(query) + "&sp=" + ytSearchFilter
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -188,11 +178,11 @@ func searchYouTubeInitialData(ctx context.Context, query string, limit int) ([]e
 
 	idx := strings.Index(string(body), ytInitialDataMarker)
 	if idx < 0 {
-		return nil, fmt.Errorf("ytInitialData not found in YouTube search response")
+		return nil, errors.New("ytInitialData not found in YouTube search response")
 	}
 	jsonData := extractJSON(body[idx+len(ytInitialDataMarker):])
 	if jsonData == nil {
-		return nil, fmt.Errorf("failed to extract ytInitialData JSON")
+		return nil, errors.New("failed to extract ytInitialData JSON")
 	}
 	return extractVideosFromInitialData(jsonData, limit), nil
 }
@@ -237,7 +227,7 @@ func extractVideosFromInitialData(data []byte, limit int) []engine.YouTubeVideo 
 			return
 		}
 		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(v, &obj); err == nil {
+		if err := json.Unmarshal(v, &obj); err == nil { //nolint:nestif // JSON response parsing
 			if raw, ok := obj["videoRenderer"]; ok {
 				var vr ytSearchResult
 				if err := json.Unmarshal(raw, &vr.VideoRenderer); err == nil &&

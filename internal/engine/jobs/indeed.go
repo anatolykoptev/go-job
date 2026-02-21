@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -128,7 +129,7 @@ func buildIndeedGraphQLQuery(what, where, timeRange string, limit int, cursor st
 func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLResponse, error) {
 	apiKey := engine.Cfg.IndeedAPIKey
 	if apiKey == "" {
-		return nil, fmt.Errorf("indeed: no API key configured")
+		return nil, errors.New("indeed: no API key configured")
 	}
 
 	bodyBytes, err := json.Marshal(indeedGraphQLRequest{Query: gqlQuery})
@@ -137,7 +138,7 @@ func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLRespon
 	}
 
 	respBytes, err := engine.RetryDo(ctx, engine.DefaultRetryConfig, func() ([]byte, error) {
-		req, err := http.NewRequestWithContext(ctx, "POST", indeedGraphQLEndpoint, bytes.NewReader(bodyBytes))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, indeedGraphQLEndpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -211,21 +212,21 @@ func indeedGQLJobToResult(job indeedGQLJob) engine.SearxngResult {
 		}
 	}
 
-	jobURL := fmt.Sprintf("https://www.indeed.com/viewjob?jk=%s", job.Key)
+	jobURL := "https://www.indeed.com/viewjob?jk=" + job.Key
 
 	var contentParts []string
 	contentParts = append(contentParts, "**Source:** Indeed")
 	if job.Employer.Name != "" {
-		contentParts = append(contentParts, fmt.Sprintf("**Company:** %s", job.Employer.Name))
+		contentParts = append(contentParts, "**Company:** "+job.Employer.Name)
 	}
 	if location != "" {
-		contentParts = append(contentParts, fmt.Sprintf("**Location:** %s", location))
+		contentParts = append(contentParts, "**Location:** "+location)
 	}
 	if salary != "" {
-		contentParts = append(contentParts, fmt.Sprintf("**Salary:** %s", salary))
+		contentParts = append(contentParts, "**Salary:** "+salary)
 	}
 	if job.DatePublished != "" {
-		contentParts = append(contentParts, fmt.Sprintf("**Posted:** %s", job.DatePublished))
+		contentParts = append(contentParts, "**Posted:** "+job.DatePublished)
 	}
 	if desc != "" {
 		contentParts = append(contentParts, "\n"+desc)
@@ -483,12 +484,4 @@ func findByAttr(n *html.Node, attr, value string) *html.Node {
 		}
 	}
 	return nil
-}
-
-// indeedJobURL returns a canonical Indeed job URL from a viewjob URL.
-func indeedJobURL(rawURL string) string {
-	if strings.Contains(rawURL, "indeed.com/viewjob") {
-		return rawURL
-	}
-	return fmt.Sprintf("https://www.indeed.com/viewjob?jk=%s", rawURL)
 }

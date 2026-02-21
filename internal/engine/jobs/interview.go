@@ -89,7 +89,7 @@ func PrepareInterview(ctx context.Context, resume, jobDescription, company, focu
 
 	// Optional company enrichment
 	var companyContext string
-	if company != "" {
+	if company != "" { //nolint:nestif // company research enrichment
 		res, err := ResearchCompany(ctx, company)
 		if err != nil {
 			slog.Warn("interview_prep: company research failed, proceeding without", slog.Any("error", err))

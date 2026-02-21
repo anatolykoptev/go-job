@@ -3,6 +3,7 @@ package jobs
 import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -97,7 +98,7 @@ func scrapeYCJobsPage(ctx context.Context, query, location string) ([]engine.Sea
 		}
 		bodyBytes = data
 	} else {
-		return nil, fmt.Errorf("BrowserClient not available for YC direct scrape")
+		return nil, errors.New("BrowserClient not available for YC direct scrape")
 	}
 
 	return parseYCJobsHTML(string(bodyBytes), targetURL), nil
@@ -162,12 +163,13 @@ func extractYCJobCard(n *html.Node, pageURL string) engine.SearxngResult {
 		if line == "" || line == title {
 			continue
 		}
-		if company == "" {
+		switch {
+		case company == "":
 			company = line
-		} else if location == "" {
+		case location == "":
 			location = line
-		} else {
-			break
+		default:
+			// all fields filled
 		}
 	}
 

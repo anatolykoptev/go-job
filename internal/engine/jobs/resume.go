@@ -99,7 +99,7 @@ Return ONLY the cover letter text, no JSON, no markdown headers.`
 // tone: "professional" (default), "friendly", "concise"
 func GenerateCoverLetter(ctx context.Context, resumeText, jobDescription, tone string) (*CoverLetterResult, error) {
 	if tone == "" {
-		tone = "professional"
+		tone = "professional" //nolint:goconst
 	}
 	validTones := map[string]bool{"professional": true, "friendly": true, "concise": true}
 	if !validTones[strings.ToLower(tone)] {

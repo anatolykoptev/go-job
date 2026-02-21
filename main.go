@@ -74,11 +74,11 @@ func main() {
 	mux.Handle("/mcp/", handler)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"go_job","version":"1.0.0"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","service":"go_job","version":"1.0.0"}`))
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(engine.FormatMetrics()))
+		_, _ = w.Write([]byte(engine.FormatMetrics()))
 	})
 
 	srv := &http.Server{
@@ -104,7 +104,9 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown failed", slog.Any("error", err))
+	}
 	logger.Info("stopped")
 }
 

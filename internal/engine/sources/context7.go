@@ -62,7 +62,7 @@ func resolveLibrary(ctx context.Context, query, libraryName string) (*C7Library,
 		"libraryName": {libraryName},
 	}.Encode())
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func resolveLibrary(ctx context.Context, query, libraryName string) (*C7Library,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("context7 search status %d", resp.StatusCode)
 	}
 
@@ -100,7 +100,7 @@ func queryDocs(ctx context.Context, query, libraryID string) (*c7ContextResponse
 		"type":      {"json"},
 	}.Encode())
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func queryDocs(ctx context.Context, query, libraryID string) (*c7ContextResponse
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("context7 docs status %d", resp.StatusCode)
 	}
 
@@ -177,7 +177,7 @@ func SearchContext7(ctx context.Context, query, libraryName string) ([]engine.Se
 
 		results = append(results, engine.SearxngResult{
 			Title:   fmt.Sprintf("[Docs] %s — %s", lib.Title, title),
-			URL:     fmt.Sprintf("https://context7.com%s", lib.ID),
+			URL:     "https://context7.com" + lib.ID,
 			Content: text,
 		})
 	}
@@ -195,8 +195,8 @@ func SearchContext7(ctx context.Context, query, libraryName string) ([]engine.Se
 		}
 
 		results = append(results, engine.SearxngResult{
-			Title:   fmt.Sprintf("[Docs] %s", title),
-			URL:     fmt.Sprintf("https://context7.com%s", lib.ID),
+			Title:   "[Docs] " + title,
+			URL:     "https://context7.com" + lib.ID,
 			Content: text,
 		})
 	}

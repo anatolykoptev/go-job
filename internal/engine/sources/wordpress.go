@@ -72,7 +72,7 @@ func fetchWPPostType(ctx context.Context, query, postType, label string) ([]engi
 		url.Values{"search": {query}, "per_page": {"3"}}.Encode(),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func fetchWPPostType(ctx context.Context, query, postType, label string) ([]engi
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("wordpress API status %d for %s", resp.StatusCode, postType)
 	}
 

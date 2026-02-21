@@ -3,6 +3,7 @@ package jobserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -19,7 +20,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.RemoteWorkSearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		if input.Query == "" {
-			return nil, engine.SmartSearchOutput{}, fmt.Errorf("query is required")
+			return nil, engine.SmartSearchOutput{}, errors.New("query is required")
 		}
 
 		cacheKey := engine.CacheKey("remote_work_search", input.Query, input.Language)
@@ -136,7 +137,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 
 		if len(merged) == 0 {
 			if rokRes.err != nil && wwrRes.err != nil && remRes.err != nil {
-				return nil, engine.SmartSearchOutput{}, fmt.Errorf("all sources failed")
+				return nil, engine.SmartSearchOutput{}, errors.New("all sources failed")
 			}
 			out := engine.RemoteWorkSearchOutput{Query: input.Query, Summary: "No remote jobs found."}
 			return remoteWorkResult(ctx, cacheKey, out)
