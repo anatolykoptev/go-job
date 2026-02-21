@@ -26,4 +26,8 @@ func RegisterTools(server *mcp.Server) {
 	registerInterviewPrep(server)
 	// Twitter
 	registerTwitterJobSearch(server)
+	// Master Resume
+	registerMasterResumeBuild(server)
+	registerResumeGenerate(server)
+	registerResumeEnrich(server)
 }
