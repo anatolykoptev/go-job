@@ -34,6 +34,9 @@ type Config struct {
 	DirectStartpage      bool           // enable Startpage direct scraper
 	IndeedAPIKey         string         // hardcoded iOS app key; overrideable via INDEED_API_KEY env
 	TwitterClient        *twitter.Client // nil = Twitter search disabled
+	DatabaseURL          string          // DATABASE_URL for PostgreSQL (resume graph)
+	MemDBURL             string          // MEMDB_URL for vector search
+	MemDBServiceSecret   string          // INTERNAL_SERVICE_SECRET for MemDB auth
 }
 
 var cfg Config

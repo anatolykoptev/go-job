@@ -22,6 +22,7 @@ import (
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -51,7 +52,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	logger.Info("tools registered", slog.Int("count", 15))
+	logger.Info("tools registered", slog.Int("count", 18))
 
 	if stdio {
 		logger.Info("running in stdio mode")
@@ -84,7 +85,7 @@ func main() {
 		Addr:         ":" + mcpPort,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: 600 * time.Second,
 	}
 
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -132,6 +133,9 @@ func initEngine() {
 		CacheMaxEntries:      envInt("CACHE_MAX_ENTRIES", 1000),
 		CacheCleanupInterval: envDuration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
 		IndeedAPIKey:         env("INDEED_API_KEY", ""),
+		DatabaseURL:          env("DATABASE_URL", ""),
+		MemDBURL:             env("MEMDB_URL", ""),
+		MemDBServiceSecret:   env("INTERNAL_SERVICE_SECRET", ""),
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
@@ -180,6 +184,23 @@ func initEngine() {
 	}
 
 	engine.Init(c)
+
+	// Resume DB (PostgreSQL + AGE graph)
+	if c.DatabaseURL != "" {
+		rdb, err := jobs.ConnectResumeDB(context.Background(), c.DatabaseURL)
+		if err != nil {
+			slog.Warn("resume DB init failed", slog.Any("error", err))
+		} else {
+			jobs.SetResumeDB(rdb)
+			slog.Info("resume DB initialized")
+		}
+	}
+
+	// MemDB vector client
+	if c.MemDBURL != "" && c.MemDBServiceSecret != "" {
+		jobs.SetMemDB(jobs.NewMemDBClient(c.MemDBURL, c.MemDBServiceSecret))
+		slog.Info("memdb client initialized", slog.String("url", c.MemDBURL))
+	}
 
 	cacheTTL := envDuration("CACHE_TTL", 15*time.Minute)
 	engine.InitCache(env("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)

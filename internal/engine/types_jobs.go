@@ -169,3 +169,24 @@ type PersonResearchInput struct {
 	Company  string `json:"company,omitempty" jsonschema:"Company they work at (helps narrow search)"`
 	JobTitle string `json:"job_title,omitempty" jsonschema:"Their job title (helps narrow search)"`
 }
+
+// MasterResumeBuildInput is the input for master_resume_build.
+type MasterResumeBuildInput struct {
+	Resume string `json:"resume" jsonschema:"Full resume text — all experience, education, skills, projects, achievements, certifications"`
+}
+
+// ResumeGenerateInput is the input for resume_generate.
+type ResumeGenerateInput struct {
+	JobDescription string `json:"job_description" jsonschema:"Job description to tailor the resume for"`
+	Company        string `json:"company,omitempty" jsonschema:"Company name (enriches with company research)"`
+	Format         string `json:"format,omitempty" jsonschema:"Output format: text (default), markdown, json"`
+}
+
+// ResumeEnrichInput is the input for resume_enrich.
+type ResumeEnrichInput struct {
+	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`
+	Answers []struct {
+		QuestionID string `json:"question_id" jsonschema:"ID of the question being answered"`
+		Answer     string `json:"answer" jsonschema:"Your answer to the question"`
+	} `json:"answers,omitempty" jsonschema:"Answers to enrichment questions (required when action='answer')"`
+}
