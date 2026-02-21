@@ -389,7 +389,7 @@ func indeedRequest(ctx context.Context, targetURL string) (string, error) {
 		headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
 		data, err := engine.RetryDo(ctx, engine.DefaultRetryConfig, func() ([]byte, error) {
-			d, s, e := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
+			d, _, s, e := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
 			if e != nil {
 				return nil, e
 			}

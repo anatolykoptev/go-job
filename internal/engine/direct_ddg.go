@@ -68,7 +68,7 @@ func ddgSearchHTML(ctx context.Context, bc *BrowserClient, query, region string)
 	headers["referer"] = "https://html.duckduckgo.com/"
 	headers["content-type"] = "application/x-www-form-urlencoded"
 
-	data, status, err := bc.Do("POST", "https://html.duckduckgo.com/html/", headers, strings.NewReader(formBody))
+	data, _, status, err := bc.Do("POST", "https://html.duckduckgo.com/html/", headers, strings.NewReader(formBody))
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func ddgGetVQD(ctx context.Context, bc *BrowserClient, query string) (string, er
 	headers := ChromeHeaders()
 	headers["referer"] = "https://duckduckgo.com/"
 
-	data, status, err := bc.Do("GET", u, headers, nil)
+	data, _, status, err := bc.Do("GET", u, headers, nil)
 	if err != nil {
 		return "", err
 	}
@@ -176,7 +176,7 @@ func ddgSearchDJS(ctx context.Context, bc *BrowserClient, query, vqd, region str
 	headers["referer"] = "https://duckduckgo.com/"
 	headers["accept"] = "application/json, text/javascript, */*; q=0.01"
 
-	data, status, err := bc.Do("GET", u, headers, nil)
+	data, _, status, err := bc.Do("GET", u, headers, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -1,17 +1,18 @@
 package engine
 
-import "testing"
+import (
+	"testing"
+
+	stealth "github.com/anatolykoptev/go-stealth"
+)
 
 func TestNewBrowserClient(t *testing.T) {
-	bc, err := NewBrowserClient()
+	bc, err := stealth.NewClient(stealth.WithTimeout(10))
 	if err != nil {
-		t.Fatalf("NewBrowserClient() error = %v", err)
+		t.Fatalf("NewClient() error = %v", err)
 	}
 	if bc == nil {
-		t.Fatal("NewBrowserClient() returned nil")
-	}
-	if bc.client == nil {
-		t.Fatal("BrowserClient.client is nil")
+		t.Fatal("NewClient() returned nil")
 	}
 }
 

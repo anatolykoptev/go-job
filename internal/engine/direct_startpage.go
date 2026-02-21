@@ -25,7 +25,7 @@ func SearchStartpageDirect(ctx context.Context, bc *BrowserClient, query, langua
 	headers["content-type"] = "application/x-www-form-urlencoded"
 	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
-	data, status, err := bc.Do("POST", "https://www.startpage.com/sp/search", headers, strings.NewReader(formBody))
+	data, _, status, err := bc.Do("POST", "https://www.startpage.com/sp/search", headers, strings.NewReader(formBody))
 	if err != nil {
 		return nil, fmt.Errorf("startpage request: %w", err)
 	}

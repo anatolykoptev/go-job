@@ -230,7 +230,7 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 		headers["referer"] = "https://www.linkedin.com/"
 
 		data, err := engine.RetryDo(ctx, engine.DefaultRetryConfig, func() ([]byte, error) {
-			d, s, e := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
+			d, _, s, e := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
 			if e != nil {
 				return nil, e
 			}

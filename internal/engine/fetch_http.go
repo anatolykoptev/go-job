@@ -58,7 +58,7 @@ func fetchWithRetry(ctx context.Context, fetchURL string, isHTML bool) (*http.Re
 			return nil, backoff.Permanent(err)
 		}
 
-		if isRetryableStatus(resp.StatusCode) {
+		if IsRetryableStatus(resp.StatusCode) {
 			resp.Body.Close()
 			return nil, fmt.Errorf("status %d", resp.StatusCode)
 		}

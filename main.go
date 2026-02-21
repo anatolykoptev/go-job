@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -138,6 +139,16 @@ func initEngine() {
 			},
 		},
 	}
+	bc, err := stealth.NewClient(
+		stealth.WithTimeout(15),
+	)
+	if err != nil {
+		slog.Error("stealth client init failed", slog.Any("error", err))
+	} else {
+		c.BrowserClient = bc
+		slog.Info("stealth browser client initialized")
+	}
+
 	engine.Init(c)
 
 	cacheTTL := envDuration("CACHE_TTL", 15*time.Minute)

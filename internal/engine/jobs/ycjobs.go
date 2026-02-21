@@ -88,7 +88,7 @@ func scrapeYCJobsPage(ctx context.Context, query, location string) ([]engine.Sea
 	if engine.Cfg.BrowserClient != nil {
 		headers := engine.ChromeHeaders()
 		headers["referer"] = "https://www.workatastartup.com/"
-		data, status, err := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
+		data, _, status, err := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
 		if err != nil {
 			return nil, fmt.Errorf("yc browser fetch: %w", err)
 		}
