@@ -1,5 +1,5 @@
 BINARY = bin/go_job
-SERVICE = go-search-jobs
+SERVICE = go-job
 
 .PHONY: build deploy restart clean lint
 
