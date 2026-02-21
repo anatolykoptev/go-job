@@ -8,7 +8,8 @@ ExecStart=/home/user/go_job/bin/go_job
 EnvironmentFile=/home/user/go-search/deploy/go-search.env
 EnvironmentFile=/home/user/deploy-config/.env
 Environment=SEARXNG_URL=http://127.0.0.1:8888
-Environment=LLM_API_BASE=https://generativelanguage.googleapis.com/v1beta/openai
+EnvironmentFile=/home/user/go_job/deploy/go_job.env
+Environment=LLM_API_BASE=http://127.0.0.1:8317/v1
 Environment=LLM_MODEL=gemini-2.5-flash
 Environment=MCP_PORT=8891
 Environment=MAX_FETCH_URLS=8
