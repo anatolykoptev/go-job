@@ -42,6 +42,7 @@ func registerJobSearch(server *mcp.Server) {
 		useHN := platform == "all" || platform == "hn" || platform == "startup"
 		useIndeed := platform == "all" || platform == "indeed"
 		useHabr := platform == "all" || platform == "habr"
+		useTwitter := platform == "all" || platform == "twitter"
 
 		type sourceResult struct {
 			name    string
@@ -71,6 +72,9 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useHabr {
 			srcs = append(srcs, "habr")
+		}
+		if useTwitter {
+			srcs = append(srcs, "twitter")
 		}
 
 		ch := make(chan sourceResult, len(srcs)+1)
@@ -127,6 +131,13 @@ func registerJobSearch(server *mcp.Server) {
 					results, err := jobs.SearchHabrJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: habr error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case "twitter":
+					results, err := jobs.SearchTwitterJobs(ctx, input.Query, 30)
+					if err != nil {
+						slog.Warn("job_search: twitter error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 				}

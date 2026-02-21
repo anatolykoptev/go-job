@@ -19,6 +19,8 @@ import (
 	"time"
 
 	stealth "github.com/anatolykoptev/go-stealth"
+	"github.com/anatolykoptev/go-stealth/proxypool"
+	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -49,7 +51,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	logger.Info("tools registered", slog.Int("count", 13))
+	logger.Info("tools registered", slog.Int("count", 14))
 
 	if stdio {
 		logger.Info("running in stdio mode")
@@ -139,14 +141,42 @@ func initEngine() {
 			},
 		},
 	}
-	bc, err := stealth.NewClient(
-		stealth.WithTimeout(15),
-	)
+	var opts []stealth.ClientOption
+	opts = append(opts, stealth.WithTimeout(15))
+
+	if apiKey := os.Getenv("WEBSHARE_API_KEY"); apiKey != "" {
+		pool, err := proxypool.NewWebshare(apiKey)
+		if err != nil {
+			slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
+		} else {
+			opts = append(opts, stealth.WithProxyPool(pool))
+			slog.Info("proxy pool initialized", slog.Int("proxies", pool.Len()))
+		}
+	}
+
+	bc, err := stealth.NewClient(opts...)
 	if err != nil {
 		slog.Error("stealth client init failed", slog.Any("error", err))
 	} else {
 		c.BrowserClient = bc
 		slog.Info("stealth browser client initialized")
+	}
+
+	// Twitter client (optional — guest mode if no accounts configured)
+	accounts := twitter.ParseAccounts(os.Getenv("TWITTER_ACCOUNTS"))
+	openCount := 2
+	if len(accounts) > 0 {
+		openCount = 0
+	}
+	tw, err := twitter.NewClient(twitter.ClientConfig{
+		Accounts:         accounts,
+		OpenAccountCount: openCount,
+	})
+	if err != nil {
+		slog.Warn("twitter client init failed", slog.Any("error", err))
+	} else {
+		c.TwitterClient = tw
+		slog.Info("twitter client ready", slog.Int("pool_size", tw.Pool().Size()))
 	}
 
 	engine.Init(c)

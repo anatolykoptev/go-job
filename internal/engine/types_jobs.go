@@ -9,7 +9,7 @@ type JobSearchInput struct {
 	JobType    string `json:"job_type,omitempty" jsonschema:"Job type: full-time, part-time, contract, temporary"`
 	Remote     string `json:"remote,omitempty" jsonschema:"Work type: onsite, hybrid, remote"`
 	TimeRange  string `json:"time_range,omitempty" jsonschema:"Time posted: day, week, month"`
-	Platform   string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, greenhouse, lever, ats (greenhouse+lever), yc (workatastartup.com), hn (HN Who is Hiring), indeed, habr (Хабр Карьера), startup (yc+hn+ats), all (default)"`
+	Platform   string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, greenhouse, lever, ats (greenhouse+lever), yc (workatastartup.com), hn (HN Who is Hiring), indeed, habr (Хабр Карьера), twitter (X/Twitter job tweets), startup (yc+hn+ats), all (default)"`
 	Salary     string `json:"salary,omitempty" jsonschema:"Minimum salary filter for LinkedIn: 40k+, 60k+, 80k+, 100k+, 120k+, 140k+, 160k+, 180k+, 200k+"`
 	EasyApply  bool   `json:"easy_apply,omitempty" jsonschema:"LinkedIn only: filter to Easy Apply jobs (one-click apply)"`
 	Language   string `json:"language,omitempty" jsonschema:"Language code for the answer (default: all)"`

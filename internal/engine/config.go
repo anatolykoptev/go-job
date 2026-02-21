@@ -3,6 +3,8 @@ package engine
 import (
 	"net/http"
 	"time"
+
+	twitter "github.com/anatolykoptev/go-twitter"
 )
 
 // Config holds all engine configuration, injected from main.
@@ -31,6 +33,7 @@ type Config struct {
 	DirectDDG            bool           // enable DuckDuckGo direct scraper
 	DirectStartpage      bool           // enable Startpage direct scraper
 	IndeedAPIKey         string         // hardcoded iOS app key; overrideable via INDEED_API_KEY env
+	TwitterClient        *twitter.Client // nil = Twitter search disabled
 }
 
 var cfg Config
