@@ -155,6 +155,14 @@ type ResumeTailorInput struct {
 	JobDescription string `json:"job_description"`
 }
 
+// InterviewPrepInput is the input for interview_prep.
+type InterviewPrepInput struct {
+	Resume         string `json:"resume" jsonschema:"Your resume text"`
+	JobDescription string `json:"job_description" jsonschema:"Job description to prepare for"`
+	Company        string `json:"company,omitempty" jsonschema:"Company name (enriches questions with company context: tech stack, culture, news)"`
+	Focus          string `json:"focus,omitempty" jsonschema:"Focus area: all (default), behavioral, technical, system_design"`
+}
+
 // PersonResearchInput is the input for person_research.
 type PersonResearchInput struct {
 	Name     string `json:"name" jsonschema:"Full name of the person to research"`

@@ -22,6 +22,8 @@ func RegisterTools(server *mcp.Server) {
 	registerJobTrackerUpdate(server)
 	// Person research
 	registerPersonResearch(server)
+	// Interview
+	registerInterviewPrep(server)
 	// Twitter
 	registerTwitterJobSearch(server)
 }
