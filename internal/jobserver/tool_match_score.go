@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -21,24 +22,24 @@ func registerJobMatchScore(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobMatchScoreInput) (*mcp.CallToolResult, engine.JobMatchScoreOutput, error) {
 		if input.Resume == "" {
-			return nil, engine.JobMatchScoreOutput{}, fmt.Errorf("resume is required")
+			return nil, engine.JobMatchScoreOutput{}, errors.New("resume is required")
 		}
 		if input.Query == "" {
-			return nil, engine.JobMatchScoreOutput{}, fmt.Errorf("query is required")
+			return nil, engine.JobMatchScoreOutput{}, errors.New("query is required")
 		}
 
 		resumeKW := jobs.ExtractResumeKeywords(input.Resume)
 
 		platform := strings.ToLower(strings.TrimSpace(input.Platform))
 		if platform == "" {
-			platform = "all"
+			platform = platAll
 		}
 
 		var mu sync.Mutex
 		var allResults []engine.SearxngResult
 		var wg sync.WaitGroup
 
-		if platform == "all" || platform == "linkedin" {
+		if platform == platAll || platform == platLinkedIn {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -54,7 +55,7 @@ func registerJobMatchScore(server *mcp.Server) {
 			}()
 		}
 
-		if platform == "all" || platform == "indeed" {
+		if platform == platAll || platform == platIndeed {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -69,7 +70,7 @@ func registerJobMatchScore(server *mcp.Server) {
 			}()
 		}
 
-		if platform == "all" || platform == "yc" || platform == "startup" {
+		if platform == platAll || platform == "yc" || platform == platStartup {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -84,7 +85,7 @@ func registerJobMatchScore(server *mcp.Server) {
 			}()
 		}
 
-		if platform == "all" || platform == "hn" || platform == "startup" {
+		if platform == platAll || platform == "hn" || platform == platStartup {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

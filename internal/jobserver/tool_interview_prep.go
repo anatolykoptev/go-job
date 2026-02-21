@@ -2,7 +2,7 @@ package jobserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -16,10 +16,10 @@ func registerInterviewPrep(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.InterviewPrepInput) (*mcp.CallToolResult, *jobs.InterviewPrepResult, error) {
 		if input.Resume == "" {
-			return nil, nil, fmt.Errorf("resume is required")
+			return nil, nil, errors.New("resume is required")
 		}
 		if input.JobDescription == "" {
-			return nil, nil, fmt.Errorf("job_description is required")
+			return nil, nil, errors.New("job_description is required")
 		}
 		result, err := jobs.PrepareInterview(ctx, input.Resume, input.JobDescription, input.Company, input.Focus)
 		if err != nil {

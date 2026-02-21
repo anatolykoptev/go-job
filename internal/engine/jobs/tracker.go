@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,7 +85,7 @@ var (
 func openTrackerDB() (*sql.DB, error) {
 	trackerOnce.Do(func() {
 		dir := filepath.Join(os.Getenv("HOME"), ".go_job")
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
 			return
 		}
@@ -133,7 +134,7 @@ func validStatus(s string) bool {
 // AddTrackedJob saves a new job to the tracker.
 func AddTrackedJob(_ context.Context, input JobTrackerAddInput) (*JobTrackerResult, error) {
 	if input.Title == "" || input.Company == "" {
-		return nil, fmt.Errorf("job_tracker_add: title and company are required")
+		return nil, errors.New("job_tracker_add: title and company are required")
 	}
 
 	status := strings.ToLower(input.Status)
@@ -234,10 +235,10 @@ func ListTrackedJobs(_ context.Context, input JobTrackerListInput) (*JobTrackerL
 // UpdateTrackedJob updates the status and/or notes of a tracked job.
 func UpdateTrackedJob(_ context.Context, input JobTrackerUpdateInput) (*JobTrackerResult, error) {
 	if input.ID <= 0 {
-		return nil, fmt.Errorf("job_tracker_update: id is required")
+		return nil, errors.New("job_tracker_update: id is required")
 	}
 	if input.Status == "" && input.Notes == "" {
-		return nil, fmt.Errorf("job_tracker_update: at least one of status or notes must be provided")
+		return nil, errors.New("job_tracker_update: at least one of status or notes must be provided")
 	}
 
 	db, err := openTrackerDB()
@@ -247,21 +248,22 @@ func UpdateTrackedJob(_ context.Context, input JobTrackerUpdateInput) (*JobTrack
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	if input.Status != "" && input.Notes != "" {
+	switch {
+	case input.Status != "" && input.Notes != "":
 		status := strings.ToLower(input.Status)
 		if !validStatus(status) {
 			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
 		}
 		_, err = db.Exec(`UPDATE jobs SET status=?, notes=?, updated_at=? WHERE id=?`,
 			status, input.Notes, now, input.ID)
-	} else if input.Status != "" {
+	case input.Status != "":
 		status := strings.ToLower(input.Status)
 		if !validStatus(status) {
 			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
 		}
 		_, err = db.Exec(`UPDATE jobs SET status=?, updated_at=? WHERE id=?`,
 			status, now, input.ID)
-	} else {
+	default:
 		_, err = db.Exec(`UPDATE jobs SET notes=?, updated_at=? WHERE id=?`,
 			input.Notes, now, input.ID)
 	}

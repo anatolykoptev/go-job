@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,7 +33,7 @@ func extractTranscriptToken(data []byte) (string, error) {
 		}
 		return decoded, nil
 	}
-	return "", fmt.Errorf("getTranscriptEndpoint not found in engagement panels")
+	return "", errors.New("getTranscriptEndpoint not found in engagement panels")
 }
 
 // parseTranscriptSegments extracts plain text from a /get_transcript JSON response.
@@ -107,7 +108,7 @@ func fetchTranscriptViaEngagementPanel(ctx context.Context, videoID string) (str
 
 	text := parseTranscriptSegments(transcriptResp)
 	if text == "" {
-		return "", fmt.Errorf("empty transcript segments")
+		return "", errors.New("empty transcript segments")
 	}
 	return text, nil
 }
@@ -158,7 +159,7 @@ func pickBestTrack(tracks []captionTrack, langs []string) (captionTrack, bool) {
 // fetchTimedText fetches and parses a YouTube timedtext XML caption URL.
 func fetchTimedText(ctx context.Context, baseURL string) (string, error) {
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", baseURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -215,7 +216,7 @@ func fetchTranscriptViaPlayer(ctx context.Context, videoID string, langs []strin
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "POST", ytInnertubeURL+"?prettyPrint=false", bytes.NewReader(reqBody))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ytInnertubeURL+"?prettyPrint=false", bytes.NewReader(reqBody))
 		if err != nil {
 			return nil, err
 		}
@@ -242,15 +243,15 @@ func fetchTranscriptViaPlayer(ctx context.Context, videoID string, langs []strin
 		if reason != "" {
 			return "", fmt.Errorf("captions unavailable: %s", reason)
 		}
-		return "", fmt.Errorf("no captions in player response")
+		return "", errors.New("no captions in player response")
 	}
 	tracks := playerResp.Captions.PlayerCaptionsTracklistRenderer.CaptionTracks
 	if len(tracks) == 0 {
-		return "", fmt.Errorf("no caption tracks")
+		return "", errors.New("no caption tracks")
 	}
 	track, ok := pickBestTrack(tracks, langs)
 	if !ok {
-		return "", fmt.Errorf("all caption tracks require PoToken")
+		return "", errors.New("all caption tracks require PoToken")
 	}
 	return fetchTimedText(ctx, track.BaseURL)
 }
@@ -264,7 +265,7 @@ func fetchTranscriptViaPageScrape(ctx context.Context, videoID string, langs []s
 	watchURL := "https://www.youtube.com/watch?v=" + videoID
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", watchURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, watchURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -286,11 +287,11 @@ func fetchTranscriptViaPageScrape(ctx context.Context, videoID string, langs []s
 	// Extract ytInitialPlayerResponse JSON
 	idx := strings.Index(string(body), ytInitialPlayerResponseMarker)
 	if idx < 0 {
-		return "", fmt.Errorf("ytInitialPlayerResponse not found in watch page")
+		return "", errors.New("ytInitialPlayerResponse not found in watch page")
 	}
 	jsonData := extractJSON(body[idx+len(ytInitialPlayerResponseMarker):])
 	if jsonData == nil {
-		return "", fmt.Errorf("failed to extract ytInitialPlayerResponse JSON")
+		return "", errors.New("failed to extract ytInitialPlayerResponse JSON")
 	}
 
 	// Parse captions from player response
@@ -299,15 +300,15 @@ func fetchTranscriptViaPageScrape(ctx context.Context, videoID string, langs []s
 		return "", fmt.Errorf("decode ytInitialPlayerResponse: %w", err)
 	}
 	if playerResp.Captions == nil {
-		return "", fmt.Errorf("no captions in ytInitialPlayerResponse")
+		return "", errors.New("no captions in ytInitialPlayerResponse")
 	}
 	tracks := playerResp.Captions.PlayerCaptionsTracklistRenderer.CaptionTracks
 	if len(tracks) == 0 {
-		return "", fmt.Errorf("no caption tracks in watch page")
+		return "", errors.New("no caption tracks in watch page")
 	}
 	track, ok := pickBestTrack(tracks, langs)
 	if !ok {
-		return "", fmt.Errorf("all tracks require PoToken")
+		return "", errors.New("all tracks require PoToken")
 	}
 	return fetchTimedText(ctx, track.BaseURL)
 }

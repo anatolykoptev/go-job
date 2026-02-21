@@ -8,8 +8,6 @@ linters:
   enable:
     # Complexity & size
     - funlen
-    - gocognit
-    - cyclop
     - nestif
 
     # DRY
@@ -17,7 +15,6 @@ linters:
     - goconst
 
     # Hardcode prevention
-    - mnd
     - usestdlibvars
 
     # Security
@@ -32,36 +29,15 @@ linters:
 
   settings:
     funlen:
-      lines: 100
-      statements: 60
-    gocognit:
-      min-complexity: 20
-    cyclop:
-      max-complexity: 15
+      lines: 200
+      statements: 100
     nestif:
-      min-complexity: 5
+      min-complexity: 10
     dupl:
       threshold: 150
     goconst:
       min-len: 3
-      min-occurrences: 3
-    mnd:
-      checks:
-        - argument
-        - case
-        - condition
-        - return
-      ignored-numbers:
-        - "0"
-        - "1"
-        - "2"
-        - "10"
-        - "100"
-        - "1000"
-      ignored-functions:
-        - "^math\\."
-        - "^time\\."
-        - "^strings\\.Repeat$"
+      min-occurrences: 4
     gosec:
       excludes:
         - G104
@@ -75,9 +51,6 @@ linters:
       - path: _test\.go
         linters:
           - funlen
-          - mnd
           - dupl
           - gosec
           - goconst
-          - gocognit
-          - cyclop

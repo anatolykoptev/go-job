@@ -3,11 +3,13 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,7 +61,7 @@ func FindWhoIsHiringThread(ctx context.Context) (int64, error) {
 	q.Set("hitsPerPage", "1")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return 0, err
 	}
@@ -73,7 +75,7 @@ func FindWhoIsHiringThread(ctx context.Context) (int64, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("HN Algolia status %d", resp.StatusCode)
 	}
 
@@ -82,7 +84,7 @@ func FindWhoIsHiringThread(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	if len(data.Hits) == 0 {
-		return 0, fmt.Errorf("no 'Who is hiring?' thread found")
+		return 0, errors.New("no 'Who is hiring?' thread found")
 	}
 
 	var threadID int64
@@ -99,7 +101,7 @@ func FindWhoIsHiringThread(ctx context.Context) (int64, error) {
 // fetchHNItem fetches a single item from the HN Firebase API.
 func fetchHNItem(ctx context.Context, id int64) (*hnItemResponse, error) {
 	url := fmt.Sprintf("%s/item/%d.json", hnFirebaseBase, id)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +135,7 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 		return nil, fmt.Errorf("fetch thread: %w", err)
 	}
 	if len(thread.Kids) == 0 {
-		return nil, fmt.Errorf("thread has no comments")
+		return nil, errors.New("thread has no comments")
 	}
 
 	// Fetch comments in parallel, up to limit*2 (we'll filter down).
@@ -283,10 +285,10 @@ func searchHNThreadComments(ctx context.Context, threadID int64, query string, l
 	q := u.Query()
 	q.Set("query", query)
 	q.Set("tags", fmt.Sprintf("comment,story_%d", threadID))
-	q.Set("hitsPerPage", fmt.Sprintf("%d", limit))
+	q.Set("hitsPerPage", strconv.Itoa(limit))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +300,7 @@ func searchHNThreadComments(ctx context.Context, threadID int64, query string, l
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("algolia thread search status %d", resp.StatusCode)
 	}
 

@@ -63,9 +63,7 @@ func TestParseYCJobsHTML(t *testing.T) {
 func TestParseYCJobsHTMLEmpty(t *testing.T) {
 	results := parseYCJobsHTML("", "https://www.workatastartup.com/jobs")
 	// Should return nil/empty, not panic
-	if results == nil {
-		// acceptable
-	}
+	_ = results
 }
 
 func TestParseYCJobsHTMLInvalid(t *testing.T) {

@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -20,7 +21,7 @@ func registerFreelanceSearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.FreelanceSearchInput) (*mcp.CallToolResult, engine.FreelanceSearchOutput, error) {
 		if input.Query == "" {
-			return nil, engine.FreelanceSearchOutput{}, fmt.Errorf("query is required")
+			return nil, engine.FreelanceSearchOutput{}, errors.New("query is required")
 		}
 
 		cacheKey := engine.CacheKey("freelance_search", input.Query, input.Platform, input.Language)

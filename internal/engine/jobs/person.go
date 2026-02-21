@@ -54,7 +54,7 @@ func callGoHully(ctx context.Context, toolName string, params map[string]any) (s
 	httpCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(httpCtx, "POST", goHullyURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, goHullyURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -146,6 +146,7 @@ Return a JSON object with this exact structure:
 
 Return ONLY the JSON object, no markdown, no explanation.`
 
+//nolint:funlen // orchestration function
 // ResearchPerson gathers and synthesizes public information about a person for interview prep.
 func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*PersonProfile, error) {
 	subject := name

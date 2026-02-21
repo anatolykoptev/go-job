@@ -129,7 +129,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, error) {
 	apiURL := fmt.Sprintf(greenhouseBoardsAPI, slug)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +144,10 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
+	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("greenhouse API status %d for %s", resp.StatusCode, slug)
 	}
 
@@ -312,7 +312,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error) {
 	apiURL := fmt.Sprintf(leverAPIBase, slug)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -327,10 +327,10 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
+	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("lever API status %d for %s", resp.StatusCode, slug)
 	}
 

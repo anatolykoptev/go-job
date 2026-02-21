@@ -3,6 +3,7 @@ package engine
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,7 @@ func newFetchClient() *http.Client {
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
+				return errors.New("stopped after 10 redirects")
 			}
 			return nil
 		},
@@ -37,7 +38,7 @@ func fetchWithRetry(ctx context.Context, fetchURL string, isHTML bool) (*http.Re
 	client := newFetchClient()
 
 	operation := func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", fetchURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +64,7 @@ func fetchWithRetry(ctx context.Context, fetchURL string, isHTML bool) (*http.Re
 			return nil, fmt.Errorf("status %d", resp.StatusCode)
 		}
 
-		if resp.StatusCode != 200 {
+		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			return nil, backoff.Permanent(fmt.Errorf("status %d", resp.StatusCode))
 		}

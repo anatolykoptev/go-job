@@ -2,7 +2,7 @@ package jobserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -16,10 +16,10 @@ func registerResumeAnalyze(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeAnalyzeInput) (*mcp.CallToolResult, *jobs.ResumeAnalysisResult, error) {
 		if input.Resume == "" {
-			return nil, nil, fmt.Errorf("resume is required")
+			return nil, nil, errors.New("resume is required")
 		}
 		if input.JobDescription == "" {
-			return nil, nil, fmt.Errorf("job_description is required")
+			return nil, nil, errors.New("job_description is required")
 		}
 		result, err := jobs.AnalyzeResume(ctx, input.Resume, input.JobDescription)
 		if err != nil {
@@ -36,10 +36,10 @@ func registerCoverLetterGenerate(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.CoverLetterInput) (*mcp.CallToolResult, *jobs.CoverLetterResult, error) {
 		if input.Resume == "" {
-			return nil, nil, fmt.Errorf("resume is required")
+			return nil, nil, errors.New("resume is required")
 		}
 		if input.JobDescription == "" {
-			return nil, nil, fmt.Errorf("job_description is required")
+			return nil, nil, errors.New("job_description is required")
 		}
 		result, err := jobs.GenerateCoverLetter(ctx, input.Resume, input.JobDescription, input.Tone)
 		if err != nil {
@@ -56,10 +56,10 @@ func registerResumeTailor(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeTailorInput) (*mcp.CallToolResult, *jobs.ResumeTailorResult, error) {
 		if input.Resume == "" {
-			return nil, nil, fmt.Errorf("resume is required")
+			return nil, nil, errors.New("resume is required")
 		}
 		if input.JobDescription == "" {
-			return nil, nil, fmt.Errorf("job_description is required")
+			return nil, nil, errors.New("job_description is required")
 		}
 		result, err := jobs.TailorResume(ctx, input.Resume, input.JobDescription)
 		if err != nil {

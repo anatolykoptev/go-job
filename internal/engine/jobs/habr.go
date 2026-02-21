@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -68,14 +69,14 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 
 	q := u.Query()
 	q.Set("q", query)
-	q.Set("per_page", fmt.Sprintf("%d", limit))
+	q.Set("per_page", strconv.Itoa(limit))
 	q.Set("page", "1")
 	if location != "" {
 		q.Set("locations[]", location)
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("habr career API status %d", resp.StatusCode)
 	}
 

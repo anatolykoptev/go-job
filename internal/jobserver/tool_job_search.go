@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,17 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	platAll        = "all"
+	platLinkedIn   = "linkedin"
+	platGreenhouse = "greenhouse"
+	platLever      = "lever"
+	platIndeed     = "indeed"
+	platATS        = "ats"
+	platStartup    = "startup"
+)
+
+//nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
@@ -20,7 +32,7 @@ func registerJobSearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
-			return nil, engine.JobSearchOutput{}, fmt.Errorf("query is required")
+			return nil, engine.JobSearchOutput{}, errors.New("query is required")
 		}
 
 		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform)
@@ -32,17 +44,17 @@ func registerJobSearch(server *mcp.Server) {
 
 		platform := strings.ToLower(strings.TrimSpace(input.Platform))
 		if platform == "" {
-			platform = "all"
+			platform = platAll
 		}
 
-		useLinkedIn := platform == "all" || platform == "linkedin"
-		useGreenhouse := platform == "all" || platform == "greenhouse" || platform == "ats" || platform == "startup"
-		useLever := platform == "all" || platform == "lever" || platform == "ats" || platform == "startup"
-		useYC := platform == "all" || platform == "yc" || platform == "startup"
-		useHN := platform == "all" || platform == "hn" || platform == "startup"
-		useIndeed := platform == "all" || platform == "indeed"
-		useHabr := platform == "all" || platform == "habr"
-		useTwitter := platform == "all" || platform == "twitter"
+		useLinkedIn := platform == platAll || platform == platLinkedIn
+		useGreenhouse := platform == platAll || platform == platGreenhouse || platform == platATS || platform == platStartup
+		useLever := platform == platAll || platform == platLever || platform == platATS || platform == platStartup
+		useYC := platform == platAll || platform == "yc" || platform == platStartup
+		useHN := platform == platAll || platform == "hn" || platform == platStartup
+		useIndeed := platform == platAll || platform == platIndeed
+		useHabr := platform == platAll || platform == "habr"
+		useTwitter := platform == platAll || platform == "twitter"
 
 		type sourceResult struct {
 			name    string
@@ -53,7 +65,7 @@ func registerJobSearch(server *mcp.Server) {
 
 		var srcs []string
 		if useLinkedIn {
-			srcs = append(srcs, "linkedin")
+			srcs = append(srcs, platLinkedIn)
 		}
 		if useGreenhouse {
 			srcs = append(srcs, "greenhouse")
@@ -82,7 +94,7 @@ func registerJobSearch(server *mcp.Server) {
 		for _, src := range srcs {
 			go func(name string) {
 				switch name {
-				case "linkedin":
+				case platLinkedIn:
 					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Salary, 50, input.EasyApply)
 					if err != nil {
 						slog.Warn("job_search: linkedin error", slog.Any("error", err))
@@ -159,7 +171,7 @@ func registerJobSearch(server *mcp.Server) {
 		for i := 0; i < totalGoroutines; i++ {
 			r := <-ch
 			merged = append(merged, r.results...)
-			if r.name == "linkedin" && len(r.liJobs) > 0 {
+			if r.name == platLinkedIn && len(r.liJobs) > 0 {
 				linkedInJobs = r.liJobs
 			}
 		}
@@ -265,9 +277,9 @@ func registerJobSearch(server *mcp.Server) {
 func buildJobSearxQuery(query, location, platform string) string {
 	var sitePart string
 	switch platform {
-	case "linkedin":
+	case platLinkedIn:
 		sitePart = "site:linkedin.com/jobs"
-	case "greenhouse":
+	case platGreenhouse:
 		sitePart = "site:boards.greenhouse.io"
 	case "lever":
 		sitePart = "site:jobs.lever.co"

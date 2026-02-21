@@ -125,7 +125,7 @@ func generateVisitorData() string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 	b := make([]byte, 11)
 	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
+		b[i] = chars[rand.Intn(len(chars))] //nolint:gosec // non-cryptographic use
 	}
 	return string(b)
 }
@@ -154,7 +154,7 @@ func postInnerTubeWEB(ctx context.Context, endpoint string, payload any, visitor
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"?prettyPrint=false", bytes.NewReader(bodyBytes))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?prettyPrint=false", bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -172,7 +172,7 @@ func postInnerTubeWEB(ctx context.Context, endpoint string, payload any, visitor
 		return nil, fmt.Errorf("innertube WEB [%s]: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
 	}

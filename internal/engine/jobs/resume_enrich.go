@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,10 +13,10 @@ import (
 
 // ResumeEnrichResult is the structured output of resume_enrich.
 type ResumeEnrichResult struct {
-	Status    string             `json:"status"` // "questions", "complete"
-	Questions []EnrichQuestion   `json:"questions,omitempty"`
-	Applied   int                `json:"applied,omitempty"`
-	Summary   string             `json:"summary"`
+	Status    string           `json:"status"` // "questions", "complete"
+	Questions []EnrichQuestion `json:"questions,omitempty"`
+	Applied   int              `json:"applied,omitempty"`
+	Summary   string           `json:"summary"`
 }
 
 // EnrichQuestion is a single enrichment question.
@@ -104,12 +105,12 @@ Return ONLY the JSON object, no markdown, no explanation.`
 func EnrichResume(ctx context.Context, action string, answers []AnswerPair) (*ResumeEnrichResult, error) {
 	db := GetResumeDB()
 	if db == nil {
-		return nil, fmt.Errorf("resume database not configured (set DATABASE_URL)")
+		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
 
 	personID := db.GetLatestPersonID(ctx)
 	if personID == 0 {
-		return nil, fmt.Errorf("no master resume found — run master_resume_build first")
+		return nil, errors.New("no master resume found — run master_resume_build first")
 	}
 
 	switch action {
@@ -156,7 +157,7 @@ func enrichStart(ctx context.Context, db *ResumeDB, personID int) (*ResumeEnrich
 
 func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []AnswerPair) (*ResumeEnrichResult, error) {
 	if len(answers) == 0 {
-		return nil, fmt.Errorf("no answers provided")
+		return nil, errors.New("no answers provided")
 	}
 
 	// Load current data
@@ -216,7 +217,9 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				Source:     "enrichment",
 			})
 			if err == nil {
-				db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": u.Name})
+				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": u.Name}); err != nil {
+					slog.Debug("graph node upsert failed", slog.Any("error", err))
+				}
 				applied++
 			}
 
@@ -269,14 +272,20 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				Highlights:  u.Highlights,
 			})
 			if err == nil {
-				db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{"name": u.Name})
+				if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{"name": u.Name}); err != nil {
+					slog.Debug("graph node upsert failed", slog.Any("error", err))
+				}
 				if parentPtr != nil {
-					db.UpsertGraphEdge(ctx, "Proj", projID, "PART_OF", "Exp", *parentPtr)
+					if err := db.UpsertGraphEdge(ctx, "Proj", projID, "PART_OF", "Exp", *parentPtr); err != nil {
+						slog.Debug("graph edge upsert failed", slog.Any("error", err))
+					}
 				}
 				// Add to MemDB
 				if mdb != nil {
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
-					mdb.Add(ctx, text, map[string]any{"type": "project", "id": float64(projID)})
+					if err := mdb.Add(ctx, text, map[string]any{"type": "project", "id": float64(projID)}); err != nil {
+						slog.Debug("memdb add project failed", slog.Any("error", err))
+					}
 				}
 				applied++
 			}
@@ -291,7 +300,9 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			}
 			methID, err := db.InsertMethodology(ctx, personID, u.Name, u.Description)
 			if err == nil {
-				db.UpsertGraphNode(ctx, "Method", methID, map[string]string{"name": u.Name})
+				if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{"name": u.Name}); err != nil {
+					slog.Debug("graph node upsert failed", slog.Any("error", err))
+				}
 				applied++
 			}
 
@@ -304,14 +315,18 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			}
 			domID, err := db.InsertDomain(ctx, personID, u.Name)
 			if err == nil {
-				db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{"name": u.Name})
+				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{"name": u.Name}); err != nil {
+					slog.Debug("upsert domain graph node failed", slog.Any("error", err))
+				}
 				applied++
 			}
 		}
 	}
 
 	// Mark as enriched
-	db.MarkPersonEnriched(ctx, personID)
+	if err := db.MarkPersonEnriched(ctx, personID); err != nil {
+		slog.Debug("mark person enriched failed", slog.Any("error", err))
+	}
 
 	slog.Info("enrichment applied", slog.Int("person_id", personID), slog.Int("applied", applied))
 
@@ -325,13 +340,17 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 // updateAchievementMetrics updates metric fields on an achievement.
 func updateAchievementMetrics(ctx context.Context, db *ResumeDB, achvID int, metricNumeric *float64, metricUnit, newText string) {
 	if newText != "" {
-		db.pool.Exec(ctx,
-			`UPDATE resume_achievements SET text = $2 WHERE id = $1`, achvID, newText)
+		if _, err := db.pool.Exec(ctx,
+			`UPDATE resume_achievements SET text = $2 WHERE id = $1`, achvID, newText); err != nil {
+			slog.Debug("update achievement text failed", slog.Any("error", err))
+		}
 	}
 	if metricNumeric != nil || metricUnit != "" {
-		db.pool.Exec(ctx,
+		if _, err := db.pool.Exec(ctx,
 			`UPDATE resume_achievements SET metric_numeric = $2, metric_unit = $3 WHERE id = $1`,
-			achvID, metricNumeric, metricUnit)
+			achvID, metricNumeric, metricUnit); err != nil {
+			slog.Debug("update achievement metrics failed", slog.Any("error", err))
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -46,7 +47,7 @@ func buildTwitterJobQuery(query string) string {
 func SearchTwitterJobs(ctx context.Context, query string, limit int) ([]engine.SearxngResult, error) {
 	tw := engine.Cfg.TwitterClient
 	if tw == nil {
-		return nil, fmt.Errorf("twitter client not configured")
+		return nil, errors.New("twitter client not configured")
 	}
 
 	twitterQuery := buildTwitterJobQuery(query)
@@ -63,7 +64,7 @@ func SearchTwitterJobs(ctx context.Context, query string, limit int) ([]engine.S
 
 	results := make([]engine.SearxngResult, 0, len(tweets))
 	for _, t := range tweets {
-		tweetURL := fmt.Sprintf("https://x.com/i/status/%s", t.ID)
+		tweetURL := "https://x.com/i/status/" + t.ID
 
 		// First line as title, rest as content
 		lines := strings.SplitN(strings.TrimSpace(t.Text), "\n", 2)
@@ -89,7 +90,7 @@ func SearchTwitterJobs(ctx context.Context, query string, limit int) ([]engine.S
 func SearchTwitterJobsRaw(ctx context.Context, query string, limit int) ([]TwitterJobTweet, error) {
 	tw := engine.Cfg.TwitterClient
 	if tw == nil {
-		return nil, fmt.Errorf("twitter client not configured")
+		return nil, errors.New("twitter client not configured")
 	}
 
 	twitterQuery := buildTwitterJobQuery(query)
@@ -113,7 +114,7 @@ func SearchTwitterJobsRaw(ctx context.Context, query string, limit int) ([]Twitt
 			ID:        t.ID,
 			AuthorID:  t.AuthorID,
 			Text:      t.Text,
-			URL:       fmt.Sprintf("https://x.com/i/status/%s", t.ID),
+			URL:       "https://x.com/i/status/" + t.ID,
 			Likes:     t.Likes,
 			Retweets:  t.Retweets,
 			CreatedAt: t.CreatedAt.Format("2006-01-02T15:04:05Z"),

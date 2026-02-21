@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,9 +22,6 @@ import (
 
 // LinkedIn Guest API endpoint — returns HTML, no auth required.
 const linkedInGuestAPI = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-
-// LinkedIn job view URL for fetching individual job details.
-const linkedInJobView = "https://www.linkedin.com/jobs/view/"
 
 // experienceMap maps human-readable experience levels to LinkedIn filter codes.
 var experienceMap = map[string]string{
@@ -247,7 +245,7 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 
 	// Fallback: standard HTTP client
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -261,7 +259,7 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("linkedin status %d", resp.StatusCode)
 	}
 
@@ -417,7 +415,7 @@ func fetchJobDetailsUncached(ctx context.Context, jobURL string) (string, error)
 		}
 	}
 
-	return "", fmt.Errorf("no job details found")
+	return "", errors.New("no job details found")
 }
 
 // extractJSONLD extracts and formats the schema.org/JobPosting JSON-LD block.
@@ -530,7 +528,7 @@ func extractJobDescription(body string) string {
 func renderChildren(n *html.Node) string {
 	var sb strings.Builder
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		html.Render(&sb, c)
+		_ = html.Render(&sb, c)
 	}
 	return sb.String()
 }

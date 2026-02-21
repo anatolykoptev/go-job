@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -65,7 +66,7 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	// Extract best tag from query: prefer tech/role keywords over generic words.
 	fields := strings.Fields(strings.ToLower(query))
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("query cannot be empty")
+		return nil, errors.New("query cannot be empty")
 	}
 	tag := pickBestRemoteOKTag(fields)
 
@@ -81,7 +82,7 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +97,7 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("RemoteOK API returned status %d", resp.StatusCode)
 	}
 
@@ -181,7 +182,7 @@ func parseRemoteOKResponse(body []byte) ([]engine.RemoteJobListing, error) {
 // formatRemoteSalary formats salary range from RemoteOK min/max values.
 func formatRemoteSalary(min, max int) string {
 	if min == 0 && max == 0 {
-		return "not specified"
+		return "not specified" //nolint:goconst
 	}
 	if min == max {
 		return fmt.Sprintf("$%d", max)
@@ -200,7 +201,7 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", wwrRSSURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wwrRSSURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +216,7 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("WWR RSS returned status %d", resp.StatusCode)
 	}
 
@@ -448,7 +449,7 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}

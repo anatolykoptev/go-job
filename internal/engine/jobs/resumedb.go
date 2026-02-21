@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -45,7 +46,7 @@ type ResumeDB struct {
 // ConnectResumeDB creates a pgx pool and runs schema migrations.
 func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error) {
 	if databaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL is required")
+		return nil, errors.New("DATABASE_URL is required")
 	}
 
 	config, err := pgxpool.ParseConfig(databaseURL)
@@ -126,7 +127,7 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 					slog.String("file", entry.Name()),
 					slog.Any("error", err))
 				// Reset search_path after AGE migration (it sets search_path to ag_catalog)
-				conn.Exec(ctx, "SET search_path TO public")
+				_, _ = conn.Exec(ctx, "SET search_path TO public")
 				continue
 			}
 			return fmt.Errorf("execute %s: %w", entry.Name(), err)
@@ -134,7 +135,7 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 
 		// 002_resume_graph.sql sets search_path to ag_catalog; reset it for subsequent migrations
 		if strings.Contains(entry.Name(), "002") {
-			conn.Exec(ctx, "SET search_path TO public")
+			_, _ = conn.Exec(ctx, "SET search_path TO public")
 		}
 
 		slog.Info("migration applied", slog.String("file", entry.Name()))
@@ -437,14 +438,14 @@ func (db *ResumeDB) GetAchievementsByIDs(ctx context.Context, ids []int) ([]Achi
 // --- Education CRUD ---
 
 type EducationRecord struct {
-	ID        int      `json:"id"`
-	PersonID  int      `json:"person_id"`
-	School    string   `json:"school"`
-	Degree    string   `json:"degree"`
-	Field     string   `json:"field"`
-	StartDate string   `json:"start_date"`
-	EndDate   string   `json:"end_date"`
-	GPA       string   `json:"gpa"`
+	ID         int      `json:"id"`
+	PersonID   int      `json:"person_id"`
+	School     string   `json:"school"`
+	Degree     string   `json:"degree"`
+	Field      string   `json:"field"`
+	StartDate  string   `json:"start_date"`
+	EndDate    string   `json:"end_date"`
+	GPA        string   `json:"gpa"`
 	Highlights []string `json:"highlights"`
 }
 
@@ -926,8 +927,8 @@ func (db *ResumeDB) QueryCareerTrajectory(ctx context.Context, personID int) ([]
 			continue
 		}
 		var e TrajectoryEdge
-		fmt.Sscanf(strings.TrimSpace(fID), "%d", &e.FromExpID)
-		fmt.Sscanf(strings.TrimSpace(tID), "%d", &e.ToExpID)
+		_, _ = fmt.Sscanf(strings.TrimSpace(fID), "%d", &e.FromExpID)
+		_, _ = fmt.Sscanf(strings.TrimSpace(tID), "%d", &e.ToExpID)
 		e.FromTitle = strings.Trim(strings.TrimSpace(fTitle), `"`)
 		e.ToTitle = strings.Trim(strings.TrimSpace(tTitle), `"`)
 		edges = append(edges, e)
@@ -970,7 +971,7 @@ func (db *ResumeDB) CountGraphNodes(ctx context.Context) (int, error) {
 	}
 	// AGE returns agtype: e.g. "5" or "5::integer"
 	var count int
-	fmt.Sscanf(strings.TrimSpace(raw), "%d", &count)
+	_, _ = fmt.Sscanf(strings.TrimSpace(raw), "%d", &count)
 	return count, nil
 }
 
@@ -995,7 +996,7 @@ func (db *ResumeDB) CountGraphEdges(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	var count int
-	fmt.Sscanf(strings.TrimSpace(raw), "%d", &count)
+	_, _ = fmt.Sscanf(strings.TrimSpace(raw), "%d", &count)
 	return count, nil
 }
 

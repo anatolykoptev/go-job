@@ -2,7 +2,7 @@ package jobserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -16,7 +16,7 @@ func registerSalaryResearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.SalaryResearchInput) (*mcp.CallToolResult, *jobs.SalaryResearchResult, error) {
 		if input.Role == "" {
-			return nil, nil, fmt.Errorf("role is required")
+			return nil, nil, errors.New("role is required")
 		}
 		result, err := jobs.ResearchSalary(ctx, input.Role, input.Location, input.Experience)
 		if err != nil {
@@ -33,7 +33,7 @@ func registerCompanyResearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.CompanyResearchInput) (*mcp.CallToolResult, *jobs.CompanyResearchResult, error) {
 		if input.Company == "" {
-			return nil, nil, fmt.Errorf("company is required")
+			return nil, nil, errors.New("company is required")
 		}
 		result, err := jobs.ResearchCompany(ctx, input.Company)
 		if err != nil {
@@ -50,7 +50,7 @@ func registerPersonResearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.PersonResearchInput) (*mcp.CallToolResult, *jobs.PersonProfile, error) {
 		if input.Name == "" {
-			return nil, nil, fmt.Errorf("name is required")
+			return nil, nil, errors.New("name is required")
 		}
 		result, err := jobs.ResearchPerson(ctx, input.Name, input.Company, input.JobTitle)
 		if err != nil {

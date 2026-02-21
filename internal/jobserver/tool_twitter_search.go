@@ -2,8 +2,10 @@ package jobserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -18,8 +20,8 @@ type TwitterJobSearchInput struct {
 }
 
 type TwitterJobSearchOutput struct {
-	Query  string               `json:"query"`
-	Count  int                  `json:"count"`
+	Query  string                 `json:"query"`
+	Count  int                    `json:"count"`
 	Tweets []jobs.TwitterJobTweet `json:"tweets"`
 }
 
@@ -30,7 +32,7 @@ func registerTwitterJobSearch(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input TwitterJobSearchInput) (*mcp.CallToolResult, TwitterJobSearchOutput, error) {
 		if input.Query == "" {
-			return nil, TwitterJobSearchOutput{}, fmt.Errorf("query is required")
+			return nil, TwitterJobSearchOutput{}, errors.New("query is required")
 		}
 
 		limit := input.Limit
@@ -41,7 +43,7 @@ func registerTwitterJobSearch(server *mcp.Server) {
 			limit = 50
 		}
 
-		cacheKey := engine.CacheKey("twitter_job_search", input.Query, fmt.Sprintf("%d", limit))
+		cacheKey := engine.CacheKey("twitter_job_search", input.Query, strconv.Itoa(limit))
 		if out, ok := toolutil.CacheLoadJSON[TwitterJobSearchOutput](ctx, cacheKey); ok {
 			return nil, out, nil
 		}
