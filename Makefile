@@ -1,7 +1,7 @@
 BINARY = bin/go_job
 SERVICE = go-search-jobs
 
-.PHONY: build deploy restart clean
+.PHONY: build deploy restart clean lint
 
 build:
 	go build -o $(BINARY) .
@@ -14,6 +14,9 @@ deploy: build
 
 restart:
 	systemctl --user restart $(SERVICE)
+
+lint:
+	golangci-lint run ./...
 
 clean:
 	rm -f $(BINARY)
