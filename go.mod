@@ -9,6 +9,7 @@ require (
 	github.com/anatolykoptev/go-twitter v0.1.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
+	github.com/jackc/pgx/v5 v5.8.0
 	github.com/modelcontextprotocol/go-sdk v1.3.0
 	github.com/redis/go-redis/v9 v9.18.0
 	golang.org/x/net v0.50.0
@@ -35,6 +36,9 @@ require (
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -47,6 +51,7 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
