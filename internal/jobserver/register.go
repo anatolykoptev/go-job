@@ -30,4 +30,9 @@ func RegisterTools(server *mcp.Server) {
 	registerMasterResumeBuild(server)
 	registerResumeGenerate(server)
 	registerResumeEnrich(server)
+	// Resume Profile & Memory
+	registerResumeProfile(server)
+	registerResumeMemorySearch(server)
+	registerResumeMemoryAdd(server)
+	registerResumeMemoryUpdate(server)
 }

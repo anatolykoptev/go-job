@@ -735,7 +735,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	// 19. Sync to MemDB
 	if mdb != nil {
 		for _, ve := range vectorTexts {
-			if err := mdb.Add(ctx, ve.content, ve.info); err != nil {
+			if _, err := mdb.Add(ctx, ve.content, ve.info); err != nil {
 				slog.Debug("memdb add failed", slog.Any("error", err))
 				continue
 			}

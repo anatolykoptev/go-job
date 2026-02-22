@@ -187,6 +187,33 @@ func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	return id
 }
 
+// GetPerson returns the person record for the given ID.
+func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord, error) {
+	var p PersonRecord
+	var linksJSON []byte
+	err := db.pool.QueryRow(ctx,
+		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,'')
+		 FROM resume_persons WHERE id = $1`, personID,
+	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(linksJSON, &p.Links)
+	return &p, nil
+}
+
+// GetPersonEnrichedAt returns the enriched_at timestamp as a string, or empty if not enriched.
+func (db *ResumeDB) GetPersonEnrichedAt(ctx context.Context, personID int) string {
+	var enrichedAt *string
+	err := db.pool.QueryRow(ctx,
+		`SELECT enriched_at::text FROM resume_persons WHERE id = $1`, personID,
+	).Scan(&enrichedAt)
+	if err != nil || enrichedAt == nil {
+		return ""
+	}
+	return *enrichedAt
+}
+
 // --- Experience CRUD ---
 
 type ExperienceRecord struct {

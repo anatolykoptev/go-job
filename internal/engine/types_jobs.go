@@ -182,6 +182,29 @@ type ResumeGenerateInput struct {
 	Format         string `json:"format,omitempty" jsonschema:"Output format: text (default), markdown, json"`
 }
 
+// ResumeProfileInput is the input for resume_profile.
+type ResumeProfileInput struct {
+	Section string `json:"section,omitempty" jsonschema:"Optional: filter by section (experiences, skills, projects, achievements, educations, certifications, domains, methodologies, summary). Empty = return all."`
+}
+
+// ResumeMemorySearchInput is the input for resume_memory_search.
+type ResumeMemorySearchInput struct {
+	Query string `json:"query" jsonschema:"Semantic search query (e.g. 'distributed systems experience', 'Python projects')"`
+	TopK  int    `json:"top_k,omitempty" jsonschema:"Number of results (default 10, max 30)"`
+}
+
+// ResumeMemoryAddInput is the input for resume_memory_add.
+type ResumeMemoryAddInput struct {
+	Content string `json:"content" jsonschema:"Text to store (career goal, preference, note about experience, etc.)"`
+	Type    string `json:"type,omitempty" jsonschema:"Category: note, goal, preference, skill_context, experience_detail (default: note)"`
+}
+
+// ResumeMemoryUpdateInput is the input for resume_memory_update.
+type ResumeMemoryUpdateInput struct {
+	MemoryID string `json:"memory_id" jsonschema:"ID of the memory to update (from resume_memory_search results)"`
+	Content  string `json:"content" jsonschema:"New content to replace the existing memory"`
+}
+
 // ResumeEnrichInput is the input for resume_enrich.
 type ResumeEnrichInput struct {
 	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`
