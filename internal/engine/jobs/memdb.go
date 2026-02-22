@@ -26,8 +26,13 @@ func NewMemDBClient(baseURL, serviceSecret string) *MemDBClient {
 	}
 }
 
-// Add sends a memory to MemDB for enrichment.
-func (c *MemDBClient) Add(ctx context.Context, content string, info map[string]any) error {
+// AddResult holds the response from a MemDB add operation.
+type AddResult struct {
+	MemoryID string
+}
+
+// Add sends a memory to MemDB for enrichment and returns the new memory ID.
+func (c *MemDBClient) Add(ctx context.Context, content string, info map[string]any) (*AddResult, error) {
 	body := map[string]any{
 		"user_id":           "gojob",
 		"writable_cube_ids": []string{"gojob"},
@@ -41,15 +46,29 @@ func (c *MemDBClient) Add(ctx context.Context, content string, info map[string]a
 
 	resp, err := c.post(ctx, "/product/add", body)
 	if err != nil {
-		return fmt.Errorf("memdb add: %w", err)
+		return nil, fmt.Errorf("memdb add: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("memdb add: status %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("memdb add: status %d: %s", resp.StatusCode, string(b))
 	}
-	return nil
+
+	var raw struct {
+		Data []struct {
+			MemoryID string `json:"memory_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		// Add succeeded but we couldn't parse the response — not fatal.
+		return &AddResult{}, nil
+	}
+	result := &AddResult{}
+	if len(raw.Data) > 0 {
+		result.MemoryID = raw.Data[0].MemoryID
+	}
+	return result, nil
 }
 
 // MemDBSearchResult is a single result from MemDB search.

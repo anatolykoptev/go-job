@@ -8,7 +8,7 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/PuerkitoBio/goquery"
-	readability "github.com/go-shiori/go-readability"
+	readability "codeberg.org/readeck/go-readability/v2"
 )
 
 // FetchURLContent extracts main text content from a URL using go-readability.
@@ -41,15 +41,20 @@ func FetchURLContent(ctx context.Context, rawURL string) (title, content string,
 		return fetchWithGoquery(ctx, rawURL, body)
 	}
 
-	md, err := htmltomarkdown.ConvertString(article.Content)
+	var htmlBuf strings.Builder
+	_ = article.RenderHTML(&htmlBuf)
+
+	md, err := htmltomarkdown.ConvertString(htmlBuf.String())
 	if err != nil {
-		md = article.TextContent
+		var textBuf strings.Builder
+		_ = article.RenderText(&textBuf)
+		md = textBuf.String()
 	}
 	text := strings.TrimSpace(md)
 	if len(text) > cfg.MaxContentChars {
 		text = text[:cfg.MaxContentChars] + "..."
 	}
-	return article.Title, text, nil
+	return article.Title(), text, nil
 }
 
 // fetchWithGoquery uses goquery for structured HTML parsing when readability fails.

@@ -283,7 +283,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				// Add to MemDB
 				if mdb != nil {
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
-					if err := mdb.Add(ctx, text, map[string]any{"type": "project", "id": float64(projID)}); err != nil {
+					if _, err := mdb.Add(ctx, text, map[string]any{"type": "project", "id": float64(projID)}); err != nil {
 						slog.Debug("memdb add project failed", slog.Any("error", err))
 					}
 				}
