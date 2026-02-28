@@ -1,7 +1,7 @@
 # go_job + vaelor-jobs — Career Assistant Roadmap
 
 > AIHawk-level career assistant through vaelor-jobs agent + go_job MCP server.
-> Last updated: 2026-02-21
+> Last updated: 2026-02-28
 
 ---
 
@@ -67,7 +67,22 @@ No browser automation. No credentials. Pure API + LLM.
 | `job-application-prep` | search → company → analyze → tailor → cover letter → tracker | ✅ |
 | `resume-audit` | multi-source search → 2x analyze → salary → audit report | ✅ |
 
-**Total: 14 MCP tools, 11 job sources, 6 vaelor skills/workflows**
+### Phase 7 — Interview Preparation (go_job v1.2)
+| Tool | Description | Status |
+|------|-------------|--------|
+| `interview_prep` | Personalized Q&A (behavioral + technical + system design) with model answers from resume, optional company enrichment | ✅ |
+| `project_showcase` | STAR-format project narratives with impact and talking points | ✅ |
+| `pitch_generate` | 30-sec & 2-min elevator pitches, "why this company" answer, optional company enrichment | ✅ |
+| `skill_gap` | Resume vs JD gap analysis: match score, missing skills with priority/learning time, learning plan | ✅ |
+
+### Phase 8 — Application Workflow (go_job v1.2)
+| Tool | Description | Status |
+|------|-------------|--------|
+| `application_prep` | One-call combo: resume analysis + cover letter + interview prep + company research (parallel execution) | ✅ |
+| `offer_compare` | Side-by-side offer comparison with scoring (0-100) and recommendation | ✅ |
+| `negotiation_prep` | Salary negotiation playbook: scripts, counters, BATNA, red flags, optional salary research enrichment | ✅ |
+
+**Total: 25 MCP tools, 11 job sources, 6 vaelor skills/workflows**
 
 ---
 
@@ -88,7 +103,9 @@ No browser automation. No credentials. Pure API + LLM.
 | Resume match score | ❌ | ✅ Jaccard (0-100) |
 | Twitter/X search | ❌ | ✅ raw tweets + pipeline |
 | Auto-apply | ✅ EasyApply | ❌ (by design) |
-| Interview prep | ❌ | 🔜 Phase 7 |
+| Interview prep | ❌ | ✅ Q&A + STAR showcase + pitches + skill gap |
+| Offer comparison | ❌ | ✅ side-by-side scoring |
+| Salary negotiation | ❌ | ✅ scripts + BATNA |
 | Auth required | ✅ LinkedIn login | ❌ no credentials |
 | Browser required | ✅ Selenium | ❌ headless |
 | MCP interface | ❌ | ✅ |
@@ -107,7 +124,8 @@ No browser automation. No credentials. Pure API + LLM.
 | Auto-apply | ✅ | ✅ | ❌ | ❌ by design |
 | Resume builder | ✅ | ✅ ATS-optimized | ❌ | ✅ analyze+tailor |
 | Cover letter | ✅ | ✅ | ❌ | ✅ 3 tones |
-| Interview prep | ❌ | ❌ | ✅ mock interviews | 🔜 Phase 7 |
+| Interview prep | ❌ | ❌ | ✅ mock interviews | ✅ Q&A + pitches + STAR |
+| Offer negotiation | ❌ | ❌ | ❌ | ✅ scripts + BATNA |
 | Live interview coaching | ❌ | ✅ Interview Buddy | ✅ | 🔜 Phase 9 |
 | Company research | ❌ | ❌ | ❌ | ✅ |
 | Salary research | ❌ | ❌ | ❌ | ✅ |
@@ -117,34 +135,6 @@ No browser automation. No credentials. Pure API + LLM.
 ---
 
 ## Roadmap — Next Steps
-
-### Phase 7 — Interview Preparation (HIGH PRIORITY)
-
-> Core gap: user can find and apply to jobs but feels unprepared for interviews.
-> Goal: generate personalized interview Q&A based on resume + JD + company.
-
-| Feature | Tool | Effort | Notes |
-|---------|------|--------|-------|
-| **Interview Q&A generator** | `interview_prep` | Medium | Input: resume + job_description (or URL). Output: behavioral Qs (5), technical Qs (10), system design Qs (3) + model answers referencing user's actual projects. LLM prompt chains company_research + person_research for context. |
-| **Project showcase (STAR format)** | `project_showcase` | Low | Input: project descriptions or GitHub repos. Output: STAR-format narratives (Situation, Task, Action, Result) for each project. Turns "I built go-hully" into "Built a crypto Twitter intelligence platform processing 50 tweets/batch with Go, PostgreSQL/Apache AGE graph, and vector search, reducing KOL analysis time from hours to seconds." |
-| **Elevator pitch generator** | `pitch_generate` | Low | Input: resume + target_role. Output: 30-sec pitch, 2-min pitch, "why this company" answer. Reframes non-traditional backgrounds ("AI systems builder" vs "not a programmer"). |
-| **Skill gap analysis** | `skill_gap` | Low | Input: resume + target_job[]. Output: matching skills, missing skills, prioritized learning plan with resources (GitHub repos, courses). Extends existing `job_match_score` keyword extraction into actionable recommendations. |
-
-**References:**
-- [IliaLarchenko/Interviewer](https://github.com/IliaLarchenko/Interviewer) (93★) — speech-first mock interviewer for technical/coding/ML
-- [FoloUp/FoloUp](https://github.com/FoloUp/FoloUp) (1K★) — AI voice interviewer with analysis
-- [langgraph-AI-interview-agent](https://github.com/zzzlip/langgraph-AI-interview-agent) — multi-agent interview prep with resume analysis
-- [AI-Interview-Preparation-Coach-using-autogen](https://github.com/Pranjal1713/AI-Interview-Preparation-Coach-using-autogen) — behavioral, technical, system design mock interviews
-
-### Phase 8 — Application Workflow (MEDIUM PRIORITY)
-
-> Streamline the apply step without risky browser automation.
-
-| Feature | Tool | Effort | Notes |
-|---------|------|--------|-------|
-| **Application package** | `application_prep` | Low | One-call combo: tailored resume + cover letter + interview prep + tracker entry. Input: resume + job URL. Replaces manual 4-tool workflow. |
-| **Offer comparison** | `offer_compare` | Low | Side-by-side comparison of multiple offers (salary, equity, benefits, WLB, growth). |
-| **Salary negotiation script** | `negotiation_prep` | Low | LLM-generated negotiation talking points based on salary_research data + offer details. |
 
 ### Phase 9 — Advanced Interview (LOW PRIORITY, HIGH IMPACT)
 
@@ -197,7 +187,7 @@ vaelor-jobs (port 18796)
       └── full-application-package.json   ← Phase 8
         │ MCP
         ▼
-go_job MCP server (port 8891, 14 tools)
+go_job MCP server (port 8891, 25 tools)
   ├── job_search            (11 sources incl. Twitter/X)
   ├── remote_work_search    (RemoteOK, WWR, Remotive)
   ├── freelance_search      (Upwork, Freelancer)
@@ -212,13 +202,20 @@ go_job MCP server (port 8891, 14 tools)
   ├── job_tracker_add       (SQLite)
   ├── job_tracker_list      (SQLite)
   ├── job_tracker_update    (SQLite)
-  ├── interview_prep        ← Phase 7
-  ├── project_showcase      ← Phase 7
-  ├── pitch_generate        ← Phase 7
-  ├── skill_gap             ← Phase 7
-  ├── application_prep      ← Phase 8
-  ├── offer_compare         ← Phase 8
-  └── negotiation_prep      ← Phase 8
+  ├── interview_prep        (LLM + company enrichment)
+  ├── project_showcase      (LLM, STAR format)
+  ├── pitch_generate        (LLM + company enrichment)
+  ├── skill_gap             (keyword matching + LLM)
+  ├── application_prep      (parallel: analyze + cover + interview + company)
+  ├── offer_compare         (LLM, scoring 0-100)
+  ├── negotiation_prep      (LLM + salary research)
+  ├── master_resume_build   (LLM, master profile)
+  ├── resume_generate       (LLM from master profile)
+  ├── resume_enrich         (LLM, Q&A enrichment)
+  ├── resume_profile        (master profile viewer)
+  ├── resume_memory_search  (semantic search)
+  ├── resume_memory_add     (memory store)
+  └── resume_memory_update  (memory update)
 ```
 
 ---
