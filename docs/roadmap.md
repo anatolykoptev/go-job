@@ -30,7 +30,7 @@ No browser automation. No credentials. Pure API + LLM.
 
 **Filters:** experience, job_type, remote, time_range, salary (LinkedIn f_SB2), platform (incl. twitter), location
 
-**Sources (11):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X
+**Sources (12):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs
 
 ### Phase 2 — Resume & Cover Letter (go_job v1.1)
 | Tool | Description | Status |
@@ -82,7 +82,20 @@ No browser automation. No credentials. Pure API + LLM.
 | `offer_compare` | Side-by-side offer comparison with scoring (0-100) and recommendation | ✅ |
 | `negotiation_prep` | Salary negotiation playbook: scripts, counters, BATNA, red flags, optional salary research enrichment | ✅ |
 
-**Total: 25 MCP tools, 11 job sources, 6 vaelor skills/workflows**
+### Phase 10a — Search UX Improvements (go_job v1.3)
+| Feature | Description | Status |
+|---------|-------------|--------|
+| `results_limit` | `limit` param on `job_search` (default 15, max 50) | ✅ |
+| `pagination` | `offset` param — skip N results for pagination | ✅ |
+| `blacklist` | Comma-separated company/keyword exclusion filter | ✅ |
+| `google_jobs` | Google Jobs source via SearXNG (`site:careers.google.com`) | ✅ |
+| `user_profile` | `~/.go_job/profile.json` — default platform, limit, location, remote, blacklist | ✅ |
+
+**Filters (updated):** experience, job_type, remote, time_range, salary, platform (incl. twitter, google), location, **limit, offset, blacklist**
+
+**Sources (12):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, **Google Jobs**
+
+**Total: 25 MCP tools, 12 job sources, 6 vaelor skills/workflows**
 
 ---
 
@@ -92,7 +105,7 @@ No browser automation. No credentials. Pure API + LLM.
 
 | Feature | AIHawk | go_job + vaelor-jobs |
 |---------|--------|---------------------|
-| Job search | LinkedIn + Indeed (Selenium) | 11 sources, no browser |
+| Job search | LinkedIn + Indeed (Selenium) | 12 sources, no browser |
 | Resume tailoring | ✅ | ✅ |
 | Cover letter | ✅ AI-generated | ✅ AI-generated |
 | ATS analysis | ❌ | ✅ score + keywords + gaps |
@@ -112,7 +125,7 @@ No browser automation. No credentials. Pure API + LLM.
 | Caching | ❌ | ✅ L1+L2 Redis |
 | Language | Python | Go |
 
-**go_job advantages:** no browser, no credentials, MCP-native, caching, 11 sources, salary+company+person research, ATS scoring, Twitter/X
+**go_job advantages:** no browser, no credentials, MCP-native, caching, 12 sources, salary+company+person research, ATS scoring, Twitter/X, pagination, blacklist
 
 **AIHawk advantage:** auto-apply (EasyApply) — intentionally not implemented (ToS violation risk)
 
@@ -120,7 +133,7 @@ No browser automation. No credentials. Pure API + LLM.
 
 | Feature | JobCopilot ($29/mo) | AIApply | FinalRound AI | go_job |
 |---------|---------------------|---------|---------------|--------|
-| Job search | ✅ | ✅ | ❌ | ✅ 11 sources |
+| Job search | ✅ | ✅ | ❌ | ✅ 12 sources |
 | Auto-apply | ✅ | ✅ | ❌ | ❌ by design |
 | Resume builder | ✅ | ✅ ATS-optimized | ❌ | ✅ analyze+tailor |
 | Cover letter | ✅ | ✅ | ❌ | ✅ 3 tones |
@@ -146,17 +159,12 @@ No browser automation. No credentials. Pure API + LLM.
 | **System design practice** | vaelor skill | High | Interactive system design session: interviewer asks, candidate draws (text-based), interviewer probes. Tailored to company's tech stack (from company_research). |
 | **Live interview companion** | vaelor skill | Medium | Real-time answer suggestions during actual interview. User sends question text → instant structured answer with talking points from their projects. Like AIApply's "Interview Buddy". |
 
-### Phase 10 — More Sources & UX
+### Phase 10b — More Sources & UX (remaining)
 
 | Feature | Effort | Notes |
 |---------|--------|-------|
 | **Glassdoor source** | Medium | Salary data + company reviews via SearXNG |
 | **ZipRecruiter** | Medium | Large US market |
-| **Google Jobs** | Low | SearXNG `site:jobs.google.com` |
-| **Pagination** | Low | `offset` param for LinkedIn Guest API |
-| **`results_limit` param** | Low | Currently fixed at ~15 per source |
-| **User profile** | Low | `~/.go_job/profile.md` — resume, preferences, blacklist |
-| **Blacklist filter** | Low | Skip companies/keywords in job_search |
 | **Alert/watch mode** | Medium | Periodic re-search + Telegram notify on new matches |
 | **PDF resume parsing** | Medium | Extract text from uploaded PDF |
 | **LinkedIn profile scrape** | High | Extract experience from LinkedIn profile URL |
@@ -188,7 +196,7 @@ vaelor-jobs (port 18796)
         │ MCP
         ▼
 go_job MCP server (port 8891, 25 tools)
-  ├── job_search            (11 sources incl. Twitter/X)
+  ├── job_search            (12 sources incl. Twitter/X, Google Jobs; limit/offset/blacklist)
   ├── remote_work_search    (RemoteOK, WWR, Remotive)
   ├── freelance_search      (Upwork, Freelancer)
   ├── twitter_job_search    (raw tweets via go-twitter)
@@ -227,7 +235,7 @@ go_job MCP server (port 8891, 25 tools)
 | Job tracker | `~/.go_job/tracker.db` | SQLite, persists across restarts |
 | L1 cache | in-memory (sync.Map) | Fast, lost on restart |
 | L2 cache | Redis (optional) | Persistent, shared across instances |
-| User profile | `~/.go_job/profile.md` | Resume, preferences, blacklist (Phase 10) |
+| User profile | `~/.go_job/profile.json` | Default platform, limit, location, remote, blacklist |
 
 ---
 
