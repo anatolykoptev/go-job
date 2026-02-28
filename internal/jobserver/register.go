@@ -27,6 +27,10 @@ func RegisterTools(server *mcp.Server) {
 	registerProjectShowcase(server)
 	registerPitchGenerate(server)
 	registerSkillGap(server)
+	// Application Workflow
+	registerApplicationPrep(server)
+	registerOfferCompare(server)
+	registerNegotiationPrep(server)
 	// Twitter
 	registerTwitterJobSearch(server)
 	// Master Resume

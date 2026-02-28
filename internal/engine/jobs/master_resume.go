@@ -273,7 +273,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		return nil, fmt.Errorf("master_resume_build LLM: %w", err)
 	}
 
-	raw = stripMarkdownFences(raw)
+	raw = StripMarkdownFences(raw)
 
 	var parsed parsedResume
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
@@ -294,7 +294,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 
 	var enrichment enrichmentResult
 	if enrichRaw != "" {
-		enrichRaw = stripMarkdownFences(enrichRaw)
+		enrichRaw = StripMarkdownFences(enrichRaw)
 		if err := json.Unmarshal([]byte(enrichRaw), &enrichment); err != nil {
 			slog.Warn("enrichment parse failed, continuing without enrichment", slog.Any("error", err))
 		}
@@ -884,7 +884,8 @@ func linkAchievementToParent(ctx context.Context, db *ResumeDB, contextHint stri
 	}
 }
 
-func stripMarkdownFences(raw string) string {
+// StripMarkdownFences removes ```json and ``` wrappers from LLM output.
+func StripMarkdownFences(raw string) string {
 	raw = strings.TrimSpace(raw)
 	raw = strings.TrimPrefix(raw, "```json")
 	raw = strings.TrimPrefix(raw, "```")

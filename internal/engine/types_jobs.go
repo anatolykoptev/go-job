@@ -224,6 +224,30 @@ type SkillGapInput struct {
 	JobDescription string `json:"job_description" jsonschema:"Target job description to analyze gaps against"`
 }
 
+// ApplicationPrepInput is the input for application_prep.
+type ApplicationPrepInput struct {
+	Resume         string `json:"resume" jsonschema:"Your resume text"`
+	JobDescription string `json:"job_description" jsonschema:"Job description to apply for"`
+	Company        string `json:"company,omitempty" jsonschema:"Company name (enriches with company research)"`
+	Tone           string `json:"tone,omitempty" jsonschema:"Cover letter tone: professional (default), friendly, concise"`
+}
+
+// OfferCompareInput is the input for offer_compare.
+type OfferCompareInput struct {
+	Offers     string `json:"offers" jsonschema:"Describe 2+ job offers to compare (company, role, salary, equity, benefits, WLB, growth, location)"`
+	Priorities string `json:"priorities,omitempty" jsonschema:"Your priorities: e.g. salary, remote, growth, WLB (helps weight the comparison)"`
+}
+
+// NegotiationPrepInput is the input for negotiation_prep.
+type NegotiationPrepInput struct {
+	Role         string `json:"role" jsonschema:"Job title you are negotiating for"`
+	Company      string `json:"company,omitempty" jsonschema:"Company name (enriches with salary research data)"`
+	Location     string `json:"location,omitempty" jsonschema:"Job location (for salary benchmarks)"`
+	CurrentOffer string `json:"current_offer" jsonschema:"Current offer details: salary, equity, benefits, signing bonus"`
+	TargetComp   string `json:"target_comp,omitempty" jsonschema:"Your target compensation (what you want to negotiate to)"`
+	Leverage     string `json:"leverage,omitempty" jsonschema:"Your leverage: competing offers, unique skills, market demand"`
+}
+
 // ResumeEnrichInput is the input for resume_enrich.
 type ResumeEnrichInput struct {
 	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`

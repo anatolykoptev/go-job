@@ -139,7 +139,7 @@ func enrichStart(ctx context.Context, db *ResumeDB, personID int) (*ResumeEnrich
 		return nil, fmt.Errorf("enrich start LLM: %w", err)
 	}
 
-	raw = stripMarkdownFences(raw)
+	raw = StripMarkdownFences(raw)
 
 	var parsed struct {
 		Questions []EnrichQuestion `json:"questions"`
@@ -178,7 +178,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 		return nil, fmt.Errorf("enrich answer LLM: %w", err)
 	}
 
-	raw = stripMarkdownFences(raw)
+	raw = StripMarkdownFences(raw)
 
 	var parsed struct {
 		Updates []json.RawMessage `json:"updates"`

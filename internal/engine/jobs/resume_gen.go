@@ -107,7 +107,7 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		return nil, fmt.Errorf("resume_generate extract JD: %w", err)
 	}
 
-	jdRaw = stripMarkdownFences(jdRaw)
+	jdRaw = StripMarkdownFences(jdRaw)
 
 	var jd jdRequirements
 	if err := json.Unmarshal([]byte(jdRaw), &jd); err != nil {
@@ -261,7 +261,7 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		return nil, fmt.Errorf("resume_generate assemble: %w", err)
 	}
 
-	assembleRaw = stripMarkdownFences(assembleRaw)
+	assembleRaw = StripMarkdownFences(assembleRaw)
 
 	var assembled struct {
 		Resume          string   `json:"resume"`
