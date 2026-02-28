@@ -23,13 +23,15 @@ const (
 	platStartup    = "startup"
 	platGoogle     = "google"
 	platCraigslist = "craigslist"
+	platRemoteOK   = "remoteok"
+	platWWR        = "weworkremotely"
 )
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, and Craigslist. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, and WeWorkRemotely. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -83,6 +85,8 @@ func registerJobSearch(server *mcp.Server) {
 		useHabr := platform == platAll || platform == "habr"
 		useTwitter := platform == platAll || platform == "twitter"
 		useCraigslist := platform == platAll || platform == platCraigslist
+		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == "remote"
+		useWWR := platform == platAll || platform == platWWR || platform == "remote"
 		useGoogle := platform == platAll || platform == platGoogle
 
 		type sourceResult struct {
@@ -119,6 +123,12 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useCraigslist {
 			srcs = append(srcs, platCraigslist)
+		}
+		if useRemoteOK {
+			srcs = append(srcs, platRemoteOK)
+		}
+		if useWWR {
+			srcs = append(srcs, platWWR)
 		}
 		if useGoogle {
 			srcs = append(srcs, platGoogle)
@@ -194,6 +204,20 @@ func registerJobSearch(server *mcp.Server) {
 						slog.Warn("job_search: craigslist error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platRemoteOK:
+					rjobs, err := jobs.SearchRemoteOK(ctx, input.Query, 15)
+					if err != nil {
+						slog.Warn("job_search: remoteok error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
+
+				case platWWR:
+					rjobs, err := jobs.SearchWeWorkRemotely(ctx, input.Query, 15)
+					if err != nil {
+						slog.Warn("job_search: weworkremotely error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
 
 				case platGoogle:
 					searxQuery := input.Query + " " + input.Location + " site:careers.google.com OR site:jobs.google.com"
@@ -349,6 +373,12 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:news.ycombinator.com \"who is hiring\""
 	case platCraigslist:
 		sitePart = "site:craigslist.org/d/jobs"
+	case platRemoteOK:
+		sitePart = "site:remoteok.com"
+	case platWWR:
+		sitePart = "site:weworkremotely.com"
+	case "remote":
+		sitePart = "site:remoteok.com OR site:weworkremotely.com"
 	case platGoogle:
 		sitePart = "site:careers.google.com OR site:jobs.google.com"
 	default:
