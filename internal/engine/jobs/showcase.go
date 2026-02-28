@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -71,11 +70,7 @@ func ShowcaseProjects(ctx context.Context, projects, targetRole string) (*Projec
 		return nil, fmt.Errorf("project_showcase LLM: %w", err)
 	}
 
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
+	raw = StripMarkdownFences(raw)
 
 	var result ProjectShowcaseResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
