@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	stealth "github.com/anatolykoptev/go-stealth"
 )
 
 func TestIsRetryable(t *testing.T) {
@@ -14,16 +16,16 @@ func TestIsRetryable(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"http 429", &HttpStatusError{StatusCode: 429}, true},
-		{"http 502", &HttpStatusError{StatusCode: 502}, true},
-		{"http 503", &HttpStatusError{StatusCode: 503}, true},
+		{"http 429", &stealth.HttpStatusError{StatusCode: 429}, true},
+		{"http 502", &stealth.HttpStatusError{StatusCode: 502}, true},
+		{"http 503", &stealth.HttpStatusError{StatusCode: 503}, true},
 		{"regular error", errors.New("something"), false},
 		{"timeout", &net.DNSError{IsTimeout: true}, true},
 		{"op error", &net.OpError{Op: "dial", Err: errors.New("refused")}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsRetryable(tt.err); got != tt.want {
+			if got := stealth.IsRetryable(tt.err); got != tt.want {
 				t.Errorf("IsRetryable() = %v, want %v", got, tt.want)
 			}
 		})
@@ -31,7 +33,7 @@ func TestIsRetryable(t *testing.T) {
 }
 
 func TestRetryDoSuccess(t *testing.T) {
-	rc := RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
+	rc := stealth.RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
 	calls := 0
 	got, err := RetryDo(context.Background(), rc, func() (string, error) {
 		calls++
@@ -49,12 +51,12 @@ func TestRetryDoSuccess(t *testing.T) {
 }
 
 func TestRetryDoRetryThenSuccess(t *testing.T) {
-	rc := RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
+	rc := stealth.RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
 	calls := 0
 	got, err := RetryDo(context.Background(), rc, func() (string, error) {
 		calls++
 		if calls < 3 {
-			return "", &HttpStatusError{StatusCode: 503}
+			return "", &stealth.HttpStatusError{StatusCode: 503}
 		}
 		return "ok", nil
 	})
@@ -70,11 +72,11 @@ func TestRetryDoRetryThenSuccess(t *testing.T) {
 }
 
 func TestRetryDoExhausted(t *testing.T) {
-	rc := RetryConfig{MaxRetries: 2, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
+	rc := stealth.RetryConfig{MaxRetries: 2, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
 	calls := 0
 	_, err := RetryDo(context.Background(), rc, func() (string, error) {
 		calls++
-		return "", &HttpStatusError{StatusCode: 502}
+		return "", &stealth.HttpStatusError{StatusCode: 502}
 	})
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
@@ -85,7 +87,7 @@ func TestRetryDoExhausted(t *testing.T) {
 }
 
 func TestRetryDoNonRetryable(t *testing.T) {
-	rc := RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
+	rc := stealth.RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
 	calls := 0
 	_, err := RetryDo(context.Background(), rc, func() (string, error) {
 		calls++
@@ -103,9 +105,9 @@ func TestRetryDoContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	rc := RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
+	rc := stealth.RetryConfig{MaxRetries: 3, InitialWait: time.Millisecond, MaxWait: 10 * time.Millisecond, Multiplier: 2}
 	_, err := RetryDo(ctx, rc, func() (string, error) {
-		return "", &HttpStatusError{StatusCode: 503}
+		return "", &stealth.HttpStatusError{StatusCode: 503}
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
