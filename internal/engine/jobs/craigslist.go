@@ -19,7 +19,7 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		searxQuery = query + " " + location + " " + craigslistSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "en", "", "google")
+	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "en", "", engine.DefaultSearchEngine)
 	if err != nil {
 		slog.Warn("craigslist: SearXNG error", slog.Any("error", err))
 	}

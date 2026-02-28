@@ -64,8 +64,8 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 				ch <- searchResult{r, err}
 			}()
 		}
-		addQuery(input.Query+" remote job", "google")
-		addQuery(input.Query+" remote job", "bing")
+		addQuery(input.Query+" remote job", engine.DefaultSearchEngine)
+		addQuery(input.Query+" remote job", engine.DefaultSearchEngine)
 
 		var rokRes, wwrRes, remRes apiResult
 		for i := 0; i < 3; i++ {

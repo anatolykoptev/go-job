@@ -50,7 +50,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 		searxQuery = query + " " + location + " " + greenhouseSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", "google")
+	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
 	if err != nil {
 		return nil, fmt.Errorf("greenhouse SearXNG: %w", err)
 	}
@@ -220,7 +220,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 		searxQuery = query + " " + location + " " + leverSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", "google")
+	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
 	if err != nil {
 		return nil, fmt.Errorf("lever SearXNG: %w", err)
 	}
