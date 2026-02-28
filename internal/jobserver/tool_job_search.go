@@ -22,13 +22,14 @@ const (
 	platATS        = "ats"
 	platStartup    = "startup"
 	platGoogle     = "google"
+	platCraigslist = "craigslist"
 )
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, and HN Who is Hiring. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, and Craigslist. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -81,6 +82,7 @@ func registerJobSearch(server *mcp.Server) {
 		useIndeed := platform == platAll || platform == platIndeed
 		useHabr := platform == platAll || platform == "habr"
 		useTwitter := platform == platAll || platform == "twitter"
+		useCraigslist := platform == platAll || platform == platCraigslist
 		useGoogle := platform == platAll || platform == platGoogle
 
 		type sourceResult struct {
@@ -114,6 +116,9 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useTwitter {
 			srcs = append(srcs, "twitter")
+		}
+		if useCraigslist {
+			srcs = append(srcs, platCraigslist)
 		}
 		if useGoogle {
 			srcs = append(srcs, platGoogle)
@@ -180,6 +185,13 @@ func registerJobSearch(server *mcp.Server) {
 					results, err := jobs.SearchTwitterJobs(ctx, input.Query, 30)
 					if err != nil {
 						slog.Warn("job_search: twitter error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platCraigslist:
+					results, err := jobs.SearchCraigslistJobs(ctx, input.Query, input.Location, 15)
+					if err != nil {
+						slog.Warn("job_search: craigslist error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
@@ -335,6 +347,8 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:workatastartup.com"
 	case "hn":
 		sitePart = "site:news.ycombinator.com \"who is hiring\""
+	case platCraigslist:
+		sitePart = "site:craigslist.org/d/jobs"
 	case platGoogle:
 		sitePart = "site:careers.google.com OR site:jobs.google.com"
 	default:

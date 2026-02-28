@@ -30,6 +30,7 @@ var metrics struct {
 	YCJobsRequests             atomic.Int64
 	IndeedRequests             atomic.Int64
 	HabrRequests               atomic.Int64
+	CraigslistRequests         atomic.Int64
 }
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
@@ -55,6 +56,7 @@ func GetMetrics() map[string]int64 {
 		"yc_jobs_requests":             metrics.YCJobsRequests.Load(),
 		"indeed_requests":              metrics.IndeedRequests.Load(),
 		"habr_requests":                metrics.HabrRequests.Load(),
+		"craigslist_requests":          metrics.CraigslistRequests.Load(),
 		"cache_hits":                  hits,
 		"cache_misses":                misses,
 	}
@@ -73,7 +75,7 @@ func FormatMetrics() string {
 		"gitingest_requests",
 		"youtube_search_requests", "youtube_transcript_requests",
 		"hn_jobs_requests", "greenhouse_requests", "lever_requests", "yc_jobs_requests",
-		"indeed_requests", "habr_requests",
+		"indeed_requests", "habr_requests", "craigslist_requests",
 		"cache_hits", "cache_misses",
 	}
 	for _, k := range keys {
@@ -96,6 +98,7 @@ func IncrRemoteOKRequests()  { metrics.RemoteOKRequests.Add(1) }
 func IncrWWRRequests()       { metrics.WWRRequests.Add(1) }
 func IncrIndeedRequests()    { metrics.IndeedRequests.Add(1) }
 func IncrHabrRequests()      { metrics.HabrRequests.Add(1) }
+func IncrCraigslistRequests() { metrics.CraigslistRequests.Add(1) }
 
 // Incrementors for sources/ sub-package.
 func IncrFreelancerAPIRequests()  { metrics.FreelancerAPIRequests.Add(1) }
