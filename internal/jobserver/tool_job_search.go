@@ -27,13 +27,14 @@ const (
 	platRemoteOK    = "remoteok"
 	platWWR         = "weworkremotely"
 	platFreelancer  = "freelancer"
+	platRemotive    = "remotive"
 )
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -89,6 +90,7 @@ func registerJobSearch(server *mcp.Server) {
 		useCraigslist := platform == platAll || platform == platCraigslist
 		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == "remote"
 		useWWR := platform == platAll || platform == platWWR || platform == "remote"
+		useRemotive := platform == platAll || platform == platRemotive || platform == "remote"
 		useFreelancer := platform == platAll || platform == platFreelancer
 		useGoogle := platform == platAll || platform == platGoogle
 
@@ -132,6 +134,9 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useWWR {
 			srcs = append(srcs, platWWR)
+		}
+		if useRemotive {
+			srcs = append(srcs, platRemotive)
 		}
 		if useFreelancer {
 			srcs = append(srcs, platFreelancer)
@@ -222,6 +227,13 @@ func registerJobSearch(server *mcp.Server) {
 					rjobs, err := jobs.SearchWeWorkRemotely(ctx, input.Query, 15)
 					if err != nil {
 						slog.Warn("job_search: weworkremotely error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
+
+				case platRemotive:
+					rjobs, err := jobs.SearchRemotive(ctx, input.Query, 15)
+					if err != nil {
+						slog.Warn("job_search: remotive error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
 
@@ -390,8 +402,10 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:remoteok.com"
 	case platWWR:
 		sitePart = "site:weworkremotely.com"
+	case platRemotive:
+		sitePart = "site:remotive.com"
 	case "remote":
-		sitePart = "site:remoteok.com OR site:weworkremotely.com"
+		sitePart = "site:remoteok.com OR site:weworkremotely.com OR site:remotive.com"
 	case platFreelancer:
 		sitePart = "site:freelancer.com/projects"
 	case platGoogle:
