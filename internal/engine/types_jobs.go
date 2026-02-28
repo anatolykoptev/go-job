@@ -9,10 +9,13 @@ type JobSearchInput struct {
 	JobType    string `json:"job_type,omitempty" jsonschema:"Job type: full-time, part-time, contract, temporary"`
 	Remote     string `json:"remote,omitempty" jsonschema:"Work type: onsite, hybrid, remote"`
 	TimeRange  string `json:"time_range,omitempty" jsonschema:"Time posted: day, week, month"`
-	Platform   string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, greenhouse, lever, ats (greenhouse+lever), yc (workatastartup.com), hn (HN Who is Hiring), indeed, habr (Хабр Карьера), twitter (X/Twitter job tweets), startup (yc+hn+ats), all (default)"`
+	Platform   string `json:"platform,omitempty" jsonschema:"Source filter: linkedin, greenhouse, lever, ats (greenhouse+lever), yc (workatastartup.com), hn (HN Who is Hiring), indeed, habr (Хабр Карьера), twitter (X/Twitter job tweets), google (Google Jobs), startup (yc+hn+ats), all (default)"`
 	Salary     string `json:"salary,omitempty" jsonschema:"Minimum salary filter for LinkedIn: 40k+, 60k+, 80k+, 100k+, 120k+, 140k+, 160k+, 180k+, 200k+"`
 	EasyApply  bool   `json:"easy_apply,omitempty" jsonschema:"LinkedIn only: filter to Easy Apply jobs (one-click apply)"`
 	Language   string `json:"language,omitempty" jsonschema:"Language code for the answer (default: all)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"Max results to return (default 15, max 50)"`
+	Offset   int    `json:"offset,omitempty" jsonschema:"Skip first N results for pagination (default 0)"`
+	Blacklist string `json:"blacklist,omitempty" jsonschema:"Comma-separated company names or keywords to exclude from results (e.g. Google, Meta, staffing)"`
 }
 
 // JobListing is a structured representation of a job listing.

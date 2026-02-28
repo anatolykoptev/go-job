@@ -21,6 +21,7 @@ const (
 	platIndeed     = "indeed"
 	platATS        = "ats"
 	platStartup    = "startup"
+	platGoogle     = "google"
 )
 
 //nolint:funlen // multi-platform aggregation
@@ -34,9 +35,27 @@ func registerJobSearch(server *mcp.Server) {
 			return nil, engine.JobSearchOutput{}, errors.New("query is required")
 		}
 
-		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform)
+		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform, fmt.Sprintf("limit_%d_offset_%d", input.Limit, input.Offset))
 		if out, ok := engine.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
 			return nil, out, nil
+		}
+
+		// Apply user profile defaults.
+		profile := jobs.LoadProfile()
+		if input.Platform == "" && profile.DefaultPlatform != "" {
+			input.Platform = profile.DefaultPlatform
+		}
+		if input.Limit <= 0 && profile.DefaultLimit > 0 {
+			input.Limit = profile.DefaultLimit
+		}
+		if input.Location == "" && profile.DefaultLocation != "" {
+			input.Location = profile.DefaultLocation
+		}
+		if input.Remote == "" && profile.DefaultRemote != "" {
+			input.Remote = profile.DefaultRemote
+		}
+		if input.Blacklist == "" && profile.Blacklist != "" {
+			input.Blacklist = profile.Blacklist
 		}
 
 		lang := engine.NormLang(input.Language)
@@ -44,6 +63,14 @@ func registerJobSearch(server *mcp.Server) {
 		platform := strings.ToLower(strings.TrimSpace(input.Platform))
 		if platform == "" {
 			platform = platAll
+		}
+
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 15
+		}
+		if limit > 50 {
+			limit = 50
 		}
 
 		useLinkedIn := platform == platAll || platform == platLinkedIn
@@ -54,6 +81,7 @@ func registerJobSearch(server *mcp.Server) {
 		useIndeed := platform == platAll || platform == platIndeed
 		useHabr := platform == platAll || platform == "habr"
 		useTwitter := platform == platAll || platform == "twitter"
+		useGoogle := platform == platAll || platform == platGoogle
 
 		type sourceResult struct {
 			name    string
@@ -86,6 +114,9 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useTwitter {
 			srcs = append(srcs, "twitter")
+		}
+		if useGoogle {
+			srcs = append(srcs, platGoogle)
 		}
 
 		ch := make(chan sourceResult, len(srcs)+1)
@@ -151,6 +182,14 @@ func registerJobSearch(server *mcp.Server) {
 						slog.Warn("job_search: twitter error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platGoogle:
+					searxQuery := input.Query + " " + input.Location + " site:careers.google.com OR site:jobs.google.com"
+					results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, "google")
+					if err != nil {
+						slog.Warn("job_search: google error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
 				}
 			}(src)
 		}
@@ -201,9 +240,19 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		deduped = canonDeduped
 
-		top := engine.DedupByDomain(deduped, 15)
-		if len(top) > 15 {
-			top = top[:15]
+		// Apply blacklist filter.
+		deduped = applyBlacklist(deduped, input.Blacklist)
+
+		// Apply pagination offset.
+		if input.Offset > 0 && input.Offset < len(deduped) {
+			deduped = deduped[input.Offset:]
+		} else if input.Offset >= len(deduped) {
+			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total)."}, nil
+		}
+
+		top := engine.DedupByDomain(deduped, limit)
+		if len(top) > limit {
+			top = top[:limit]
 		}
 
 		contents := make(map[string]string)
@@ -286,6 +335,8 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:workatastartup.com"
 	case "hn":
 		sitePart = "site:news.ycombinator.com \"who is hiring\""
+	case platGoogle:
+		sitePart = "site:careers.google.com OR site:jobs.google.com"
 	default:
 		sitePart = "jobs"
 	}
@@ -293,4 +344,35 @@ func buildJobSearxQuery(query, location, platform string) string {
 		return query + " " + location + " " + sitePart
 	}
 	return query + " " + sitePart
+}
+
+func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.SearxngResult {
+	if blacklist == "" {
+		return results
+	}
+	var terms []string
+	for _, t := range strings.Split(blacklist, ",") {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t != "" {
+			terms = append(terms, t)
+		}
+	}
+	if len(terms) == 0 {
+		return results
+	}
+	var filtered []engine.SearxngResult
+	for _, r := range results {
+		lower := strings.ToLower(r.Title + " " + r.Content)
+		blocked := false
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
