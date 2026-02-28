@@ -8,7 +8,6 @@ require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anatolykoptev/go-stealth v1.0.0
 	github.com/anatolykoptev/go-twitter v0.1.2
-	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/modelcontextprotocol/go-sdk v1.3.1
 	github.com/redis/go-redis/v9 v9.18.0
