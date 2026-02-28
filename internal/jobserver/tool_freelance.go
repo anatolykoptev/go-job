@@ -62,12 +62,12 @@ func registerFreelanceSearch(server *mcp.Server) {
 		}
 
 		if useUpwork {
-			addQuery(input.Query+" site:upwork.com/freelance-jobs/apply", "google")
-			addQuery(input.Query+" site:upwork.com/freelance-jobs/apply", "bing")
+			addQuery(input.Query+" site:upwork.com/freelance-jobs/apply", engine.DefaultSearchEngine)
+			addQuery(input.Query+" site:upwork.com/freelance-jobs/apply", engine.DefaultSearchEngine)
 		}
 		if useFreelancer && !freelancerAPISuccess {
-			addQuery(input.Query+" site:freelancer.com/projects", "google")
-			addQuery(input.Query+" site:freelancer.com/projects", "bing")
+			addQuery(input.Query+" site:freelancer.com/projects", engine.DefaultSearchEngine)
+			addQuery(input.Query+" site:freelancer.com/projects", engine.DefaultSearchEngine)
 		}
 
 		var merged []engine.SearxngResult

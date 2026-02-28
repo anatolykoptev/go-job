@@ -246,7 +246,7 @@ func registerJobSearch(server *mcp.Server) {
 
 				case platGoogle:
 					searxQuery := input.Query + " " + input.Location + " site:careers.google.com OR site:jobs.google.com"
-					results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, "google")
+					results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
 					if err != nil {
 						slog.Warn("job_search: google error", slog.Any("error", err))
 					}
@@ -257,7 +257,7 @@ func registerJobSearch(server *mcp.Server) {
 
 		go func() {
 			searxQuery := buildJobSearxQuery(input.Query, input.Location, platform)
-			results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, "google")
+			results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
 			if err != nil {
 				slog.Warn("job_search: searxng error", slog.Any("error", err))
 			}

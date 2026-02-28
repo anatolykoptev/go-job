@@ -311,11 +311,11 @@ func searchIndeedViaSearxng(ctx context.Context, query, location string, limit i
 	bCh := make(chan searchRes, 1)
 
 	go func() {
-		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", "google")
+		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
 		gCh <- searchRes{r, err}
 	}()
 	go func() {
-		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", "bing")
+		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
 		bCh <- searchRes{r, err}
 	}()
 

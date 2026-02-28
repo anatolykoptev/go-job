@@ -26,7 +26,7 @@ func SearchYCJobs(ctx context.Context, query, location string, limit int) ([]eng
 		searxQuery = query + " " + location + " " + ycSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", "google")
+	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
 	if err != nil {
 		slog.Warn("yc: SearXNG error", slog.Any("error", err))
 	}

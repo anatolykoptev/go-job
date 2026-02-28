@@ -169,7 +169,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, subject+" site:linkedin.com/in", "all", "", "google")
+		results, err := engine.SearchSearXNG(ctx, subject+" site:linkedin.com/in", "all", "", engine.DefaultSearchEngine)
 		if err != nil {
 			ch <- sourceData{name: "linkedin"}
 			return
@@ -190,7 +190,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, subject+" site:github.com", "all", "", "google")
+		results, err := engine.SearchSearXNG(ctx, subject+" site:github.com", "all", "", engine.DefaultSearchEngine)
 		if err != nil {
 			ch <- sourceData{name: "github"}
 			return
@@ -215,7 +215,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		if company != "" {
 			query = name + " " + company
 		}
-		results, err := engine.SearchSearXNG(ctx, query, "all", "", "google")
+		results, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
 		if err != nil {
 			ch <- sourceData{name: "web"}
 			return
@@ -234,7 +234,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, name+" site:habr.com", "ru", "", "google")
+		results, err := engine.SearchSearXNG(ctx, name+" site:habr.com", "ru", "", engine.DefaultSearchEngine)
 		if err != nil {
 			ch <- sourceData{name: "habr"}
 			return
@@ -254,7 +254,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	go func() {
 		defer wg.Done()
 		// First find their Twitter handle via web search
-		twResults, _ := engine.SearchSearXNG(ctx, subject+" twitter OR x.com", "all", "", "google")
+		twResults, _ := engine.SearchSearXNG(ctx, subject+" twitter OR x.com", "all", "", engine.DefaultSearchEngine)
 		var handle string
 		for _, r := range twResults {
 			if h := extractTwitterHandle(r.URL); h != "" {

@@ -9,6 +9,9 @@ import (
 	"sync"
 )
 
+// DefaultSearchEngine is the SearXNG engine used for site: queries.
+const DefaultSearchEngine = "bing"
+
 // SearchSearXNG queries the SearXNG instance and returns raw results.
 func SearchSearXNG(ctx context.Context, query, language, timeRange, engines string) ([]SearxngResult, error) {
 	u, err := url.Parse(cfg.SearxngURL + "/search")

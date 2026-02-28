@@ -60,7 +60,7 @@ func ResearchSalary(ctx context.Context, role, location, experience string) (*Sa
 	ch := make(chan searchRes, len(queries))
 	for _, q := range queries {
 		go func(query string) {
-			r, err := engine.SearchSearXNG(ctx, query, "all", "", "google")
+			r, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
 			ch <- searchRes{r, err}
 		}(q)
 	}
@@ -197,7 +197,7 @@ func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchR
 	ch := make(chan searchRes, len(queries))
 	for _, q := range queries {
 		go func(query string) {
-			r, err := engine.SearchSearXNG(ctx, query, "all", "", "google")
+			r, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
 			ch <- searchRes{r, err}
 		}(q)
 	}
