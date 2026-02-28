@@ -28,12 +28,16 @@ func FormatOutput(out SmartSearchOutput, opts OutputOpts) SmartSearchOutput {
 	return out
 }
 
-// fetchContentsParallel fetches text content from URLs in parallel.
-func fetchContentsParallel(ctx context.Context, results []SearxngResult) map[string]string {
-	contents := make(map[string]string)
+// FetchContentsParallel fetches text content from URLs in parallel.
+// URLs present in skipURLs are skipped. Pass nil to fetch all.
+func FetchContentsParallel(ctx context.Context, results []SearxngResult, skipURLs map[string]bool) map[string]string {
+	contents := make(map[string]string, len(results))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, r := range results {
+		if skipURLs[r.URL] {
+			continue
+		}
 		wg.Add(1)
 		go func(u string) {
 			defer wg.Done()

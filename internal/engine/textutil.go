@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// NormLang normalises a language field: empty string → "all".
+func NormLang(lang string) string {
+	if lang == "" {
+		return "all"
+	}
+	return lang
+}
+
 // User-Agent strings used across HTTP clients.
 const (
 	UserAgentBot    = "GoSearch/1.0"

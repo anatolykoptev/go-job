@@ -74,8 +74,6 @@ go_job/
 │   │       └── freelancer.go        # Freelancer.com REST API
 │   ├── jobserver/
 │   │   └── register.go              # MCP tool registrations (11 tools)
-│   └── toolutil/
-│       └── toolutil.go              # Shared helpers: cache, fetch, lang
 ├── docs/
 │   ├── README.md                    # Index + architecture
 │   ├── compare.md                   # Comparison with competitors

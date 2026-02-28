@@ -9,7 +9,6 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
-	"github.com/anatolykoptev/go_job/internal/toolutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -28,7 +27,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 			return nil, cached, nil
 		}
 
-		lang := toolutil.NormLang(input.Language)
+		lang := engine.NormLang(input.Language)
 
 		type apiResult struct {
 			jobList []engine.RemoteJobListing
@@ -156,7 +155,7 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 			deduped = deduped[:15]
 		}
 
-		contents := toolutil.FetchURLsParallel(ctx, deduped, apiURLs)
+		contents := engine.FetchContentsParallel(ctx, deduped, apiURLs)
 
 		remoteOut, err := jobs.SummarizeRemoteWorkResults(ctx, input.Query, engine.RemoteWorkInstruction, 4000, deduped, contents)
 		if err != nil {

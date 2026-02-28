@@ -9,7 +9,6 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
-	"github.com/anatolykoptev/go_job/internal/toolutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,7 +43,7 @@ func registerTwitterJobSearch(server *mcp.Server) {
 		}
 
 		cacheKey := engine.CacheKey("twitter_job_search", input.Query, strconv.Itoa(limit))
-		if out, ok := toolutil.CacheLoadJSON[TwitterJobSearchOutput](ctx, cacheKey); ok {
+		if out, ok := engine.CacheLoadJSON[TwitterJobSearchOutput](ctx, cacheKey); ok {
 			return nil, out, nil
 		}
 
@@ -60,7 +59,7 @@ func registerTwitterJobSearch(server *mcp.Server) {
 			Tweets: tweets,
 		}
 
-		toolutil.CacheStoreJSON(ctx, cacheKey, input.Query, out)
+		engine.CacheStoreJSON(ctx, cacheKey, input.Query, out)
 		return nil, out, nil
 	})
 }
