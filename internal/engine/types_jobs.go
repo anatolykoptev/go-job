@@ -205,6 +205,25 @@ type ResumeMemoryUpdateInput struct {
 	Content  string `json:"content" jsonschema:"New content to replace the existing memory"`
 }
 
+// ProjectShowcaseInput is the input for project_showcase.
+type ProjectShowcaseInput struct {
+	Projects   string `json:"projects" jsonschema:"Project descriptions, GitHub URLs, or resume section with projects"`
+	TargetRole string `json:"target_role,omitempty" jsonschema:"Target role to tailor narratives for (e.g. backend engineer)"`
+}
+
+// PitchGenerateInput is the input for pitch_generate.
+type PitchGenerateInput struct {
+	Resume     string `json:"resume" jsonschema:"Your resume text"`
+	TargetRole string `json:"target_role" jsonschema:"Target role or position title"`
+	Company    string `json:"company,omitempty" jsonschema:"Company name (enriches with company research for why-this-company answer)"`
+}
+
+// SkillGapInput is the input for skill_gap.
+type SkillGapInput struct {
+	Resume         string `json:"resume" jsonschema:"Your resume text"`
+	JobDescription string `json:"job_description" jsonschema:"Target job description to analyze gaps against"`
+}
+
 // ResumeEnrichInput is the input for resume_enrich.
 type ResumeEnrichInput struct {
 	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`

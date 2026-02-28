@@ -89,30 +89,12 @@ func PrepareInterview(ctx context.Context, resume, jobDescription, company, focu
 
 	// Optional company enrichment
 	var companyContext string
-	if company != "" { //nolint:nestif // company research enrichment
+	if company != "" {
 		res, err := ResearchCompany(ctx, company)
 		if err != nil {
 			slog.Warn("interview_prep: company research failed, proceeding without", slog.Any("error", err))
 		} else {
-			var parts []string
-			if len(res.TechStack) > 0 {
-				parts = append(parts, "Tech stack: "+strings.Join(res.TechStack, ", "))
-			}
-			if res.CultureNotes != "" {
-				parts = append(parts, "Culture: "+res.CultureNotes)
-			}
-			if len(res.RecentNews) > 0 {
-				parts = append(parts, "Recent news: "+strings.Join(res.RecentNews, "; "))
-			}
-			if res.Size != "" {
-				parts = append(parts, "Size: "+res.Size)
-			}
-			if res.Industry != "" {
-				parts = append(parts, "Industry: "+res.Industry)
-			}
-			if len(parts) > 0 {
-				companyContext = fmt.Sprintf("\nCOMPANY CONTEXT (%s):\n%s\n", company, strings.Join(parts, "\n"))
-			}
+			companyContext = BuildCompanyContext(company, res)
 		}
 	}
 

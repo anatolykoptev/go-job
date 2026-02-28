@@ -240,3 +240,31 @@ func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchR
 	}
 	return &result, nil
 }
+
+// BuildCompanyContext formats CompanyResearchResult into a prompt-ready context block.
+// Returns empty string if res is nil or has no useful data.
+func BuildCompanyContext(company string, res *CompanyResearchResult) string {
+	if res == nil {
+		return ""
+	}
+	var parts []string
+	if len(res.TechStack) > 0 {
+		parts = append(parts, "Tech stack: "+strings.Join(res.TechStack, ", "))
+	}
+	if res.CultureNotes != "" {
+		parts = append(parts, "Culture: "+res.CultureNotes)
+	}
+	if len(res.RecentNews) > 0 {
+		parts = append(parts, "Recent news: "+strings.Join(res.RecentNews, "; "))
+	}
+	if res.Size != "" {
+		parts = append(parts, "Size: "+res.Size)
+	}
+	if res.Industry != "" {
+		parts = append(parts, "Industry: "+res.Industry)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\nCOMPANY CONTEXT (%s):\n%s\n", company, strings.Join(parts, "\n"))
+}
