@@ -10,7 +10,6 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/sources"
-	"github.com/anatolykoptev/go_job/internal/toolutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -25,12 +24,12 @@ func registerFreelanceSearch(server *mcp.Server) {
 		}
 
 		cacheKey := engine.CacheKey("freelance_search", input.Query, input.Platform, input.Language)
-		if out, ok := toolutil.CacheLoadJSON[engine.FreelanceSearchOutput](ctx, cacheKey); ok {
+		if out, ok := engine.CacheLoadJSON[engine.FreelanceSearchOutput](ctx, cacheKey); ok {
 			return nil, out, nil
 		}
 
 		platform := strings.ToLower(input.Platform)
-		lang := toolutil.NormLang(input.Language)
+		lang := engine.NormLang(input.Language)
 
 		useUpwork := platform == "" || platform == "all" || platform == "upwork"
 		useFreelancer := platform == "" || platform == "all" || platform == "freelancer"
@@ -131,7 +130,7 @@ func registerFreelanceSearch(server *mcp.Server) {
 			top = top[:10]
 		}
 
-		contents := toolutil.FetchURLsParallel(ctx, top, apiURLs)
+		contents := engine.FetchContentsParallel(ctx, top, apiURLs)
 
 		freelanceOut, err := engine.SummarizeFreelanceResults(ctx, input.Query, engine.FreelanceSearchInstruction, 4000, top, contents)
 		if err != nil {
@@ -155,7 +154,7 @@ func registerFreelanceSearch(server *mcp.Server) {
 			}
 		}
 
-		toolutil.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
+		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
 		return nil, *freelanceOut, nil
 	})
 }

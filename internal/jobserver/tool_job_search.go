@@ -10,7 +10,6 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
-	"github.com/anatolykoptev/go_job/internal/toolutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -36,11 +35,11 @@ func registerJobSearch(server *mcp.Server) {
 		}
 
 		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform)
-		if out, ok := toolutil.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
+		if out, ok := engine.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
 			return nil, out, nil
 		}
 
-		lang := toolutil.NormLang(input.Language)
+		lang := engine.NormLang(input.Language)
 
 		platform := strings.ToLower(strings.TrimSpace(input.Platform))
 		if platform == "" {
@@ -269,7 +268,7 @@ func registerJobSearch(server *mcp.Server) {
 			}
 		}
 
-		toolutil.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
 		return nil, *jobOut, nil
 	})
 }

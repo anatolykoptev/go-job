@@ -169,7 +169,7 @@ collectLoop:
 // all other URLs use go-readability extraction.
 func fetchContentsWithRewriter(ctx context.Context, results []SearxngResult, rewriter func(string) string) map[string]string {
 	if rewriter == nil {
-		return fetchContentsParallel(ctx, results)
+		return FetchContentsParallel(ctx, results, nil)
 	}
 
 	contents := make(map[string]string)

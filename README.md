@@ -54,8 +54,6 @@ go_job/
 │   │       └── tracker.go     # Job application tracker (SQLite)
 │   ├── jobserver/
 │   │   └── register.go        # Tool registrations (all 4 MCP tools)
-│   └── toolutil/
-│       └── toolutil.go        # Cache helpers, FetchURLsParallel, NormLang
 └── deploy/
     └── go_job.service         # systemd unit (port 8891)
 ```

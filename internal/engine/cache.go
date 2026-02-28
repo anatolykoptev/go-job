@@ -265,6 +265,34 @@ func CacheSetJobDetails(ctx context.Context, jobURL, details string) {
 	}
 }
 
+// CacheLoadJSON tries to load a cached value of type T from the engine cache.
+// Returns the decoded value and true on hit; zero value and false on miss or decode error.
+func CacheLoadJSON[T any](ctx context.Context, key string) (T, bool) {
+	cached, ok := CacheGet(ctx, key)
+	if !ok {
+		var zero T
+		return zero, false
+	}
+	var out T
+	if err := json.Unmarshal([]byte(cached.Answer), &out); err != nil {
+		var zero T
+		return zero, false
+	}
+	return out, true
+}
+
+// CacheStoreJSON marshals v and stores it in the engine cache.
+func CacheStoreJSON[T any](ctx context.Context, key, query string, v T) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	CacheSet(ctx, key, SmartSearchOutput{
+		Query:  query,
+		Answer: string(data),
+	})
+}
+
 // cleanupLoop periodically removes expired L1 entries.
 func (c *tieredCache) cleanupLoop() {
 	interval := c.cleanupInterval
