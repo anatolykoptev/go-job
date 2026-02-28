@@ -397,7 +397,7 @@ func buildJobSearxQuery(query, location, platform string) string {
 	case "hn":
 		sitePart = "site:news.ycombinator.com \"who is hiring\""
 	case platCraigslist:
-		sitePart = "site:craigslist.org/d/jobs"
+		sitePart = "site:craigslist.org"
 	case platRemoteOK:
 		sitePart = "site:remoteok.com"
 	case platWWR:
