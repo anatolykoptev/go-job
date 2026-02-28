@@ -27,7 +27,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var mcpPort = env("MCP_PORT", "8891")
+var (
+	version = "dev"
+	mcpPort = env("MCP_PORT", "8891")
+)
 
 func main() {
 	stdio := isStdio()
@@ -48,7 +51,7 @@ func main() {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "go_job",
-		Version: "1.0.0",
+		Version: version,
 	}, nil)
 
 	jobserver.RegisterTools(server)
@@ -74,7 +77,7 @@ func main() {
 	mux.Handle("/mcp/", handler)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","service":"go_job","version":"1.0.0"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","service":"go_job","version":"` + version + `"}`))
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
