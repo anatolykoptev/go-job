@@ -8,6 +8,8 @@ github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/anatolykoptev/go-stealth v1.0.0 h1:uL2OdHSPZwKT7JBbKqvSpv24eaufoO8b5qajVP4lfD4=
 github.com/anatolykoptev/go-stealth v1.0.0/go.mod h1:Qnr6G2O57rcyF6rHtcSjnju/4BcG7+7mdlGjOxtQVSs=
+github.com/anatolykoptev/go-stealth v1.0.1 h1:fj60AzunlSmA3kvvhNvLMC9SXIOyVM3fu5sK7rvRLU0=
+github.com/anatolykoptev/go-stealth v1.0.1/go.mod h1:Qnr6G2O57rcyF6rHtcSjnju/4BcG7+7mdlGjOxtQVSs=
 github.com/anatolykoptev/go-twitter v0.1.2 h1:ThhiAC7ZMLb2woOw6N3OuOb/C0Nd7nqmmZfXPe38sJ8=
 github.com/anatolykoptev/go-twitter v0.1.2/go.mod h1:Pq5K0KgW7fvhp0viNsP24C+SwcRs1Z4izMrsmKcbBJA=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=

@@ -137,19 +137,35 @@ func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLRespon
 		return nil, fmt.Errorf("indeed: marshal request: %w", err)
 	}
 
+	headers := map[string]string{
+		"content-type":    "application/json",
+		"indeed-api-key":  apiKey,
+		"user-agent":      indeedIOSUserAgent,
+		"indeed-app-info": indeedAppInfo,
+		"indeed-locale":   "en-US",
+		"indeed-co":       "us",
+		"Host":            "apis.indeed.com",
+	}
+
 	respBytes, err := engine.RetryDo(ctx, engine.DefaultRetryConfig, func() ([]byte, error) {
+		if engine.Cfg.BrowserClient != nil {
+			data, _, status, e := engine.Cfg.BrowserClient.Do("POST", indeedGraphQLEndpoint, headers, bytes.NewReader(bodyBytes))
+			if e != nil {
+				return nil, e
+			}
+			if status != http.StatusOK {
+				return nil, fmt.Errorf("indeed graphql status %d", status)
+			}
+			return data, nil
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, indeedGraphQLEndpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("content-type", "application/json")
-		req.Header.Set("indeed-api-key", apiKey)
-		req.Header.Set("user-agent", indeedIOSUserAgent)
-		req.Header.Set("indeed-app-info", indeedAppInfo)
-		req.Header.Set("indeed-locale", "en-US")
-		req.Header.Set("indeed-co", "us")
-		req.Header.Set("Host", "apis.indeed.com")
-
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
 		resp, err := engine.Cfg.HTTPClient.Do(req)
 		if err != nil {
 			return nil, err

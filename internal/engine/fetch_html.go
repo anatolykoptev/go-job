@@ -24,13 +24,7 @@ func FetchURLContent(ctx context.Context, rawURL string) (title, content string,
 	ctx, cancel := context.WithTimeout(ctx, cfg.FetchTimeout)
 	defer cancel()
 
-	resp, err := fetchWithRetry(ctx, rawURL, true)
-	if err != nil {
-		return fetchWithFallback(ctx, rawURL)
-	}
-	defer resp.Body.Close()
-
-	body, err := readResponseBody(resp)
+	body, err := fetchBody(ctx, rawURL)
 	if err != nil {
 		return fetchWithFallback(ctx, rawURL)
 	}
@@ -116,13 +110,7 @@ func fetchWithFallback(ctx context.Context, rawURL string) (title, content strin
 	ctx, cancel := context.WithTimeout(ctx, cfg.FetchTimeout)
 	defer cancel()
 
-	resp, err := fetchWithRetry(ctx, rawURL, true)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := readResponseBody(resp)
+	body, err := fetchBody(ctx, rawURL)
 	if err != nil {
 		return "", "", err
 	}

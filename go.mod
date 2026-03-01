@@ -6,7 +6,7 @@ require (
 	codeberg.org/readeck/go-readability/v2 v2.1.1
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
-	github.com/anatolykoptev/go-stealth v1.0.0
+	github.com/anatolykoptev/go-stealth v1.0.1
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/modelcontextprotocol/go-sdk v1.3.1
