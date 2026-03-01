@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 	"regexp"
@@ -8,10 +9,11 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/PuerkitoBio/goquery"
-	readability "codeberg.org/readeck/go-readability/v2"
+	trafilatura "github.com/markusmobius/go-trafilatura"
+	"golang.org/x/net/html"
 )
 
-// FetchURLContent extracts main text content from a URL using go-readability.
+// FetchURLContent extracts main text content from a URL using go-trafilatura.
 // Falls back to goquery, then regex-based extraction on failure.
 func FetchURLContent(ctx context.Context, rawURL string) (title, content string, err error) {
 	metrics.FetchRequests.Add(1)
@@ -30,25 +32,31 @@ func FetchURLContent(ctx context.Context, rawURL string) (title, content string,
 	}
 
 	parsedURL, _ := url.Parse(rawURL)
-	article, err := readability.FromReader(strings.NewReader(string(body)), parsedURL)
+	result, err := trafilatura.Extract(bytes.NewReader(body), trafilatura.Options{
+		OriginalURL:     parsedURL,
+		EnableFallback:  true,
+		Focus:           trafilatura.FavorRecall,
+		ExcludeComments: true,
+	})
 	if err != nil {
 		return fetchWithGoquery(ctx, rawURL, body)
 	}
 
-	var htmlBuf strings.Builder
-	_ = article.RenderHTML(&htmlBuf)
-
-	md, err := htmltomarkdown.ConvertString(htmlBuf.String())
-	if err != nil {
-		var textBuf strings.Builder
-		_ = article.RenderText(&textBuf)
-		md = textBuf.String()
+	text := result.ContentText
+	if result.ContentNode != nil {
+		var htmlBuf bytes.Buffer
+		if renderErr := html.Render(&htmlBuf, result.ContentNode); renderErr == nil {
+			if md, mdErr := htmltomarkdown.ConvertString(htmlBuf.String()); mdErr == nil && strings.TrimSpace(md) != "" {
+				text = md
+			}
+		}
 	}
-	text := strings.TrimSpace(md)
+
+	text = strings.TrimSpace(text)
 	if len(text) > cfg.MaxContentChars {
 		text = text[:cfg.MaxContentChars] + "..."
 	}
-	return article.Title(), text, nil
+	return result.Metadata.Title, text, nil
 }
 
 // fetchWithGoquery uses goquery for structured HTML parsing when readability fails.
