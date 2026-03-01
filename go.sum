@@ -6,6 +6,10 @@ github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31zw7fnfJ/G1ebisIesCDl44slkIVFqk3YTSadd8=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
+github.com/anatolykoptev/go-kit v0.3.0 h1:OtX+G44NNOer2ZMDVvwovPkRkpyZrHygG6CEGIuV6J8=
+github.com/anatolykoptev/go-kit v0.3.0/go.mod h1:pzYG0D0N8nhMTvTcuiXopM36mhc0OjwVXc3wa8LRdKQ=
+github.com/anatolykoptev/go-mcpserver v0.1.0 h1:km9CXoIL0V4IeEfW7sBa0cVRpG8DKEs5d7IEB1qBfh0=
+github.com/anatolykoptev/go-mcpserver v0.1.0/go.mod h1:QqV2Oz8Bu1HRxTMm6rRVOaHul4YtP7SlIKS8UnqxXB0=
 github.com/anatolykoptev/go-stealth v1.0.1 h1:fj60AzunlSmA3kvvhNvLMC9SXIOyVM3fu5sK7rvRLU0=
 github.com/anatolykoptev/go-stealth v1.0.1/go.mod h1:Qnr6G2O57rcyF6rHtcSjnju/4BcG7+7mdlGjOxtQVSs=
 github.com/anatolykoptev/go-twitter v0.1.2 h1:ThhiAC7ZMLb2woOw6N3OuOb/C0Nd7nqmmZfXPe38sJ8=

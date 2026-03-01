@@ -34,7 +34,7 @@ func SearchDDGDirect(ctx context.Context, bc *BrowserClient, query, region strin
 		region = "wt-wt"
 	}
 
-	metrics.DirectDDGRequests.Add(1)
+	reg.Incr(MetricDirectDDGRequests)
 
 	// Primary: HTML lite endpoint (more reliable, no VQD needed)
 	results, err := ddgSearchHTML(ctx, bc, query, region)

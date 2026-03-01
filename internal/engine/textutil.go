@@ -3,6 +3,8 @@ package engine
 import (
 	"regexp"
 	"strings"
+
+	"github.com/anatolykoptev/go-kit/strutil"
 )
 
 // NormLang normalises a language field: empty string → "all".
@@ -37,11 +39,7 @@ func Truncate(s string, n int) string {
 // TruncateRunes caps s at limit runes, appending suffix if truncated.
 // Pass suffix="" for no suffix. Safe for UTF-8 (Cyrillic, CJK, emoji).
 func TruncateRunes(s string, limit int, suffix string) string {
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[:limit]) + suffix
+	return strutil.TruncateWith(s, limit, suffix)
 }
 
 // CanonicalJobKey returns a normalized dedup key for cross-source job deduplication.
@@ -73,14 +71,5 @@ func CanonicalJobKey(title, location string) string {
 
 // TruncateAtWord truncates a string to maxLen runes at a word boundary.
 func TruncateAtWord(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	truncated := string(runes[:maxLen])
-	cut := strings.LastIndex(truncated, " ")
-	if cut < len(truncated)/2 {
-		return truncated + "..."
-	}
-	return truncated[:cut] + "..."
+	return strutil.TruncateAtWord(s, maxLen)
 }

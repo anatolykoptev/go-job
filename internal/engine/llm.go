@@ -1,43 +1,18 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go-kit/llm"
 )
 
 // currentDate returns today's date in ISO 8601 format (UTC).
 func currentDate() string {
 	return time.Now().UTC().Format("2006-01-02")
-}
-
-// LLM client with its own timeout (longer than fetch/search).
-var llmClient = &http.Client{Timeout: 60 * time.Second}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
 }
 
 type LLMStructuredOutput struct {
@@ -57,105 +32,64 @@ type llmFreelanceOutput struct {
 	Summary  string             `json:"summary"`
 }
 
-// callLLMParams sends a prompt to the LLM API with explicit temperature and max_tokens.
-// On any error, iterates through LLMAPIKeyFallbacks in order until one succeeds.
-func callLLMParams(ctx context.Context, prompt string, temperature float64, maxTokens int) (string, error) {
-	raw, err := callLLMWithKey(ctx, prompt, temperature, maxTokens, cfg.LLMAPIKey)
-	if err != nil {
-		for _, key := range cfg.LLMAPIKeyFallbacks {
-			if key == "" {
-				continue
-			}
-			raw, err = callLLMWithKey(ctx, prompt, temperature, maxTokens, key)
-			if err == nil {
-				break
-			}
-		}
-	}
-	return raw, err
-}
-
-// callLLMWithKey performs a single LLM API call with the given key.
-func callLLMWithKey(ctx context.Context, prompt string, temperature float64, maxTokens int, apiKey string) (string, error) {
-	metrics.LLMCalls.Add(1)
-
-	body, _ := json.Marshal(chatRequest{
-		Model:       cfg.LLMModel,
-		Messages:    []chatMessage{{Role: "user", Content: prompt}},
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-	})
-
-	apiURL := strings.TrimSuffix(cfg.LLMAPIBase, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
-	if err != nil {
-		metrics.LLMErrors.Add(1)
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := RetryHTTP(ctx, DefaultRetryConfig, func() (*http.Response, error) {
-		return llmClient.Do(req)
-	})
-	if err != nil {
-		metrics.LLMErrors.Add(1)
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		metrics.LLMErrors.Add(1)
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM API %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var chatResp chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", err
-	}
-	if len(chatResp.Choices) == 0 {
-		return "", errors.New("no choices in LLM response")
-	}
-
-	raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	return strings.TrimSpace(raw), nil
+// stripFences removes markdown code fences from LLM output.
+func stripFences(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
 }
 
 // CallLLM sends a prompt using the configured temperature and max_tokens.
 func CallLLM(ctx context.Context, prompt string) (string, error) {
-	return callLLMParams(ctx, prompt, cfg.LLMTemperature, cfg.LLMMaxTokens)
+	reg.Incr(MetricLLMCalls)
+	resp, err := cfg.LLMClient.Complete(ctx, "", prompt)
+	if err != nil {
+		reg.Incr(MetricLLMErrors)
+		return "", err
+	}
+	return stripFences(resp), nil
+}
+
+// CallLLMRaw sends a prompt to the LLM API and returns the raw response text.
+// Public wrapper for tool handlers that build their own prompts.
+func CallLLMRaw(ctx context.Context, prompt string) (string, error) {
+	return CallLLM(ctx, prompt)
 }
 
 // RewriteQuery uses the LLM to convert a conversational query into a search-optimized form.
-// Returns the rewritten query, or the original query if rewriting fails (non-blocking).
-// Example: "как задеплоить go в k8s?" → "golang Kubernetes deployment production best practices"
 func RewriteQuery(ctx context.Context, query string) string {
 	prompt := fmt.Sprintf(rewriteQueryPrompt, query)
-	raw, err := callLLMParams(ctx, prompt, 0.3, 100)
-	if err != nil || strings.TrimSpace(raw) == "" {
+	reg.Incr(MetricLLMCalls)
+	raw, err := cfg.LLMClient.Complete(ctx, "", prompt,
+		llm.WithChatTemperature(0.3),
+		llm.WithChatMaxTokens(100),
+	)
+	if err != nil {
+		reg.Incr(MetricLLMErrors)
 		return query
 	}
-	rewritten := strings.TrimSpace(raw)
-	// Sanity check: reject if LLM returned something suspiciously long or multi-line
-	if len(rewritten) > 200 || strings.Contains(rewritten, "\n") {
+	rewritten := strings.TrimSpace(stripFences(raw))
+	if rewritten == "" || len(rewritten) > 200 || strings.Contains(rewritten, "\n") {
 		return query
 	}
 	return rewritten
 }
 
 // ExpandWebSearchQueries generates semantically diverse web search query variants.
-// Uses expandWebQueryPrompt (no GitHub syntax, preserves language names like "golang").
-// Returns up to n alternative queries. Fails fast — caller should fall back gracefully.
 func ExpandWebSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
 	prompt := fmt.Sprintf(expandWebQueryPrompt, n, query, n)
-	raw, err := callLLMParams(ctx, prompt, 0.7, 250)
+	reg.Incr(MetricLLMCalls)
+	raw, err := cfg.LLMClient.Complete(ctx, "", prompt,
+		llm.WithChatTemperature(0.7),
+		llm.WithChatMaxTokens(250),
+	)
 	if err != nil {
+		reg.Incr(MetricLLMErrors)
 		return nil, err
 	}
+	raw = stripFences(raw)
 	var variants []string
 	if err := json.Unmarshal([]byte(raw), &variants); err != nil {
 		return nil, fmt.Errorf("expand web: parse failed on %q: %w", raw, err)
@@ -167,32 +101,26 @@ func ExpandWebSearchQueries(ctx context.Context, query string, n int) ([]string,
 }
 
 // ExpandSearchQueries uses the LLM to generate semantically diverse query variants.
-// Returns up to n alternative queries (not including the original).
-// Fails fast — caller should handle error gracefully and fall back to original query.
 func ExpandSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
 	prompt := fmt.Sprintf(expandQueryPrompt, n, query, n)
-
-	// Low max_tokens: 3 short queries fit in ~150 tokens. Slightly higher temp for variety.
-	raw, err := callLLMParams(ctx, prompt, 0.7, 250)
+	reg.Incr(MetricLLMCalls)
+	raw, err := cfg.LLMClient.Complete(ctx, "", prompt,
+		llm.WithChatTemperature(0.7),
+		llm.WithChatMaxTokens(250),
+	)
 	if err != nil {
+		reg.Incr(MetricLLMErrors)
 		return nil, err
 	}
-
+	raw = stripFences(raw)
 	var variants []string
 	if err := json.Unmarshal([]byte(raw), &variants); err != nil {
 		return nil, fmt.Errorf("expand: parse failed on %q: %w", raw, err)
 	}
-
 	if len(variants) > n {
 		variants = variants[:n]
 	}
 	return variants, nil
-}
-
-// CallLLMRaw sends a prompt to the LLM API and returns the raw response text.
-// Public wrapper for tool handlers that build their own prompts.
-func CallLLMRaw(ctx context.Context, prompt string) (string, error) {
-	return CallLLM(ctx, prompt)
 }
 
 // BuildSourcesText formats search results and their fetched content for LLM context.
@@ -252,7 +180,6 @@ func SummarizeWithInstruction(ctx context.Context, query, instruction string, co
 // ## headings and mandatory per-sentence citations.
 func SummarizeDeep(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*LLMStructuredOutput, error) {
 	sources := BuildSourcesText(results, contents, contentLimit)
-	// Prepend domain instruction if present
 	instructionSection := ""
 	if instruction != "" {
 		instructionSection = instruction + "\n\n"
@@ -275,8 +202,6 @@ func SummarizeDeep(ctx context.Context, query, instruction string, contentLimit 
 }
 
 // SummarizeToJSON builds an LLM prompt from search results and parses the response as JSON into T.
-// Returns (parsed, "", nil) on success, (nil, raw, nil) on parse failure (caller handles fallback),
-// or (nil, "", err) on LLM error.
 func SummarizeToJSON[T any](ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*T, string, error) {
 	sources := BuildSourcesText(results, contents, contentLimit)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)

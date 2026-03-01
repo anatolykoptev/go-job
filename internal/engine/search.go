@@ -32,7 +32,7 @@ func SearchSearXNG(ctx context.Context, query, language, timeRange, engines stri
 	}
 	u.RawQuery = q.Encode()
 
-	metrics.SearchRequests.Add(1)
+	reg.Incr(MetricSearchRequests)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
