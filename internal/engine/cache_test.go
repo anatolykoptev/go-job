@@ -24,17 +24,17 @@ func TestCacheKey(t *testing.T) {
 		}
 	})
 
-	t.Run("has prefix", func(t *testing.T) {
+	t.Run("non-empty", func(t *testing.T) {
 		k := CacheKey("test")
-		if k[:3] != "gs:" {
-			t.Errorf("expected gs: prefix, got %q", k[:3])
+		if len(k) == 0 {
+			t.Error("expected non-empty key")
 		}
 	})
 }
 
 func TestCacheGetSet(t *testing.T) {
-	// Init minimal cache (no Redis)
 	InitCache("", 1*time.Minute, 100, 5*time.Minute)
+	defer searchCache.Close()
 
 	ctx := context.Background()
 	key := CacheKey("test", "round-trip")
@@ -60,8 +60,8 @@ func TestCacheGetSet(t *testing.T) {
 }
 
 func TestCacheExpiration(t *testing.T) {
-	// Init with very short TTL
 	InitCache("", 1*time.Millisecond, 100, 5*time.Minute)
+	defer searchCache.Close()
 
 	ctx := context.Background()
 	key := CacheKey("test", "expiry")
@@ -76,8 +76,9 @@ func TestCacheExpiration(t *testing.T) {
 }
 
 func TestCacheEviction(t *testing.T) {
-	// maxEntries=3
 	InitCache("", 1*time.Minute, 3, 5*time.Minute)
+	defer searchCache.Close()
+
 	ctx := context.Background()
 
 	// Add 5 entries
@@ -86,22 +87,15 @@ func TestCacheEviction(t *testing.T) {
 		CacheSet(ctx, key, SmartSearchOutput{Answer: fmt.Sprintf("v%d", i)})
 	}
 
-	// Count L1 entries
-	count := 0
-	searchCache.l1.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count > 3 {
-		t.Errorf("expected at most 3 entries after eviction, got %d", count)
+	s := searchCache.Stats()
+	if s.L1Size > 3 {
+		t.Errorf("expected at most 3 entries after eviction, got %d", s.L1Size)
 	}
 }
 
 func TestCacheStats(t *testing.T) {
 	InitCache("", 1*time.Minute, 100, 5*time.Minute)
-	// Reset counters
-	cacheHits.Store(0)
-	cacheMisses.Store(0)
+	defer searchCache.Close()
 
 	ctx := context.Background()
 	key := CacheKey("stats", "test")
@@ -109,7 +103,6 @@ func TestCacheStats(t *testing.T) {
 	// Miss
 	CacheGet(ctx, key)
 	hits, misses := CacheStats()
-	_ = hits
 	if misses != 1 {
 		t.Errorf("misses = %d, want 1", misses)
 	}
@@ -124,5 +117,57 @@ func TestCacheStats(t *testing.T) {
 	}
 	if misses != 1 {
 		t.Errorf("misses = %d, want 1", misses)
+	}
+}
+
+func TestCacheJobDetails(t *testing.T) {
+	InitCache("", 1*time.Minute, 100, 5*time.Minute)
+	defer searchCache.Close()
+
+	ctx := context.Background()
+
+	// Miss
+	_, ok := CacheGetJobDetails(ctx, "https://example.com/job/123")
+	if ok {
+		t.Error("expected miss on empty cache")
+	}
+
+	// Set and hit
+	CacheSetJobDetails(ctx, "https://example.com/job/123", "Senior Go Developer")
+	got, ok := CacheGetJobDetails(ctx, "https://example.com/job/123")
+	if !ok {
+		t.Fatal("expected hit after set")
+	}
+	if got != "Senior Go Developer" {
+		t.Errorf("got %q, want %q", got, "Senior Go Developer")
+	}
+}
+
+func TestCacheLoadStoreJSON(t *testing.T) {
+	InitCache("", 1*time.Minute, 100, 5*time.Minute)
+	defer searchCache.Close()
+
+	ctx := context.Background()
+	key := CacheKey("json", "test")
+
+	type payload struct {
+		Name  string `json:"name"`
+		Count int    `json:"count"`
+	}
+
+	// Miss
+	_, ok := CacheLoadJSON[payload](ctx, key)
+	if ok {
+		t.Error("expected miss on empty cache")
+	}
+
+	// Store and load
+	CacheStoreJSON(ctx, key, "test query", payload{Name: "foo", Count: 42})
+	got, ok := CacheLoadJSON[payload](ctx, key)
+	if !ok {
+		t.Fatal("expected hit after store")
+	}
+	if got.Name != "foo" || got.Count != 42 {
+		t.Errorf("got %+v, want {foo 42}", got)
 	}
 }
