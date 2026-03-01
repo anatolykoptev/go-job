@@ -16,7 +16,7 @@ func SearchStartpageDirect(ctx context.Context, bc *BrowserClient, query, langua
 		language = "english"
 	}
 
-	metrics.DirectStartpageRequests.Add(1)
+	reg.Incr(MetricDirectStartpageRequests)
 
 	formBody := fmt.Sprintf("query=%s&cat=web&language=%s", urlEncode(query), urlEncode(language))
 

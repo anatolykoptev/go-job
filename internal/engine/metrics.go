@@ -5,61 +5,44 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 )
 
-// Metrics tracks operational counters across the engine.
-var metrics struct {
-	SearchRequests          atomic.Int64
-	LLMCalls                atomic.Int64
-	LLMErrors               atomic.Int64
-	FetchRequests           atomic.Int64
-	FetchErrors             atomic.Int64
-	DirectDDGRequests       atomic.Int64
-	DirectStartpageRequests atomic.Int64
-	FreelancerAPIRequests   atomic.Int64
-	RemoteOKRequests        atomic.Int64
-	WWRRequests             atomic.Int64
-	GitingestRequests          atomic.Int64
-	YouTubeSearchRequests      atomic.Int64
-	YouTubeTranscriptRequests  atomic.Int64
-	HNJobsRequests             atomic.Int64
-	GreenhouseRequests         atomic.Int64
-	LeverRequests              atomic.Int64
-	YCJobsRequests             atomic.Int64
-	IndeedRequests             atomic.Int64
-	HabrRequests               atomic.Int64
-	CraigslistRequests         atomic.Int64
-}
+// Metric name constants.
+const (
+	MetricSearchRequests          = "search_requests"
+	MetricLLMCalls                = "llm_calls"
+	MetricLLMErrors               = "llm_errors"
+	MetricFetchRequests           = "fetch_requests"
+	MetricFetchErrors             = "fetch_errors"
+	MetricDirectDDGRequests       = "direct_ddg_requests"
+	MetricDirectStartpageRequests = "direct_startpage_requests"
+	MetricFreelancerAPIRequests   = "freelancer_api_requests"
+	MetricRemoteOKRequests        = "remoteok_requests"
+	MetricWWRRequests             = "wwr_requests"
+	MetricGitingestRequests       = "gitingest_requests"
+	MetricYouTubeSearchRequests   = "youtube_search_requests"
+	MetricYouTubeTranscriptReqs   = "youtube_transcript_requests"
+	MetricHNJobsRequests          = "hn_jobs_requests"
+	MetricGreenhouseRequests      = "greenhouse_requests"
+	MetricLeverRequests           = "lever_requests"
+	MetricYCJobsRequests          = "yc_jobs_requests"
+	MetricIndeedRequests          = "indeed_requests"
+	MetricHabrRequests            = "habr_requests"
+	MetricCraigslistRequests      = "craigslist_requests"
+)
+
+var reg = kitmetrics.NewRegistry()
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
 func GetMetrics() map[string]int64 {
+	snap := reg.Snapshot()
 	hits, misses := CacheStats()
-	return map[string]int64{
-		"search_requests":           metrics.SearchRequests.Load(),
-		"llm_calls":                 metrics.LLMCalls.Load(),
-		"llm_errors":                metrics.LLMErrors.Load(),
-		"fetch_requests":            metrics.FetchRequests.Load(),
-		"fetch_errors":              metrics.FetchErrors.Load(),
-		"direct_ddg_requests":       metrics.DirectDDGRequests.Load(),
-		"direct_startpage_requests": metrics.DirectStartpageRequests.Load(),
-		"freelancer_api_requests":   metrics.FreelancerAPIRequests.Load(),
-		"remoteok_requests":         metrics.RemoteOKRequests.Load(),
-		"wwr_requests":              metrics.WWRRequests.Load(),
-		"gitingest_requests":           metrics.GitingestRequests.Load(),
-		"youtube_search_requests":      metrics.YouTubeSearchRequests.Load(),
-		"youtube_transcript_requests":  metrics.YouTubeTranscriptRequests.Load(),
-		"hn_jobs_requests":             metrics.HNJobsRequests.Load(),
-		"greenhouse_requests":          metrics.GreenhouseRequests.Load(),
-		"lever_requests":               metrics.LeverRequests.Load(),
-		"yc_jobs_requests":             metrics.YCJobsRequests.Load(),
-		"indeed_requests":              metrics.IndeedRequests.Load(),
-		"habr_requests":                metrics.HabrRequests.Load(),
-		"craigslist_requests":          metrics.CraigslistRequests.Load(),
-		"cache_hits":                  hits,
-		"cache_misses":                misses,
-	}
+	snap["cache_hits"] = hits
+	snap["cache_misses"] = misses
+	return snap
 }
 
 // FormatMetrics returns metrics as a simple text format for HTTP endpoint.
@@ -67,15 +50,15 @@ func FormatMetrics() string {
 	m := GetMetrics()
 	var sb strings.Builder
 	keys := []string{
-		"search_requests", "llm_calls", "llm_errors",
-		"fetch_requests", "fetch_errors",
-		"direct_ddg_requests", "direct_startpage_requests",
-		"freelancer_api_requests",
-		"remoteok_requests", "wwr_requests",
-		"gitingest_requests",
-		"youtube_search_requests", "youtube_transcript_requests",
-		"hn_jobs_requests", "greenhouse_requests", "lever_requests", "yc_jobs_requests",
-		"indeed_requests", "habr_requests", "craigslist_requests",
+		MetricSearchRequests, MetricLLMCalls, MetricLLMErrors,
+		MetricFetchRequests, MetricFetchErrors,
+		MetricDirectDDGRequests, MetricDirectStartpageRequests,
+		MetricFreelancerAPIRequests,
+		MetricRemoteOKRequests, MetricWWRRequests,
+		MetricGitingestRequests,
+		MetricYouTubeSearchRequests, MetricYouTubeTranscriptReqs,
+		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
+		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests,
 		"cache_hits", "cache_misses",
 	}
 	for _, k := range keys {
@@ -85,25 +68,19 @@ func FormatMetrics() string {
 }
 
 // IncrGitingestRequests increments the gitingest request counter.
-func IncrGitingestRequests() {
-	metrics.GitingestRequests.Add(1)
-}
-
-// Incrementors for jobs/ sub-package.
-func IncrHNJobsRequests()    { metrics.HNJobsRequests.Add(1) }
-func IncrGreenhouseRequests() { metrics.GreenhouseRequests.Add(1) }
-func IncrLeverRequests()     { metrics.LeverRequests.Add(1) }
-func IncrYCJobsRequests()    { metrics.YCJobsRequests.Add(1) }
-func IncrRemoteOKRequests()  { metrics.RemoteOKRequests.Add(1) }
-func IncrWWRRequests()       { metrics.WWRRequests.Add(1) }
-func IncrIndeedRequests()    { metrics.IndeedRequests.Add(1) }
-func IncrHabrRequests()      { metrics.HabrRequests.Add(1) }
-func IncrCraigslistRequests() { metrics.CraigslistRequests.Add(1) }
-
-// Incrementors for sources/ sub-package.
-func IncrFreelancerAPIRequests()  { metrics.FreelancerAPIRequests.Add(1) }
-func IncrYouTubeSearch()          { metrics.YouTubeSearchRequests.Add(1) }
-func IncrYouTubeTranscript()      { metrics.YouTubeTranscriptRequests.Add(1) }
+func IncrGitingestRequests()      { reg.Incr(MetricGitingestRequests) }
+func IncrHNJobsRequests()         { reg.Incr(MetricHNJobsRequests) }
+func IncrGreenhouseRequests()     { reg.Incr(MetricGreenhouseRequests) }
+func IncrLeverRequests()          { reg.Incr(MetricLeverRequests) }
+func IncrYCJobsRequests()         { reg.Incr(MetricYCJobsRequests) }
+func IncrRemoteOKRequests()       { reg.Incr(MetricRemoteOKRequests) }
+func IncrWWRRequests()            { reg.Incr(MetricWWRRequests) }
+func IncrIndeedRequests()         { reg.Incr(MetricIndeedRequests) }
+func IncrHabrRequests()           { reg.Incr(MetricHabrRequests) }
+func IncrCraigslistRequests()     { reg.Incr(MetricCraigslistRequests) }
+func IncrFreelancerAPIRequests()  { reg.Incr(MetricFreelancerAPIRequests) }
+func IncrYouTubeSearch()          { reg.Incr(MetricYouTubeSearchRequests) }
+func IncrYouTubeTranscript()      { reg.Incr(MetricYouTubeTranscriptReqs) }
 
 // TrackOperation logs a warning if an operation takes longer than threshold.
 func TrackOperation(ctx context.Context, name string, fn func(context.Context) error) error {

@@ -16,10 +16,10 @@ import (
 // FetchURLContent extracts main text content from a URL using go-trafilatura.
 // Falls back to goquery, then regex-based extraction on failure.
 func FetchURLContent(ctx context.Context, rawURL string) (title, content string, err error) {
-	metrics.FetchRequests.Add(1)
+	reg.Incr(MetricFetchRequests)
 	defer func() {
 		if err != nil {
-			metrics.FetchErrors.Add(1)
+			reg.Incr(MetricFetchErrors)
 		}
 	}()
 

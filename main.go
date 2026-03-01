@@ -11,13 +11,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
-	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go-kit/llm"
+	"github.com/anatolykoptev/go-mcpserver"
 	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
@@ -29,23 +27,13 @@ import (
 
 var (
 	version = "dev"
-	mcpPort = env("MCP_PORT", "8891")
+	mcpPort = env.Str("MCP_PORT", "8891")
 )
 
 func main() {
-	stdio := isStdio()
-
-	logWriter := os.Stdout
-	if stdio {
-		logWriter = os.Stderr
-	}
-	logger := slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
-
 	initEngine()
 
-	logger.Info("starting go_job",
-		slog.Bool("stdio", stdio),
+	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
 	)
 
@@ -55,92 +43,38 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	logger.Info("tools registered", slog.Int("count", 25))
+	slog.Info("tools registered", slog.Int("count", 25))
 
-	if stdio {
-		logger.Info("running in stdio mode")
-		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-			logger.Error("stdio server failed", slog.Any("error", err))
-			os.Exit(1)
-		}
-		return
-	}
-
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{
-		Stateless: true,
-	})
-
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
-	mux.Handle("/mcp/", handler)
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","service":"go_job","version":"` + version + `"}`))
-	})
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(engine.FormatMetrics()))
-	})
-
-	srv := &http.Server{
-		Addr:         ":" + mcpPort,
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
+	if err := mcpserver.Run(server, mcpserver.Config{
+		Name:         "go_job",
+		Version:      version,
+		Port:         mcpPort,
 		WriteTimeout: 600 * time.Second,
+		Metrics:      engine.FormatMetrics,
+	}); err != nil {
+		slog.Error("server failed", slog.Any("error", err))
 	}
-
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	go func() {
-		logger.Info("listening", slog.String("addr", srv.Addr))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server failed", slog.Any("error", err))
-			os.Exit(1)
-		}
-	}()
-
-	<-sigCtx.Done()
-	logger.Info("shutting down")
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown failed", slog.Any("error", err))
-	}
-	logger.Info("stopped")
-}
-
-func isStdio() bool {
-	for _, arg := range os.Args[1:] {
-		if arg == "--stdio" {
-			return true
-		}
-	}
-	return false
 }
 
 func initEngine() {
 	c := engine.Config{
-		SearxngURL:           env("SEARXNG_URL", "http://127.0.0.1:8888"),
-		LLMAPIKey:            env("LLM_API_KEY", ""),
-		LLMAPIKeyFallbacks:   envList("LLM_API_KEY_FALLBACKS", ""),
-		LLMAPIBase:           env("LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai"),
-		LLMModel:             env("LLM_MODEL", "gemini-2.5-flash"),
-		LLMTemperature:       envFloat("LLM_TEMPERATURE", 0.1),
-		LLMMaxTokens:         envInt("LLM_MAX_TOKENS", 16384),
-		MaxFetchURLs:         envInt("MAX_FETCH_URLS", 8),
-		MaxContentChars:      envInt("MAX_CONTENT_CHARS", 6000),
-		FetchTimeout:         envDuration("FETCH_TIMEOUT", 10*time.Second),
-		GithubToken:          env("GITHUB_TOKEN", ""),
-		CacheMaxEntries:      envInt("CACHE_MAX_ENTRIES", 1000),
-		CacheCleanupInterval: envDuration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
-		IndeedAPIKey:         env("INDEED_API_KEY", ""),
-		DatabaseURL:          env("DATABASE_URL", ""),
-		MemDBURL:             env("MEMDB_URL", ""),
-		MemDBServiceSecret:   env("INTERNAL_SERVICE_SECRET", ""),
+		SearxngURL:           env.Str("SEARXNG_URL", "http://127.0.0.1:8888"),
+		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
+		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
+		LLMAPIBase:           env.Str("LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai"),
+		LLMModel:             env.Str("LLM_MODEL", "gemini-2.5-flash"),
+		LLMTemperature:       env.Float("LLM_TEMPERATURE", 0.1),
+		LLMMaxTokens:         env.Int("LLM_MAX_TOKENS", 16384),
+		MaxFetchURLs:         env.Int("MAX_FETCH_URLS", 8),
+		MaxContentChars:      env.Int("MAX_CONTENT_CHARS", 6000),
+		FetchTimeout:         env.Duration("FETCH_TIMEOUT", 10*time.Second),
+		GithubToken:          env.Str("GITHUB_TOKEN", ""),
+		CacheMaxEntries:      env.Int("CACHE_MAX_ENTRIES", 1000),
+		CacheCleanupInterval: env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
+		IndeedAPIKey:         env.Str("INDEED_API_KEY", ""),
+		DatabaseURL:          env.Str("DATABASE_URL", ""),
+		MemDBURL:             env.Str("MEMDB_URL", ""),
+		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
@@ -153,7 +87,7 @@ func initEngine() {
 	var opts []stealth.ClientOption
 	opts = append(opts, stealth.WithTimeout(15))
 
-	if apiKey := os.Getenv("WEBSHARE_API_KEY"); apiKey != "" {
+	if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
 		pool, err := proxypool.NewWebshare(apiKey)
 		if err != nil {
 			slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
@@ -172,7 +106,7 @@ func initEngine() {
 	}
 
 	// Twitter client (optional — guest mode if no accounts configured)
-	accounts := twitter.ParseAccounts(os.Getenv("TWITTER_ACCOUNTS"))
+	accounts := twitter.ParseAccounts(env.Str("TWITTER_ACCOUNTS", ""))
 	openCount := 2
 	if len(accounts) > 0 {
 		openCount = 0
@@ -187,6 +121,13 @@ func initEngine() {
 		c.TwitterClient = tw
 		slog.Info("twitter client ready", slog.Int("pool_size", tw.Pool().Size()))
 	}
+
+	c.LLMClient = llm.NewClient(c.LLMAPIBase, c.LLMAPIKey, c.LLMModel,
+		llm.WithFallbackKeys(c.LLMAPIKeyFallbacks),
+		llm.WithMaxTokens(c.LLMMaxTokens),
+		llm.WithTemperature(c.LLMTemperature),
+		llm.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
+	)
 
 	engine.Init(c)
 
@@ -207,45 +148,6 @@ func initEngine() {
 		slog.Info("memdb client initialized", slog.String("url", c.MemDBURL))
 	}
 
-	cacheTTL := envDuration("CACHE_TTL", 15*time.Minute)
-	engine.InitCache(env("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
-}
-
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return def
-}
-
-func envList(key, def string) []string {
-	v := env(key, def)
-	return strings.Split(v, ",")
-}
-
-func envDuration(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if secs, err := strconv.ParseFloat(v, 64); err == nil {
-			return time.Duration(secs * float64(time.Second))
-		}
-	}
-	return def
+	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
+	engine.InitCache(env.Str("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
 }

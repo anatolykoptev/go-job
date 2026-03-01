@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/llm"
 	twitter "github.com/anatolykoptev/go-twitter"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	LLMModel             string
 	LLMTemperature       float64
 	LLMMaxTokens         int
+	LLMClient            *llm.Client
 	MaxFetchURLs         int
 	MaxContentChars      int
 	FetchTimeout         time.Duration
