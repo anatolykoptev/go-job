@@ -5,14 +5,13 @@ go 1.26
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
-	github.com/anatolykoptev/go-kit v0.3.0
+	github.com/anatolykoptev/go-kit v0.4.0
 	github.com/anatolykoptev/go-mcpserver v0.1.0
 	github.com/anatolykoptev/go-stealth v1.0.1
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/markusmobius/go-trafilatura v1.12.2
 	github.com/modelcontextprotocol/go-sdk v1.3.1
-	github.com/redis/go-redis/v9 v9.18.0
 	golang.org/x/net v0.50.0
 	modernc.org/sqlite v1.46.1
 )
@@ -56,6 +55,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/redis/go-redis/v9 v9.18.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/zerolog v1.33.0 // indirect
