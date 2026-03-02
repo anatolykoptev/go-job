@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
-	github.com/anatolykoptev/go-kit v0.4.1
+	github.com/anatolykoptev/go-kit v0.5.0
 	github.com/anatolykoptev/go-mcpserver v0.1.0
 	github.com/anatolykoptev/go-stealth v1.0.1
 	github.com/anatolykoptev/go-twitter v0.1.2
@@ -61,6 +61,7 @@ require (
 	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.3 // indirect
+	github.com/sony/gobreaker v1.0.0 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	github.com/tetratelabs/wazero v1.8.1 // indirect
 	github.com/wasilibs/go-re2 v1.7.0 // indirect
