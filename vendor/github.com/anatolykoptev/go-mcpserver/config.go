@@ -39,6 +39,8 @@ type Config struct {
 	DisableRecovery   bool // default false (recovery ON)
 	DisableHealth     bool // set true to register custom /health in Routes
 	DisableRequestLog bool // default false (request logging ON)
+	DisableMCP        bool // skip /mcp route registration; server param may be nil
+	Stateless         *bool // nil = default true; *false = stateful (session) mode
 
 	Context    context.Context // nil → internal signal.NotifyContext(SIGINT, SIGTERM)
 	Logger     *slog.Logger    // nil → auto (stdout HTTP / stderr stdio, LevelInfo)

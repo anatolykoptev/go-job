@@ -3,7 +3,8 @@ package cache
 import "time"
 
 // evict removes one entry from the cache using S3-FIFO policy.
-func (c *Cache) evict() bool {
+// Returns the evicted key, data, and whether an eviction occurred.
+func (c *Cache) evict() (string, []byte, bool) {
 	now := time.Now()
 
 	// Phase 1: evict from small queue.
@@ -15,7 +16,7 @@ func (c *Cache) evict() bool {
 		if now.After(e.expiresAt) {
 			delete(c.items, e.key)
 			c.evictions.Add(1)
-			return true
+			return e.key, e.data, true
 		}
 
 		if e.freq > 0 {
@@ -27,10 +28,11 @@ func (c *Cache) evict() bool {
 		}
 
 		// One-hit wonder — evict to ghost.
+		key, data := e.key, e.data
 		delete(c.items, e.key)
 		c.evictions.Add(1)
-		c.addToGhost(e.key)
-		return true
+		c.addToGhost(key)
+		return key, data, true
 	}
 
 	// Phase 2: evict from main queue (CLOCK-like second chance).
@@ -43,7 +45,7 @@ func (c *Cache) evict() bool {
 		if now.After(e.expiresAt) {
 			delete(c.items, e.key)
 			c.evictions.Add(1)
-			return true
+			return e.key, e.data, true
 		}
 
 		if e.freq > 0 {
@@ -54,7 +56,7 @@ func (c *Cache) evict() bool {
 
 		delete(c.items, e.key)
 		c.evictions.Add(1)
-		return true
+		return e.key, e.data, true
 	}
 
 	// Safety: force evict front of main if all had freq > 0.
@@ -63,10 +65,10 @@ func (c *Cache) evict() bool {
 		c.main.Remove(front)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
-		return true
+		return e.key, e.data, true
 	}
 
-	return false
+	return "", nil, false
 }
 
 // addToGhost adds a key to the ghost queue, evicting the oldest ghost if full.
@@ -104,10 +106,14 @@ func (c *Cache) cleanupLoop(interval time.Duration) {
 		case <-c.done:
 			return
 		case <-ticker.C:
+			var batch []evictedEntry
 			c.mu.Lock()
 			now := time.Now()
 			for key, e := range c.items {
 				if now.After(e.expiresAt) {
+					if c.cfg.OnEvict != nil {
+						batch = append(batch, evictedEntry{key: key, data: e.data, reason: EvictExpired})
+					}
 					if e.inMain {
 						c.main.Remove(e.elem)
 					} else {
@@ -117,6 +123,7 @@ func (c *Cache) cleanupLoop(interval time.Duration) {
 				}
 			}
 			c.mu.Unlock()
+			c.notifyBatch(batch)
 		}
 	}
 }

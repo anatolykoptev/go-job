@@ -5,8 +5,6 @@ package cache
 
 import (
 	"container/list"
-	"encoding/hex"
-	"hash/fnv"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -40,6 +38,11 @@ type Config struct {
 	// L2 is an optional L2 store (e.g. Redis). If set, overrides RedisURL.
 	// Pass a mock here in tests instead of using a real Redis.
 	L2 L2
+
+	// OnEvict is called after an entry is removed from L1.
+	// Called outside the cache lock — safe to call cache methods.
+	// Must be goroutine-safe (may fire from multiple goroutines concurrently).
+	OnEvict func(key string, data []byte, reason EvictReason)
 }
 
 func (c *Config) applyDefaults() {
@@ -151,14 +154,29 @@ func (c *Cache) jitteredTTL(base time.Duration) time.Duration {
 	return base + time.Duration(rand.Int64N(2*jitter+1)-jitter)
 }
 
-// Key builds a deterministic cache key from parts using FNV-128a.
-func Key(parts ...string) string {
-	h := fnv.New128a()
-	for i, p := range parts {
-		if i > 0 {
-			h.Write([]byte{0})
-		}
-		h.Write([]byte(p))
-	}
-	return hex.EncodeToString(h.Sum(nil))
+// Clear removes all entries from L1 and returns the number cleared.
+// L2 is not affected. OnEvict callbacks are NOT fired (bulk operation).
+func (c *Cache) Clear() int {
+	c.mu.Lock()
+	n := len(c.items)
+	c.items = make(map[string]*entry)
+	c.small.Init()
+	c.main.Init()
+	c.ghost.Init()
+	c.ghostMap = make(map[string]*list.Element)
+	c.mu.Unlock()
+	return n
 }
+
+// Close stops the background cleanup goroutine and closes L2 if set.
+func (c *Cache) Close() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+	if c.l2 != nil {
+		c.l2.Close()
+	}
+}
+
