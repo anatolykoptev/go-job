@@ -14,6 +14,9 @@ var searchCache *cache.Cache
 // CacheTTL controls how long results stay cached.
 var CacheTTL = 15 * time.Minute
 
+// JobDetailsTTL controls how long job details stay cached (descriptions rarely change).
+var JobDetailsTTL = 24 * time.Hour
+
 // InitCache sets up the 2-tier cache. Call after Init().
 // redisURL can be empty to disable L2.
 func InitCache(redisURL string, ttl time.Duration, maxEntries int, _ time.Duration) {
@@ -89,7 +92,7 @@ func CacheSetJobDetails(ctx context.Context, jobURL, details string) {
 		return
 	}
 	key := CacheKey("jd", jobURL)
-	searchCache.Set(ctx, key, []byte(details))
+	searchCache.SetWithTTL(ctx, key, []byte(details), JobDetailsTTL)
 }
 
 // CacheLoadJSON tries to load a cached value of type T from the engine cache.
