@@ -36,7 +36,7 @@ import (
 func main() {
     res := gomoji.ContainsEmoji("hello world")
     println(res) // false
-
+    
     res = gomoji.ContainsEmoji("hello world 🤗")
     println(res) // true
 }
@@ -84,11 +84,11 @@ Result:
 The function returns all existing emojis. You can do whatever you need with the list.
  ```go
  package main
-
+ 
  import (
      "github.com/forPelevin/gomoji"
  )
-
+ 
  func main() {
      emojis := gomoji.AllEmojis()
      println(emojis)

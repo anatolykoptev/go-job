@@ -1,6 +1,6 @@
 $ ./example -max 100000000 > rnd.dat
 $ ./assess 1000000
-           G E N E R A T O R    S E L E C T I O N
+           G E N E R A T O R    S E L E C T I O N 
            ______________________________________
 
     [0] Input File                 [1] Linear Congruential
@@ -55,7 +55,7 @@ $ ./assess 1000000
 
      Statistical Testing Complete!!!!!!!!!!!!
 
-$ cat experiments/AlgorithmTesting/finalAnalysisReport.txt
+$ cat experiments/AlgorithmTesting/finalAnalysisReport.txt 
 ------------------------------------------------------------------------------
 RESULTS FOR THE UNIFORMITY OF P-VALUES AND THE PROPORTION OF PASSING SEQUENCES
 ------------------------------------------------------------------------------

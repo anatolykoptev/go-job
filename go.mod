@@ -6,12 +6,12 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anatolykoptev/go-kit v0.6.0
-	github.com/anatolykoptev/go-mcpserver v0.2.0
+	github.com/anatolykoptev/go-mcpserver v0.3.0
 	github.com/anatolykoptev/go-stealth v1.0.1
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/markusmobius/go-trafilatura v1.12.2
-	github.com/modelcontextprotocol/go-sdk v1.3.1
+	github.com/modelcontextprotocol/go-sdk v1.4.0
 	golang.org/x/net v0.50.0
 	modernc.org/sqlite v1.46.1
 )
@@ -71,7 +71,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/oauth2 v0.30.0 // indirect
+	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect

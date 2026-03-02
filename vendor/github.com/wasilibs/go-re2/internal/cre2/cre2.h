@@ -14,7 +14,7 @@
 #ifndef CRE2_H
 #define CRE2_H 1
 
-
+
 /** --------------------------------------------------------------------
  ** Headers.
  ** ----------------------------------------------------------------- */
@@ -31,7 +31,7 @@ extern "C" {
 #  define cre2_decl	extern
 #endif
 
-
+
 /** --------------------------------------------------------------------
  ** Regular expressions configuration options.
  ** ----------------------------------------------------------------- */
@@ -76,7 +76,7 @@ cre2_decl int cre2_opt_one_line			(cre2_options_t *opt);
 cre2_decl int64_t cre2_opt_max_mem		(cre2_options_t *opt);
 cre2_decl cre2_encoding_t cre2_opt_encoding	(cre2_options_t *opt);
 
-
+
 /** --------------------------------------------------------------------
  ** Precompiled regular expressions.
  ** ----------------------------------------------------------------- */
@@ -132,7 +132,7 @@ cre2_decl void cre2_named_groups_iter_delete(cre2_named_groups_iter_t *iter);
 cre2_decl const char *cre2_error_string(const cre2_regexp_t *re);
 cre2_decl void cre2_error_arg(const cre2_regexp_t *re, cre2_string_t * arg);
 
-
+
 /** --------------------------------------------------------------------
  ** Main matching functions.
  ** ----------------------------------------------------------------- */
@@ -160,7 +160,7 @@ cre2_decl int cre2_easy_match	(const char * pattern, int pattern_len,
 cre2_decl void cre2_strings_to_ranges (const char * text, cre2_range_t * ranges,
 				       cre2_string_t * strings, int nmatch);
 
-
+
 /** --------------------------------------------------------------------
  ** Other matching functions.
  ** ----------------------------------------------------------------- */
@@ -187,7 +187,7 @@ cre2_decl cre2_match_rex_fun_t		cre2_partial_match_re;
 cre2_decl cre2_match_rex2_fun_t		cre2_consume_re;
 cre2_decl cre2_match_rex2_fun_t		cre2_find_and_consume_re;
 
-
+
 /** --------------------------------------------------------------------
  ** Problematic functions.
  ** ----------------------------------------------------------------- */
@@ -299,7 +299,7 @@ cre2_decl int cre2_possible_match_range (cre2_regexp_t * rex,
 cre2_decl int cre2_check_rewrite_string (cre2_regexp_t * rex,
 					 cre2_string_t * rewrite, cre2_string_t * errmsg);
 
-
+
 /** --------------------------------------------------------------------
  ** Set match.
  ** ----------------------------------------------------------------- */
@@ -331,7 +331,7 @@ cre2_decl int cre2_set_compile(cre2_set *set);
 cre2_decl size_t cre2_set_match(cre2_set *set, const char *text, size_t text_len,
 					 int *match, size_t match_len);
 
-
+
 /** --------------------------------------------------------------------
  ** Done.
  ** ----------------------------------------------------------------- */

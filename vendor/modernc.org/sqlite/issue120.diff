@@ -9,7 +9,7 @@
 +static ssize_t ts_read(int fd, void *aBuf, size_t nBuf);
 +static ssize_t ts_pread(int fd, void *aBuf, size_t nBuf, off_t off);
  /* Note:  pread64() and pwrite64() actually use off64_t as the type on their
- ** last parameter.  But that datatype is not defined on many systems
+ ** last parameter.  But that datatype is not defined on many systems 
  ** (ex: Mac, OpenBSD).  So substitute a likely equivalent: sqlite3_uint64 */
 -static int ts_pread64(int fd, void *aBuf, size_t nBuf, sqlite3_uint64 off);
 -static int ts_write(int fd, const void *aBuf, size_t nBuf);

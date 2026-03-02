@@ -65,7 +65,7 @@ editor:
 
 test:
 	go test -v -timeout 24h
-
+	
 vendor:
 	cd vendor_libsqlite3 && go build -o ../vendor main.go
 	./vendor
