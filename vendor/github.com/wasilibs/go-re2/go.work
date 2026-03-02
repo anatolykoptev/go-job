@@ -1,0 +1,9 @@
+go 1.21
+
+use (
+	.
+	./internal/e2e
+	./mage
+	./magefiles
+	./wafbench
+)
