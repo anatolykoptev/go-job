@@ -6,8 +6,8 @@ github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31zw7fnfJ/G1ebisIesCDl44slkIVFqk3YTSadd8=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
-github.com/anatolykoptev/go-kit v0.4.1 h1:xpKUg5K3hD5e0XtpV+nhFcwkkBIAIQgJeL13kDoZ03g=
-github.com/anatolykoptev/go-kit v0.4.1/go.mod h1:5g8pUGRo/Bc2xKVfnR6VnMl14mo1/K1ib0t34MzOSrg=
+github.com/anatolykoptev/go-kit v0.5.0 h1:vBBFURfNMpID/R4ZJiqkd8VKCPaDrv0D23TvExPQPVs=
+github.com/anatolykoptev/go-kit v0.5.0/go.mod h1:sxZXhRKXffOpIH5oSOCcnRZjiQT0s6te4os6eMUMwqg=
 github.com/anatolykoptev/go-mcpserver v0.1.0 h1:km9CXoIL0V4IeEfW7sBa0cVRpG8DKEs5d7IEB1qBfh0=
 github.com/anatolykoptev/go-mcpserver v0.1.0/go.mod h1:QqV2Oz8Bu1HRxTMm6rRVOaHul4YtP7SlIKS8UnqxXB0=
 github.com/anatolykoptev/go-stealth v1.0.1 h1:fj60AzunlSmA3kvvhNvLMC9SXIOyVM3fu5sK7rvRLU0=
@@ -139,6 +139,8 @@ github.com/segmentio/encoding v0.5.3 h1:OjMgICtcSFuNvQCdwqMCv9Tg7lEOXGwm1J5RPQcc
 github.com/segmentio/encoding v0.5.3/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
 github.com/sergi/go-diff v1.4.0 h1:n/SP9D5ad1fORl+llWyN+D6qoUETXNZARKjyY2/KVCw=
 github.com/sergi/go-diff v1.4.0/go.mod h1:A0bzQcvG0E7Rwjx0REVgAGH58e96+X0MeOfepqsbeW4=
+github.com/sony/gobreaker v1.0.0 h1:feX5fGGXSl3dYd4aHZItw+FpHLvvoaqkawKjVNiFMNQ=
+github.com/sony/gobreaker v1.0.0/go.mod h1:ZKptC7FHNvhBz7dN2LGjPVBz2sZJmc0/PkyDJOjmxWY=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
