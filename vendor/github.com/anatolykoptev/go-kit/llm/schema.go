@@ -86,3 +86,11 @@ func structSchema(t reflect.Type) map[string]any {
 	}
 	return schema
 }
+
+// injectField adds a property to an object schema and prepends it to required.
+func injectField(schema map[string]any, name string, fieldSchema map[string]any) {
+	props := schema["properties"].(map[string]any)
+	props[name] = fieldSchema
+	req, _ := schema["required"].([]string)
+	schema["required"] = append([]string{name}, req...)
+}
