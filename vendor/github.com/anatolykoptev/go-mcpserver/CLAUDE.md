@@ -18,6 +18,7 @@ Bootstrap library for Go MCP servers. Zero-binary — imported as a dependency.
 |------|---------|
 | `mcpserver.go` | `Run()` + `Build()` entry points, stdio/HTTP branching, server lifecycle |
 | `config.go` | `Config` struct, validation, defaults, `buildMiddleware` |
+| `auth.go` | `BearerAuth` config, OAuth 2.1 types, re-exports from go-sdk/auth |
 | `middleware.go` | Recovery, RequestID, RequestLog, CORS, `WithRequestID` context helper |
 | `response_writer.go` | `responseWriter` wrapper (status/bytes capture, `http.Flusher`) |
 | `health.go` | `/health`, `/health/live`, `/health/ready` handlers |
@@ -46,6 +47,8 @@ go vet ./... # additional checks
 
 - **Library, not binary** — no `main.go`, no GoReleaser; consumers `go get` it
 - **Stateless by default** — `Config.Stateless *bool` (nil=true); `Config.DisableMCP` skips `/mcp` routes
+- **OAuth 2.1 bearer auth** — `Config.BearerAuth` wraps `/mcp` only; metadata via RFC 9728
+- **MCP-layer middleware** — `Config.MCPReceivingMiddleware`/`MCPSendingMiddleware` pass-through to go-sdk
 - **`Build()` for testing** — returns `http.Handler` without starting server
 - **Context key pattern** — unexported `requestIDContextKey struct{}` (not int-based)
 - **Error channel over os.Exit** — `Run()` returns bind errors instead of calling `os.Exit(1)`

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -52,6 +53,8 @@ func Run(server *mcp.Server, cfg Config) error {
 		logger = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 	slog.SetDefault(logger)
+
+	applyMCPMiddleware(server, cfg)
 
 	if stdio {
 		logger.Info("running in stdio mode", slog.String("service", cfg.Name))
@@ -129,6 +132,7 @@ func Build(server *mcp.Server, cfg Config) (http.Handler, error) {
 		return nil, errors.New("mcpserver: server must not be nil when DisableMCP is false")
 	}
 	cfg = withDefaults(cfg)
+	applyMCPMiddleware(server, cfg)
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -141,11 +145,39 @@ func buildHandler(server *mcp.Server, cfg Config, logger *slog.Logger) http.Hand
 
 	if !cfg.DisableMCP {
 		stateless := cfg.Stateless == nil || *cfg.Stateless
-		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
-		}, &mcp.StreamableHTTPOptions{Stateless: stateless})
-		mux.Handle("/mcp", handler)
-		mux.Handle("/mcp/", handler)
+		}, &mcp.StreamableHTTPOptions{
+			Stateless:      stateless,
+			SessionTimeout: cfg.SessionTimeout,
+			EventStore:     cfg.EventStore,
+			JSONResponse:   cfg.JSONResponse,
+			Logger:         cfg.MCPLogger,
+		})
+
+		if cfg.BearerAuth != nil {
+			metaPath := cfg.BearerAuth.ResourceMetadataPath
+			if metaPath == "" && cfg.BearerAuth.Metadata != nil {
+				metaPath = "/.well-known/oauth-protected-resource"
+			}
+			authMW := auth.RequireBearerToken(cfg.BearerAuth.Verifier,
+				&auth.RequireBearerTokenOptions{
+					ResourceMetadataURL: metaPath,
+					Scopes:              cfg.BearerAuth.Scopes,
+				})
+			mcpHandler = authMW(mcpHandler)
+		}
+
+		mux.Handle("/mcp", mcpHandler)
+		mux.Handle("/mcp/", mcpHandler)
+	}
+
+	if cfg.BearerAuth != nil && cfg.BearerAuth.Metadata != nil {
+		path := cfg.BearerAuth.ResourceMetadataPath
+		if path == "" {
+			path = "/.well-known/oauth-protected-resource"
+		}
+		mux.Handle("GET "+path, auth.ProtectedResourceMetadataHandler(cfg.BearerAuth.Metadata))
 	}
 
 	registerHealth(mux, cfg)
