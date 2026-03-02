@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +17,7 @@ const (
 	idBytes         = 16
 )
 
-// contextKey is an unexported type for context keys in this package.
-type contextKey int
-
-const requestIDKey contextKey = 0
+type requestIDContextKey struct{}
 
 // Middleware is an HTTP middleware that wraps a handler.
 type Middleware func(http.Handler) http.Handler
@@ -42,6 +40,7 @@ func Recovery(logger *slog.Logger) Middleware {
 					logger.Error("panic recovered",
 						slog.Any("panic", rv),
 						slog.String("path", r.URL.Path),
+						slog.String("stack", string(debug.Stack())),
 					)
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
@@ -62,7 +61,7 @@ func RequestID() Middleware {
 				id = generateID()
 			}
 			w.Header().Set(requestIDHeader, id)
-			ctx := context.WithValue(r.Context(), requestIDKey, id)
+			ctx := context.WithValue(r.Context(), requestIDContextKey{}, id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -71,10 +70,16 @@ func RequestID() Middleware {
 // RequestIDFromContext retrieves the request ID stored by [RequestID] middleware.
 // Returns an empty string if no ID is present.
 func RequestIDFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDKey).(string); ok {
+	if v, ok := ctx.Value(requestIDContextKey{}).(string); ok {
 		return v
 	}
 	return ""
+}
+
+// WithRequestID returns a copy of ctx with the given request ID.
+// Use in tests or when manually injecting a request ID without middleware.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDContextKey{}, id)
 }
 
 // RequestLog returns middleware that logs method, path, status, duration,
@@ -89,6 +94,7 @@ func RequestLog(logger *slog.Logger) Middleware {
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", rw.status),
+				slog.Int("bytes", rw.bytesWritten),
 				slog.Duration("duration", time.Since(start)),
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 			)
@@ -167,32 +173,6 @@ func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool, headers
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
-type responseWriter struct {
-	http.ResponseWriter
-	status      int
-	wroteHeader bool
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	if !rw.wroteHeader {
-		rw.status = code
-		rw.wroteHeader = true
-	}
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if !rw.wroteHeader {
-		rw.WriteHeader(http.StatusOK)
-	}
-	return rw.ResponseWriter.Write(b)
-}
-
-// Unwrap returns the underlying http.ResponseWriter for http.ResponseController.
-func (rw *responseWriter) Unwrap() http.ResponseWriter {
-	return rw.ResponseWriter
-}
 func generateID() string {
 	b := make([]byte, idBytes)
 	_, _ = rand.Read(b)

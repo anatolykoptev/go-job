@@ -1,10 +1,10 @@
 # Roadmap
 
-## v0.4.0
+## v0.4.0 (done)
 
-- **Stateless/Stateful toggle** — expose `StreamableHTTPOptions` in Config instead of hardcoded `Stateless: true`
-- **DisableMCP flag** — allow using go-mcpserver purely for HTTP bootstrap without registering `/mcp` routes
-- **Flusher interface** — `responseWriter` should implement `http.Flusher` for SSE support through middleware
-- **os.Exit cleanup** — replace `os.Exit(1)` in ListenAndServe goroutine with proper error channel
-- **Expose handler** — add `Build()` method returning `http.Handler` for testing without starting a server
-- **Consumer migrations** — migrate gigiena-teksta (~500 lines boilerplate) and go-billing (~120 lines) to go-mcpserver
+- ~~**Stateless/Stateful toggle**~~ — `Config.Stateless *bool`; nil defaults to true
+- ~~**DisableMCP flag**~~ — `Config.DisableMCP bool`; skips `/mcp` route registration
+- ~~**Flusher interface**~~ — `responseWriter` implements `http.Flusher`; extracted to `response_writer.go`
+- ~~**os.Exit cleanup**~~ — done in v0.3.0 audit (error channel)
+- ~~**Expose handler**~~ — `Build()` returns `(http.Handler, error)` for testing/embedding
+- ~~**Consumer migrations**~~ — go-billing migrated; `WithRequestID()` context helper added

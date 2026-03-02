@@ -37,6 +37,9 @@ func Run(server *mcp.Server, cfg Config) error {
 	if err := validate(cfg); err != nil {
 		return err
 	}
+	if !cfg.DisableMCP && server == nil {
+		return errors.New("mcpserver: server must not be nil when DisableMCP is false")
+	}
 	cfg = withDefaults(cfg)
 	stdio := isStdio()
 
@@ -70,30 +73,7 @@ func Run(server *mcp.Server, cfg Config) error {
 	}
 	defer cancel()
 
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{
-		Stateless: true,
-	})
-
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
-	mux.Handle("/mcp/", handler)
-
-	registerHealth(mux, cfg)
-
-	if cfg.Metrics != nil {
-		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write([]byte(cfg.Metrics()))
-		})
-	}
-
-	if cfg.Routes != nil {
-		cfg.Routes(mux)
-	}
-
-	h := Chain(mux, buildMiddleware(cfg, logger)...)
+	h := buildHandler(server, cfg, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -102,18 +82,25 @@ func Run(server *mcp.Server, cfg Config) error {
 		WriteTimeout: cfg.WriteTimeout,
 	}
 
+	listenErr := make(chan error, 1)
 	go func() {
 		logger.Info("listening",
 			slog.String("service", cfg.Name),
 			slog.String("addr", srv.Addr),
 		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server failed", slog.Any("error", err))
-			os.Exit(1) //nolint:gocritic // intentional exit on bind failure
+			listenErr <- err
 		}
 	}()
 
-	<-sigCtx.Done()
+	select {
+	case <-sigCtx.Done():
+		// normal shutdown path
+	case err := <-listenErr:
+		logger.Error("server failed", slog.Any("error", err))
+		cancel()
+		return err
+	}
 	logger.Info("shutting down", slog.String("service", cfg.Name))
 
 	if cfg.OnShutdown != nil {
@@ -130,4 +117,49 @@ func Run(server *mcp.Server, cfg Config) error {
 
 	logger.Info("stopped", slog.String("service", cfg.Name))
 	return nil
+}
+
+// Build returns an http.Handler with middleware, health, and optional /mcp routes.
+// Use for testing or embedding in a custom server; use [Run] for production.
+func Build(server *mcp.Server, cfg Config) (http.Handler, error) {
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	if !cfg.DisableMCP && server == nil {
+		return nil, errors.New("mcpserver: server must not be nil when DisableMCP is false")
+	}
+	cfg = withDefaults(cfg)
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+	return buildHandler(server, cfg, logger), nil
+}
+
+func buildHandler(server *mcp.Server, cfg Config, logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+
+	if !cfg.DisableMCP {
+		stateless := cfg.Stateless == nil || *cfg.Stateless
+		handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+			return server
+		}, &mcp.StreamableHTTPOptions{Stateless: stateless})
+		mux.Handle("/mcp", handler)
+		mux.Handle("/mcp/", handler)
+	}
+
+	registerHealth(mux, cfg)
+
+	if cfg.Metrics != nil {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte(cfg.Metrics()))
+		})
+	}
+
+	if cfg.Routes != nil {
+		cfg.Routes(mux)
+	}
+
+	return Chain(mux, buildMiddleware(cfg, logger)...)
 }
