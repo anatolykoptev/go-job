@@ -46,11 +46,13 @@ func main() {
 	slog.Info("tools registered", slog.Int("count", 25))
 
 	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:         "go_job",
-		Version:      version,
-		Port:         mcpPort,
-		WriteTimeout: 600 * time.Second,
-		Metrics:      engine.FormatMetrics,
+		Name:           "go_job",
+		Version:        version,
+		Port:           mcpPort,
+		WriteTimeout:   600 * time.Second,
+		SessionTimeout: 10 * time.Minute,
+		MCPLogger:      slog.Default(),
+		Metrics:        engine.FormatMetrics,
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
