@@ -1,5 +1,12 @@
 # Roadmap
 
+## v0.5.0 (done)
+
+- ~~**MCP-layer middleware**~~ — `Config.MCPReceivingMiddleware`/`MCPSendingMiddleware` pass-through to go-sdk `AddReceivingMiddleware`/`AddSendingMiddleware`
+- ~~**StreamableHTTP options**~~ — `Config.SessionTimeout`, `EventStore`, `JSONResponse`, `MCPLogger` exposed
+- ~~**OAuth 2.1 bearer auth**~~ — `Config.BearerAuth` wraps `/mcp` only; RFC 9728 metadata endpoint; `auth.go` types
+- ~~**Connection lost handler**~~ — dropped (`ServerSessionOptions.onClose` unexported in SDK v1.4.0)
+
 ## v0.4.0 (done)
 
 - ~~**Stateless/Stateful toggle**~~ — `Config.Stateless *bool`; nil defaults to true

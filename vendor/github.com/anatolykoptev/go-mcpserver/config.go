@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
@@ -42,6 +44,16 @@ type Config struct {
 	DisableMCP        bool // skip /mcp route registration; server param may be nil
 	Stateless         *bool // nil = default true; *false = stateful (session) mode
 
+	MCPReceivingMiddleware []mcp.Middleware // applied to incoming JSON-RPC (client→server)
+	MCPSendingMiddleware   []mcp.Middleware // applied to outgoing JSON-RPC (server→client)
+
+	SessionTimeout time.Duration  // idle session timeout; 0 = never (passed to StreamableHTTPOptions)
+	EventStore     mcp.EventStore // stream resumption; nil = disabled
+	JSONResponse   bool           // true = application/json instead of text/event-stream
+	MCPLogger      *slog.Logger   // separate logger for StreamableHTTP handler; nil = none
+
+	BearerAuth *BearerAuth // nil = no auth; wraps /mcp only (see auth.go)
+
 	Context    context.Context // nil → internal signal.NotifyContext(SIGINT, SIGTERM)
 	Logger     *slog.Logger    // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
 	OnShutdown func()          // called before HTTP shutdown
@@ -75,6 +87,18 @@ func withDefaults(cfg Config) Config {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
 	}
 	return cfg
+}
+
+func applyMCPMiddleware(server *mcp.Server, cfg Config) {
+	if server == nil {
+		return
+	}
+	if len(cfg.MCPReceivingMiddleware) > 0 {
+		server.AddReceivingMiddleware(cfg.MCPReceivingMiddleware...)
+	}
+	if len(cfg.MCPSendingMiddleware) > 0 {
+		server.AddSendingMiddleware(cfg.MCPSendingMiddleware...)
+	}
 }
 
 func buildMiddleware(cfg Config, logger *slog.Logger) []Middleware {
