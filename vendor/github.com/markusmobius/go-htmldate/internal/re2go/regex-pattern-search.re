@@ -39,3 +39,4 @@ func TimestampPatternSubmatch(input string) ([]string, int) {
 		*/
 	}
 }
+

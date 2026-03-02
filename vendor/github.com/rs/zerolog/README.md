@@ -81,7 +81,7 @@ func main() {
         Str("Scale", "833 cents").
         Float64("Interval", 833.09).
         Msg("Fibonacci is everywhere")
-
+    
     log.Debug().
         Str("Name", "Tom").
         Send()
@@ -232,7 +232,7 @@ func main() {
 
 #### Error Logging with Stacktrace
 
-Using `github.com/pkg/errors`, you can add a formatted stacktrace to your errors.
+Using `github.com/pkg/errors`, you can add a formatted stacktrace to your errors. 
 
 ```go
 package main
@@ -609,7 +609,7 @@ if err := http.ListenAndServe(":8080", nil); err != nil {
 ```
 
 ## Multiple Log Output
-`zerolog.MultiLevelWriter` may be used to send the log message to multiple outputs.
+`zerolog.MultiLevelWriter` may be used to send the log message to multiple outputs. 
 In this example, we send the log message to both `os.Stdout` and the in-built ConsoleWriter.
 ```go
 func main() {
@@ -640,7 +640,7 @@ Some settings can be changed and will be applied to all loggers:
 * `zerolog.ErrorFieldName`: Can be set to customize `Err` field name.
 * `zerolog.TimeFieldFormat`: Can be set to customize `Time` field value formatting. If set with `zerolog.TimeFormatUnix`, `zerolog.TimeFormatUnixMs` or `zerolog.TimeFormatUnixMicro`, times are formatted as UNIX timestamp.
 * `zerolog.DurationFieldUnit`: Can be set to customize the unit for time.Duration type fields added by `Dur` (default: `time.Millisecond`).
-* `zerolog.DurationFieldInteger`: If set to `true`, `Dur` fields are formatted as integers instead of floats (default: `false`).
+* `zerolog.DurationFieldInteger`: If set to `true`, `Dur` fields are formatted as integers instead of floats (default: `false`). 
 * `zerolog.ErrorHandler`: Called whenever zerolog fails to write an event on its output. If not set, an error is printed on the stderr. This handler must be thread safe and non-blocking.
 * `zerolog.FloatingPointPrecision`: If set to a value other than -1, controls the number
 of digits when formatting float numbers in JSON. See

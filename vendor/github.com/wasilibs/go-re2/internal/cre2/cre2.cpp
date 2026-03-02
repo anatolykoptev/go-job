@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <vector>
 
-
+
 /** --------------------------------------------------------------------
  ** Options objects.
  ** ----------------------------------------------------------------- */
@@ -115,7 +115,7 @@ cre2_opt_set_latin1_encoding(cre2_options_t *opt)
   TO_OPT(opt)->set_encoding(RE2::Options::EncodingLatin1);
 }
 
-
+
 /** --------------------------------------------------------------------
  ** Precompiled regular expressions objects.
  ** ----------------------------------------------------------------- */
@@ -189,7 +189,7 @@ cre2_program_size (const cre2_regexp_t *re)
   return TO_CONST_RE2(re)->ProgramSize();
 }
 
-
+
 /** --------------------------------------------------------------------
  ** Named capture group iteration.
  ** ----------------------------------------------------------------- */
@@ -228,7 +228,7 @@ cre2_named_groups_iter_delete(cre2_named_groups_iter_t *iter)
   delete iter;
 }
 
-
+
 /** --------------------------------------------------------------------
  ** Matching with precompiled regular expressions objects.
  ** ----------------------------------------------------------------- */
@@ -306,7 +306,7 @@ cre2_strings_to_ranges (const char * text, cre2_range_t * ranges, cre2_string_t 
   }
 }
 
-
+
 /** --------------------------------------------------------------------
  ** Other matching functions: stringz pattern.
  ** ----------------------------------------------------------------- */
@@ -369,7 +369,7 @@ DEFINE_MATCH_ZSTRING_FUN(cre2_partial_match,PartialMatchN)
 DEFINE_MATCH_ZSTRING_FUN2(cre2_consume,ConsumeN)
 DEFINE_MATCH_ZSTRING_FUN2(cre2_find_and_consume,FindAndConsumeN)
 
-
+
 /** --------------------------------------------------------------------
  ** Other matching functions: rex pattern.
  ** ----------------------------------------------------------------- */
@@ -432,7 +432,7 @@ DEFINE_MATCH_REX_FUN(cre2_partial_match_re,PartialMatchN)
 DEFINE_MATCH_REX_FUN2(cre2_consume_re,ConsumeN)
 DEFINE_MATCH_REX_FUN2(cre2_find_and_consume_re,FindAndConsumeN)
 
-
+
 /** --------------------------------------------------------------------
  ** Problematic functions.
  ** ----------------------------------------------------------------- */
@@ -640,7 +640,7 @@ cre2_check_rewrite_string (cre2_regexp_t * rex, cre2_string_t * rewrite, cre2_st
   }
 }
 
-
+
 /** --------------------------------------------------------------------
  ** Set match.
  ** ----------------------------------------------------------------- */

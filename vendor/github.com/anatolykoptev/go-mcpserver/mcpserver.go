@@ -12,43 +12,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-const (
-	defaultPort            = "8080"
-	defaultReadTimeout     = 30 * time.Second
-	defaultWriteTimeout    = 120 * time.Second
-	defaultShutdownTimeout = 10 * time.Second
-	portEnvVar             = "MCP_PORT"
-)
-
-// Config controls how the MCP server runs.
-type Config struct {
-	Name    string // service name for /health + logs (required)
-	Version string // version for /health + logs (required)
-	Port    string // HTTP port; empty → MCP_PORT env → "8080"
-
-	WriteTimeout    time.Duration // default 120s
-	ReadTimeout     time.Duration // default 30s
-	ShutdownTimeout time.Duration // default 10s
-
-	Metrics func() string        // if set, registers GET /metrics
-	Routes  func(*http.ServeMux) // extra routes after /mcp, /health, /metrics
-
-	Middleware     []Middleware  // custom middleware, applied after built-ins
-	CORSOrigins    []string     // nil = no CORS; ["*"] = allow all
-	ReadinessCheck func() error // nil = /health/ready always returns 200
-
-	DisableRecovery   bool // default false (recovery ON)
-	DisableHealth     bool // set true to register custom /health in Routes
-	DisableRequestLog bool // default false (request logging ON)
-
-	Logger     *slog.Logger // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
-	OnShutdown func()       // called before HTTP shutdown
-}
 
 // IsStdio reports whether --stdio was passed on the command line.
 func IsStdio() bool {
@@ -64,46 +30,13 @@ func isStdio() bool {
 	return false
 }
 
-func withDefaults(cfg Config) Config {
-	if cfg.Port == "" {
-		if p := os.Getenv(portEnvVar); p != "" {
-			cfg.Port = p
-		} else {
-			cfg.Port = defaultPort
-		}
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = defaultReadTimeout
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = defaultWriteTimeout
-	}
-	if cfg.ShutdownTimeout == 0 {
-		cfg.ShutdownTimeout = defaultShutdownTimeout
-	}
-	return cfg
-}
-
-func buildMiddleware(cfg Config, logger *slog.Logger) []Middleware {
-	var mws []Middleware
-	if !cfg.DisableRecovery {
-		mws = append(mws, Recovery(logger))
-	}
-	mws = append(mws, RequestID())
-	if !cfg.DisableRequestLog {
-		mws = append(mws, RequestLog(logger))
-	}
-	if len(cfg.CORSOrigins) > 0 {
-		mws = append(mws, CORS(cfg.CORSOrigins))
-	}
-	mws = append(mws, cfg.Middleware...)
-	return mws
-}
-
 // Run starts the MCP server and blocks until a signal is received.
 // In stdio mode (--stdio flag), it runs via stdin/stdout.
 // Otherwise, it starts an HTTP server with middleware, /mcp, /health, and optional /metrics.
 func Run(server *mcp.Server, cfg Config) error {
+	if err := validate(cfg); err != nil {
+		return err
+	}
 	cfg = withDefaults(cfg)
 	stdio := isStdio()
 
@@ -119,10 +52,22 @@ func Run(server *mcp.Server, cfg Config) error {
 
 	if stdio {
 		logger.Info("running in stdio mode", slog.String("service", cfg.Name))
-		return server.Run(context.Background(), &mcp.StdioTransport{})
+		ctx := cfg.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return server.Run(ctx, &mcp.StdioTransport{})
 	}
 
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	var (
+		sigCtx context.Context
+		cancel context.CancelFunc
+	)
+	if cfg.Context != nil {
+		sigCtx, cancel = context.WithCancel(cfg.Context)
+	} else {
+		sigCtx, cancel = signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	}
 	defer cancel()
 
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {

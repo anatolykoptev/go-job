@@ -64,7 +64,7 @@ go get -u github.com/JohannesKaufmann/html-to-markdown/v2
 
 _Or if you want a specific commit add the suffix `/v2@commithash`_
 
-> [!NOTE]
+> [!NOTE]  
 > This is the documentation for the v2 library. For the old version switch to the ["v1" branch](https://github.com/JohannesKaufmann/html-to-markdown/tree/v1).
 
 ### Usage
@@ -163,7 +163,7 @@ func main() {
 
 - 🧑‍💻 [Example code, options](/examples/options/main.go)
 
-> [!NOTE]
+> [!NOTE]  
 > If you use `NewConverter` directly make sure to also **register the commonmark and base plugin**.
 
 ---
@@ -181,7 +181,7 @@ You can specify how different HTML tags should be handled during conversion.
   - `RenderAsHTML` will render the node (including children) as HTML.
   - `RenderAsHTMLWrapper` will render the node as HTML and render the children as markdown.
 
-> [!NOTE]
+> [!NOTE]  
 > By default, some tags are automatically removed (e.g. `<style>`). You can override existing configuration by using a different _priority_. For example, you could keep `<style>` tags by registering them with `PriorityEarly`.
 
 Here are the examples for the screenshot above:
@@ -216,7 +216,7 @@ These are the plugins located in the [plugin folder](/plugin):
 | ConfluenceCodeBlock   | _planned_                                                                                          |
 | ConfluenceAttachments | _planned_                                                                                          |
 
-> [!NOTE]
+> [!NOTE]  
 > Not all the plugins from v1 are already ported to v2. These will soon be implemented...
 
 These are the plugins in other repositories:
@@ -291,7 +291,7 @@ go build ./cli/html2markdown
 html2markdown --version
 ```
 
-> [!NOTE]
+> [!NOTE]  
 > Make sure that `--version` prints `2.X.X` as there is a different CLI for V2 of the converter.
 
 ### Usage

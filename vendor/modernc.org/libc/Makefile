@@ -4,7 +4,7 @@
 
 .PHONY:	all build_all_targets check clean download edit editor generate dev membrk-test test work xtest short-test xlibc libc-test surface vet
 
-SHELL=/bin/bash -o pipefail
+SHELL=/bin/bash -o pipefail	
 
 DIR = /tmp/libc
 TAR = musl-7ada6dde6f9dc6a2836c3d92c2f762d35fd229e0.tar.gz

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -94,16 +96,33 @@ func RequestLog(logger *slog.Logger) Middleware {
 	}
 }
 
+const defaultAllowHeaders = "Content-Type, Authorization, X-Request-ID"
+
+// CORSConfig controls CORS middleware behavior.
+type CORSConfig struct {
+	Origins      []string // required; ["*"] = allow all
+	MaxAge       int      // preflight Max-Age in seconds; 0 = omit
+	AllowHeaders []string // nil = default (Content-Type, Authorization, X-Request-ID)
+}
+
 // CORS returns middleware that handles Cross-Origin Resource Sharing.
-// Pass ["*"] to allow all origins. Preflight OPTIONS requests get a 204.
-func CORS(origins []string) Middleware {
-	allow := make(map[string]struct{}, len(origins))
+// Pass ["*"] in Origins to allow all origins. Preflight OPTIONS requests get a 204.
+func CORS(cfg CORSConfig) Middleware {
+	allow := make(map[string]struct{}, len(cfg.Origins))
 	wildcard := false
-	for _, o := range origins {
+	for _, o := range cfg.Origins {
 		if o == "*" {
 			wildcard = true
 		}
 		allow[o] = struct{}{}
+	}
+	headers := defaultAllowHeaders
+	if len(cfg.AllowHeaders) > 0 {
+		headers = strings.Join(cfg.AllowHeaders, ", ")
+	}
+	maxAge := ""
+	if cfg.MaxAge > 0 {
+		maxAge = strconv.Itoa(cfg.MaxAge)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +135,7 @@ func CORS(origins []string) Middleware {
 				next.ServeHTTP(w, r)
 				return
 			}
-			setCORSHeaders(w, origin, wildcard)
+			setCORSHeaders(w, origin, wildcard, headers, maxAge)
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -134,7 +153,7 @@ func matchOrigin(origin string, wildcard bool, allow map[string]struct{}) bool {
 	return ok
 }
 
-func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool) {
+func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool, headers, maxAge string) {
 	if wildcard {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	} else {
@@ -142,7 +161,10 @@ func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool) {
 		w.Header().Add("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+	w.Header().Set("Access-Control-Allow-Headers", headers)
+	if maxAge != "" {
+		w.Header().Set("Access-Control-Max-Age", maxAge)
+	}
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
@@ -171,7 +193,6 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
-
 func generateID() string {
 	b := make([]byte, idBytes)
 	_, _ = rand.Read(b)

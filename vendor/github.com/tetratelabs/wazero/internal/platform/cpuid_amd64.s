@@ -11,3 +11,4 @@ TEXT ·cpuid(SB), NOSPLIT, $0-24
 	MOVL CX, ecx+16(FP)
 	MOVL DX, edx+20(FP)
 	RET
+

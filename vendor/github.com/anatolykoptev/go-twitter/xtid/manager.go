@@ -118,3 +118,4 @@ func (m *Manager) GenerateID(method, path string) (string, error) {
 	}
 	return m.ct.GenerateID(method, path), nil
 }
+

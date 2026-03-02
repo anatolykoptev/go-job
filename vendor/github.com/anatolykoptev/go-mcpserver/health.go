@@ -1,7 +1,7 @@
 package mcpserver
 
 import (
-	"fmt"
+	"encoding/json"
 	"net/http"
 )
 
@@ -12,11 +12,15 @@ func registerHealth(mux *http.ServeMux, cfg Config) {
 		return
 	}
 
-	healthBody := `{"status":"ok","service":"` + cfg.Name + `","version":"` + cfg.Version + `"}`
+	healthBody, _ := json.Marshal(map[string]string{
+		"status":  "ok",
+		"service": cfg.Name,
+		"version": cfg.Version,
+	})
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(healthBody))
+		_, _ = w.Write(healthBody)
 	})
 
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
@@ -29,7 +33,11 @@ func registerHealth(mux *http.ServeMux, cfg Config) {
 			if err := cfg.ReadinessCheck(); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
-				fmt.Fprintf(w, `{"status":"unavailable","error":%q}`, err.Error())
+				body, _ := json.Marshal(map[string]string{
+					"status": "unavailable",
+					"error":  err.Error(),
+				})
+				_, _ = w.Write(body)
 				return
 			}
 		}
