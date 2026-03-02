@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"log/slog"
@@ -24,10 +23,17 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 	}
 
 	// L1 miss or expired.
+	var expKey string
+	var expData []byte
+	wasExpired := ok
 	if ok {
+		expKey, expData = e.key, e.data
 		c.removeEntry(e)
 	}
 	c.mu.Unlock()
+	if wasExpired {
+		c.notifyEvict(expKey, expData, EvictExpired)
+	}
 
 	// Try L2.
 	if c.l2 != nil {
@@ -81,10 +87,15 @@ func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL,
 		return
 	}
 
-	// Evict until under capacity.
+	// Evict until under capacity — collect evicted entries for callback.
+	var batch []evictedEntry
 	for len(c.items) >= c.cfg.L1MaxItems {
-		if !c.evict() {
+		ek, ed, ok := c.evict()
+		if !ok {
 			break
+		}
+		if c.cfg.OnEvict != nil {
+			batch = append(batch, evictedEntry{ek, ed, EvictCapacity})
 		}
 	}
 
@@ -106,6 +117,7 @@ func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL,
 	e.elem = c.small.PushBack(e)
 	c.items[key] = e
 	c.mu.Unlock()
+	c.notifyBatch(batch)
 
 	// Write-through to L2 (best-effort).
 	if c.l2 != nil {
@@ -117,11 +129,19 @@ func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL,
 
 // Delete removes a key from both L1 and L2.
 func (c *Cache) Delete(ctx context.Context, key string) {
+	var delKey string
+	var delData []byte
+	var found bool
 	c.mu.Lock()
 	if e, ok := c.items[key]; ok {
+		delKey, delData = e.key, e.data
+		found = true
 		c.removeEntry(e)
 	}
 	c.mu.Unlock()
+	if found {
+		c.notifyEvict(delKey, delData, EvictExplicit)
+	}
 
 	// Delete from L2 (best-effort).
 	if c.l2 != nil {
@@ -169,28 +189,3 @@ func (c *Cache) GetOrLoadWithTTL(ctx context.Context, key string, ttl time.Durat
 	return data, nil
 }
 
-// Clear removes all entries from L1 and returns the number cleared.
-// L2 is not affected.
-func (c *Cache) Clear() int {
-	c.mu.Lock()
-	n := len(c.items)
-	c.items = make(map[string]*entry)
-	c.small.Init()
-	c.main.Init()
-	c.ghost.Init()
-	c.ghostMap = make(map[string]*list.Element)
-	c.mu.Unlock()
-	return n
-}
-
-// Close stops the background cleanup goroutine and closes L2 if set.
-func (c *Cache) Close() {
-	select {
-	case <-c.done:
-	default:
-		close(c.done)
-	}
-	if c.l2 != nil {
-		c.l2.Close()
-	}
-}
