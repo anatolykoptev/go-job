@@ -25,7 +25,7 @@ github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/strutil
-# github.com/anatolykoptev/go-mcpserver v0.4.0
+# github.com/anatolykoptev/go-mcpserver v0.5.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 # github.com/anatolykoptev/go-stealth v1.0.1
