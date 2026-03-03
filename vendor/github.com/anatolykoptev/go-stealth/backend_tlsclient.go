@@ -59,7 +59,7 @@ func (t *tlsClientDoer) Do(req *Request) (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	rawData, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", err)
 	}
@@ -71,6 +71,11 @@ func (t *tlsClientDoer) Do(req *Request) (*Response, error) {
 		} else if len(v) > 0 {
 			respHeaders[strings.ToLower(k)] = v[0]
 		}
+	}
+
+	data, err := decompressBody(rawData, respHeaders["content-encoding"])
+	if err != nil {
+		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("decompress body: %w", err)
 	}
 
 	return &Response{Body: data, Headers: respHeaders, StatusCode: resp.StatusCode}, nil
