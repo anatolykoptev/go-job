@@ -14,6 +14,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 		c.small.Remove(front)
 
 		if now.After(e.expiresAt) {
+			c.removeFromTagIndex(e.key, e.tags)
 			delete(c.items, e.key)
 			c.evictions.Add(1)
 			return e.key, e.data, true
@@ -29,6 +30,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 
 		// One-hit wonder — evict to ghost.
 		key, data := e.key, e.data
+		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
 		c.addToGhost(key)
@@ -43,6 +45,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 		c.main.Remove(front)
 
 		if now.After(e.expiresAt) {
+			c.removeFromTagIndex(e.key, e.tags)
 			delete(c.items, e.key)
 			c.evictions.Add(1)
 			return e.key, e.data, true
@@ -54,6 +57,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 			continue
 		}
 
+		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
 		return e.key, e.data, true
@@ -63,6 +67,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 	if front := c.main.Front(); front != nil {
 		e := front.Value.(*entry)
 		c.main.Remove(front)
+		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
 		return e.key, e.data, true
@@ -93,6 +98,7 @@ func (c *Cache) removeEntry(e *entry) {
 	} else {
 		c.small.Remove(e.elem)
 	}
+	c.removeFromTagIndex(e.key, e.tags)
 	delete(c.items, e.key)
 }
 
@@ -119,6 +125,7 @@ func (c *Cache) cleanupLoop(interval time.Duration) {
 					} else {
 						c.small.Remove(e.elem)
 					}
+					c.removeFromTagIndex(key, e.tags)
 					delete(c.items, key)
 				}
 			}

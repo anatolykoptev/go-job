@@ -70,13 +70,17 @@ func (c *Cache) SetWithTTL(ctx context.Context, key string, data []byte, ttl tim
 	c.setInternal(ctx, key, data, ttl, ttl)
 }
 
-func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL, l2TTL time.Duration) {
+func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL, l2TTL time.Duration, tags ...string) {
 	c.mu.Lock()
 
 	// Update existing entry.
 	if e, ok := c.items[key]; ok {
 		e.data = data
 		e.expiresAt = time.Now().Add(c.jitteredTTL(l1TTL))
+		if len(tags) > 0 {
+			c.updateTags(key, e.tags, tags)
+			e.tags = tags
+		}
 		c.mu.Unlock()
 		// Write-through to L2 (best-effort).
 		if c.l2 != nil {
@@ -113,9 +117,13 @@ func (c *Cache) setInternal(ctx context.Context, key string, data []byte, l1TTL,
 		data:      data,
 		expiresAt: time.Now().Add(c.jitteredTTL(l1TTL)),
 		freq:      initFreq,
+		tags:      tags,
 	}
 	e.elem = c.small.PushBack(e)
 	c.items[key] = e
+	if len(tags) > 0 {
+		c.addToTagIndex(key, tags)
+	}
 	c.mu.Unlock()
 	c.notifyBatch(batch)
 
