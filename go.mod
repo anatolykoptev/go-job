@@ -7,7 +7,7 @@ require (
 	github.com/anatolykoptev/go-engine v0.7.0
 	github.com/anatolykoptev/go-kit v0.8.0
 	github.com/anatolykoptev/go-mcpserver v0.6.0
-	github.com/anatolykoptev/go-stealth v1.1.0
+	github.com/anatolykoptev/go-stealth v1.3.1
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/modelcontextprotocol/go-sdk v1.4.0

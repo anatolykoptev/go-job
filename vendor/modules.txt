@@ -36,8 +36,8 @@ github.com/anatolykoptev/go-kit/metrics
 # github.com/anatolykoptev/go-mcpserver v0.6.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
-# github.com/anatolykoptev/go-stealth v1.1.0
-## explicit; go 1.24.1
+# github.com/anatolykoptev/go-stealth v1.3.1
+## explicit; go 1.26
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/pool
 github.com/anatolykoptev/go-stealth/proxypool
