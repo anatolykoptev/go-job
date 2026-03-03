@@ -4,20 +4,20 @@ go 1.26
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
-	github.com/PuerkitoBio/goquery v1.11.0
+	github.com/anatolykoptev/go-engine v0.1.1
 	github.com/anatolykoptev/go-kit v0.6.1-0.20260302231502-b68df5a4fe05
 	github.com/anatolykoptev/go-mcpserver v0.6.0
-	github.com/anatolykoptev/go-stealth v1.0.1
+	github.com/anatolykoptev/go-stealth v1.1.0
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
-	github.com/markusmobius/go-trafilatura v1.12.2
 	github.com/modelcontextprotocol/go-sdk v1.4.0
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.51.0
 	modernc.org/sqlite v1.46.1
 )
 
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/PuerkitoBio/goquery v1.11.0 // indirect
 	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
@@ -50,6 +50,7 @@ require (
 	github.com/markusmobius/go-dateparser v1.2.3 // indirect
 	github.com/markusmobius/go-domdistiller v0.0.0-20240926050704-25b8d046ffb4 // indirect
 	github.com/markusmobius/go-htmldate v1.9.1 // indirect
+	github.com/markusmobius/go-trafilatura v1.12.2 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

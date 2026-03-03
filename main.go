@@ -1,22 +1,17 @@
 // go_job — Job, Remote & Freelance Search MCP server.
 //
-// Exposes three MCP tools: job_search, remote_work_search, freelance_search.
+// Exposes MCP tools for job search, remote work, freelance, resume, interview prep, and more.
 // Runs as HTTP MCP server or stdio transport.
-//
-// Currently depends on github.com/anatolykoptev/go-search for the engine layer.
-// Designed to be gradually decoupled — see internal/engine/ for future migration.
 package main
 
 import (
 	"context"
 	"log/slog"
-	"net/http"
+	"os"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
-	"github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-mcpserver"
-	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -73,7 +68,7 @@ func initEngine() {
 		SearxngURL:           env.Str("SEARXNG_URL", "http://127.0.0.1:8888"),
 		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
 		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
-		LLMAPIBase:           env.Str("LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai"),
+		LLMAPIBase:           env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
 		LLMModel:             env.Str("LLM_MODEL", "gemini-2.5-flash"),
 		LLMTemperature:       env.Float("LLM_TEMPERATURE", 0.1),
 		LLMMaxTokens:         env.Int("LLM_MAX_TOKENS", 16384),
@@ -87,34 +82,19 @@ func initEngine() {
 		DatabaseURL:          env.Str("DATABASE_URL", ""),
 		MemDBURL:             env.Str("MEMDB_URL", ""),
 		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
-		HTTPClient: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        20,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     60 * time.Second,
-			},
-		},
+		DirectDDG:            env.Bool("DIRECT_DDG", false),
+		DirectStartpage:      env.Bool("DIRECT_STARTPAGE", false),
 	}
-	var opts []stealth.ClientOption
-	opts = append(opts, stealth.WithTimeout(15))
 
-	if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
+	// Initialize proxy pool from Webshare API (optional).
+	if apiKey := os.Getenv("WEBSHARE_API_KEY"); apiKey != "" {
 		pool, err := proxypool.NewWebshare(apiKey)
 		if err != nil {
 			slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
 		} else {
-			opts = append(opts, stealth.WithProxyPool(pool))
+			c.ProxyPool = pool
 			slog.Info("proxy pool initialized", slog.Int("proxies", pool.Len()))
 		}
-	}
-
-	bc, err := stealth.NewClient(opts...)
-	if err != nil {
-		slog.Error("stealth client init failed", slog.Any("error", err))
-	} else {
-		c.BrowserClient = bc
-		slog.Info("stealth browser client initialized")
 	}
 
 	// Twitter client (optional — guest mode if no accounts configured)
@@ -133,13 +113,6 @@ func initEngine() {
 		c.TwitterClient = tw
 		slog.Info("twitter client ready", slog.Int("pool_size", tw.Pool().Size()))
 	}
-
-	c.LLMClient = llm.NewClient(c.LLMAPIBase, c.LLMAPIKey, c.LLMModel,
-		llm.WithFallbackKeys(c.LLMAPIKeyFallbacks),
-		llm.WithMaxTokens(c.LLMMaxTokens),
-		llm.WithTemperature(c.LLMTemperature),
-		llm.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
-	)
 
 	engine.Init(c)
 
