@@ -18,8 +18,8 @@ github.com/PuerkitoBio/goquery
 # github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc
 ## explicit; go 1.12
 github.com/RadhiFadlillah/whatlanggo
-# github.com/anatolykoptev/go-engine v0.1.1
-## explicit; go 1.25.0
+# github.com/anatolykoptev/go-engine v0.7.0
+## explicit; go 1.26
 github.com/anatolykoptev/go-engine/extract
 github.com/anatolykoptev/go-engine/fetch
 github.com/anatolykoptev/go-engine/llm
@@ -27,10 +27,12 @@ github.com/anatolykoptev/go-engine/metrics
 github.com/anatolykoptev/go-engine/pipeline
 github.com/anatolykoptev/go-engine/search
 github.com/anatolykoptev/go-engine/text
-# github.com/anatolykoptev/go-kit v0.6.1-0.20260302231502-b68df5a4fe05
+# github.com/anatolykoptev/go-kit v0.8.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-kit/cache
 github.com/anatolykoptev/go-kit/env
+github.com/anatolykoptev/go-kit/llm
+github.com/anatolykoptev/go-kit/metrics
 # github.com/anatolykoptev/go-mcpserver v0.6.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver

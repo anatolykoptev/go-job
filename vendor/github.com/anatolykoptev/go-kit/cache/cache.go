@@ -68,6 +68,7 @@ type entry struct {
 	freq      uint8         // 0-3, S3-FIFO frequency counter
 	elem      *list.Element // back-ref in small or main list
 	inMain    bool          // false=small, true=main
+	tags      []string      // tag-based invalidation groups
 }
 
 // Cache is a tiered L1 (memory) + optional L2 (Redis) cache.
@@ -80,7 +81,8 @@ type Cache struct {
 	small    *list.List               // probation queue (10% capacity)
 	main     *list.List               // main queue (90% capacity)
 	ghost    *list.List               // ghost queue (evicted keys, no values)
-	ghostMap map[string]*list.Element // ghost key lookups
+	ghostMap map[string]*list.Element  // ghost key lookups
+	tagIndex map[string]map[string]struct{} // tag → set of keys
 
 	smallCap int // 10% of L1MaxItems
 	mainCap  int // 90% of L1MaxItems
@@ -116,6 +118,7 @@ func New(cfg Config) *Cache {
 		main:     list.New(),
 		ghost:    list.New(),
 		ghostMap: make(map[string]*list.Element),
+		tagIndex: make(map[string]map[string]struct{}),
 		smallCap: smallCap,
 		mainCap:  mainCap,
 		ghostCap: mainCap,
@@ -164,6 +167,7 @@ func (c *Cache) Clear() int {
 	c.main.Init()
 	c.ghost.Init()
 	c.ghostMap = make(map[string]*list.Element)
+	c.tagIndex = make(map[string]map[string]struct{})
 	c.mu.Unlock()
 	return n
 }
