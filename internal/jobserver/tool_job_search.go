@@ -28,6 +28,7 @@ const (
 	platWWR         = "weworkremotely"
 	platFreelancer  = "freelancer"
 	platRemotive    = "remotive"
+	platRemote      = "remote"
 )
 
 //nolint:funlen // multi-platform aggregation
@@ -88,9 +89,9 @@ func registerJobSearch(server *mcp.Server) {
 		useHabr := platform == platAll || platform == "habr"
 		useTwitter := platform == platAll || platform == "twitter"
 		useCraigslist := platform == platAll || platform == platCraigslist
-		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == "remote"
-		useWWR := platform == platAll || platform == platWWR || platform == "remote"
-		useRemotive := platform == platAll || platform == platRemotive || platform == "remote"
+		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == platRemote
+		useWWR := platform == platAll || platform == platWWR || platform == platRemote
+		useRemotive := platform == platAll || platform == platRemotive || platform == platRemote
 		useFreelancer := platform == platAll || platform == platFreelancer
 		useGoogle := platform == platAll || platform == platGoogle
 
@@ -404,7 +405,7 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:weworkremotely.com"
 	case platRemotive:
 		sitePart = "site:remotive.com"
-	case "remote":
+	case platRemote:
 		sitePart = "site:remoteok.com OR site:weworkremotely.com OR site:remotive.com"
 	case platFreelancer:
 		sitePart = "site:freelancer.com/projects"

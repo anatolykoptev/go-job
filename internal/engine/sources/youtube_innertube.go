@@ -166,7 +166,7 @@ func postInnerTubeWEB(ctx context.Context, endpoint string, payload any, visitor
 		req.Header.Set("X-Goog-Visitor-Id", visitorData)
 		req.Header.Set("Origin", "https://www.youtube.com")
 		req.Header.Set("Referer", "https://www.youtube.com/")
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, fmt.Errorf("innertube WEB [%s]: %w", endpoint, err)

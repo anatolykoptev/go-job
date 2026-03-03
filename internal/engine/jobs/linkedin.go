@@ -252,7 +252,7 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 		req.Header.Set("User-Agent", engine.UserAgentChrome)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err

@@ -23,7 +23,7 @@ type ApplicationPrepResult struct {
 // resume analysis + cover letter + interview prep + optional company research.
 func PrepareApplication(ctx context.Context, resume, jobDescription, company, tone string) (*ApplicationPrepResult, error) {
 	if tone == "" {
-		tone = "professional"
+		tone = ToneProfessional
 	}
 
 	resumeTrunc := engine.TruncateRunes(resume, 4000, "")

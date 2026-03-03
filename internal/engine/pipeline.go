@@ -42,7 +42,7 @@ func RunSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (ou
 func runSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (SmartSearchOutput, error) {
 	lang := opts.Language
 	if lang == "" {
-		lang = "all"
+		lang = LangAll
 	}
 	contentLimit := opts.ContentLimit
 	if contentLimit == 0 {
@@ -223,7 +223,7 @@ func buildRawOutput(query string, results []SearxngResult, contents map[string]s
 
 	answer := fmt.Sprintf("Found %d results for: %s\n\n", len(results), query)
 	for _, p := range parts {
-		answer += p + "\n\n---\n\n"
+		answer += p + "\n\n---\n\n" //nolint:perfsprint // simple readable concatenation
 	}
 
 	return SmartSearchOutput{

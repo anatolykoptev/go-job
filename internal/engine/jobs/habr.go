@@ -85,7 +85,7 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // Habr API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, fmt.Errorf("habr career API: %w", err)

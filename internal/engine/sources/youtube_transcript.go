@@ -164,7 +164,7 @@ func fetchTimedText(ctx context.Context, baseURL string) (string, error) {
 			return nil, err
 		}
 		req.Header.Set("User-Agent", engine.UserAgentBot)
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return "", fmt.Errorf("fetch timedtext: %w", err)
@@ -224,7 +224,7 @@ func fetchTranscriptViaPlayer(ctx context.Context, videoID string, langs []strin
 		req.Header.Set("User-Agent", ytAndroidUA)
 		req.Header.Set("X-Youtube-Client-Name", "3")
 		req.Header.Set("X-Youtube-Client-Version", ytAndroidVersion)
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return "", fmt.Errorf("android innertube: %w", err)
@@ -272,7 +272,7 @@ func fetchTranscriptViaPageScrape(ctx context.Context, videoID string, langs []s
 		req.Header.Set("User-Agent", engine.RandomUserAgent())
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return "", fmt.Errorf("watch page: %w", err)

@@ -166,7 +166,7 @@ func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLRespon
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
-		resp, err := engine.Cfg.HTTPClient.Do(req)
+		resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 		if err != nil {
 			return nil, err
 		}

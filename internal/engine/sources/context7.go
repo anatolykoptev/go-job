@@ -68,7 +68,7 @@ func resolveLibrary(ctx context.Context, query, libraryName string) (*C7Library,
 	}
 	setC7Headers(req)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req)
+	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // context7 API URL from config, intentional outbound request
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func queryDocs(ctx context.Context, query, libraryID string) (*c7ContextResponse
 	}
 	setC7Headers(req)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req)
+	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // context7 API URL from config, intentional outbound request
 	if err != nil {
 		return nil, err
 	}

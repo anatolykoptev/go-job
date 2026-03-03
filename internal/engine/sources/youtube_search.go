@@ -108,7 +108,7 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 	params.Set("type", "video")
 	params.Set("maxResults", strconv.Itoa(limit))
 	params.Set("key", apiKey)
-	if language != "" && language != "all" {
+	if language != "" && language != engine.LangAll {
 		params.Set("relevanceLanguage", language)
 	}
 
@@ -119,7 +119,7 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 			return nil, err
 		}
 		req.Header.Set("User-Agent", engine.UserAgentBot)
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, fmt.Errorf("youtube data API: %w", err)
@@ -164,7 +164,7 @@ func searchYouTubeInitialData(ctx context.Context, query string, limit int) ([]e
 		req.Header.Set("User-Agent", engine.RandomUserAgent())
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, fmt.Errorf("youtube search page: %w", err)

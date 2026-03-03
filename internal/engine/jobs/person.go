@@ -60,7 +60,7 @@ func callGoHully(ctx context.Context, toolName string, params map[string]any) (s
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := http.DefaultClient.Do(httpReq) //nolint:gosec // go-hully internal API, intentional outbound request
 	if err != nil {
 		return "", fmt.Errorf("go-hully unreachable: %w", err)
 	}

@@ -6,7 +6,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anatolykoptev/go-kit v0.6.1-0.20260302231502-b68df5a4fe05
-	github.com/anatolykoptev/go-mcpserver v0.5.0
+	github.com/anatolykoptev/go-mcpserver v0.6.0
 	github.com/anatolykoptev/go-stealth v1.0.1
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0

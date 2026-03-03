@@ -91,7 +91,7 @@ func SearchFreelancerAPI(ctx context.Context, query string, limit int) ([]engine
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // Freelancer API URL from config, intentional outbound request
 	})
 	if err != nil {
 		return nil, err

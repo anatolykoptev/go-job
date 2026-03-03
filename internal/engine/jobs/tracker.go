@@ -85,7 +85,7 @@ var (
 func openTrackerDB() (*sql.DB, error) {
 	trackerOnce.Do(func() {
 		dir := filepath.Join(os.Getenv("HOME"), ".go_job")
-		if err := os.MkdirAll(dir, 0750); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from HOME env var, not user input
 			trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
 			return
 		}
@@ -107,7 +107,7 @@ func openTrackerDB() (*sql.DB, error) {
 
 // initTrackerSchema creates the jobs table if it doesn't exist.
 func initTrackerSchema(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS jobs (
+	schema := `CREATE TABLE IF NOT EXISTS jobs (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		title      TEXT NOT NULL,
 		company    TEXT NOT NULL,
@@ -118,7 +118,8 @@ func initTrackerSchema(db *sql.DB) error {
 		location   TEXT,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
-	)`)
+	)`
+	_, err := db.Exec(schema) //nolint:noctx // schema init, no user context available
 	return err
 }
 
@@ -151,7 +152,7 @@ func AddTrackedJob(_ context.Context, input JobTrackerAddInput) (*JobTrackerResu
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec(
+	res, err := db.Exec( //nolint:noctx // SQLite file-based tracker, no context
 		`INSERT INTO jobs (title, company, url, status, notes, salary, location, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.Title, input.Company, input.URL, status,
@@ -186,13 +187,13 @@ func ListTrackedJobs(_ context.Context, input JobTrackerListInput) (*JobTrackerL
 		if !validStatus(status) {
 			return nil, fmt.Errorf("job_tracker_list: invalid status %q", status)
 		}
-		rows, err = db.Query(
+		rows, err = db.Query( //nolint:noctx // SQLite file-based tracker, no context
 			`SELECT id, title, company, url, status, notes, salary, location, created_at, updated_at
 			 FROM jobs WHERE status = ? ORDER BY updated_at DESC LIMIT ?`,
 			status, limit,
 		)
 	} else {
-		rows, err = db.Query(
+		rows, err = db.Query( //nolint:noctx // SQLite file-based tracker, no context
 			`SELECT id, title, company, url, status, notes, salary, location, created_at, updated_at
 			 FROM jobs ORDER BY updated_at DESC LIMIT ?`,
 			limit,
@@ -221,9 +222,9 @@ func ListTrackedJobs(_ context.Context, input JobTrackerListInput) (*JobTrackerL
 	// Count total matching rows
 	var total int
 	if input.Status != "" {
-		db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = ?`, strings.ToLower(input.Status)).Scan(&total) //nolint:errcheck
+		db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = ?`, strings.ToLower(input.Status)).Scan(&total) //nolint:errcheck,noctx
 	} else {
-		db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&total) //nolint:errcheck
+		db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&total) //nolint:errcheck,noctx
 	}
 
 	if jobs == nil {
@@ -254,17 +255,17 @@ func UpdateTrackedJob(_ context.Context, input JobTrackerUpdateInput) (*JobTrack
 		if !validStatus(status) {
 			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
 		}
-		_, err = db.Exec(`UPDATE jobs SET status=?, notes=?, updated_at=? WHERE id=?`,
+		_, err = db.Exec(`UPDATE jobs SET status=?, notes=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
 			status, input.Notes, now, input.ID)
 	case input.Status != "":
 		status := strings.ToLower(input.Status)
 		if !validStatus(status) {
 			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
 		}
-		_, err = db.Exec(`UPDATE jobs SET status=?, updated_at=? WHERE id=?`,
+		_, err = db.Exec(`UPDATE jobs SET status=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
 			status, now, input.ID)
 	default:
-		_, err = db.Exec(`UPDATE jobs SET notes=?, updated_at=? WHERE id=?`,
+		_, err = db.Exec(`UPDATE jobs SET notes=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
 			input.Notes, now, input.ID)
 	}
 

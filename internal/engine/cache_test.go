@@ -102,7 +102,8 @@ func TestCacheStats(t *testing.T) {
 
 	// Miss
 	CacheGet(ctx, key)
-	hits, misses := CacheStats()
+	var hits, misses int64
+	_, misses = CacheStats()
 	if misses != 1 {
 		t.Errorf("misses = %d, want 1", misses)
 	}

@@ -1,5 +1,15 @@
 # Roadmap
 
+## v0.6.0 (done)
+
+- ~~**MCP-layer tool scope filtering**~~ — `BearerAuth.ToolFilter func(ctx, toolName, *TokenInfo) bool`; filters `tools/list` responses and blocks `tools/call` per token scope. Inspired by FastMCP Python `AuthMiddleware.on_list_tools()`.
+- ~~**Testing convenience**~~ — `NewTestServer(t, server, cfg) *httptest.Server` wrapping `Build()` + `httptest.NewServer()` + `t.Cleanup()`. Mirrors mark3labs/mcp-go `mcptest`.
+- ~~**MCPHooks convenience**~~ — `MCPHooks{OnToolCall, OnToolResult, OnError}` → `Middleware()` factory for `MCPReceivingMiddleware`; typed hooks for metrics/tracing. Inspired by mark3labs/mcp-go 24-hook system.
+
+## v0.5.1 (done)
+
+- ~~**StaticTokenVerifier**~~ — convenience helper for pre-shared token auth without full OAuth
+
 ## v0.5.0 (done)
 
 - ~~**MCP-layer middleware**~~ — `Config.MCPReceivingMiddleware`/`MCPSendingMiddleware` pass-through to go-sdk `AddReceivingMiddleware`/`AddSendingMiddleware`

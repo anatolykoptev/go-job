@@ -32,6 +32,7 @@ const (
 	MetricIndeedRequests          = "indeed_requests"
 	MetricHabrRequests            = "habr_requests"
 	MetricCraigslistRequests      = "craigslist_requests"
+	MetricToolCalls               = "tool_calls"
 )
 
 var reg = kitmetrics.NewRegistry()
@@ -59,6 +60,7 @@ func FormatMetrics() string {
 		MetricYouTubeSearchRequests, MetricYouTubeTranscriptReqs,
 		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
 		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests,
+		MetricToolCalls,
 		"cache_hits", "cache_misses",
 	}
 	for _, k := range keys {
@@ -81,6 +83,7 @@ func IncrCraigslistRequests()     { reg.Incr(MetricCraigslistRequests) }
 func IncrFreelancerAPIRequests()  { reg.Incr(MetricFreelancerAPIRequests) }
 func IncrYouTubeSearch()          { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()      { reg.Incr(MetricYouTubeTranscriptReqs) }
+func IncrToolCall()               { reg.Incr(MetricToolCalls) }
 
 // TrackOperation logs a warning if an operation takes longer than threshold.
 func TrackOperation(ctx context.Context, name string, fn func(context.Context) error) error {

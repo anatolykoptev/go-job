@@ -7,13 +7,16 @@ import (
 	"github.com/anatolykoptev/go-kit/strutil"
 )
 
-// NormLang normalises a language field: empty string → "all".
+// NormLang normalises a language field: empty string → LangAll.
 func NormLang(lang string) string {
 	if lang == "" {
-		return "all"
+		return LangAll
 	}
 	return lang
 }
+
+// LangAll is the sentinel value meaning "all languages".
+const LangAll = "all"
 
 // User-Agent strings used across HTTP clients.
 const (

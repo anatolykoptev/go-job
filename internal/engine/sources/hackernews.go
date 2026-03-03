@@ -60,7 +60,7 @@ func SearchHackerNews(ctx context.Context, input engine.HNSearchInput) ([]engine
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // HN Algolia API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func fetchHNComments(ctx context.Context, storyID string, maxComments int) ([]st
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req)
+	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // HN Firebase API URL, intentional outbound request
 	if err != nil {
 		return nil, err
 	}

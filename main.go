@@ -45,14 +45,24 @@ func main() {
 	jobserver.RegisterTools(server)
 	slog.Info("tools registered", slog.Int("count", 25))
 
+	hooks := mcpserver.MCPHooks{
+		OnToolCall: func(_ context.Context, _ string) {
+			engine.IncrToolCall()
+		},
+		OnToolResult: func(_ context.Context, name string, dur time.Duration, isErr bool) {
+			slog.Info("tool_result", slog.String("tool", name), slog.Duration("duration", dur), slog.Bool("error", isErr))
+		},
+	}
+
 	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:           "go_job",
-		Version:        version,
-		Port:           mcpPort,
-		WriteTimeout:   600 * time.Second,
-		SessionTimeout: 10 * time.Minute,
-		MCPLogger:      slog.Default(),
-		Metrics:        engine.FormatMetrics,
+		Name:                   "go_job",
+		Version:                version,
+		Port:                   mcpPort,
+		WriteTimeout:           600 * time.Second,
+		SessionTimeout:         10 * time.Minute,
+		MCPLogger:              slog.Default(),
+		Metrics:                engine.FormatMetrics,
+		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware()},
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
