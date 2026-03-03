@@ -1,6 +1,43 @@
 package engine
 
-// --- Core search types ---
+import (
+	"github.com/anatolykoptev/go-engine/llm"
+	"github.com/anatolykoptev/go-engine/pipeline"
+	"github.com/anatolykoptev/go-engine/search"
+	"github.com/anatolykoptev/go-engine/text"
+)
+
+// --- Type aliases mapping go-job types to go-engine types ---
+
+type SearxngResult = search.Result
+type LLMStructuredOutput = llm.StructuredOutput
+type FactItem = llm.FactItem
+type SourceItem = pipeline.SourceItem
+type SmartSearchOutput = pipeline.SearchOutput
+type OutputOpts = pipeline.OutputOpts
+type QueryType = text.QueryType
+type QueryDomain = text.QueryDomain
+
+// Constant aliases for query types.
+const (
+	QtGeneral    = text.QtGeneral
+	QtFact       = text.QtFact
+	QtComparison = text.QtComparison
+	QtList       = text.QtList
+	QtHowTo      = text.QtHowTo
+)
+
+// Constant aliases for query domains.
+const (
+	QdGeneral     = text.QdGeneral
+	QdWordPress   = text.QdWordPress
+	QdClaudeCode  = text.QdClaudeCode
+	QdGitHubRepo  = text.QdGitHubRepo
+	QdLibDocs     = text.QdLibDocs
+	QdHuggingFace = text.QdHuggingFace
+)
+
+// --- Domain-specific input types (go-job only) ---
 
 type SmartSearchInput struct {
 	Query     string `json:"query" jsonschema:"Search query"`
@@ -27,27 +64,7 @@ type WPDevSearchInput struct {
 	TimeRange string `json:"time_range,omitempty" jsonschema:"Time filter: day, month, year"`
 }
 
-// --- Output types (JSON responses) ---
-
-type SourceItem struct {
-	Index   int    `json:"index"`
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet,omitempty"`
-}
-
-// FactItem is a single verified fact with explicit source indices.
-type FactItem struct {
-	Point   string `json:"point"`   // complete sentence, no markdown
-	Sources []int  `json:"sources"` // 1-based indices into Sources array
-}
-
-type SmartSearchOutput struct {
-	Query   string       `json:"query"`
-	Answer  string       `json:"answer"`  // 2-3 sentence plain text summary, no markdown
-	Facts   []FactItem   `json:"facts"`   // key facts with explicit source indices
-	Sources []SourceItem `json:"sources"`
-}
+// --- Domain-specific output types (go-job only) ---
 
 type RawSearchOutput struct {
 	Query   string          `json:"query"`
@@ -67,26 +84,4 @@ type URLReadOutput struct {
 	Title     string `json:"title,omitempty"`
 	Content   string `json:"content"`
 	Truncated bool   `json:"truncated"`
-}
-
-// --- Output formatting ---
-
-// OutputOpts controls the size and shape of SmartSearchOutput.
-type OutputOpts struct {
-	MaxAnswerChars  int  // truncate LLM answer (0 = no limit)
-	MaxSources      int  // max sources in output (0 = all)
-	IncludeSnippets bool // include snippet text in sources
-}
-
-// --- Internal types ---
-
-type SearxngResult struct {
-	Title   string  `json:"title"`
-	Content string  `json:"content"`
-	URL     string  `json:"url"`
-	Score   float64 `json:"score"`
-}
-
-type searxngResponse struct {
-	Results []SearxngResult `json:"results"`
 }
