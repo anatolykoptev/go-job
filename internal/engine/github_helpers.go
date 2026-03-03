@@ -41,7 +41,7 @@ func searchRepoTree(ctx context.Context, owner, repo, filename string) ([]string
 	if cfg.GithubToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.GithubToken)
 	}
-	resp, err := cfg.HTTPClient.Do(req)
+	resp, err := cfg.HTTPClient.Do(req) //nolint:gosec // GitHub API URL, intentional outbound request
 	if err != nil {
 		return nil, err
 	}

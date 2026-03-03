@@ -90,7 +90,7 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err
@@ -209,7 +209,7 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 	req.Header.Set("Accept", "application/xml, application/rss+xml")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err
@@ -457,7 +457,7 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err

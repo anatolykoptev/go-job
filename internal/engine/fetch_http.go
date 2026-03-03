@@ -28,7 +28,7 @@ func fetchWithRetry(ctx context.Context, fetchURL string, isHTML bool) (*http.Re
 
 		req.Header.Set("Accept-Encoding", "gzip, deflate")
 
-		return cfg.HTTPClient.Do(req)
+		return cfg.HTTPClient.Do(req) //nolint:gosec // URL comes from search results, intentional SSRF via proxy
 	})
 }
 

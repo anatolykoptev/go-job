@@ -137,7 +137,7 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
@@ -320,7 +320,7 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
 		return nil, err

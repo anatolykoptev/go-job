@@ -9,6 +9,9 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
+// ToneProfessional is the default tone for cover letters and applications.
+const ToneProfessional = "professional"
+
 // --- Resume Analysis ---
 
 // ResumeAnalysisResult is the structured output of resume_analyze.
@@ -99,11 +102,11 @@ Return ONLY the cover letter text, no JSON, no markdown headers.`
 // tone: "professional" (default), "friendly", "concise"
 func GenerateCoverLetter(ctx context.Context, resumeText, jobDescription, tone string) (*CoverLetterResult, error) {
 	if tone == "" {
-		tone = "professional" //nolint:goconst
+		tone = ToneProfessional
 	}
-	validTones := map[string]bool{"professional": true, "friendly": true, "concise": true}
+	validTones := map[string]bool{ToneProfessional: true, "friendly": true, "concise": true}
 	if !validTones[strings.ToLower(tone)] {
-		tone = "professional"
+		tone = ToneProfessional
 	}
 
 	resumeTrunc := engine.TruncateRunes(resumeText, 3000, "")

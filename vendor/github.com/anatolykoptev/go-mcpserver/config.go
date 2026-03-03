@@ -93,6 +93,9 @@ func applyMCPMiddleware(server *mcp.Server, cfg Config) {
 	if server == nil {
 		return
 	}
+	if cfg.BearerAuth != nil && cfg.BearerAuth.ToolFilter != nil {
+		server.AddReceivingMiddleware(toolFilterMiddleware(cfg.BearerAuth.ToolFilter))
+	}
 	if len(cfg.MCPReceivingMiddleware) > 0 {
 		server.AddReceivingMiddleware(cfg.MCPReceivingMiddleware...)
 	}

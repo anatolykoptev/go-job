@@ -195,5 +195,5 @@ func (c *MemDBClient) post(ctx context.Context, path string, body any) (*http.Re
 		req.Header.Set("X-Internal-Service", c.serviceSecret)
 	}
 
-	return c.http.Do(req)
+	return c.http.Do(req) //nolint:gosec // MemDB internal API URL, intentional outbound request
 }

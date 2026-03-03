@@ -68,7 +68,7 @@ func FindWhoIsHiringThread(ctx context.Context) (int64, error) {
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return 0, err
@@ -108,7 +108,7 @@ func fetchHNItem(ctx context.Context, id int64) (*hnItemResponse, error) {
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err
@@ -294,7 +294,7 @@ func searchHNThreadComments(ctx context.Context, threadID int64, query string, l
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req)
+	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	if err != nil {
 		return nil, err
 	}

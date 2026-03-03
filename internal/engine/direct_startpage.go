@@ -12,7 +12,7 @@ import (
 // SearchStartpageDirect queries Startpage directly using browser TLS fingerprint.
 // Returns results compatible with the SearXNG pipeline.
 func SearchStartpageDirect(ctx context.Context, bc *BrowserClient, query, language string) ([]SearxngResult, error) {
-	if language == "" || language == "all" {
+	if language == "" || language == LangAll {
 		language = "english"
 	}
 

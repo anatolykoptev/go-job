@@ -21,7 +21,7 @@ func SearchSearXNG(ctx context.Context, query, language, timeRange, engines stri
 	q := u.Query()
 	q.Set("q", query)
 	q.Set("format", "json")
-	if language != "" && language != "all" {
+	if language != "" && language != LangAll {
 		q.Set("language", language)
 	}
 	if timeRange != "" {
@@ -39,7 +39,7 @@ func SearchSearXNG(ctx context.Context, query, language, timeRange, engines stri
 		return nil, err
 	}
 	resp, err := RetryHTTP(ctx, DefaultRetryConfig, func() (*http.Response, error) {
-		return cfg.HTTPClient.Do(req)
+		return cfg.HTTPClient.Do(req) //nolint:gosec // SearXNG URL from config, intentional outbound request
 	})
 	if err != nil {
 		return nil, err

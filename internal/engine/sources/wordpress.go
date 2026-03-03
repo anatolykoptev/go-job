@@ -79,7 +79,7 @@ func fetchWPPostType(ctx context.Context, query, postType, label string) ([]engi
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
 		return nil, err

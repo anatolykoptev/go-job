@@ -18,10 +18,12 @@ Bootstrap library for Go MCP servers. Zero-binary — imported as a dependency.
 |------|---------|
 | `mcpserver.go` | `Run()` + `Build()` entry points, stdio/HTTP branching, server lifecycle |
 | `config.go` | `Config` struct, validation, defaults, `buildMiddleware` |
-| `auth.go` | `BearerAuth` config, OAuth 2.1 types, re-exports from go-sdk/auth |
+| `auth.go` | `BearerAuth` config (incl. `ToolFilter`), `toolFilterMiddleware`, OAuth 2.1 types |
 | `middleware.go` | Recovery, RequestID, RequestLog, CORS, `WithRequestID` context helper |
 | `response_writer.go` | `responseWriter` wrapper (status/bytes capture, `http.Flusher`) |
 | `health.go` | `/health`, `/health/live`, `/health/ready` handlers |
+| `hooks.go` | `MCPHooks` typed callbacks for tool metrics/tracing → `mcp.Middleware` |
+| `testing.go` | `NewTestServer(t, server, cfg)` — httptest helper with auto-cleanup |
 
 ## Commands
 
@@ -48,8 +50,11 @@ go vet ./... # additional checks
 - **Library, not binary** — no `main.go`, no GoReleaser; consumers `go get` it
 - **Stateless by default** — `Config.Stateless *bool` (nil=true); `Config.DisableMCP` skips `/mcp` routes
 - **OAuth 2.1 bearer auth** — `Config.BearerAuth` wraps `/mcp` only; metadata via RFC 9728
+- **Tool scope filtering** — `BearerAuth.ToolFilter` hides/denies tools per token scopes (MCP middleware)
+- **MCPHooks** — typed callbacks (`OnToolCall`, `OnToolResult`, `OnError`) for metrics/tracing
 - **MCP-layer middleware** — `Config.MCPReceivingMiddleware`/`MCPSendingMiddleware` pass-through to go-sdk
 - **`Build()` for testing** — returns `http.Handler` without starting server
+- **`NewTestServer()`** — httptest helper with auto-cleanup for integration tests
 - **Context key pattern** — unexported `requestIDContextKey struct{}` (not int-based)
 - **Error channel over os.Exit** — `Run()` returns bind errors instead of calling `os.Exit(1)`
 - **No external dependencies** beyond `go-sdk/mcp` (stdlib only for middleware)

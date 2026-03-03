@@ -61,7 +61,7 @@ func FetchRepoMeta(ctx context.Context, owner, repo string) (*RepoMeta, error) {
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // GitHub API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func SearchGitHubRepos(ctx context.Context, query, sort string) ([]engine.Searxn
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // GitHub API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
@@ -208,7 +208,7 @@ func SearchGitHubIssues(ctx context.Context, query string) ([]engine.IssueItem, 
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // GitHub API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
@@ -283,7 +283,7 @@ func SearchGitHubCode(ctx context.Context, query string, repos []string) ([]engi
 	// Build query: "search terms repo:owner/repo1 repo:owner/repo2"
 	q := query
 	for _, r := range repos {
-		q += " repo:" + r
+		q += " repo:" + r //nolint:perfsprint // simple readable concatenation
 	}
 
 	apiURL := "https://api.github.com/search/code?" + url.Values{
@@ -303,7 +303,7 @@ func SearchGitHubCode(ctx context.Context, query string, repos []string) ([]engi
 	}
 
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req)
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // GitHub Code Search API URL, intentional outbound request
 	})
 	if err != nil {
 		return nil, err
