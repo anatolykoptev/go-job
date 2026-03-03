@@ -33,12 +33,22 @@ var DefaultRetryConfig = RetryConfig{
 // RetryDo retries fn up to MaxRetries times with exponential backoff.
 // Retries only on retryable errors; returns immediately on non-retryable or context cancellation.
 func RetryDo[T any](ctx context.Context, rc RetryConfig, fn func() (T, error)) (T, error) {
+	return retryDo(ctx, rc, nil, fn)
+}
+
+// retryDo is the shared retry loop. If resetFn is non-nil, it is called before
+// each retry attempt (not before the first attempt).
+func retryDo[T any](ctx context.Context, rc RetryConfig, resetFn func(), fn func() (T, error)) (T, error) {
 	var zero T
 	var lastErr error
 
 	for attempt := 0; attempt <= rc.MaxRetries; attempt++ {
 		if ctx.Err() != nil {
 			return zero, ctx.Err()
+		}
+
+		if attempt > 0 && resetFn != nil {
+			resetFn()
 		}
 
 		result, err := fn()
@@ -52,6 +62,10 @@ func RetryDo[T any](ctx context.Context, rc RetryConfig, fn func() (T, error)) (
 		}
 
 		if attempt < rc.MaxRetries {
+			if hook := retryHookFromContext(ctx); hook != nil {
+				hook(ctx, attempt+1, rc.MaxRetries, lastErr)
+			}
+
 			wait := time.Duration(float64(rc.InitialWait) * math.Pow(rc.Multiplier, float64(attempt)))
 			if wait > rc.MaxWait {
 				wait = rc.MaxWait
@@ -104,7 +118,7 @@ func (e *HttpStatusError) Error() string {
 func IsRetryable(err error) bool {
 	var httpErr *HttpStatusError
 	if errors.As(err, &httpErr) {
-		return true
+		return IsRetryableStatus(httpErr.StatusCode)
 	}
 
 	var opErr *net.OpError
