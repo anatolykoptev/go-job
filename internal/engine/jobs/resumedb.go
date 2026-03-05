@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -65,14 +67,27 @@ func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error)
 		return err
 	}
 
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	pool, err := retry.Do(ctx, retry.Options{
+		MaxAttempts:  10,
+		InitialDelay: time.Second,
+		MaxDelay:     30 * time.Second,
+		Jitter:       true,
+		OnRetry: func(attempt int, err error) {
+			slog.Warn("postgres not ready, retrying", slog.Int("attempt", attempt), slog.Any("error", err))
+		},
+	}, func() (*pgxpool.Pool, error) {
+		p, retryErr := pgxpool.NewWithConfig(ctx, config)
+		if retryErr != nil {
+			return nil, retryErr
+		}
+		if retryErr = p.Ping(ctx); retryErr != nil {
+			p.Close()
+			return nil, retryErr
+		}
+		return p, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create pgx pool: %w", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
+		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
 
 	db := &ResumeDB{pool: pool}

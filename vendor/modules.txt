@@ -27,12 +27,13 @@ github.com/anatolykoptev/go-engine/metrics
 github.com/anatolykoptev/go-engine/pipeline
 github.com/anatolykoptev/go-engine/search
 github.com/anatolykoptev/go-engine/text
-# github.com/anatolykoptev/go-kit v0.8.0
+# github.com/anatolykoptev/go-kit v0.9.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-kit/cache
 github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
+github.com/anatolykoptev/go-kit/retry
 # github.com/anatolykoptev/go-mcpserver v0.6.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver

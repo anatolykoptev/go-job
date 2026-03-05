@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // SetJSON marshals val as JSON and stores it in the cache.
@@ -12,6 +13,16 @@ func SetJSON[T any](c *Cache, ctx context.Context, key string, val T) error {
 		return err
 	}
 	c.Set(ctx, key, data)
+	return nil
+}
+
+// SetJSONWithTTL marshals val as JSON and stores it with a custom TTL.
+func SetJSONWithTTL[T any](c *Cache, ctx context.Context, key string, val T, ttl time.Duration) error {
+	data, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+	c.SetWithTTL(ctx, key, data, ttl)
 	return nil
 }
 
