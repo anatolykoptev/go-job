@@ -15,6 +15,7 @@ type clientConfig struct {
 	http3          bool
 	blockRetries   int
 	cookieProvider CookieProvider
+	oxBrowserURL   string
 }
 
 func defaultConfig() *clientConfig {
@@ -114,5 +115,15 @@ func WithRetryOnBlock(n int) ClientOption {
 func WithCookieSolver(provider CookieProvider) ClientOption {
 	return func(c *clientConfig) {
 		c.cookieProvider = provider
+	}
+}
+
+// WithOxBrowser enables ox-browser integration for CF solving and smart fetch.
+// If no CookieProvider is already set, adds OxBrowserSolver + CloudflareDetectMiddleware.
+// Always adds SmartFetchMiddleware as a fallback for CF-challenged responses.
+// url is the ox-browser base URL (e.g. "http://127.0.0.1:8901").
+func WithOxBrowser(url string) ClientOption {
+	return func(c *clientConfig) {
+		c.oxBrowserURL = url
 	}
 }

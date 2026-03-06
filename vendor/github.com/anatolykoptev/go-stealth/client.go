@@ -79,6 +79,16 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 		bc.Use(CloudflareCookieMiddleware(cfg.cookieProvider))
 		bc.Use(CloudflareDetectMiddleware)
 	}
+	if cfg.oxBrowserURL != "" {
+		oxClient := NewOxBrowserClient(cfg.oxBrowserURL)
+		if cfg.cookieProvider == nil {
+			bc.Use(CloudflareCookieMiddleware(NewOxBrowserSolver(OxBrowserSolverConfig{
+				BaseURL: cfg.oxBrowserURL,
+			})))
+			bc.Use(CloudflareDetectMiddleware)
+		}
+		bc.Use(SmartFetchMiddleware(oxClient))
+	}
 	return bc, nil
 }
 
