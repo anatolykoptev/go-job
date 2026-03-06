@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anatolykoptev/go-engine/search"
+	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/text"
 )
 
@@ -41,14 +41,13 @@ Be practical — if the question implies a choice, give a recommendation.`,
 }
 
 // BuildSourcesText formats search results and their fetched content for LLM context.
-func BuildSourcesText(results []search.Result, contents map[string]string, contentLimit int) string {
+// Each source's content is truncated to fit within maxTokens using charsPerToken estimation.
+func BuildSourcesText(results []sources.Result, contents map[string]string, maxTokens int, charsPerToken float64) string {
 	var sb strings.Builder
 	for i, r := range results {
 		fmt.Fprintf(&sb, "\n[%d] %s\nURL: %s\n", i+1, r.Title, r.URL)
 		if c, ok := contents[r.URL]; ok && c != "" {
-			if len(c) > contentLimit {
-				c = c[:contentLimit] + "..."
-			}
+			c = text.TruncateToTokenBudget(c, maxTokens, charsPerToken)
 			fmt.Fprintf(&sb, "Content: %s\n", c)
 		}
 		if r.Content != "" {
@@ -61,15 +60,15 @@ func BuildSourcesText(results []search.Result, contents map[string]string, conte
 }
 
 // Summarize summarizes search results using auto-detected query type instructions.
-func (c *Client) Summarize(ctx context.Context, query string, contentLimit int, results []search.Result, contents map[string]string) (*StructuredOutput, error) {
+func (c *Client) Summarize(ctx context.Context, query string, maxTokens int, charsPerToken float64, results []sources.Result, contents map[string]string) (*StructuredOutput, error) {
 	qt := text.DetectQueryType(query)
 	instruction := TypeInstructions[qt]
-	return c.SummarizeWithInstruction(ctx, query, instruction, contentLimit, results, contents)
+	return c.SummarizeWithInstruction(ctx, query, instruction, maxTokens, charsPerToken, results, contents)
 }
 
 // SummarizeWithInstruction summarizes search results using a custom LLM instruction.
-func (c *Client) SummarizeWithInstruction(ctx context.Context, query, instruction string, contentLimit int, results []search.Result, contents map[string]string) (*StructuredOutput, error) {
-	sources := BuildSourcesText(results, contents, contentLimit)
+func (c *Client) SummarizeWithInstruction(ctx context.Context, query, instruction string, maxTokens int, charsPerToken float64, results []sources.Result, contents map[string]string) (*StructuredOutput, error) {
+	sources := BuildSourcesText(results, contents, maxTokens, charsPerToken)
 	prompt := fmt.Sprintf(PromptBase, currentDate(), instruction, query, sources)
 
 	raw, err := c.Complete(ctx, prompt)
@@ -88,8 +87,8 @@ func (c *Client) SummarizeWithInstruction(ctx context.Context, query, instructio
 }
 
 // SummarizeDeep summarizes search results with exhaustive fact extraction.
-func (c *Client) SummarizeDeep(ctx context.Context, query, instruction string, contentLimit int, results []search.Result, contents map[string]string) (*StructuredOutput, error) {
-	sources := BuildSourcesText(results, contents, contentLimit)
+func (c *Client) SummarizeDeep(ctx context.Context, query, instruction string, maxTokens int, charsPerToken float64, results []sources.Result, contents map[string]string) (*StructuredOutput, error) {
+	sources := BuildSourcesText(results, contents, maxTokens, charsPerToken)
 	instructionSection := ""
 	if instruction != "" {
 		instructionSection = instruction + "\n\n"
@@ -114,8 +113,8 @@ func (c *Client) SummarizeDeep(ctx context.Context, query, instruction string, c
 // SummarizeToJSON builds an LLM prompt from search results and parses the response as JSON into T.
 // Returns (parsed, "", nil) on success, (nil, raw, nil) on parse failure (caller handles fallback),
 // or (nil, "", err) on LLM error.
-func SummarizeToJSON[T any](ctx context.Context, c *Client, query, instruction string, contentLimit int, results []search.Result, contents map[string]string) (*T, string, error) {
-	sources := BuildSourcesText(results, contents, contentLimit)
+func SummarizeToJSON[T any](ctx context.Context, c *Client, query, instruction string, maxTokens int, charsPerToken float64, results []sources.Result, contents map[string]string) (*T, string, error) {
+	sources := BuildSourcesText(results, contents, maxTokens, charsPerToken)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
 
 	raw, err := c.Complete(ctx, prompt)

@@ -58,5 +58,6 @@ func (e *Extractor) extractRegex(body []byte) (*Result, error) {
 	return &Result{
 		Title:   title,
 		Content: e.truncate(content),
+		Format:  FormatText, // regex always returns text
 	}, nil
 }

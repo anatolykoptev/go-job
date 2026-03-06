@@ -4,15 +4,17 @@ package stealth
 type ClientOption func(*clientConfig)
 
 type clientConfig struct {
-	proxyURL     string
-	proxyPool    ProxyPoolProvider
-	profile      TLSProfile
-	timeout      int
-	headerOrder  []string
-	followRedirs bool
-	debug        bool
-	backend      BackendFactory
-	http3        bool
+	proxyURL       string
+	proxyPool      ProxyPoolProvider
+	profile        TLSProfile
+	timeout        int
+	headerOrder    []string
+	followRedirs   bool
+	debug          bool
+	backend        BackendFactory
+	http3          bool
+	blockRetries   int
+	cookieProvider CookieProvider
 }
 
 func defaultConfig() *clientConfig {
@@ -93,5 +95,24 @@ func WithStdHTTP() ClientOption {
 func WithHTTP3() ClientOption {
 	return func(c *clientConfig) {
 		c.http3 = true
+	}
+}
+
+// WithRetryOnBlock enables automatic retry with proxy rotation when the server
+// returns a block status (403, 429). Each retry uses the next proxy from the pool.
+// Requires WithProxyPool. n is the number of extra retries (total attempts = 1 + n).
+func WithRetryOnBlock(n int) ClientOption {
+	return func(c *clientConfig) {
+		if n > 0 {
+			c.blockRetries = n
+		}
+	}
+}
+
+// WithCookieSolver enables Cloudflare challenge solving via a CookieProvider.
+// Automatically adds CloudflareDetectMiddleware and CloudflareCookieMiddleware.
+func WithCookieSolver(provider CookieProvider) ClientOption {
+	return func(c *clientConfig) {
+		c.cookieProvider = provider
 	}
 }

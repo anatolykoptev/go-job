@@ -2,90 +2,79 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/url"
 
-	"github.com/anatolykoptev/go-engine/fetch"
 	"github.com/anatolykoptev/go-engine/metrics"
+	"github.com/anatolykoptev/go-engine/sources"
+	"github.com/anatolykoptev/go-stealth/websearch"
 )
 
 const metricSearchRequests = "search_requests"
 
 // SearXNG queries a local SearXNG instance for search results.
+// Wraps websearch.SearXNG with go-engine metrics support.
 type SearXNG struct {
-	baseURL    string
+	inner   *websearch.SearXNG
+	metrics *metrics.Registry
+}
+
+// SearXNGOption configures a SearXNG client.
+type SearXNGOption func(*searxngConfig)
+
+type searxngConfig struct {
 	httpClient *http.Client
 	metrics    *metrics.Registry
 }
 
-// SearXNGOption configures a SearXNG client.
-type SearXNGOption func(*SearXNG)
-
 // WithHTTPClient sets the HTTP client for SearXNG requests.
 func WithHTTPClient(c *http.Client) SearXNGOption {
-	return func(s *SearXNG) { s.httpClient = c }
+	return func(cfg *searxngConfig) { cfg.httpClient = c }
 }
 
 // WithMetrics sets the metrics registry for tracking request counts.
 func WithMetrics(m *metrics.Registry) SearXNGOption {
-	return func(s *SearXNG) { s.metrics = m }
+	return func(cfg *searxngConfig) { cfg.metrics = m }
 }
 
 // NewSearXNG creates a SearXNG client.
 func NewSearXNG(baseURL string, opts ...SearXNGOption) *SearXNG {
-	s := &SearXNG{
-		baseURL:    baseURL,
-		httpClient: http.DefaultClient,
-	}
+	cfg := &searxngConfig{}
 	for _, o := range opts {
-		o(s)
+		o(cfg)
 	}
-	return s
+	var wsOpts []websearch.SearXNGOption
+	if cfg.httpClient != nil {
+		wsOpts = append(wsOpts, websearch.WithSearXNGHTTPClient(cfg.httpClient))
+	}
+	return &SearXNG{
+		inner:   websearch.NewSearXNG(baseURL, wsOpts...),
+		metrics: cfg.metrics,
+	}
 }
 
-// Search queries SearXNG and returns results.
-func (s *SearXNG) Search(ctx context.Context, query, language, timeRange, engines string) ([]Result, error) {
-	u, err := url.Parse(s.baseURL + "/search")
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
-	q.Set("q", query)
-	q.Set("format", "json")
-	if language != "" && language != "all" {
-		q.Set("language", language)
-	}
-	if timeRange != "" {
-		q.Set("time_range", timeRange)
-	}
-	if engines != "" {
-		q.Set("engines", engines)
-	}
-	u.RawQuery = q.Encode()
-
+// SearchQuery queries SearXNG using a sources.Query.
+// Reads Extra["categories"] and Extra["engines"] if set.
+func (s *SearXNG) SearchQuery(ctx context.Context, q sources.Query) ([]sources.Result, error) {
 	if s.metrics != nil {
 		s.metrics.Incr(metricSearchRequests)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	engines := q.Extra["engines"]
+	categories := q.Extra["categories"]
+	ws, err := s.inner.SearchAdvanced(ctx, q.Text, q.Language, q.TimeRange, engines, categories)
 	if err != nil {
 		return nil, err
 	}
-	// SearXNG botdetection requires X-Forwarded-For to identify the client IP.
-	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	return wsToSourceResults(ws), nil
+}
 
-	resp, err := fetch.RetryHTTP(ctx, fetch.DefaultRetryConfig, func() (*http.Response, error) {
-		return s.httpClient.Do(req) //nolint:bodyclose,gosec // closed below; URL is caller-provided
-	})
+// Search queries SearXNG and returns results.
+func (s *SearXNG) Search(ctx context.Context, query, language, timeRange, engines string) ([]sources.Result, error) {
+	if s.metrics != nil {
+		s.metrics.Incr(metricSearchRequests)
+	}
+	ws, err := s.inner.SearchAdvanced(ctx, query, language, timeRange, engines, "")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var data searxngResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
-	}
-	return data.Results, nil
+	return wsToSourceResults(ws), nil
 }

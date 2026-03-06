@@ -3,13 +3,13 @@ package engine
 import (
 	"github.com/anatolykoptev/go-engine/llm"
 	"github.com/anatolykoptev/go-engine/pipeline"
-	"github.com/anatolykoptev/go-engine/search"
+	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/text"
 )
 
 // --- Type aliases mapping go-job types to go-engine types ---
 
-type SearxngResult = search.Result
+type SearxngResult = sources.Result
 type LLMStructuredOutput = llm.StructuredOutput
 type FactItem = llm.FactItem
 type SourceItem = pipeline.SourceItem

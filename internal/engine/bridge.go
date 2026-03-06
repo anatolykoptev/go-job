@@ -115,15 +115,12 @@ func FetchURLContent(ctx context.Context, rawURL string) (title, content string,
 	}
 
 	parsedURL, _ := url.Parse(rawURL)
-	result, err := extractorInst.Extract(body, parsedURL)
+	result, err := extractorInst.Extract(ctx, body, parsedURL)
 	if err != nil {
 		return "", "", err
 	}
 
-	txt := result.Markdown
-	if strings.TrimSpace(txt) == "" {
-		txt = result.Content
-	}
+	txt := result.Content
 	txt = strings.TrimSpace(txt)
 	if len(txt) > cfg.MaxContentChars {
 		txt = txt[:cfg.MaxContentChars] + "..."
@@ -164,9 +161,19 @@ func BuildSearchOutput(query string, llmOut *LLMStructuredOutput, results []Sear
 	return pipeline.BuildSearchOutput(query, llmOut, results)
 }
 
-// ParallelFetch fetches URL content in parallel, returning url->text map.
+// FetchResult holds the outcome for a single parallel URL fetch.
+type FetchResult = pipeline.FetchResult
+
+// ParallelFetch fetches URL content in parallel, returning results per URL.
 func ParallelFetch(ctx context.Context, urls []string, fetchFn func(ctx context.Context, url string) (string, error)) map[string]string {
-	return pipeline.ParallelFetch(ctx, urls, fetchFn)
+	results := pipeline.ParallelFetch(ctx, urls, fetchFn)
+	m := make(map[string]string, len(results))
+	for _, r := range results {
+		if r.Err == nil && r.Content != "" {
+			m[r.URL] = r.Content
+		}
+	}
+	return m
 }
 
 // ExtractJSONAnswer extracts the "answer" field from malformed JSON.
