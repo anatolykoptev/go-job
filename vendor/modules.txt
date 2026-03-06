@@ -38,7 +38,7 @@ github.com/anatolykoptev/go-kit/retry
 # github.com/anatolykoptev/go-mcpserver v0.6.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
-# github.com/anatolykoptev/go-stealth v1.5.1-0.20260306090743-4a2f5cd2331d
+# github.com/anatolykoptev/go-stealth v1.5.1-0.20260306195200-b28d67aab251
 ## explicit; go 1.26
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/pool
@@ -427,6 +427,7 @@ golang.org/x/oauth2/internal
 # golang.org/x/sync v0.19.0
 ## explicit; go 1.24.0
 golang.org/x/sync/semaphore
+golang.org/x/sync/singleflight
 # golang.org/x/sys v0.41.0
 ## explicit; go 1.24.0
 golang.org/x/sys/cpu

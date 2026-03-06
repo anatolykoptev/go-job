@@ -9,9 +9,10 @@ import (
 type ChallengeType string
 
 const (
-	ChallengeJS        ChallengeType = "js_challenge"
-	ChallengeTurnstile ChallengeType = "managed_challenge"
-	ChallengeBlock     ChallengeType = "block"
+	ChallengeJS           ChallengeType = "js_challenge"
+	ChallengeTurnstile    ChallengeType = "managed_challenge"
+	ChallengeBlock        ChallengeType = "block"
+	ChallengeManagedAt200 ChallengeType = "managed_challenge_200"
 )
 
 // CloudflareError indicates a Cloudflare challenge or block was detected.
@@ -28,9 +29,6 @@ func (e *CloudflareError) Error() string {
 // DetectCloudflare inspects a Response for Cloudflare challenge markers.
 // Returns nil if the response is not a Cloudflare challenge.
 func DetectCloudflare(resp *Response) *CloudflareError {
-	if resp.StatusCode != 403 && resp.StatusCode != 503 {
-		return nil
-	}
 	server := strings.ToLower(resp.Headers["server"])
 	if !strings.Contains(server, "cloudflare") {
 		return nil
@@ -39,16 +37,33 @@ func DetectCloudflare(resp *Response) *CloudflareError {
 	body := strings.ToLower(string(resp.Body))
 	rayID := resp.Headers["cf-ray"]
 
-	if resp.StatusCode == 503 && strings.Contains(body, "challenge-platform") {
-		return &CloudflareError{Type: ChallengeJS, StatusCode: resp.StatusCode, RayID: rayID}
+	if resp.StatusCode == 403 || resp.StatusCode == 503 {
+		if resp.StatusCode == 503 && strings.Contains(body, "challenge-platform") {
+			return &CloudflareError{Type: ChallengeJS, StatusCode: resp.StatusCode, RayID: rayID}
+		}
+
+		if strings.Contains(body, "turnstile-wrapper") || strings.Contains(body, "cf-turnstile") {
+			return &CloudflareError{Type: ChallengeTurnstile, StatusCode: resp.StatusCode, RayID: rayID}
+		}
+
+		if strings.Contains(body, "you have been blocked") || strings.Contains(body, "cf-error-details") {
+			return &CloudflareError{Type: ChallengeBlock, StatusCode: resp.StatusCode, RayID: rayID}
+		}
+
+		return nil
 	}
 
-	if strings.Contains(body, "turnstile-wrapper") || strings.Contains(body, "cf-turnstile") {
-		return &CloudflareError{Type: ChallengeTurnstile, StatusCode: resp.StatusCode, RayID: rayID}
-	}
-
-	if strings.Contains(body, "you have been blocked") || strings.Contains(body, "cf-error-details") {
-		return &CloudflareError{Type: ChallengeBlock, StatusCode: resp.StatusCode, RayID: rayID}
+	if resp.StatusCode == 200 {
+		cfMitigated := strings.ToLower(resp.Headers["cf-mitigated"])
+		if strings.Contains(cfMitigated, "challenge") {
+			return &CloudflareError{Type: ChallengeManagedAt200, StatusCode: 200, RayID: rayID}
+		}
+		if strings.Contains(body, "cf-turnstile") || strings.Contains(body, "turnstile-wrapper") {
+			return &CloudflareError{Type: ChallengeTurnstile, StatusCode: 200, RayID: rayID}
+		}
+		if strings.Contains(body, "_cf_chl_opt") || strings.Contains(body, "challenge-platform") {
+			return &CloudflareError{Type: ChallengeManagedAt200, StatusCode: 200, RayID: rayID}
+		}
 	}
 
 	return nil
