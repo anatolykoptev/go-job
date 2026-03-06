@@ -65,7 +65,7 @@ func main() {
 
 func initEngine() {
 	c := engine.Config{
-		SearxngURL:           env.Str("SEARXNG_URL", "http://127.0.0.1:8888"),
+		SearxngURL:           env.Str("SEARXNG_URL", ""),
 		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
 		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
 		LLMAPIBase:           env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
