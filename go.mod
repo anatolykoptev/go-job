@@ -4,10 +4,10 @@ go 1.26
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
-	github.com/anatolykoptev/go-engine v0.7.0
+	github.com/anatolykoptev/go-engine v1.6.0
 	github.com/anatolykoptev/go-kit v0.9.0
 	github.com/anatolykoptev/go-mcpserver v0.6.0
-	github.com/anatolykoptev/go-stealth v1.3.1
+	github.com/anatolykoptev/go-stealth v1.5.1-0.20260306090743-4a2f5cd2331d
 	github.com/anatolykoptev/go-twitter v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/modelcontextprotocol/go-sdk v1.4.0
@@ -76,6 +76,7 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

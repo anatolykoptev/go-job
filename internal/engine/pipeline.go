@@ -57,19 +57,22 @@ func runSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (Sm
 		maxFetchURLs = maxFetchURLs * 3 / 2 // ×1.5
 	}
 
-	// --- Parallel search ---
+	// --- Parallel search (SearXNG, skipped when not configured) ---
 	type searchResult struct {
 		results []SearxngResult
 		err     error
 	}
-	channels := make([]chan searchResult, len(opts.Queries))
-	for i, sq := range opts.Queries {
-		ch := make(chan searchResult, 1)
-		channels[i] = ch
-		go func(sq SearchQuery, ch chan searchResult) {
-			r, err := SearchSearXNG(ctx, sq.Query, lang, opts.TimeRange, sq.Engines)
-			ch <- searchResult{r, err}
-		}(sq, ch)
+	var channels []chan searchResult
+	if cfg.SearxngURL != "" {
+		channels = make([]chan searchResult, len(opts.Queries))
+		for i, sq := range opts.Queries {
+			ch := make(chan searchResult, 1)
+			channels[i] = ch
+			go func(sq SearchQuery, ch chan searchResult) {
+				r, err := SearchSearXNG(ctx, sq.Query, lang, opts.TimeRange, sq.Engines)
+				ch <- searchResult{r, err}
+			}(sq, ch)
+		}
 	}
 
 	// --- Merge ---
@@ -94,8 +97,12 @@ collectLoop:
 	// --- Merge extra results (direct API calls) ---
 	merged = append(merged, opts.ExtraResults...)
 
-	// --- Merge direct scraper results (DDG, Startpage with browser TLS) ---
-	if directResults := SearchDirect(ctx, opts.Queries[0].Query, lang); len(directResults) > 0 {
+	// --- Merge direct scraper results (DDG, Startpage, Brave, Reddit) ---
+	directQuery := query
+	if len(opts.Queries) > 0 {
+		directQuery = opts.Queries[0].Query
+	}
+	if directResults := SearchDirect(ctx, directQuery, lang); len(directResults) > 0 {
 		merged = append(merged, directResults...)
 	}
 

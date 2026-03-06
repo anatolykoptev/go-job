@@ -8,10 +8,8 @@
 package fetch
 
 import (
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -49,6 +47,7 @@ type Fetcher struct {
 	httpClient    *http.Client
 	browserClient *stealth.BrowserClient
 	retryConfig   RetryConfig
+	retryTracker  *stealth.RetryTracker
 }
 
 // Option configures a Fetcher.
@@ -73,6 +72,7 @@ func WithProxyPool(pool proxypool.ProxyPool) Option {
 		bc, err := stealth.NewClient(
 			stealth.WithTimeout(browserClientTimeoutSec),
 			stealth.WithProxyPool(pool),
+			stealth.WithFollowRedirects(),
 		)
 		if err != nil {
 			return
@@ -111,11 +111,30 @@ func New(opts ...Option) *Fetcher {
 // FetchBody retrieves the response body bytes from a URL.
 // Routes through BrowserClient (residential proxy) when available,
 // falls back to standard HTTP client otherwise.
+// When a RetryTracker is configured, it checks ShouldRetry before each request
+// and records the outcome (attempt or success) after.
 func (f *Fetcher) FetchBody(ctx context.Context, url string) ([]byte, error) {
-	if f.browserClient != nil {
-		return f.fetchViaProxy(ctx, url)
+	if f.retryTracker != nil && !f.retryTracker.ShouldRetry(url) {
+		return nil, ErrPermanentlyFailed
 	}
-	return f.fetchViaHTTP(ctx, url)
+
+	var body []byte
+	var err error
+	if f.browserClient != nil {
+		body, err = f.fetchViaProxy(ctx, url)
+	} else {
+		body, err = f.fetchViaHTTP(ctx, url)
+	}
+
+	if f.retryTracker != nil {
+		if err != nil {
+			f.retryTracker.RecordAttempt(url, err)
+		} else {
+			f.retryTracker.RecordSuccess(url)
+		}
+	}
+
+	return body, err
 }
 
 // HasProxy reports whether the fetcher has a proxy-backed BrowserClient.
@@ -140,7 +159,7 @@ func (f *Fetcher) fetchViaProxy(ctx context.Context, fetchURL string) ([]byte, e
 			return nil, err
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("fetch status %d for %s", status, fetchURL)
+			return nil, &stealth.HttpStatusError{StatusCode: status}
 		}
 		return data, nil
 	})
@@ -163,38 +182,10 @@ func (f *Fetcher) fetchViaHTTP(ctx context.Context, fetchURL string) ([]byte, er
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return ReadResponseBody(resp)
-}
 
-// ReadResponseBody reads the response body, handling gzip decompression.
-func ReadResponseBody(resp *http.Response) ([]byte, error) {
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		defer gz.Close()
-		return io.ReadAll(gz)
+	if resp.StatusCode != http.StatusOK {
+		return nil, &stealth.HttpStatusError{StatusCode: resp.StatusCode}
 	}
-	return io.ReadAll(resp.Body)
-}
 
-// ChromeHeaders returns common Chrome browser headers.
-func ChromeHeaders() map[string]string {
-	return stealth.ChromeHeaders()
-}
-
-// RandomUserAgent returns a random Chrome-like User-Agent string.
-func RandomUserAgent() string {
-	return stealth.RandomUserAgent()
-}
-
-// RetryDo retries fn up to MaxRetries times with exponential backoff.
-func RetryDo[T any](ctx context.Context, rc RetryConfig, fn func() (T, error)) (T, error) {
-	return stealth.RetryDo(ctx, rc, fn)
-}
-
-// RetryHTTP executes an HTTP request function with retry logic.
-func RetryHTTP(ctx context.Context, rc RetryConfig, fn func() (*http.Response, error)) (*http.Response, error) {
-	return stealth.RetryHTTP(ctx, rc, fn)
+	return ReadResponseBody(resp)
 }

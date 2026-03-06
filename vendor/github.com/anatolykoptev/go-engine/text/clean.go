@@ -5,15 +5,15 @@
 package text
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/anatolykoptev/go-stealth/webtext"
 )
 
-var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
-
 // CleanHTML strips HTML tags and trims whitespace.
+// Delegates to go-stealth/webtext for the canonical implementation.
 func CleanHTML(s string) string {
-	return strings.TrimSpace(htmlTagRe.ReplaceAllString(s, ""))
+	return webtext.CleanHTML(s)
 }
 
 // CleanLines removes empty lines and trims whitespace from each line.

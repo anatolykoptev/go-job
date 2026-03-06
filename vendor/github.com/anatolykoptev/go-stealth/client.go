@@ -3,6 +3,9 @@ package stealth
 import (
 	"io"
 	"log/slog"
+	"math/rand/v2"
+	"net/http"
+	"time"
 )
 
 // DefaultHeaderOrder is a generic Chrome-like header order.
@@ -18,12 +21,13 @@ var DefaultHeaderOrder = []string{
 // BrowserClient wraps an HTTPDoer backend with middleware, proxy rotation,
 // and TLS fingerprint impersonation.
 type BrowserClient struct {
-	doer        HTTPDoer
-	headerOrder []string
-	proxyPool   ProxyPoolProvider // nil = no auto-rotation
-	middlewares []Middleware
-	handler     Handler // lazy-built from middlewares + base handler
-	debug       bool
+	doer         HTTPDoer
+	headerOrder  []string
+	proxyPool    ProxyPoolProvider // nil = no auto-rotation
+	middlewares  []Middleware
+	handler      Handler // lazy-built from middlewares + base handler
+	debug        bool
+	blockRetries int // extra retry attempts on 403/429 (requires proxyPool)
 }
 
 // ProxyPoolProvider returns the next proxy URL for rotation.
@@ -62,13 +66,18 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	}
 
 	bc := &BrowserClient{
-		doer:        doer,
-		headerOrder: order,
-		proxyPool:   cfg.proxyPool,
-		debug:       cfg.debug,
+		doer:         doer,
+		headerOrder:  order,
+		proxyPool:    cfg.proxyPool,
+		debug:        cfg.debug,
+		blockRetries: cfg.blockRetries,
 	}
 	if cfg.debug {
 		bc.Use(LoggingMiddleware)
+	}
+	if cfg.cookieProvider != nil {
+		bc.Use(CloudflareCookieMiddleware(cfg.cookieProvider))
+		bc.Use(CloudflareDetectMiddleware)
 	}
 	return bc, nil
 }
@@ -107,25 +116,8 @@ func (bc *BrowserClient) baseHandler(order []string) Handler {
 // If a ProxyPool was configured, each call rotates to the next proxy.
 // Middleware added via Use() is applied to each request.
 func (bc *BrowserClient) Do(method, urlStr string, headers map[string]string, body io.Reader) ([]byte, map[string]string, int, error) {
-	if bc.proxyPool != nil {
-		proxyURL := bc.proxyPool.Next()
-		if err := bc.SetProxy(proxyURL); err != nil {
-			slog.Warn("proxy: SetProxy failed", slog.String("proxy", MaskProxy(proxyURL)), slog.Any("error", err))
-		}
-	}
-
 	req := &Request{Method: method, URL: urlStr, Headers: headers, Body: body}
-	handler := bc.buildHandler()
-
-	resp, err := handler(req)
-	if err != nil {
-		if resp != nil {
-			return nil, nil, resp.StatusCode, err
-		}
-		return nil, nil, 0, err
-	}
-
-	return resp.Body, resp.Headers, resp.StatusCode, nil
+	return bc.doWithRetry(req, bc.buildHandler())
 }
 
 // SetProxy changes the proxy URL for subsequent requests.
@@ -141,13 +133,6 @@ func (bc *BrowserClient) GetCookieValue(rawURL, name string) string {
 // DoWithHeaderOrder executes a request with a custom header order.
 // Middleware and proxy rotation are applied.
 func (bc *BrowserClient) DoWithHeaderOrder(method, urlStr string, headers map[string]string, body io.Reader, order []string) ([]byte, map[string]string, int, error) {
-	if bc.proxyPool != nil {
-		proxyURL := bc.proxyPool.Next()
-		if err := bc.SetProxy(proxyURL); err != nil {
-			slog.Warn("proxy: SetProxy failed", slog.String("proxy", MaskProxy(proxyURL)), slog.Any("error", err))
-		}
-	}
-
 	req := &Request{Method: method, URL: urlStr, Headers: headers, Body: body}
 
 	base := bc.baseHandler(order)
@@ -158,13 +143,52 @@ func (bc *BrowserClient) DoWithHeaderOrder(method, urlStr string, headers map[st
 		handler = base
 	}
 
-	resp, err := handler(req)
-	if err != nil {
-		if resp != nil {
-			return nil, nil, resp.StatusCode, err
-		}
-		return nil, nil, 0, err
+	return bc.doWithRetry(req, handler)
+}
+
+// isBlockStatus returns true if the HTTP status indicates a proxy block.
+func isBlockStatus(code int) bool {
+	return code == http.StatusForbidden || code == http.StatusTooManyRequests
+}
+
+// doWithRetry executes a request through the handler, retrying with proxy
+// rotation on block statuses (403, 429). Requires proxyPool and blockRetries > 0.
+func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map[string]string, int, error) {
+	maxAttempts := 1
+	if bc.proxyPool != nil && bc.blockRetries > 0 {
+		maxAttempts = 1 + bc.blockRetries
 	}
 
-	return resp.Body, resp.Headers, resp.StatusCode, nil
+	for attempt := range maxAttempts {
+		if bc.proxyPool != nil {
+			proxyURL := bc.proxyPool.Next()
+			if err := bc.SetProxy(proxyURL); err != nil {
+				slog.Warn("proxy: SetProxy failed",
+					slog.String("proxy", MaskProxy(proxyURL)), slog.Any("error", err))
+			}
+		}
+
+		resp, err := handler(req)
+		if err != nil {
+			if resp != nil {
+				return nil, nil, resp.StatusCode, err
+			}
+			return nil, nil, 0, err
+		}
+
+		if attempt < maxAttempts-1 && isBlockStatus(resp.StatusCode) {
+			slog.Debug("block status, retrying with new proxy",
+				slog.String("url", req.URL),
+				slog.Int("status", resp.StatusCode),
+				slog.Int("attempt", attempt+1))
+			jitter := time.Duration(100+rand.IntN(200)) * time.Millisecond //nolint:mnd,gosec
+			time.Sleep(jitter)
+			continue
+		}
+
+		return resp.Body, resp.Headers, resp.StatusCode, nil
+	}
+
+	// Unreachable, but satisfies compiler.
+	return nil, nil, 0, nil
 }

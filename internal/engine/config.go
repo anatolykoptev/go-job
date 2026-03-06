@@ -38,6 +38,8 @@ type Config struct {
 	ProxyPool            proxypool.ProxyPool // replaces BrowserClient + HTTPClient
 	DirectDDG            bool                // enable DuckDuckGo direct scraper
 	DirectStartpage      bool                // enable Startpage direct scraper
+	DirectBrave          bool                // enable Brave direct scraper
+	DirectReddit         bool                // enable Reddit direct scraper
 	IndeedAPIKey         string              // overrideable via INDEED_API_KEY env
 	TwitterClient        *twitter.Client     // nil = Twitter search disabled
 	DatabaseURL          string              // DATABASE_URL for PostgreSQL (resume graph)
@@ -85,8 +87,10 @@ func Init(c Config) {
 	// HTML content extractor.
 	extractorInst = extract.New(extract.WithMaxContentLen(c.MaxContentChars))
 
-	// SearXNG client (local, no proxy needed).
-	searxngInst = search.NewSearXNG(c.SearxngURL, search.WithMetrics(reg))
+	// SearXNG client (local, no proxy needed — optional).
+	if c.SearxngURL != "" {
+		searxngInst = search.NewSearXNG(c.SearxngURL, search.WithMetrics(reg))
+	}
 
 	// LLM client.
 	llmOpts := []engllm.Option{
@@ -113,5 +117,7 @@ func Init(c Config) {
 		slog.Bool("proxy", c.ProxyPool != nil),
 		slog.Bool("ddg", c.DirectDDG),
 		slog.Bool("startpage", c.DirectStartpage),
+		slog.Bool("brave", c.DirectBrave),
+		slog.Bool("reddit", c.DirectReddit),
 	)
 }

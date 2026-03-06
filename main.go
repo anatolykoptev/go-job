@@ -84,6 +84,8 @@ func initEngine() {
 		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
 		DirectDDG:            env.Bool("DIRECT_DDG", false),
 		DirectStartpage:      env.Bool("DIRECT_STARTPAGE", false),
+		DirectBrave:          env.Bool("DIRECT_BRAVE", false),
+		DirectReddit:         env.Bool("DIRECT_REDDIT", false),
 	}
 
 	// Initialize proxy pool from Webshare API (optional).

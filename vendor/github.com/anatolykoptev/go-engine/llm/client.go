@@ -125,6 +125,27 @@ func (c *Client) CompleteParams(ctx context.Context, prompt string, temperature 
 	return raw, nil
 }
 
+// CompleteWithSystem sends a prompt with an explicit system message.
+// Empty system string omits the system message (same as Complete).
+func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string) (string, error) {
+	if c.metrics != nil {
+		c.metrics.Incr("llm_calls")
+	}
+
+	raw, err := c.kit.Complete(ctx, system, prompt,
+		kitllm.WithChatTemperature(c.temperature),
+		kitllm.WithChatMaxTokens(c.maxTokens),
+	)
+	if err != nil {
+		if c.metrics != nil {
+			c.metrics.Incr("llm_errors")
+		}
+		return "", err
+	}
+
+	return stripFences(raw), nil
+}
+
 // stripFences removes markdown code fences from LLM output.
 func stripFences(s string) string {
 	s = strings.TrimPrefix(s, "```json")

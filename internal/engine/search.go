@@ -4,13 +4,18 @@ import (
 	"context"
 
 	"github.com/anatolykoptev/go-engine/search"
+	"golang.org/x/time/rate"
 )
 
 // DefaultSearchEngine is the SearXNG engine used for site: queries.
 const DefaultSearchEngine = "bing"
 
 // SearchSearXNG queries the SearXNG instance and returns raw results.
+// Returns nil, nil when SearXNG is not configured (searxngInst == nil).
 func SearchSearXNG(ctx context.Context, query, language, timeRange, engines string) ([]SearxngResult, error) {
+	if searxngInst == nil {
+		return nil, nil
+	}
 	return searxngInst.Search(ctx, query, language, timeRange, engines)
 }
 
@@ -33,10 +38,14 @@ func SearchDirect(ctx context.Context, query, language string) []SearxngResult {
 // directSearchConfig builds a search.DirectConfig from engine state.
 func directSearchConfig() search.DirectConfig {
 	return search.DirectConfig{
-		Browser:   fetcherProxy.BrowserClient(),
-		DDG:       cfg.DirectDDG,
-		Startpage: cfg.DirectStartpage,
-		Retry:     DefaultRetryConfig,
-		Metrics:   reg,
+		Browser:       fetcherProxy.BrowserClient(),
+		DDG:           cfg.DirectDDG,
+		Startpage:     cfg.DirectStartpage,
+		Brave:         cfg.DirectBrave,
+		Reddit:        cfg.DirectReddit,
+		BraveLimiter:  rate.NewLimiter(1, 2),
+		RedditLimiter: rate.NewLimiter(1, 2),
+		Retry:         DefaultRetryConfig,
+		Metrics:       reg,
 	}
 }
