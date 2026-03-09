@@ -301,14 +301,24 @@ type BountyAnalyzeInput struct {
 
 // BountyAnalysis is the LLM-generated complexity analysis.
 type BountyAnalysis struct {
-	Title       string   `json:"title"`
-	Amount      string   `json:"amount"`
-	Complexity  int      `json:"complexity"`    // 1-5
-	EstHours    string   `json:"est_hours"`     // e.g. "4-8 hours"
-	DollarPerHr string   `json:"dollar_per_hr"` // e.g. "$62-125/hr"
-	Skills      []string `json:"skills_needed"`
-	Summary     string   `json:"summary"`
-	Verdict     string   `json:"verdict"` // "recommended", "fair", "avoid"
+	Title        string        `json:"title"`
+	Amount       string        `json:"amount"`
+	Complexity   int           `json:"complexity"`    // 1-5
+	EstHours     string        `json:"est_hours"`     // e.g. "4-8 hours"
+	DollarPerHr  string        `json:"dollar_per_hr"` // e.g. "$62-125/hr"
+	Skills       []string      `json:"skills_needed"`
+	Summary      string        `json:"summary"`
+	Verdict      string        `json:"verdict"` // "recommended", "fair", "avoid"
+	CompetingPRs []CompetingPR `json:"competing_prs,omitempty"`
+}
+
+// CompetingPR describes an existing pull request linked to a bounty issue.
+type CompetingPR struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Author string `json:"author"`
+	State  string `json:"state"` // "open", "closed", "merged"
+	URL    string `json:"url"`
 }
 
 // ResumeEnrichInput is the input for resume_enrich.
