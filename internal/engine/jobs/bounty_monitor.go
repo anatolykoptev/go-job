@@ -60,8 +60,22 @@ func checkNewBounties(ctx context.Context) {
 	}
 	bounties = append(bounties, opireBounties...)
 
+	// Also fetch BountyHub bounties and merge.
+	bhBounties, bhErr := SearchBountyHub(ctx, 50)
+	if bhErr != nil {
+		slog.Warn("bounty_monitor: bountyhub fetch failed", slog.Any("error", bhErr))
+	}
+	bounties = append(bounties, bhBounties...)
+
+	// Also fetch Boss.dev bounties and merge.
+	bossBounties, bossErr := SearchBoss(ctx, 50)
+	if bossErr != nil {
+		slog.Warn("bounty_monitor: boss fetch failed", slog.Any("error", bossErr))
+	}
+	bounties = append(bounties, bossBounties...)
+
 	if len(bounties) == 0 {
-		if err != nil || opireErr != nil {
+		if err != nil || opireErr != nil || bhErr != nil || bossErr != nil {
 			slog.Warn("bounty_monitor: all sources failed")
 		}
 		return

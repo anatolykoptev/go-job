@@ -15,7 +15,7 @@ import (
 func registerBountySearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "bounty_search",
-		Description: "Search for open-source bounties on Algora.io and Opire.dev. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
+		Description: "Search for open-source bounties on Algora.io, Opire.dev, BountyHub.dev, and Boss.dev. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.BountySearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		// Load fully enriched bounties from cache (all enrichment done at cache time).
@@ -33,9 +33,27 @@ func registerBountySearch(server *mcp.Server) {
 			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: ob})
 		}
 
+		// Also fetch BountyHub bounties and merge.
+		bhBounties, bhErr := jobs.SearchBountyHub(ctx, 50)
+		if bhErr != nil {
+			slog.Warn("bounty_search: bountyhub error", slog.Any("error", bhErr))
+		}
+		for _, b := range bhBounties {
+			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: b})
+		}
+
+		// Also fetch Boss.dev bounties and merge.
+		bossBounties, bossErr := jobs.SearchBoss(ctx, 50)
+		if bossErr != nil {
+			slog.Warn("bounty_search: boss error", slog.Any("error", bossErr))
+		}
+		for _, b := range bossBounties {
+			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: b})
+		}
+
 		if len(bvecs) == 0 {
-			if err != nil && opireErr != nil {
-				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v", err, opireErr)
+			if err != nil && opireErr != nil && bhErr != nil && bossErr != nil {
+				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v", err, opireErr, bhErr, bossErr)
 			}
 			return bountyResult(engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
 		}
