@@ -4,7 +4,7 @@ SERVICE = go-job
 .PHONY: build deploy restart clean lint
 
 build:
-	go build -o $(BINARY) .
+	GOWORK=off go build -o $(BINARY) .
 
 deploy: build
 	cp deploy/go_job.service $(HOME)/.config/systemd/user/$(SERVICE).service
@@ -16,7 +16,7 @@ restart:
 	systemctl --user restart $(SERVICE)
 
 lint:
-	golangci-lint run ./...
+	GOWORK=off golangci-lint run ./...
 
 clean:
 	rm -f $(BINARY)
