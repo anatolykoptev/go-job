@@ -31,6 +31,8 @@ func RegisterTools(server *mcp.Server) {
 	registerApplicationPrep(server)
 	registerOfferCompare(server)
 	registerNegotiationPrep(server)
+	// Bounties
+	registerBountySearch(server)
 	// Twitter
 	registerTwitterJobSearch(server)
 	// Master Resume

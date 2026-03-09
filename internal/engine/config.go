@@ -45,6 +45,15 @@ type Config struct {
 	DatabaseURL          string              // DATABASE_URL for PostgreSQL (resume graph)
 	MemDBURL             string              // MEMDB_URL for vector search
 	MemDBServiceSecret   string              // INTERNAL_SERVICE_SECRET for MemDB auth
+	EmbedURL             string              // EMBED_URL for direct embedding server
+
+	// Bounty search tuning.
+	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
+	BountyHighConfGap    float32 // max gap from best in high-confidence tier (default 0.04)
+	BountyHighConfMax    int     // max results in high-confidence tier (default 10)
+	BountyMedConfMax     int     // max results in medium-confidence tier (default 3)
+	BountySkillBoost     float32 // boost when query matches bounty skills (default 0.05)
+	BountyMinRelevance   float32 // minimum best-score to return results (default 0.75)
 
 	// Computed fields — populated by Init(), not set by caller.
 	HTTPClient    *http.Client    // plain HTTP client for API calls

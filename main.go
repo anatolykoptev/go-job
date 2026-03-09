@@ -82,6 +82,13 @@ func initEngine() {
 		DatabaseURL:          env.Str("DATABASE_URL", ""),
 		MemDBURL:             env.Str("MEMDB_URL", ""),
 		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
+		EmbedURL:             env.Str("EMBED_URL", ""),
+		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
+		BountyHighConfGap:    float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
+		BountyHighConfMax:    env.Int("BOUNTY_HIGH_CONF_MAX", 10),
+		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
+		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
+		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
 		DirectDDG:            env.Bool("DIRECT_DDG", false),
 		DirectStartpage:      env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:          env.Bool("DIRECT_BRAVE", false),
@@ -133,6 +140,12 @@ func initEngine() {
 	if c.MemDBURL != "" && c.MemDBServiceSecret != "" {
 		jobs.SetMemDB(jobs.NewMemDBClient(c.MemDBURL, c.MemDBServiceSecret))
 		slog.Info("memdb client initialized", slog.String("url", c.MemDBURL))
+	}
+
+	// Embed client (for embedding-based bounty matching)
+	if c.EmbedURL != "" {
+		jobs.SetEmbedClient(jobs.NewEmbedClient(c.EmbedURL))
+		slog.Info("embed client initialized", slog.String("url", c.EmbedURL))
 	}
 
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
