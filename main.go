@@ -154,6 +154,8 @@ func initEngine() {
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
 	engine.InitCache(env.Str("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
 
-	// Start bounty monitor (background goroutine).
+	// Start background monitors.
 	jobs.StartBountyMonitor(context.Background())
+	jobs.StartSecurityMonitor(context.Background())
+	jobs.StartFreelanceMonitor(context.Background())
 }
