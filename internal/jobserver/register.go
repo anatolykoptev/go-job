@@ -35,8 +35,10 @@ func RegisterTools(server *mcp.Server) {
 	registerBountySearch(server)
 	registerBountyAttempt(server)
 	registerBountyAnalyze(server)
-	// Opportunities (unified)
+	// Opportunities (unified action-first pipeline)
+	registerOpportunitySearch(server)
 	registerOpportunityAnalyze(server)
+	registerOpportunityClaim(server)
 	// Security Bug Bounties
 	registerSecurityBountySearch(server)
 	// Twitter
