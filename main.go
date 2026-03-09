@@ -89,6 +89,9 @@ func initEngine() {
 		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
 		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
 		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
+		VaelorNotifyURL:       env.Str("VAELOR_NOTIFY_URL", ""),
+		BountyNotifyChatID:    env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
+		BountyMonitorInterval: env.Duration("BOUNTY_MONITOR_INTERVAL", 15*time.Minute),
 		DirectDDG:            env.Bool("DIRECT_DDG", false),
 		DirectStartpage:      env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:          env.Bool("DIRECT_BRAVE", false),
@@ -150,4 +153,7 @@ func initEngine() {
 
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
 	engine.InitCache(env.Str("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
+
+	// Start bounty monitor (background goroutine).
+	jobs.StartBountyMonitor(context.Background())
 }
