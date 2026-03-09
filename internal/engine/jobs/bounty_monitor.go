@@ -74,8 +74,22 @@ func checkNewBounties(ctx context.Context) {
 	}
 	bounties = append(bounties, bossBounties...)
 
+	// Also fetch Lightning Bounties and merge.
+	lnBounties, lnErr := SearchLightning(ctx, 50)
+	if lnErr != nil {
+		slog.Warn("bounty_monitor: lightning fetch failed", slog.Any("error", lnErr))
+	}
+	bounties = append(bounties, lnBounties...)
+
+	// Also fetch Collaborators.build bounties and merge.
+	collabBounties, collabErr := SearchCollaborators(ctx, 50)
+	if collabErr != nil {
+		slog.Warn("bounty_monitor: collaborators fetch failed", slog.Any("error", collabErr))
+	}
+	bounties = append(bounties, collabBounties...)
+
 	if len(bounties) == 0 {
-		if err != nil || opireErr != nil || bhErr != nil || bossErr != nil {
+		if err != nil || opireErr != nil || bhErr != nil || bossErr != nil || lnErr != nil || collabErr != nil {
 			slog.Warn("bounty_monitor: all sources failed")
 		}
 		return
