@@ -39,24 +39,51 @@ type AlgoraBounty struct {
 
 const algoraScrapeCacheKey = "algora_scrape"
 
-// SearchAlgora fetches the algora.io bounties page and extracts all open bounties.
-// Results are cached for 15 min to avoid hammering algora.io; GitHub issue status
-// filtering is done separately and always fresh.
+// SearchAlgora fetches bounties from Algora. Tries REST API first (if token configured),
+// falls back to HTML scraping. Results are cached for 15 min.
 func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error) {
-	engine.IncrAlgoraRequests()
-
 	if limit <= 0 || limit > 50 {
 		limit = 30
 	}
 
-	// Try scrape cache first.
+	// Try scrape cache first (shared by both API and scraping paths).
 	if cached, ok := engine.CacheLoadJSON[[]engine.BountyListing](ctx, algoraScrapeCacheKey); ok {
-		slog.Debug("algora: using cached scrape", slog.Int("results", len(cached)))
+		slog.Debug("algora: using cached results", slog.Int("results", len(cached)))
 		if len(cached) > limit {
 			cached = cached[:limit]
 		}
 		return cached, nil
 	}
+
+	// Try API first.
+	bounties, err := searchAlgoraAPI(ctx, limit)
+	if err != nil {
+		slog.Warn("algora: API failed, falling back to scraping", slog.Any("error", err))
+	}
+	if len(bounties) > 0 {
+		engine.CacheStoreJSON(ctx, algoraScrapeCacheKey, "", bounties)
+		slog.Debug("algora: API fetch complete", slog.Int("results", len(bounties)))
+		return bounties, nil
+	}
+
+	// Fallback: HTML scraping.
+	bounties, err = scrapeAlgoraBounties(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	engine.CacheStoreJSON(ctx, algoraScrapeCacheKey, "", bounties)
+	if len(bounties) > limit {
+		bounties = bounties[:limit]
+	}
+
+	slog.Debug("algora: scrape complete", slog.Int("results", len(bounties)))
+	return bounties, nil
+}
+
+// scrapeAlgoraBounties fetches bounties by scraping the algora.io HTML page.
+func scrapeAlgoraBounties(ctx context.Context, limit int) ([]engine.BountyListing, error) {
+	engine.IncrAlgoraRequests()
 
 	fetchCtx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
@@ -86,15 +113,7 @@ func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error
 	}
 
 	bounties := parseAlgoraBounties(string(body))
-
-	// Cache the scrape result.
-	engine.CacheStoreJSON(ctx, algoraScrapeCacheKey, "", bounties)
-
-	if len(bounties) > limit {
-		bounties = bounties[:limit]
-	}
-
-	slog.Debug("algora: search complete", slog.Int("results", len(bounties)))
+	_ = limit // limit applied by caller
 	return bounties, nil
 }
 

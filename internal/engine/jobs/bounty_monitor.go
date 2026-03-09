@@ -50,7 +50,20 @@ func StartBountyMonitor(ctx context.Context) {
 func checkNewBounties(ctx context.Context) {
 	bounties, err := searchAlgoraAPI(ctx, 50)
 	if err != nil {
-		slog.Warn("bounty_monitor: fetch failed", slog.Any("error", err))
+		slog.Warn("bounty_monitor: algora fetch failed", slog.Any("error", err))
+	}
+
+	// Also fetch Opire bounties and merge.
+	opireBounties, opireErr := SearchOpire(ctx, 50)
+	if opireErr != nil {
+		slog.Warn("bounty_monitor: opire fetch failed", slog.Any("error", opireErr))
+	}
+	bounties = append(bounties, opireBounties...)
+
+	if len(bounties) == 0 {
+		if err != nil || opireErr != nil {
+			slog.Warn("bounty_monitor: all sources failed")
+		}
 		return
 	}
 

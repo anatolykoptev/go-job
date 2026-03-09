@@ -101,10 +101,10 @@ func SearchAlgoraEnriched(ctx context.Context, limit int) ([]BountyWithVector, e
 		return nil, nil
 	}
 
-	// 3. Fetch GitHub issue info in batch (single API call per bounty, parallel).
+	// 3. Fetch GitHub issue info in batch (filters closed, enriches missing data).
 	infoMap := fetchIssueInfoBatch(ctx, bounties)
 
-	// 4. Filter closed, fix titles, extract skills.
+	// 4. Filter closed, fix titles, enrich skills where missing.
 	var enriched []engine.BountyListing
 	for _, b := range bounties {
 		info := infoMap[b.URL]
@@ -115,9 +115,12 @@ func SearchAlgoraEnriched(ctx context.Context, limit int) ([]BountyWithVector, e
 		if b.Title == "" && info.Title != "" {
 			b.Title = info.Title
 		}
-		// Extract skills from title + labels + repo language.
-		labelText := strings.Join(info.Labels, " ")
-		b.Skills = ExtractSkillsFromText(b.Title + " " + labelText)
+		// Skills: keep API-provided tech if present, otherwise extract from GitHub.
+		if len(b.Skills) == 0 {
+			labelText := strings.Join(info.Labels, " ")
+			b.Skills = ExtractSkillsFromText(b.Title + " " + labelText)
+		}
+		// Always merge repo language (may add language not in API tech).
 		if info.Language != "" {
 			b.Skills = MergeSkills(b.Skills, []string{info.Language})
 		}

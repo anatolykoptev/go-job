@@ -15,7 +15,7 @@ import (
 func registerBountySearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "bounty_search",
-		Description: "Search for open-source bounties on Algora.io. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
+		Description: "Search for open-source bounties on Algora.io and Opire.dev. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.BountySearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		// Load fully enriched bounties from cache (all enrichment done at cache time).
@@ -24,9 +24,18 @@ func registerBountySearch(server *mcp.Server) {
 			slog.Warn("bounty_search: algora error", slog.Any("error", err))
 		}
 
+		// Also fetch Opire bounties and merge.
+		opireBounties, opireErr := jobs.SearchOpire(ctx, 30)
+		if opireErr != nil {
+			slog.Warn("bounty_search: opire error", slog.Any("error", opireErr))
+		}
+		for _, ob := range opireBounties {
+			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: ob})
+		}
+
 		if len(bvecs) == 0 {
-			if err != nil {
-				return nil, engine.SmartSearchOutput{}, fmt.Errorf("algora fetch failed: %w", err)
+			if err != nil && opireErr != nil {
+				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v", err, opireErr)
 			}
 			return bountyResult(engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
 		}

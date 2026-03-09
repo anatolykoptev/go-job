@@ -282,6 +282,35 @@ type BountySearchOutput struct {
 	Summary  string          `json:"summary"`
 }
 
+// BountyAttemptInput is the input for the bounty_attempt tool.
+type BountyAttemptInput struct {
+	URL string `json:"url" jsonschema:"GitHub issue URL of the bounty to attempt (e.g. https://github.com/org/repo/issues/123)"`
+}
+
+// BountyAttemptOutput is the output for the bounty_attempt tool.
+type BountyAttemptOutput struct {
+	URL        string `json:"url"`
+	CommentURL string `json:"comment_url"`
+	Status     string `json:"status"`
+}
+
+// BountyAnalyzeInput is the input for the bounty_analyze tool.
+type BountyAnalyzeInput struct {
+	URL string `json:"url" jsonschema:"GitHub issue URL of the bounty to analyze (e.g. https://github.com/org/repo/issues/123)"`
+}
+
+// BountyAnalysis is the LLM-generated complexity analysis.
+type BountyAnalysis struct {
+	Title       string   `json:"title"`
+	Amount      string   `json:"amount"`
+	Complexity  int      `json:"complexity"`    // 1-5
+	EstHours    string   `json:"est_hours"`     // e.g. "4-8 hours"
+	DollarPerHr string   `json:"dollar_per_hr"` // e.g. "$62-125/hr"
+	Skills      []string `json:"skills_needed"`
+	Summary     string   `json:"summary"`
+	Verdict     string   `json:"verdict"` // "recommended", "fair", "avoid"
+}
+
 // ResumeEnrichInput is the input for resume_enrich.
 type ResumeEnrichInput struct {
 	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`
