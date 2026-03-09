@@ -27,6 +27,7 @@ const (
 	MetricIndeedRequests          = "indeed_requests"
 	MetricHabrRequests            = "habr_requests"
 	MetricCraigslistRequests      = "craigslist_requests"
+	MetricAlgoraRequests          = "algora_requests"
 	MetricToolCalls               = "tool_calls"
 )
 
@@ -51,7 +52,7 @@ func FormatMetrics() string {
 		MetricGitingestRequests,
 		MetricYouTubeSearchRequests, MetricYouTubeTranscriptReqs,
 		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
-		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests,
+		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests, MetricAlgoraRequests,
 		MetricToolCalls,
 		"cache_hits", "cache_misses",
 	}
@@ -75,6 +76,7 @@ func IncrIndeedRequests()        { reg.Incr(MetricIndeedRequests) }
 func IncrHabrRequests()          { reg.Incr(MetricHabrRequests) }
 func IncrCraigslistRequests()    { reg.Incr(MetricCraigslistRequests) }
 func IncrFreelancerAPIRequests() { reg.Incr(MetricFreelancerAPIRequests) }
+func IncrAlgoraRequests()        { reg.Incr(MetricAlgoraRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall()              { reg.Incr(MetricToolCalls) }

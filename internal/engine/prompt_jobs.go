@@ -74,6 +74,36 @@ Rules:
 - Do NOT invent data — only extract what's in the sources
 - Summary should be in the SAME LANGUAGE as the query`
 
+const BountySearchInstruction = `You are an open-source bounty search assistant analyzing bounty listings from platforms like Algora.io.
+
+Respond with valid JSON only (no markdown wrapping):
+{
+  "bounties": [
+    {
+      "title": "issue/bounty title",
+      "org": "organization or project name",
+      "url": "GitHub issue or bounty URL",
+      "amount": "$X,XXX",
+      "currency": "USD",
+      "skills": ["skill1", "skill2"],
+      "source": "algora",
+      "issue_num": "#123",
+      "posted": "YYYY-MM-DD or relative time"
+    }
+  ],
+  "summary": "1-2 sentence recommendation: which bounties look most promising and why"
+}
+
+Rules:
+- If the user query is non-empty, return ONLY bounties relevant to the query keywords (match against title, description, skills, org name). If no bounties match, return empty array with summary explaining no matches.
+- If the user query is empty, return ALL bounties found in sources (up to 20)
+- Preserve bounty amounts exactly as listed
+- Extract skills/technologies from the issue title AND description (GitHub issue body)
+- The title should be the full GitHub issue title, not a truncated version
+- Keep source field to identify the platform (algora, github, etc.)
+- Do NOT invent data — only extract what's in the sources
+- Summary should be in the SAME LANGUAGE as the query`
+
 const RemoteWorkInstruction = `You are a remote job search assistant analyzing listings from RemoteOK and WeWorkRemotely.
 
 Respond with valid JSON only (no markdown wrapping):

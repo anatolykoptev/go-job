@@ -251,6 +251,37 @@ type NegotiationPrepInput struct {
 	Leverage     string `json:"leverage,omitempty" jsonschema:"Your leverage: competing offers, unique skills, market demand"`
 }
 
+// --- Bounty search types ---
+
+// BountySearchInput is the input for the bounty_search tool.
+type BountySearchInput struct {
+	Query     string   `json:"query,omitempty" jsonschema:"Search keywords to filter bounties (e.g. golang, rust, MCP, CLI). Empty returns all open bounties."`
+	Language  string   `json:"language,omitempty" jsonschema:"Language code for the answer (default: all)"`
+	MinAmount int      `json:"min_amount,omitempty" jsonschema:"Minimum bounty amount in USD (e.g. 500)"`
+	Skills    []string `json:"skills,omitempty" jsonschema:"Filter by technologies (e.g. [Go, Rust]). Bounty must match at least one skill."`
+}
+
+// BountyListing is a structured representation of an open-source bounty.
+type BountyListing struct {
+	Title    string   `json:"title"`
+	Org      string   `json:"org"`
+	URL      string   `json:"url"`
+	Amount   string   `json:"amount"`
+	Currency string   `json:"currency,omitempty"`
+	Skills   []string `json:"skills,omitempty"`
+	Source   string   `json:"source"`
+	IssueNum string   `json:"issue_num,omitempty"`
+	Posted    string   `json:"posted,omitempty"`
+	Relevance float32  `json:"relevance,omitempty"`
+}
+
+// BountySearchOutput is the structured output for bounty_search.
+type BountySearchOutput struct {
+	Query    string          `json:"query"`
+	Bounties []BountyListing `json:"bounties"`
+	Summary  string          `json:"summary"`
+}
+
 // ResumeEnrichInput is the input for resume_enrich.
 type ResumeEnrichInput struct {
 	Action  string `json:"action" jsonschema:"Action: 'start' to get enrichment questions, 'answer' to submit answers and apply enrichments"`
