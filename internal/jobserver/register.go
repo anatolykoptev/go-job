@@ -33,6 +33,8 @@ func RegisterTools(server *mcp.Server) {
 	registerNegotiationPrep(server)
 	// Bounties
 	registerBountySearch(server)
+	registerBountyAttempt(server)
+	registerBountyAnalyze(server)
 	// Twitter
 	registerTwitterJobSearch(server)
 	// Master Resume
