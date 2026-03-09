@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -23,15 +26,15 @@ type himalayasResponse struct {
 }
 
 type himalayasJob struct {
-	Title          string   `json:"title"`
-	CompanyName    string   `json:"companyName"`
-	ApplicationURL string   `json:"applicationUrl"`
-	Categories     []string `json:"categories"`
-	Seniority      []string `json:"seniority"`
-	MinSalary      int      `json:"minSalary"`
-	MaxSalary      int      `json:"maxSalary"`
-	PubDate        string   `json:"pubDate"`
-	Excerpt        string   `json:"excerpt"`
+	Title          string          `json:"title"`
+	CompanyName    string          `json:"companyName"`
+	ApplicationURL string          `json:"applicationUrl"`
+	Categories     []string        `json:"categories"`
+	Seniority      []string        `json:"seniority"`
+	MinSalary      int             `json:"minSalary"`
+	MaxSalary      int             `json:"maxSalary"`
+	PubDate        json.RawMessage `json:"pubDate"`
+	Excerpt        string          `json:"excerpt"`
 }
 
 // SearchHimalayas fetches jobs from Himalayas. Results are cached.
@@ -130,9 +133,30 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 			SalaryMin: hj.MinSalary,
 			SalaryMax: hj.MaxSalary,
 			Source:    "himalayas",
-			Posted:    hj.PubDate,
+			Posted:    parsePubDate(hj.PubDate),
 		})
 	}
 
 	return jobs, nil
+}
+
+// parsePubDate handles pubDate as either a JSON string or a Unix timestamp number.
+func parsePubDate(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	s := strings.TrimSpace(string(raw))
+	if len(s) > 1 && s[0] == '"' {
+		var str string
+		if json.Unmarshal(raw, &str) == nil {
+			return str
+		}
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if n > 1e12 {
+			n /= 1000
+		}
+		return time.Unix(n, 0).UTC().Format(time.RFC3339)
+	}
+	return s
 }
