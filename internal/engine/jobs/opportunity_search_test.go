@@ -103,3 +103,23 @@ func TestFilterOpportunitiesEmpty(t *testing.T) {
 		t.Errorf("got %d results, want 0", len(filtered))
 	}
 }
+
+func TestFilterOpportunitiesAlias(t *testing.T) {
+	opps := []engine.Opportunity{
+		{Title: "Fix auth bug", Skills: []string{"Go", "Auth"}},
+		{Title: "Build CLI", Skills: []string{"Rust"}},
+		{Title: "Golang API", Skills: []string{"Python"}},
+	}
+
+	// "golang" should match "Go" skill (alias) and "Golang" in title
+	filtered := filterOpportunities(opps, "golang")
+	if len(filtered) != 2 {
+		t.Errorf("got %d results, want 2 (alias 'go' + title 'Golang')", len(filtered))
+	}
+
+	// "go" should match "golang" skill (alias) and "Go" skill
+	filtered = filterOpportunities(opps, "go")
+	if len(filtered) != 2 {
+		t.Errorf("got %d results for 'go', want 2", len(filtered))
+	}
+}

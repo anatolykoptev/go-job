@@ -70,3 +70,13 @@ func TestParseHimalayasResponse_nullJobs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, jobs)
 }
+
+func TestParseHimalayasResponse_numericPubDate(t *testing.T) {
+	t.Parallel()
+	resp := `{"jobs": [{"title": "Engineer", "companyName": "Co", "applicationUrl": "https://example.com/job", "categories": [], "seniority": [], "minSalary": 0, "maxSalary": 0, "pubDate": 1741305600000, "excerpt": ""}], "total": 1}`
+	jobs, err := parseHimalayasResponse([]byte(resp))
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	// 1741305600000ms = 2025-03-07T00:00:00Z
+	assert.Equal(t, "2025-03-07T00:00:00Z", jobs[0].Posted)
+}
