@@ -15,7 +15,7 @@ import (
 func registerBountySearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "bounty_search",
-		Description: "Search for open-source bounties on Algora.io, Opire.dev, BountyHub.dev, and Boss.dev. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
+		Description: "Search for open-source bounties on Algora.io, Opire.dev, BountyHub.dev, Boss.dev, Lightning Bounties, and Collaborators.build. Returns paid GitHub issues with bounty amounts. Filter by technology, keyword, minimum amount, or required skills.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.BountySearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		// Load fully enriched bounties from cache (all enrichment done at cache time).
@@ -51,9 +51,27 @@ func registerBountySearch(server *mcp.Server) {
 			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: b})
 		}
 
+		// Also fetch Lightning Bounties and merge.
+		lnBounties, lnErr := jobs.SearchLightning(ctx, 50)
+		if lnErr != nil {
+			slog.Warn("bounty_search: lightning error", slog.Any("error", lnErr))
+		}
+		for _, b := range lnBounties {
+			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: b})
+		}
+
+		// Also fetch Collaborators.build bounties and merge.
+		collabBounties, collabErr := jobs.SearchCollaborators(ctx, 50)
+		if collabErr != nil {
+			slog.Warn("bounty_search: collaborators error", slog.Any("error", collabErr))
+		}
+		for _, b := range collabBounties {
+			bvecs = append(bvecs, jobs.BountyWithVector{Bounty: b})
+		}
+
 		if len(bvecs) == 0 {
-			if err != nil && opireErr != nil && bhErr != nil && bossErr != nil {
-				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v", err, opireErr, bhErr, bossErr)
+			if err != nil && opireErr != nil && bhErr != nil && bossErr != nil && lnErr != nil && collabErr != nil {
+				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v; lightning: %v; collaborators: %v", err, opireErr, bhErr, bossErr, lnErr, collabErr)
 			}
 			return bountyResult(engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
 		}
