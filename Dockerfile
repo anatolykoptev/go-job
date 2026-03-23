@@ -1,5 +1,9 @@
 FROM golang:alpine AS builder
 WORKDIR /build
+
+COPY go.mod go.sum ./
+COPY vendor/ vendor/
+
 COPY . .
 RUN VERSION=$(git describe --tags --always 2>/dev/null || echo "dev") && \
     CGO_ENABLED=0 go build -mod=vendor -ldflags="-s -w -X main.version=${VERSION}" -o go_job .
