@@ -17,6 +17,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
+	"github.com/anatolykoptev/go_job/internal/social"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -65,37 +66,37 @@ func main() {
 
 func initEngine() {
 	c := engine.Config{
-		SearxngURL:           env.Str("SEARXNG_URL", ""),
-		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
-		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
-		LLMAPIBase:           env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
-		LLMModel:             env.Str("LLM_MODEL", "gemini-2.5-flash"),
-		LLMTemperature:       env.Float("LLM_TEMPERATURE", 0.1),
-		LLMMaxTokens:         env.Int("LLM_MAX_TOKENS", 16384),
-		MaxFetchURLs:         env.Int("MAX_FETCH_URLS", 8),
-		MaxContentChars:      env.Int("MAX_CONTENT_CHARS", 6000),
-		FetchTimeout:         env.Duration("FETCH_TIMEOUT", 10*time.Second),
-		GithubToken:          env.Str("GITHUB_TOKEN", ""),
-		CacheMaxEntries:      env.Int("CACHE_MAX_ENTRIES", 1000),
-		CacheCleanupInterval: env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
-		IndeedAPIKey:         env.Str("INDEED_API_KEY", ""),
-		DatabaseURL:          env.Str("DATABASE_URL", ""),
-		MemDBURL:             env.Str("MEMDB_URL", ""),
-		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
-		EmbedURL:             env.Str("EMBED_URL", ""),
-		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
-		BountyHighConfGap:    float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
-		BountyHighConfMax:    env.Int("BOUNTY_HIGH_CONF_MAX", 10),
-		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
-		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
-		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
+		SearxngURL:            env.Str("SEARXNG_URL", ""),
+		LLMAPIKey:             env.Str("LLM_API_KEY", ""),
+		LLMAPIKeyFallbacks:    env.List("LLM_API_KEY_FALLBACKS", ""),
+		LLMAPIBase:            env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
+		LLMModel:              env.Str("LLM_MODEL", "gemini-3.1-flash-lite-preview"),
+		LLMTemperature:        env.Float("LLM_TEMPERATURE", 0.1),
+		LLMMaxTokens:          env.Int("LLM_MAX_TOKENS", 16384),
+		MaxFetchURLs:          env.Int("MAX_FETCH_URLS", 8),
+		MaxContentChars:       env.Int("MAX_CONTENT_CHARS", 6000),
+		FetchTimeout:          env.Duration("FETCH_TIMEOUT", 10*time.Second),
+		GithubToken:           env.Str("GITHUB_TOKEN", ""),
+		CacheMaxEntries:       env.Int("CACHE_MAX_ENTRIES", 1000),
+		CacheCleanupInterval:  env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
+		IndeedAPIKey:          env.Str("INDEED_API_KEY", ""),
+		DatabaseURL:           env.Str("DATABASE_URL", ""),
+		MemDBURL:              env.Str("MEMDB_URL", ""),
+		MemDBServiceSecret:    env.Str("INTERNAL_SERVICE_SECRET", ""),
+		EmbedURL:              env.Str("EMBED_URL", ""),
+		BountyHighConfidence:  float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
+		BountyHighConfGap:     float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
+		BountyHighConfMax:     env.Int("BOUNTY_HIGH_CONF_MAX", 10),
+		BountyMedConfMax:      env.Int("BOUNTY_MED_CONF_MAX", 3),
+		BountySkillBoost:      float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
+		BountyMinRelevance:    float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
 		VaelorNotifyURL:       env.Str("VAELOR_NOTIFY_URL", ""),
 		BountyNotifyChatID:    env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
 		BountyMonitorInterval: env.Duration("BOUNTY_MONITOR_INTERVAL", 15*time.Minute),
-		DirectDDG:            env.Bool("DIRECT_DDG", false),
-		DirectStartpage:      env.Bool("DIRECT_STARTPAGE", false),
-		DirectBrave:          env.Bool("DIRECT_BRAVE", false),
-		DirectReddit:         env.Bool("DIRECT_REDDIT", false),
+		DirectDDG:             env.Bool("DIRECT_DDG", false),
+		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
+		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
+		DirectReddit:          env.Bool("DIRECT_REDDIT", false),
 	}
 
 	// Initialize proxy pool from Webshare API (optional).
@@ -109,7 +110,14 @@ func initEngine() {
 		}
 	}
 
-	// Twitter client (optional — guest mode if no accounts configured)
+	// go-social client (optional — centralized account pool)
+	if socialURL := env.Str("GO_SOCIAL_URL", ""); socialURL != "" {
+		socialToken := env.Str("GO_SOCIAL_TOKEN", "")
+		c.SocialClient = social.NewClient(socialURL, socialToken, "go-job")
+		slog.Info("go-social client initialized", slog.String("url", socialURL))
+	}
+
+	// Twitter client (fallback — local accounts or guest mode)
 	accounts := twitter.ParseAccounts(env.Str("TWITTER_ACCOUNTS", ""))
 	openCount := 2
 	if len(accounts) > 0 {

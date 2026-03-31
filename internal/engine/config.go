@@ -12,40 +12,42 @@ import (
 	"github.com/anatolykoptev/go-engine/search"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
+	"github.com/anatolykoptev/go_job/internal/social"
 )
 
 // Config holds all engine configuration, injected from main.
 type Config struct {
-	SearxngURL           string
-	LLMAPIKey            string
-	LLMAPIKeyFallbacks   []string
-	LLMAPIBase           string
-	LLMModel             string
-	LLMTemperature       float64
-	LLMMaxTokens         int
-	MaxFetchURLs         int
-	MaxContentChars      int
-	FetchTimeout         time.Duration
-	GithubToken          string
-	GithubSearchRepos    []string
-	Context7APIKey       string
-	HuggingFaceToken     string
+	SearxngURL                string
+	LLMAPIKey                 string
+	LLMAPIKeyFallbacks        []string
+	LLMAPIBase                string
+	LLMModel                  string
+	LLMTemperature            float64
+	LLMMaxTokens              int
+	MaxFetchURLs              int
+	MaxContentChars           int
+	FetchTimeout              time.Duration
+	GithubToken               string
+	GithubSearchRepos         []string
+	Context7APIKey            string
+	HuggingFaceToken          string
 	YouTubeAPIKey             string
 	YouTubeAPIKeyFallback     string
 	YouTubeTranscriptsEnabled bool
-	CacheMaxEntries      int
-	CacheCleanupInterval time.Duration
-	ProxyPool            proxypool.ProxyPool // replaces BrowserClient + HTTPClient
-	DirectDDG            bool                // enable DuckDuckGo direct scraper
-	DirectStartpage      bool                // enable Startpage direct scraper
-	DirectBrave          bool                // enable Brave direct scraper
-	DirectReddit         bool                // enable Reddit direct scraper
-	IndeedAPIKey         string              // overrideable via INDEED_API_KEY env
-	TwitterClient        *twitter.Client     // nil = Twitter search disabled
-	DatabaseURL          string              // DATABASE_URL for PostgreSQL (resume graph)
-	MemDBURL             string              // MEMDB_URL for vector search
-	MemDBServiceSecret   string              // INTERNAL_SERVICE_SECRET for MemDB auth
-	EmbedURL             string              // EMBED_URL for direct embedding server
+	CacheMaxEntries           int
+	CacheCleanupInterval      time.Duration
+	ProxyPool                 proxypool.ProxyPool // replaces BrowserClient + HTTPClient
+	DirectDDG                 bool                // enable DuckDuckGo direct scraper
+	DirectStartpage           bool                // enable Startpage direct scraper
+	DirectBrave               bool                // enable Brave direct scraper
+	DirectReddit              bool                // enable Reddit direct scraper
+	IndeedAPIKey              string              // overrideable via INDEED_API_KEY env
+	TwitterClient             *twitter.Client     // nil = Twitter search disabled
+	SocialClient              *social.Client      // nil = go-social disabled, use local twitter
+	DatabaseURL               string              // DATABASE_URL for PostgreSQL (resume graph)
+	MemDBURL                  string              // MEMDB_URL for vector search
+	MemDBServiceSecret        string              // INTERNAL_SERVICE_SECRET for MemDB auth
+	EmbedURL                  string              // EMBED_URL for direct embedding server
 
 	// Bounty search tuning.
 	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
@@ -61,8 +63,8 @@ type Config struct {
 	BountyMonitorInterval time.Duration // BOUNTY_MONITOR_INTERVAL (default 15m)
 
 	// Computed fields — populated by Init(), not set by caller.
-	HTTPClient    *http.Client    // plain HTTP client for API calls
-	BrowserClient *BrowserClient  // proxy browser client (nil if no proxy)
+	HTTPClient    *http.Client   // plain HTTP client for API calls
+	BrowserClient *BrowserClient // proxy browser client (nil if no proxy)
 }
 
 // Package-level go-engine instances, set by Init().
