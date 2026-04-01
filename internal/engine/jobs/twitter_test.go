@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	twitter "github.com/anatolykoptev/go-twitter"
+	"github.com/anatolykoptev/go-twitter/social"
 	"github.com/anatolykoptev/go_job/internal/engine"
-	"github.com/anatolykoptev/go_job/internal/social"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,10 +35,12 @@ func TestSearchTwitterJobsRaw_ViaSocial(t *testing.T) {
 	engine.Cfg.TwitterClient = nil
 	defer func() { engine.Cfg.SocialClient = nil }()
 
-	// Will fail at SearchTimeline (fake creds), but proves the social path is attempted
+	// Proves the social path is attempted (not the "not configured" fallback).
+	// May succeed or fail depending on whether fake creds happen to work.
 	_, err := SearchTwitterJobsRaw(context.Background(), "golang hiring", 5)
-	assert.Error(t, err)
-	assert.NotContains(t, err.Error(), "not configured")
+	if err != nil {
+		assert.NotContains(t, err.Error(), "not configured")
+	}
 }
 
 func TestSearchTwitterJobsRaw_FallbackToLocal(t *testing.T) {

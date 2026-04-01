@@ -12,7 +12,7 @@ import (
 	"github.com/anatolykoptev/go-engine/search"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
-	"github.com/anatolykoptev/go_job/internal/social"
+	"github.com/anatolykoptev/go-twitter/social"
 )
 
 // Config holds all engine configuration, injected from main.

@@ -1,3 +1,4 @@
+// Package social provides a thin HTTP client for the go-social account management API.
 package social
 
 import (
