@@ -35,10 +35,13 @@ github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/retry
+# github.com/anatolykoptev/go-linkedin v0.0.0 => /home/krolik/src/go-linkedin
+## explicit; go 1.26
+github.com/anatolykoptev/go-linkedin
 # github.com/anatolykoptev/go-mcpserver v0.6.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
-# github.com/anatolykoptev/go-stealth v1.5.1-0.20260306195200-b28d67aab251
+# github.com/anatolykoptev/go-stealth v1.11.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/pool
@@ -519,3 +522,4 @@ modernc.org/memory
 modernc.org/sqlite
 modernc.org/sqlite/lib
 modernc.org/sqlite/vtab
+# github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin

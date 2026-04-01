@@ -6,8 +6,9 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/anatolykoptev/go-engine v1.6.0
 	github.com/anatolykoptev/go-kit v0.9.0
+	github.com/anatolykoptev/go-linkedin v0.0.0
 	github.com/anatolykoptev/go-mcpserver v0.6.0
-	github.com/anatolykoptev/go-stealth v1.5.1-0.20260306195200-b28d67aab251
+	github.com/anatolykoptev/go-stealth v1.11.0
 	github.com/anatolykoptev/go-twitter v0.5.2
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/modelcontextprotocol/go-sdk v1.4.1
@@ -86,3 +87,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin
