@@ -46,7 +46,7 @@ github.com/anatolykoptev/go-stealth/proxypool
 github.com/anatolykoptev/go-stealth/ratelimit
 github.com/anatolykoptev/go-stealth/websearch
 github.com/anatolykoptev/go-stealth/webtext
-# github.com/anatolykoptev/go-twitter v0.5.1
+# github.com/anatolykoptev/go-twitter v0.5.2
 ## explicit; go 1.26
 github.com/anatolykoptev/go-twitter
 github.com/anatolykoptev/go-twitter/captcha
