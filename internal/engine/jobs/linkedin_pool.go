@@ -24,6 +24,7 @@ var linkedinPool = &liPool{}
 type liPool struct {
 	mu        sync.Mutex
 	client    *linkedin.Client
+	accountID string
 	expiresAt time.Time
 }
 
@@ -51,7 +52,7 @@ func (p *liPool) get(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 		return p.client, nil
 	}
 
-	client, err := acquireLinkedIn(ctx, sc)
+	client, accountID, err := acquireLinkedIn(ctx, sc)
 	if err != nil {
 		// If we have a stale client, return it rather than failing.
 		if p.client != nil {
@@ -62,6 +63,7 @@ func (p *liPool) get(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 	}
 
 	p.client = client
+	p.accountID = accountID
 	p.expiresAt = time.Now().Add(linkedinClientTTL)
 	slog.Info("linkedin client refreshed from go-social")
 	return client, nil
@@ -90,9 +92,32 @@ func withRetry[T any](ctx context.Context, fn func(*linkedin.Client) (T, error))
 			var zero T
 			return zero, err
 		}
-		return fn(client)
+		result, err = fn(client)
+		if err != nil && isAuthError(err) {
+			reportLinkedInAuthError(ctx)
+		}
 	}
 	return result, err
+}
+
+// reportLinkedInAuthError notifies go-social that LinkedIn credentials are failing.
+// Best-effort: logs warning on failure, does not block the error return.
+func reportLinkedInAuthError(ctx context.Context) {
+	sc := engine.Cfg.SocialClient
+	if sc == nil {
+		return
+	}
+	linkedinPool.mu.Lock()
+	accountID := linkedinPool.accountID
+	linkedinPool.mu.Unlock()
+	if accountID == "" {
+		return
+	}
+	if err := sc.ReportUsage(ctx, "linkedin", accountID, "auth_error"); err != nil {
+		slog.Warn("failed to report linkedin auth_error to go-social", slog.Any("error", err))
+	} else {
+		slog.Info("reported linkedin auth_error to go-social", slog.String("account_id", accountID))
+	}
 }
 
 func isAuthError(err error) bool {
@@ -103,10 +128,10 @@ func isAuthError(err error) bool {
 	return strings.Contains(s, "302") || strings.Contains(s, "403") || strings.Contains(s, "401")
 }
 
-func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, error) {
+func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, string, error) {
 	creds, err := sc.AcquireAccount(ctx, "linkedin")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	client, err := linkedin.New(linkedin.ClientConfig{
@@ -114,7 +139,7 @@ func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 		Proxy:   creds.Proxy,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return client, nil
+	return client, creds.ID, nil
 }
