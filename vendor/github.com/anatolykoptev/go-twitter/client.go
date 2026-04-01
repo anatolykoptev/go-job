@@ -1,6 +1,7 @@
 package twitter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go-stealth/pool"
 	"github.com/anatolykoptev/go-stealth/ratelimit"
+	"github.com/anatolykoptev/go-twitter/xpff"
 	"github.com/anatolykoptev/go-twitter/xtid"
 )
 
@@ -21,6 +23,7 @@ type Client struct {
 	client  *stealth.BrowserClient
 	pool    *pool.Pool[*Account]
 	xtidMgr *xtid.Manager
+	xpffGen *xpff.Generator
 	cfg     ClientConfig
 
 	mu                sync.Mutex
@@ -33,6 +36,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	cfg.defaults()
 
 	for _, acc := range cfg.Accounts {
+		acc.active = true
 		acc.rateLimiter = ratelimit.NewLimiter(cfg.RateLimit)
 		acc.HealthTracker = pool.DefaultHealthTracker()
 	}
@@ -70,10 +74,17 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	p := pool.New(cfg.Accounts, poolCfg)
 
+	xpffGuestID := mgr.GuestID()
+	if xpffGuestID == "" {
+		xpffGuestID = xpff.GenerateGuestID()
+	}
+	xpffGen := xpff.New(xpffGuestID, defaultUserAgent)
+
 	c := &Client{
 		client:  bc,
 		pool:    p,
 		xtidMgr: mgr,
+		xpffGen: xpffGen,
 		cfg:     cfg,
 	}
 
@@ -94,6 +105,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		if err := c.loadOrLogin(acc, c.clientForAccount(acc)); err != nil {
 			slog.Warn("account login failed", slog.String("user", acc.Username), slog.Any("error", err))
 			acc.SetActive(false)
+		} else {
+			acc.SetActive(true)
 		}
 	}
 
@@ -122,6 +135,15 @@ func (c *Client) clientForAccount(acc *Account) *stealth.BrowserClient {
 	return c.client
 }
 
+// doPoolReq is a helper for doPoolRequest: executes method+payload via doRequestWithBody.
+func (c *Client) doPoolReq(bc *stealth.BrowserClient, method, urlStr string, payload []byte, headers map[string]string) ([]byte, map[string]string, int, error) {
+	var body io.Reader
+	if len(payload) > 0 {
+		body = bytes.NewReader(payload)
+	}
+	return c.doRequestWithBody(bc, method, urlStr, headers, body)
+}
+
 // doRequest executes a request with xtid header injection (no body).
 func (c *Client) doRequest(bc *stealth.BrowserClient, method, urlStr string, headers map[string]string) ([]byte, map[string]string, int, error) {
 	return c.doRequestWithBody(bc, method, urlStr, headers, nil)
@@ -137,6 +159,12 @@ func (c *Client) doRequestWithBody(bc *stealth.BrowserClient, method, urlStr str
 		headers["x-client-transaction-id"] = txID
 	} else {
 		slog.Debug("xtid: failed to generate transaction id", slog.Any("error", txErr))
+	}
+
+	if xpffVal, xpffErr := c.xpffGen.Generate(); xpffErr == nil {
+		headers["x-xp-forwarded-for"] = xpffVal
+	} else {
+		slog.Debug("xpff: failed to generate header", slog.Any("error", xpffErr))
 	}
 
 	return bc.DoWithHeaderOrder(method, urlStr, headers, body, twitterHeaderOrder)
