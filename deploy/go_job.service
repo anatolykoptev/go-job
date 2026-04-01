@@ -10,7 +10,7 @@ EnvironmentFile=/home/user/deploy-config/.env
 Environment=SEARXNG_URL=http://127.0.0.1:8888
 EnvironmentFile=/home/user/go_job/deploy/go_job.env
 Environment=LLM_API_BASE=http://127.0.0.1:8317/v1
-Environment=LLM_MODEL=gemini-2.5-flash
+Environment=LLM_MODEL=gemini-3.1-flash-lite-preview
 Environment=MCP_PORT=8891
 Environment=MAX_FETCH_URLS=8
 Environment=MAX_CONTENT_CHARS=6000

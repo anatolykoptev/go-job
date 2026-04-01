@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/anatolykoptev/go-stealth/ratelimit"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -57,11 +59,12 @@ func searchViaSocial(ctx context.Context, query string, limit int) ([]*twitter.T
 		Username:  creds.Credentials["username"],
 		AuthToken: creds.Credentials["auth_token"],
 		CT0:       creds.Credentials["ct0"],
-		Proxy:     creds.Proxy,
 	}
 
 	tw, err := twitter.NewClient(twitter.ClientConfig{
-		Accounts: []*twitter.Account{acc},
+		Accounts:     []*twitter.Account{acc},
+		DefaultProxy: creds.Proxy,
+		RateLimit:    ratelimit.Config{RequestsPerWindow: 50, WindowDuration: 15 * time.Minute},
 	})
 	if err != nil {
 		_ = sc.ReportUsage(ctx, "twitter", creds.ID, "auth_error")

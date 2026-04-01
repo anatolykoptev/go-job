@@ -1,9 +1,8 @@
-go 1.21
+go 1.22.5
 
 use (
 	.
+	./build
 	./internal/e2e
-	./mage
-	./magefiles
 	./wafbench
 )

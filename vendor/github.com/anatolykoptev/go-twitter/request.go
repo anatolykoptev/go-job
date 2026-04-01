@@ -17,6 +17,18 @@ const maxRetries = 3
 // doGET executes a GET request with multi-account retry, ct0 rotation, relogin,
 // and guest-token fallback.
 func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[string]string, error) {
+	return c.doPoolRequest(ctx, "GET", endpoint, url, nil)
+}
+
+// doPoolPOST executes a POST request with the same pool-rotation, retry, and
+// fallback logic as doGET. The payload is sent as the request body.
+func (c *Client) doPoolPOST(ctx context.Context, endpoint, url string, payload []byte) ([]byte, map[string]string, error) {
+	return c.doPoolRequest(ctx, "POST", endpoint, url, payload)
+}
+
+// doPoolRequest executes a pool-rotated request (GET or POST) with retry, ct0 rotation,
+// relogin, and guest-token fallback.
+func (c *Client) doPoolRequest(ctx context.Context, method, endpoint, url string, payload []byte) ([]byte, map[string]string, error) {
 	// Anti-fingerprint jitter
 	if err := stealth.DefaultJitter.Sleep(ctx); err != nil {
 		return nil, nil, err
@@ -62,7 +74,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 		bc := c.clientForAccount(acc)
 
 		authTok, ct0, ua := acc.Credentials()
-		body, respHdrs, status, err := c.doRequest(bc, "GET", url, twitterHeaders(authTok, ct0, ua))
+		body, respHdrs, status, err := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok, ct0, ua))
 		if err != nil {
 			if acc.Proxy != "" && isProxyError(err) {
 				c.markProxyDown(acc)
@@ -95,7 +107,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 				acc.RotateCT0()
 				authTok2, ct02, ua2 := acc.Credentials()
 				_ = saveSession(c.cfg.SessionDir, acc.Username, authTok2, ct02)
-				body2, respHdrs2, status2, err2 := c.doRequest(bc, "GET", url, twitterHeaders(authTok2, ct02, ua2))
+				body2, respHdrs2, status2, err2 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok2, ct02, ua2))
 				if err2 == nil && status2 == 200 {
 					if newCT0 := extractCT0FromHeaders(respHdrs2); newCT0 != "" {
 						acc.SetCT0(newCT0)
@@ -107,7 +119,24 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 					return body2, respHdrs2, nil
 				}
 				acc.RecordFailure()
-				lastErr = fmt.Errorf("CSRF retry failed")
+				// CSRF retry failed — attempt relogin as session may be expired
+				slog.Warn("CSRF retry failed, attempting relogin", slog.String("user", acc.Username))
+				if reErr := c.relogin(acc); reErr != nil {
+					slog.Warn("relogin after CSRF failed", slog.String("user", acc.Username), slog.Any("error", reErr))
+					c.pool.SoftDeactivate(acc, c.cfg.AuthCooldown)
+					lastErr = reErr
+					continue
+				}
+				// Retry with fresh credentials after relogin
+				authTok3, ct03, ua3 := acc.Credentials()
+				body3, respHdrs3, status3, err3 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok3, ct03, ua3))
+				if err3 == nil && status3 == 200 {
+					c.recordAPICall(endpoint, true, false)
+					acc.RecordSuccess()
+					return body3, respHdrs3, nil
+				}
+				c.pool.SoftDeactivate(acc, c.cfg.AuthCooldown)
+				lastErr = fmt.Errorf("post-relogin CSRF request failed")
 				continue
 			case errAuthExpired:
 				slog.Warn("auth expired (code 32), attempting relogin", slog.String("user", acc.Username))
@@ -118,7 +147,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 					continue
 				}
 				authTok2, ct02, ua2 := acc.Credentials()
-				body2, respHdrs2, status2, err2 := c.doRequest(bc, "GET", url, twitterHeaders(authTok2, ct02, ua2))
+				body2, respHdrs2, status2, err2 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok2, ct02, ua2))
 				if err2 == nil && status2 == 200 {
 					c.recordAPICall(endpoint, true, false)
 					acc.RecordSuccess()
@@ -166,7 +195,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 			acc.RotateCT0()
 			authTok2, ct02, ua2 := acc.Credentials()
 			_ = saveSession(c.cfg.SessionDir, acc.Username, authTok2, ct02)
-			body2, respHdrs2, status2, err2 := c.doRequest(bc, "GET", url, twitterHeaders(authTok2, ct02, ua2))
+			body2, respHdrs2, status2, err2 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok2, ct02, ua2))
 			if err2 == nil && status2 == 200 && classifyError(body2, respHdrs2) == errNone {
 				if newCT0 := extractCT0FromHeaders(respHdrs2); newCT0 != "" {
 					acc.SetCT0(newCT0)
@@ -177,7 +206,23 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 				acc.RecordSuccess()
 				return body2, respHdrs2, nil
 			}
-			lastErr = fmt.Errorf("CSRF retry failed")
+			// CSRF retry failed — attempt relogin
+			slog.Warn("CSRF retry failed, attempting relogin", slog.String("user", acc.Username))
+			if reErr := c.relogin(acc); reErr != nil {
+				slog.Warn("relogin after CSRF failed", slog.String("user", acc.Username), slog.Any("error", reErr))
+				c.pool.SoftDeactivate(acc, c.cfg.AuthCooldown)
+				lastErr = reErr
+				continue
+			}
+			authTok3, ct03, ua3 := acc.Credentials()
+			body3, respHdrs3, status3, err3 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok3, ct03, ua3))
+			if err3 == nil && status3 == 200 {
+				c.recordAPICall(endpoint, true, false)
+				acc.RecordSuccess()
+				return body3, respHdrs3, nil
+			}
+			c.pool.SoftDeactivate(acc, c.cfg.AuthCooldown)
+			lastErr = fmt.Errorf("post-relogin CSRF request failed")
 			continue
 
 		case errAuthExpired:
@@ -189,7 +234,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 				continue
 			}
 			authTok2, ct02, ua2 := acc.Credentials()
-			body2, respHdrs2, status2, err2 := c.doRequest(bc, "GET", url, twitterHeaders(authTok2, ct02, ua2))
+			body2, respHdrs2, status2, err2 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok2, ct02, ua2))
 			if err2 == nil && status2 == 200 {
 				c.recordAPICall(endpoint, true, false)
 				acc.RecordSuccess()
@@ -236,7 +281,7 @@ func (c *Client) doGET(ctx context.Context, endpoint, url string) ([]byte, map[s
 				slog.Info("attempting CAPTCHA unlock via relogin", slog.String("user", acc.Username))
 				if reErr := c.relogin(acc); reErr == nil {
 					authTok2, ct02, ua2 := acc.Credentials()
-					body2, respHdrs2, status2, err2 := c.doRequest(bc, "GET", url, twitterHeaders(authTok2, ct02, ua2))
+					body2, respHdrs2, status2, err2 := c.doPoolReq(bc, method, url, payload, twitterHeaders(authTok2, ct02, ua2))
 					if err2 == nil && status2 == 200 {
 						c.recordAPICall(endpoint, true, false)
 						acc.RecordSuccess()
@@ -456,7 +501,7 @@ func (c *Client) doPOST(ctx context.Context, acc *Account, endpoint, url string,
 // requiresAuth returns true for endpoints that need a real authenticated account.
 func requiresAuth(endpoint string) bool {
 	switch endpoint {
-	case "Following", "Followers", "Retweeters", "CreateTweet":
+	case "TweetDetail", "SearchTimeline", "Following", "Followers", "Retweeters", "CreateTweet":
 		return true
 	}
 	return false

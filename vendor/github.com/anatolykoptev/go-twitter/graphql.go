@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // GetUserByScreenName fetches a user profile by Twitter handle.
@@ -99,9 +100,17 @@ func (c *Client) fetchTweetUserList(ctx context.Context, operation, tweetID stri
 		}
 
 		variables := map[string]any{
-			"tweetId":                tweetID,
-			"count":                  min(20, maxCount-len(users)),
-			"includePromotedContent": true,
+			"tweetId":                     tweetID,
+			"count":                       min(20, maxCount-len(users)),
+			"includePromotedContent":      true,
+			"withDownvotePerspective":     false,
+			"withReactionsMetadata":       false,
+			"withReactionsPerspective":    false,
+			"withSuperFollowsTweetFields": true,
+			"withSuperFollowsUserFields":  true,
+			"withVoice":                   true,
+			"withBirdwatchNotes":          true,
+			"withCommunity":               true,
 		}
 		if cursor != "" {
 			variables["cursor"] = cursor
@@ -132,6 +141,54 @@ func (c *Client) fetchTweetUserList(ctx context.Context, operation, tweetID stri
 	return users, nil
 }
 
+// GetTweetByID fetches a single tweet by its ID.
+func (c *Client) GetTweetByID(ctx context.Context, tweetID string) (*Tweet, error) {
+	variables := map[string]any{
+		"focalTweetId":                           tweetID,
+		"with_rux_injections":                    false,
+		"rankingMode":                            "Relevance",
+		"includePromotedContent":                 true,
+		"withCommunity":                          true,
+		"withQuickPromoteEligibilityTweetFields": true,
+		"withBirdwatchNotes":                     true,
+		"withVoice":                              true,
+		"withDownvotePerspective":                false,
+		"withReactionsMetadata":                  false,
+		"withReactionsPerspective":               false,
+		"withSuperFollowsTweetFields":            true,
+		"withSuperFollowsUserFields":             true,
+	}
+	url, err := EndpointURL("TweetDetail")
+	if err != nil {
+		return nil, err
+	}
+	url = addGraphQLParams(url, variables, Endpoints["TweetDetail"].Features)
+
+	body, _, err := c.doGET(ctx, "TweetDetail", url)
+	if err != nil {
+		return nil, fmt.Errorf("TweetDetail: %w", err)
+	}
+	tweets, err := parseTweetDetail(body)
+	if err != nil {
+		// If parsing fails, log the raw response for debugging
+		slog.Debug("TweetDetail parse failed", slog.String("body_prefix", string(body[:min(500, len(body))])))
+		return nil, fmt.Errorf("parse TweetDetail: %w", err)
+	}
+	slog.Debug("TweetDetail parsed", slog.Int("count", len(tweets)), slog.String("target", tweetID))
+	for _, t := range tweets {
+		slog.Debug("TweetDetail tweet", slog.String("id", t.ID), slog.String("text_prefix", t.Text[:min(50, len(t.Text))]))
+		if t.ID == tweetID {
+			return t, nil
+		}
+	}
+	if len(tweets) > 0 {
+		return tweets[0], nil
+	}
+	// Log raw body prefix to understand why parsing returned empty
+	slog.Warn("TweetDetail no tweets", slog.String("body_prefix", string(body[:min(1000, len(body))])))
+	return nil, fmt.Errorf("tweet %s not found in response", tweetID)
+}
+
 // GetUserTweets fetches recent tweets for a user.
 func (c *Client) GetUserTweets(ctx context.Context, userID string, count int) ([]*Tweet, error) {
 	variables := map[string]any{
@@ -156,6 +213,7 @@ func (c *Client) GetUserTweets(ctx context.Context, userID string, count int) ([
 }
 
 // SearchTimeline searches for tweets matching a query.
+// Uses POST (Twitter migrated this endpoint from GET in March 2026).
 func (c *Client) SearchTimeline(ctx context.Context, query string, count int) ([]*Tweet, error) {
 	variables := map[string]any{
 		"rawQuery":    query,
@@ -170,9 +228,16 @@ func (c *Client) SearchTimeline(ctx context.Context, query string, count int) ([
 	if err != nil {
 		return nil, err
 	}
-	url = addGraphQLParams(url, variables, Endpoints["SearchTimeline"].Features, fieldToggles)
+	payload, err := json.Marshal(map[string]any{
+		"variables":    variables,
+		"features":     Endpoints["SearchTimeline"].Features,
+		"fieldToggles": fieldToggles,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("SearchTimeline: marshal payload: %w", err)
+	}
 
-	body, _, err := c.doGET(ctx, "SearchTimeline", url)
+	body, _, err := c.doPoolPOST(ctx, "SearchTimeline", url, payload)
 	if err != nil {
 		return nil, fmt.Errorf("SearchTimeline: %w", err)
 	}
