@@ -14,6 +14,8 @@ github.com/anatolykoptev/go-mcpserver v0.6.0 h1:WbjggV0IIKehmw4Lqk5KZRbyr9K77t8b
 github.com/anatolykoptev/go-mcpserver v0.6.0/go.mod h1:dFMAoXyPOJJzUOpKYFdvVNjhm4VdZtKd1Q3NcdTGJUg=
 github.com/anatolykoptev/go-stealth v1.5.1-0.20260306195200-b28d67aab251 h1:fu6VfZZmCi8wydfJWRza2ERAx5R/1IhKWNEbw/+NqSI=
 github.com/anatolykoptev/go-stealth v1.5.1-0.20260306195200-b28d67aab251/go.mod h1:HbjBbeEjCOBNljrKssELoCvah56DiIwVzrwNSyuAsfU=
+github.com/anatolykoptev/go-twitter v0.5.0 h1:/xcPAHNCTSHVDjie13zyZder4As6rG/L9+hKcqHIEYo=
+github.com/anatolykoptev/go-twitter v0.5.0/go.mod h1:tCRfcYfjBXBV0VO+Du5J7pOa3VNveZuNm+knrnAls7s=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/andybalholm/cascadia v1.3.3 h1:AG2YHrzJIm4BZ19iwJ/DAua6Btl3IwJX+VI4kktS1LM=
