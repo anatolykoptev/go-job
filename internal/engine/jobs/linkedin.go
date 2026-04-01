@@ -603,74 +603,60 @@ func LinkedInJobsToSearxngResults(ctx context.Context, jobs []LinkedInJob, fetch
 
 // VoyagerProfile fetches a full LinkedIn profile via Voyager API (authenticated).
 func VoyagerProfile(ctx context.Context, handle string) (*linkedin.Profile, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	return client.GetProfile(ctx, handle)
+	return withRetry(ctx, func(c *linkedin.Client) (*linkedin.Profile, error) {
+		return c.GetProfile(ctx, handle)
+	})
 }
 
 // VoyagerCompany fetches a LinkedIn company page via Voyager API.
 func VoyagerCompany(ctx context.Context, slug string) (*linkedin.Company, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	return client.GetCompany(ctx, slug)
+	return withRetry(ctx, func(c *linkedin.Client) (*linkedin.Company, error) {
+		return c.GetCompany(ctx, slug)
+	})
 }
 
 // VoyagerJobs searches LinkedIn job listings via Voyager API.
 func VoyagerJobs(ctx context.Context, params linkedin.JobSearchParams) ([]linkedin.Job, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	return client.SearchJobs(ctx, params)
+	return withRetry(ctx, func(c *linkedin.Client) ([]linkedin.Job, error) {
+		return c.SearchJobs(ctx, params)
+	})
 }
 
 // VoyagerSearchPeople searches LinkedIn for people matching the query.
 func VoyagerSearchPeople(ctx context.Context, query string, limit int) ([]linkedin.SearchResult, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	return client.SearchPeople(ctx, linkedin.SearchParams{Query: query, Limit: limit})
+	return withRetry(ctx, func(c *linkedin.Client) ([]linkedin.SearchResult, error) {
+		return c.SearchPeople(ctx, linkedin.SearchParams{Query: query, Limit: limit})
+	})
 }
 
 // VoyagerSearchCompanies searches LinkedIn for companies matching the query.
 func VoyagerSearchCompanies(ctx context.Context, query string, limit int) ([]linkedin.SearchResult, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	return client.SearchCompanies(ctx, linkedin.SearchParams{Query: query, Limit: limit})
+	return withRetry(ctx, func(c *linkedin.Client) ([]linkedin.SearchResult, error) {
+		return c.SearchCompanies(ctx, linkedin.SearchParams{Query: query, Limit: limit})
+	})
 }
 
 // VoyagerPosts fetches recent posts for a LinkedIn profile.
 func VoyagerPosts(ctx context.Context, handle string, limit int) ([]linkedin.Post, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	profile, err := client.GetProfile(ctx, handle)
-	if err != nil {
-		return nil, err
-	}
-	profileID := linkedin.ExtractProfileID(profile.URN)
-	return client.GetPosts(ctx, profileID, limit)
+	return withRetry(ctx, func(c *linkedin.Client) ([]linkedin.Post, error) {
+		profile, err := c.GetProfile(ctx, handle)
+		if err != nil {
+			return nil, err
+		}
+		profileID := linkedin.ExtractProfileID(profile.URN)
+		return c.GetPosts(ctx, profileID, limit)
+	})
 }
 
 // VoyagerRating computes influence and quality metrics for a LinkedIn profile.
 func VoyagerRating(ctx context.Context, handle string) (*linkedin.ProfileRating, error) {
-	client := engine.Cfg.LinkedInClient
-	if client == nil {
-		return nil, errors.New("linkedin not configured")
-	}
-	profile, err := client.GetProfile(ctx, handle)
-	if err != nil {
-		return nil, err
-	}
-	profileID := linkedin.ExtractProfileID(profile.URN)
-	posts, _ := client.GetPosts(ctx, profileID, 20)
-	return linkedin.ComputeRating(profile, posts), nil
+	return withRetry(ctx, func(c *linkedin.Client) (*linkedin.ProfileRating, error) {
+		profile, err := c.GetProfile(ctx, handle)
+		if err != nil {
+			return nil, err
+		}
+		profileID := linkedin.ExtractProfileID(profile.URN)
+		posts, _ := c.GetPosts(ctx, profileID, 20)
+		return linkedin.ComputeRating(profile, posts), nil
+	})
 }
