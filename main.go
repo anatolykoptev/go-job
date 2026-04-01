@@ -13,6 +13,7 @@ import (
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/go-stealth/proxypool"
+	linkedin "github.com/anatolykoptev/go-linkedin"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -39,7 +40,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	slog.Info("tools registered", slog.Int("count", 30))
+	slog.Info("tools registered", slog.Int("count", 36))
 
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {
@@ -115,6 +116,25 @@ func initEngine() {
 		socialToken := env.Str("GO_SOCIAL_TOKEN", "")
 		c.SocialClient = social.NewClient(socialURL, socialToken, "go-job")
 		slog.Info("go-social client initialized", slog.String("url", socialURL))
+	}
+
+	// LinkedIn client via go-social
+	if c.SocialClient != nil {
+		liCreds, liErr := c.SocialClient.AcquireAccount(context.Background(), "linkedin")
+		if liErr == nil {
+			liClient, liInitErr := linkedin.New(linkedin.ClientConfig{
+				Cookies: liCreds.Credentials,
+				Proxy:   liCreds.Proxy,
+			})
+			if liInitErr == nil {
+				c.LinkedInClient = liClient
+				slog.Info("linkedin client initialized via go-social")
+			} else {
+				slog.Warn("linkedin client init failed", slog.Any("error", liInitErr))
+			}
+		} else {
+			slog.Info("no linkedin account in go-social, linkedin tools disabled")
+		}
 	}
 
 	// Twitter client (fallback — local accounts or guest mode)

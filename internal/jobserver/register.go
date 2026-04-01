@@ -43,6 +43,13 @@ func RegisterTools(server *mcp.Server) {
 	registerSecurityBountySearch(server)
 	// Twitter
 	registerTwitterJobSearch(server)
+	// LinkedIn
+	registerLinkedInProfile(server)
+	registerLinkedInCompany(server)
+	registerLinkedInJobs(server)
+	registerLinkedInSearch(server)
+	registerLinkedInPosts(server)
+	registerLinkedInRating(server)
 	// Master Resume
 	registerMasterResumeBuild(server)
 	registerResumeGenerate(server)
