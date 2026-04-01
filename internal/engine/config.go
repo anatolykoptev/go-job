@@ -10,6 +10,7 @@ import (
 	engllm "github.com/anatolykoptev/go-engine/llm"
 	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/search"
+	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
@@ -44,6 +45,7 @@ type Config struct {
 	IndeedAPIKey              string              // overrideable via INDEED_API_KEY env
 	TwitterClient             *twitter.Client     // nil = Twitter search disabled
 	SocialClient              *social.Client      // nil = go-social disabled, use local twitter
+	LinkedInClient            *linkedin.Client    // nil = LinkedIn tools disabled
 	DatabaseURL               string              // DATABASE_URL for PostgreSQL (resume graph)
 	MemDBURL                  string              // MEMDB_URL for vector search
 	MemDBServiceSecret        string              // INTERNAL_SERVICE_SECRET for MemDB auth
