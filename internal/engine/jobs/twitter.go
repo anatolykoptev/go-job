@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
-	"github.com/anatolykoptev/go-stealth/ratelimit"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -49,36 +47,7 @@ func searchViaSocial(ctx context.Context, query string, limit int) ([]*twitter.T
 	if sc == nil {
 		return nil, errors.New("social client not configured")
 	}
-
-	creds, err := sc.AcquireAccount(ctx, "twitter")
-	if err != nil {
-		return nil, fmt.Errorf("acquire account: %w", err)
-	}
-
-	acc := &twitter.Account{
-		Username:  creds.Credentials["username"],
-		AuthToken: creds.Credentials["auth_token"],
-		CT0:       creds.Credentials["ct0"],
-	}
-
-	tw, err := twitter.NewClient(twitter.ClientConfig{
-		Accounts:     []*twitter.Account{acc},
-		DefaultProxy: creds.Proxy,
-		RateLimit:    ratelimit.Config{RequestsPerWindow: 50, WindowDuration: 15 * time.Minute},
-	})
-	if err != nil {
-		_ = sc.ReportUsage(ctx, "twitter", creds.ID, "auth_error")
-		return nil, fmt.Errorf("create ephemeral client: %w", err)
-	}
-
-	tweets, err := tw.SearchTimeline(ctx, query, limit)
-	if err != nil {
-		_ = sc.ReportUsage(ctx, "twitter", creds.ID, "auth_error")
-		return nil, fmt.Errorf("social search: %w", err)
-	}
-
-	_ = sc.ReportUsage(ctx, "twitter", creds.ID, "success")
-	return tweets, nil
+	return twitter.SearchWithSocial(ctx, sc, query, limit)
 }
 
 // searchTwitter tries go-social first, falls back to local twitter client.

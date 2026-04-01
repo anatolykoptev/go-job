@@ -14,10 +14,10 @@ import (
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
+	"github.com/anatolykoptev/go-twitter/social"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
-	"github.com/anatolykoptev/go_job/internal/social"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
