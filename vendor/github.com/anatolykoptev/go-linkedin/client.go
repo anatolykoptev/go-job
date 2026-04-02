@@ -12,9 +12,9 @@ import (
 
 const (
 	baseURL          = "https://www.linkedin.com"
-	defaultMaxReq    = 80
-	defaultJitterMin = 3 * time.Second
-	defaultJitterMax = 10 * time.Second
+	defaultMaxReq    = 50
+	defaultJitterMin = 15 * time.Second
+	defaultJitterMax = 45 * time.Second
 	versionTTL       = 24 * time.Hour
 )
 
