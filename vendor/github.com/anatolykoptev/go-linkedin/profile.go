@@ -51,11 +51,6 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 			Summary          string `json:"summary"`
 			IndustryName     string `json:"industryName"`
 			PublicIdentifier string `json:"publicIdentifier"`
-			GeoLocation      struct {
-				Geo struct {
-					Name string `json:"defaultLocalizedName"`
-				} `json:"*geo"`
-			} `json:"geoLocation"`
 		}
 		if err := safeUnmarshal(profileItems[0], &profileData); err == nil {
 			profile.URN = profileData.EntityURN
