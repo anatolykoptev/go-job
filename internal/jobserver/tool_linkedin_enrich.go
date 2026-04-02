@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -96,14 +97,27 @@ func sendToNerv(ctx context.Context, tenantID string, profile *linkedin.Profile)
 	}
 	defer resp.Body.Close()
 
+	// go-nerv uses SSE transport: "event: message\ndata: {json}\n\n"
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read nerv response: %w", err)
+	}
+	// Extract JSON from SSE "data: " line
+	jsonData := body
+	if idx := bytes.Index(body, []byte("data: ")); idx >= 0 {
+		jsonData = body[idx+6:]
+		if end := bytes.Index(jsonData, []byte("\n")); end >= 0 {
+			jsonData = jsonData[:end]
+		}
+	}
 	var rpcResp struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-		return nil, fmt.Errorf("decode nerv response: %w", err)
+	if err := json.Unmarshal(jsonData, &rpcResp); err != nil {
+		return nil, fmt.Errorf("decode nerv response: %w (body: %s)", err, string(body[:min(200, len(body))]))
 	}
 	if rpcResp.Error != nil {
 		return nil, fmt.Errorf("nerv: %s", rpcResp.Error.Message)
