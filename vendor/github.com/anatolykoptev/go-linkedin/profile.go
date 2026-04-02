@@ -17,6 +17,7 @@ func (c *Client) GetProfile(ctx context.Context, handle string) (*Profile, error
 	if err != nil {
 		return nil, err
 	}
+	c.enrichExperience(ctx, handle, profile)
 	if skills, err := c.GetSkills(ctx, profileID); err == nil {
 		profile.Skills = skills
 	}
@@ -27,7 +28,7 @@ func (c *Client) GetProfile(ctx context.Context, handle string) (*Profile, error
 }
 
 func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, string, error) {
-	endpoint := fmt.Sprintf("%s?q=memberIdentity&memberIdentity=%s&decorationId=com.linkedin.voyager.dash.deco.identity.profile.TopCardSupplementary-138",
+	endpoint := fmt.Sprintf("%s?q=memberIdentity&memberIdentity=%s&decorationId=com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-20",
 		profileEndpoint, url.QueryEscape(handle))
 	body, err := c.do(ctx, endpoint)
 	if err != nil {
@@ -86,6 +87,28 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 	profile.Certifications = parseCertifications(resp.Included)
 	profileID := ExtractProfileID(profile.URN)
 	return profile, profileID, nil
+}
+
+// enrichExperience fetches experience/education via TopCardSupplementary decoration
+// and merges into the profile (if the basic call didn't include them).
+func (c *Client) enrichExperience(ctx context.Context, handle string, profile *Profile) {
+	if len(profile.Experiences) > 0 {
+		return // already have experience from basic call
+	}
+	endpoint := fmt.Sprintf("%s?q=memberIdentity&memberIdentity=%s&decorationId=com.linkedin.voyager.dash.deco.identity.profile.TopCardSupplementary-138",
+		profileEndpoint, url.QueryEscape(handle))
+	body, err := c.do(ctx, endpoint)
+	if err != nil {
+		return
+	}
+	resp, err := parseVoyagerResponse(body)
+	if err != nil {
+		return
+	}
+	profile.Experiences = parseExperiences(resp.Included)
+	if len(profile.Educations) == 0 {
+		profile.Educations = parseEducations(resp.Included)
+	}
 }
 
 func normalizeHandle(handle string) string {
