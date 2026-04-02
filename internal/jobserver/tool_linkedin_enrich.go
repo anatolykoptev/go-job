@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -16,7 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const nervIngestTimeout = 10 * time.Second
+const nervIngestTimeout = 30 * time.Second
 
 type linkedInProfileIngestInput struct {
 	Handle   string `json:"handle" jsonschema:"LinkedIn handle or profile URL"`
@@ -48,7 +49,7 @@ func registerLinkedInProfileIngest(server *mcp.Server) {
 
 		result, err := sendToNerv(ctx, input.TenantID, profile)
 		if err != nil {
-			// Profile fetched but nerv ingestion failed — return profile anyway
+			slog.Warn("nerv ingestion failed", "handle", input.Handle, "error", err)
 			return nil, &linkedInProfileIngestOutput{
 				Profile:      profile,
 				NervIngested: false,
