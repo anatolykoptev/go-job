@@ -35,7 +35,7 @@ github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/retry
-# github.com/anatolykoptev/go-linkedin v0.3.4 => /home/krolik/src/go-linkedin
+# github.com/anatolykoptev/go-linkedin v0.3.5 => /home/krolik/src/go-linkedin
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
 # github.com/anatolykoptev/go-mcpserver v0.6.0

@@ -27,7 +27,7 @@ func (c *Client) GetProfile(ctx context.Context, handle string) (*Profile, error
 }
 
 func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, string, error) {
-	endpoint := fmt.Sprintf("%s?q=memberIdentity&memberIdentity=%s&decorationId=com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-20",
+	endpoint := fmt.Sprintf("%s?q=memberIdentity&memberIdentity=%s&decorationId=com.linkedin.voyager.dash.deco.identity.profile.TopCardSupplementary-138",
 		profileEndpoint, url.QueryEscape(handle))
 	body, err := c.do(ctx, endpoint)
 	if err != nil {
