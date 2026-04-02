@@ -40,27 +40,43 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 	profile := &Profile{
 		ProfileURL: fmt.Sprintf("https://www.linkedin.com/in/%s", handle),
 	}
-	var profileData struct {
-		EntityURN       string `json:"entityUrn"`
-		FirstName       string `json:"firstName"`
-		LastName        string `json:"lastName"`
-		Headline        string `json:"headline"`
-		LocationName    string `json:"locationName"`
-		Summary         string `json:"summary"`
-		IndustryName    string `json:"industryName"`
-		ConnectionCount int    `json:"numConnections"`
-		FollowerCount   int    `json:"followingCount"`
+	// Profile data lives in included[] under $type=com.linkedin.voyager.dash.identity.profile.Profile
+	profileItems := includedByType(resp.Included, "com.linkedin.voyager.dash.identity.profile.Profile")
+	if len(profileItems) > 0 {
+		var profileData struct {
+			EntityURN        string `json:"entityUrn"`
+			FirstName        string `json:"firstName"`
+			LastName         string `json:"lastName"`
+			Headline         string `json:"headline"`
+			Summary          string `json:"summary"`
+			IndustryName     string `json:"industryName"`
+			PublicIdentifier string `json:"publicIdentifier"`
+			GeoLocation      struct {
+				Geo struct {
+					Name string `json:"defaultLocalizedName"`
+				} `json:"*geo"`
+			} `json:"geoLocation"`
+		}
+		if err := safeUnmarshal(profileItems[0], &profileData); err == nil {
+			profile.URN = profileData.EntityURN
+			profile.FirstName = profileData.FirstName
+			profile.LastName = profileData.LastName
+			profile.Headline = profileData.Headline
+			profile.About = profileData.Summary
+			profile.Industry = profileData.IndustryName
+		}
 	}
-	if err := safeUnmarshal(resp.Data, &profileData); err == nil {
-		profile.URN = profileData.EntityURN
-		profile.FirstName = profileData.FirstName
-		profile.LastName = profileData.LastName
-		profile.Headline = profileData.Headline
-		profile.Location = profileData.LocationName
-		profile.About = profileData.Summary
-		profile.Industry = profileData.IndustryName
-		profile.ConnectionCount = profileData.ConnectionCount
-		profile.FollowerCount = profileData.FollowerCount
+	// Location from Geo objects in included
+	geoItems := includedByType(resp.Included, "com.linkedin.voyager.dash.common.Geo")
+	for _, raw := range geoItems {
+		var geo struct {
+			Name       string `json:"defaultLocalizedName"`
+			CountryURN string `json:"countryUrn"`
+		}
+		if safeUnmarshal(raw, &geo) == nil && geo.CountryURN == "" && geo.Name != "" {
+			profile.Location = geo.Name
+			break
+		}
 	}
 	profile.Experiences = parseExperiences(resp.Included)
 	profile.Educations = parseEducations(resp.Included)

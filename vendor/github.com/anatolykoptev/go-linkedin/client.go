@@ -35,6 +35,9 @@ type ClientConfig struct {
 	MaxReqPerDay int
 	JitterMin    time.Duration
 	JitterMax    time.Duration
+	// OnChallenge is called when Login() encounters an App Challenge.
+	// Use to send notifications (e.g. Telegram) so the user can approve on mobile.
+	OnChallenge func(challengeID string)
 }
 
 func (c *ClientConfig) defaults() {
@@ -122,6 +125,15 @@ func safeUnmarshal(data json.RawMessage, v any) error {
 		return fmt.Errorf("nil data")
 	}
 	return json.Unmarshal(data, v)
+}
+
+// Cookies returns a copy of the current session cookies.
+func (c *Client) Cookies() map[string]string {
+	result := make(map[string]string, len(c.cookies))
+	for k, v := range c.cookies {
+		result[k] = v
+	}
+	return result
 }
 
 // Remaining returns the number of API requests remaining in the current window.
