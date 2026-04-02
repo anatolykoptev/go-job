@@ -50,6 +50,7 @@ func RegisterTools(server *mcp.Server) {
 	registerLinkedInSearch(server)
 	registerLinkedInPosts(server)
 	registerLinkedInRating(server)
+	registerLinkedInProfileIngest(server)
 	// Master Resume
 	registerMasterResumeBuild(server)
 	registerResumeGenerate(server)
