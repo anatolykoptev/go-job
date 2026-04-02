@@ -134,9 +134,11 @@ func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 		return nil, "", err
 	}
 
+	// No proxy for API calls — LinkedIn doesn't block datacenter IPs for Voyager API.
+	// Cookies are bound to TLS fingerprint (JA3), not IP address.
+	// Proxy is only needed for login (challenge/anti-bot).
 	client, err := linkedin.New(linkedin.ClientConfig{
 		Cookies: creds.Credentials,
-		Proxy:   creds.Proxy,
 	})
 	if err != nil {
 		return nil, "", err
