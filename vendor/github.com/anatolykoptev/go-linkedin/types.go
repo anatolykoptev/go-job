@@ -10,21 +10,25 @@ type YearMonth struct {
 
 // Profile is a full LinkedIn profile with all sections.
 type Profile struct {
-	URN             string          `json:"urn"`
-	FirstName       string          `json:"first_name"`
-	LastName        string          `json:"last_name"`
-	Headline        string          `json:"headline"`
-	Location        string          `json:"location"`
-	About           string          `json:"about"`
-	Industry        string          `json:"industry"`
-	ConnectionCount int             `json:"connection_count"`
-	FollowerCount   int             `json:"follower_count"`
-	Experiences     []Experience    `json:"experiences,omitempty"`
-	Educations      []Education     `json:"educations,omitempty"`
-	Skills          []Skill         `json:"skills,omitempty"`
-	Certifications  []Certification `json:"certifications,omitempty"`
-	ContactInfo     *ContactInfo    `json:"contact_info,omitempty"`
-	ProfileURL      string          `json:"profile_url"`
+	URN              string          `json:"urn"`
+	FirstName        string          `json:"first_name"`
+	LastName         string          `json:"last_name"`
+	Headline         string          `json:"headline"`
+	Location         string          `json:"location"`
+	About            string          `json:"about"`
+	Industry         string          `json:"industry"`
+	ConnectionCount  int             `json:"connection_count"`
+	FollowerCount    int             `json:"follower_count"`
+	Experiences      []Experience    `json:"experiences,omitempty"`
+	Educations       []Education     `json:"educations,omitempty"`
+	Skills           []Skill         `json:"skills,omitempty"`
+	Certifications   []Certification `json:"certifications,omitempty"`
+	ContactInfo      *ContactInfo    `json:"contact_info,omitempty"`
+	ProfileURL       string          `json:"profile_url"`
+	PublicIdentifier string          `json:"public_identifier,omitempty"`
+	Premium          bool            `json:"premium,omitempty"`
+	Influencer       bool            `json:"influencer,omitempty"`
+	Creator          bool            `json:"creator,omitempty"`
 }
 
 // Experience is a single work experience entry.

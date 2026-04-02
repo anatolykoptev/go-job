@@ -6,7 +6,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/anatolykoptev/go-engine v1.6.0
 	github.com/anatolykoptev/go-kit v0.9.0
-	github.com/anatolykoptev/go-linkedin v0.3.5
+	github.com/anatolykoptev/go-linkedin v0.4.0
 	github.com/anatolykoptev/go-mcpserver v0.6.0
 	github.com/anatolykoptev/go-stealth v1.11.0
 	github.com/anatolykoptev/go-twitter v0.5.2
