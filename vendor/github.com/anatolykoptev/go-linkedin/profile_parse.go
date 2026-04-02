@@ -12,16 +12,16 @@ func parseExperiences(included []json.RawMessage) []Experience {
 			CompanyURN   string `json:"companyUrn"`
 			LocationName string `json:"locationName"`
 			Description  string `json:"description"`
-			TimePeriod   *struct {
-				StartDate *struct {
+			DateRange    *struct {
+				Start *struct {
 					Year  int `json:"year"`
 					Month int `json:"month"`
-				} `json:"startDate"`
-				EndDate *struct {
+				} `json:"start"`
+				End *struct {
 					Year  int `json:"year"`
 					Month int `json:"month"`
-				} `json:"endDate"`
-			} `json:"timePeriod"`
+				} `json:"end"`
+			} `json:"dateRange"`
 		}
 		if json.Unmarshal(raw, &pos) != nil {
 			continue
@@ -33,12 +33,12 @@ func parseExperiences(included []json.RawMessage) []Experience {
 			Location:    pos.LocationName,
 			Description: pos.Description,
 		}
-		if pos.TimePeriod != nil {
-			if pos.TimePeriod.StartDate != nil {
-				exp.StartDate = YearMonth{Year: pos.TimePeriod.StartDate.Year, Month: pos.TimePeriod.StartDate.Month}
+		if pos.DateRange != nil {
+			if pos.DateRange.Start != nil {
+				exp.StartDate = YearMonth{Year: pos.DateRange.Start.Year, Month: pos.DateRange.Start.Month}
 			}
-			if pos.TimePeriod.EndDate != nil {
-				exp.EndDate = &YearMonth{Year: pos.TimePeriod.EndDate.Year, Month: pos.TimePeriod.EndDate.Month}
+			if pos.DateRange.End != nil {
+				exp.EndDate = &YearMonth{Year: pos.DateRange.End.Year, Month: pos.DateRange.End.Month}
 			}
 		}
 		exps = append(exps, exp)
