@@ -40,9 +40,10 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 	profile := &Profile{
 		ProfileURL: fmt.Sprintf("https://www.linkedin.com/in/%s", handle),
 	}
-	// Profile data lives in included[] under $type=com.linkedin.voyager.dash.identity.profile.Profile
-	profileItems := includedByType(resp.Included, "com.linkedin.voyager.dash.identity.profile.Profile")
-	if len(profileItems) > 0 {
+	// Profile data lives in included[] — match by URN from data.*elements
+	targetURN := extractTargetURN(resp.Data)
+	profileItem := findProfileByURN(resp.Included, targetURN)
+	if profileItem != nil {
 		var profileData struct {
 			EntityURN        string `json:"entityUrn"`
 			FirstName        string `json:"firstName"`
@@ -51,14 +52,21 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 			Summary          string `json:"summary"`
 			IndustryName     string `json:"industryName"`
 			PublicIdentifier string `json:"publicIdentifier"`
+			Premium          bool   `json:"premium"`
+			Influencer       bool   `json:"influencer"`
+			Creator          bool   `json:"creator"`
 		}
-		if err := safeUnmarshal(profileItems[0], &profileData); err == nil {
+		if err := safeUnmarshal(profileItem, &profileData); err == nil {
 			profile.URN = profileData.EntityURN
 			profile.FirstName = profileData.FirstName
 			profile.LastName = profileData.LastName
 			profile.Headline = profileData.Headline
 			profile.About = profileData.Summary
 			profile.Industry = profileData.IndustryName
+			profile.PublicIdentifier = profileData.PublicIdentifier
+			profile.Premium = profileData.Premium
+			profile.Influencer = profileData.Influencer
+			profile.Creator = profileData.Creator
 		}
 	}
 	// Location from Geo objects in included
