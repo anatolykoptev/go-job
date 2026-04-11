@@ -1,10 +1,12 @@
 package stealth
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -40,6 +42,9 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(cfg)
+	}
+	if len(cfg.buildErrors) > 0 {
+		return nil, cfg.buildErrors[0]
 	}
 
 	backendCfg := BackendConfig{
@@ -80,10 +85,12 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 		bc.Use(CloudflareDetectMiddleware)
 	}
 	if cfg.oxBrowserURL != "" {
-		oxClient := NewOxBrowserClient(cfg.oxBrowserURL)
+		oxProxyFn := oxBrowserProxyFn(cfg.proxyPool)
+		oxClient := newOxBrowserClientMaybeProxy(cfg.oxBrowserURL, oxProxyFn)
 		if cfg.cookieProvider == nil {
 			bc.Use(CloudflareCookieMiddleware(NewOxBrowserSolver(OxBrowserSolverConfig{
 				BaseURL: cfg.oxBrowserURL,
+				ProxyFn: oxProxyFn,
 			})))
 			bc.Use(CloudflareDetectMiddleware)
 		}
@@ -163,6 +170,10 @@ func isBlockStatus(code int) bool {
 
 // doWithRetry executes a request through the handler, retrying with proxy
 // rotation on block statuses (403, 429). Requires proxyPool and blockRetries > 0.
+//
+// If SetProxy fails for a given proxy, that attempt is skipped and the next
+// proxy from the pool is tried. If the pool is exhausted without a successful
+// SetProxy, an error is returned without sending any request.
 func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map[string]string, int, error) {
 	maxAttempts := 1
 	if bc.proxyPool != nil && bc.blockRetries > 0 {
@@ -173,8 +184,14 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 		if bc.proxyPool != nil {
 			proxyURL := bc.proxyPool.Next()
 			if err := bc.SetProxy(proxyURL); err != nil {
-				slog.Warn("proxy: SetProxy failed",
-					slog.String("proxy", MaskProxy(proxyURL)), slog.Any("error", err))
+				slog.Warn("proxy: SetProxy failed, skipping to next proxy",
+					slog.String("proxy", MaskProxy(proxyURL)),
+					slog.Int("attempt", attempt+1),
+					slog.Any("error", err))
+				if attempt == maxAttempts-1 {
+					return nil, nil, 0, fmt.Errorf("proxy pool exhausted: all %d proxies failed SetProxy: %w", maxAttempts, err)
+				}
+				continue
 			}
 		}
 
@@ -201,4 +218,29 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 
 	// Unreachable, but satisfies compiler.
 	return nil, nil, 0, nil
+}
+
+// transportProxyProvider is a subset of proxypool.ProxyPool used for type assertion.
+type transportProxyProvider interface {
+	TransportProxy() func(*http.Request) (*url.URL, error)
+}
+
+// oxBrowserProxyFn extracts a TransportProxy function from pool if it supports it.
+// Returns nil if pool is nil or does not implement TransportProxy.
+func oxBrowserProxyFn(pool ProxyPoolProvider) func(*http.Request) (*url.URL, error) {
+	if pool == nil {
+		return nil
+	}
+	if pp, ok := pool.(transportProxyProvider); ok {
+		return pp.TransportProxy()
+	}
+	return nil
+}
+
+// newOxBrowserClientMaybeProxy creates an OxBrowserClient with or without proxy.
+func newOxBrowserClientMaybeProxy(baseURL string, proxyFn func(*http.Request) (*url.URL, error)) *OxBrowserClient {
+	if proxyFn != nil {
+		return NewOxBrowserClientWithProxy(baseURL, proxyFn)
+	}
+	return NewOxBrowserClient(baseURL)
 }
