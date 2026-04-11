@@ -35,9 +35,11 @@ type ClientConfig struct {
 	MaxReqPerDay int
 	JitterMin    time.Duration
 	JitterMax    time.Duration
-	// OnChallenge is called when Login() encounters an App Challenge.
-	// Use to send notifications (e.g. Telegram) so the user can approve on mobile.
+	// OnChallenge is called when Login() encounters an App Challenge (mobile approve).
 	OnChallenge func(challengeID string)
+	// OnEmailPin is called when Login() encounters an email PIN challenge.
+	// Must return the 6-digit PIN code. If nil, returns ChallengeError.
+	OnEmailPin func(email string) (string, error)
 }
 
 func (c *ClientConfig) defaults() {
@@ -54,11 +56,12 @@ func (c *ClientConfig) defaults() {
 
 // Client is a LinkedIn Voyager API client with stealth transport and rate limiting.
 type Client struct {
-	bc       *stealth.BrowserClient
-	cookies  map[string]string
-	cfg      ClientConfig
-	limiter  *RateLimiter
-	verCache versionCache
+	bc          *stealth.BrowserClient
+	cookies     map[string]string
+	cfg         ClientConfig
+	limiter     *RateLimiter
+	verCache    versionCache
+	testBaseURL string // overrides baseURL in tests
 }
 
 // New creates a new LinkedIn Voyager client with the given configuration.
@@ -66,6 +69,7 @@ func New(cfg ClientConfig) (*Client, error) {
 	cfg.defaults()
 	opts := []stealth.ClientOption{
 		stealth.WithHeaderOrder(linkedinHeaderOrder),
+		stealth.WithTimeout(60),
 	}
 	if cfg.Proxy != "" {
 		opts = append(opts, stealth.WithProxy(cfg.Proxy))
@@ -91,12 +95,19 @@ func (c *Client) do(ctx context.Context, endpoint string) ([]byte, error) {
 	csrf := extractCSRFToken(c.cookies["JSESSIONID"])
 	headers := buildHeaders(csrf, version, c.cfg.UserAgent, c.cfg.SecChUA)
 	headers["Cookie"] = buildCookieString(c.cookies)
-	body, _, statusCode, err := c.bc.DoWithHeaderOrderCtx(ctx, "GET", baseURL+endpoint, headers, nil, linkedinHeaderOrder)
+	target := baseURL
+	if c.testBaseURL != "" {
+		target = c.testBaseURL
+	}
+	body, _, statusCode, err := c.bc.DoWithHeaderOrderCtx(ctx, "GET", target+endpoint, headers, nil, linkedinHeaderOrder)
 	if err != nil {
 		return nil, fmt.Errorf("voyager request %s: %w", endpoint, err)
 	}
 	if statusCode == 401 || statusCode == 403 {
 		return nil, fmt.Errorf("voyager auth failed: status %d (cookies may be expired)", statusCode)
+	}
+	if statusCode == 200 && len(body) > 0 && body[0] == '<' {
+		return nil, fmt.Errorf("voyager auth failed: HTML response (session expired or IP blocked)")
 	}
 	if statusCode != 200 {
 		return nil, fmt.Errorf("voyager %s: status %d", endpoint, statusCode)

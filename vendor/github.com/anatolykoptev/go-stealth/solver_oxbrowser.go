@@ -3,6 +3,8 @@ package stealth
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -14,6 +16,10 @@ type OxBrowserSolverConfig struct {
 
 	// CacheTTL for solved cookies. Default: 25 minutes.
 	CacheTTL time.Duration
+
+	// ProxyFn, if non-nil, routes requests to ox-browser through a proxy.
+	// Compatible with http.Transport.Proxy — pass proxyPool.TransportProxy().
+	ProxyFn func(*http.Request) (*url.URL, error)
 }
 
 // OxBrowserSolver implements CookieProvider using ox-browser /solve.
@@ -32,8 +38,14 @@ func NewOxBrowserSolver(cfg OxBrowserSolverConfig) *OxBrowserSolver {
 	if ttl == 0 {
 		ttl = 25 * time.Minute
 	}
+	var oxClient *OxBrowserClient
+	if cfg.ProxyFn != nil {
+		oxClient = NewOxBrowserClientWithProxy(cfg.BaseURL, cfg.ProxyFn)
+	} else {
+		oxClient = NewOxBrowserClient(cfg.BaseURL)
+	}
 	return &OxBrowserSolver{
-		client: NewOxBrowserClient(cfg.BaseURL),
+		client: oxClient,
 		ttl:    ttl,
 		cache:  make(map[string]cachedCookie),
 	}

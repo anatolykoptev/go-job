@@ -8,7 +8,7 @@ require (
 	github.com/anatolykoptev/go-kit v0.9.0
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.6.0
-	github.com/anatolykoptev/go-stealth v1.11.0
+	github.com/anatolykoptev/go-stealth v1.12.0
 	github.com/anatolykoptev/go-twitter v0.5.2
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/modelcontextprotocol/go-sdk v1.4.1
@@ -50,7 +50,6 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jalaali/go-jalaali v0.0.0-20210801064154-80525e88d958 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/markusmobius/go-dateparser v1.2.4 // indirect
 	github.com/markusmobius/go-domdistiller v0.0.0-20240926050704-25b8d046ffb4 // indirect
 	github.com/markusmobius/go-htmldate v1.9.3 // indirect

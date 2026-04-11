@@ -81,10 +81,10 @@ func completeness(p *Profile) int {
 }
 
 func influenceScore(r *ProfileRating) float64 {
-	connScore := min(float64(r.ConnectionCount)/500, 1.0) * 20
-	followerScore := min(float64(r.FollowerCount)/1000, 1.0) * 25
-	engagementScore := min(r.AvgEngagement/50, 1.0) * 25
+	connScore := min(float64(r.ConnectionCount)/500, float64(1)) * 20
+	followerScore := min(float64(r.FollowerCount)/1000, float64(1)) * 25
+	engagementScore := min(r.AvgEngagement/50, float64(1)) * 25
 	completenessScore := float64(r.ProfileCompleteness) / 100 * 15
-	postScore := min(r.PostFrequency/2, 1.0) * 15
+	postScore := min(r.PostFrequency/2, float64(1)) * 15
 	return connScore + followerScore + engagementScore + completenessScore + postScore
 }

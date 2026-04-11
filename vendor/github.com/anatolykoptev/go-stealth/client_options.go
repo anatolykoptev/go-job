@@ -16,6 +16,7 @@ type clientConfig struct {
 	blockRetries   int
 	cookieProvider CookieProvider
 	oxBrowserURL   string
+	buildErrors    []error // deferred errors from option constructors
 }
 
 func defaultConfig() *clientConfig {

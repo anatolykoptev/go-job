@@ -43,6 +43,25 @@ client, _ := stealth.NewClient(
 )
 ```
 
+### Country Targeting
+
+By default `NewWebshare` targets the US. Use `WebshareConfig` or the rotating constructor for finer control.
+
+```go
+// 1. Backbone with default US (existing call — unchanged)
+pool, _ := proxypool.NewWebshare(apiKey)
+
+// 2. Multi-country via API filter + username injection
+pool, _ := proxypool.NewWebshareWithConfig(apiKey, proxypool.WebshareConfig{
+    Countries: []string{"US", "GB", "DE"},
+})
+
+// 3. Rotating endpoint — no API key needed, Webshare rotates IPs internally
+pool, _ := proxypool.NewWebshareRotating(os.Getenv("WEBSHARE_USER"), os.Getenv("WEBSHARE_PASS"), "US")
+```
+
+The pool round-robins across all entries. With multiple countries, each base proxy is duplicated per country so rotations naturally spread across geographies.
+
 ### As http.RoundTripper
 
 ```go
