@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -17,10 +18,23 @@ type OxBrowserClient struct {
 }
 
 // NewOxBrowserClient creates a client for ox-browser at the given base URL.
+// Does NOT route through proxy. Use NewOxBrowserClientWithProxy for stealth scenarios.
 func NewOxBrowserClient(baseURL string) *OxBrowserClient {
 	return &OxBrowserClient{
 		baseURL: baseURL,
 		client:  &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// NewOxBrowserClientWithProxy creates a client for ox-browser that routes
+// all requests (to the ox-browser API itself) through the given proxy function.
+// proxyFn is compatible with http.Transport.Proxy — pass proxyPool.TransportProxy()
+// to ensure each call to ox-browser uses a fresh rotated residential IP.
+func NewOxBrowserClientWithProxy(baseURL string, proxyFn func(*http.Request) (*url.URL, error)) *OxBrowserClient {
+	transport := &http.Transport{Proxy: proxyFn}
+	return &OxBrowserClient{
+		baseURL: baseURL,
+		client:  &http.Client{Transport: transport, Timeout: 60 * time.Second},
 	}
 }
 
@@ -101,7 +115,7 @@ func (c *OxBrowserClient) post(ctx context.Context, path string, body []byte, ou
 	if err != nil {
 		return fmt.Errorf("ox-browser %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // deferred close, error unrecoverable
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
