@@ -7,11 +7,11 @@ require (
 	github.com/anatolykoptev/go-engine v1.6.0
 	github.com/anatolykoptev/go-kit v0.9.0
 	github.com/anatolykoptev/go-linkedin v0.4.2
-	github.com/anatolykoptev/go-mcpserver v0.10.1
+	github.com/anatolykoptev/go-mcpserver v0.11.0
 	github.com/anatolykoptev/go-stealth v1.12.0
 	github.com/anatolykoptev/go-twitter v0.5.2
 	github.com/jackc/pgx/v5 v5.9.1
-	github.com/modelcontextprotocol/go-sdk v1.4.1
+	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/net v0.51.0
 	golang.org/x/time v0.15.0
@@ -79,7 +79,7 @@ require (
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.68.0 // indirect
