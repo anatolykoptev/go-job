@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -19,15 +20,24 @@ import (
 //
 // The input schema is inferred from In (same as mcp.AddTool).
 // Output schema is not supported (Out must be any).
+//
+// If the schema cannot be inferred (e.g. unsupported jsonschema tags), the tool
+// is registered with an open schema and a warning is logged instead of panicking.
 func AddTool[In any](s *mcp.Server, t *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, error)) {
 	schema, err := jsonschema.ForType(reflect.TypeFor[In](), &jsonschema.ForOptions{})
 	if err != nil {
-		panic(fmt.Sprintf("AddTool: %q: schema: %v", t.Name, err))
+		slog.Warn("AddTool: schema inference failed, using open schema",
+			slog.String("tool", t.Name), slog.Any("error", err))
+		registerOpenSchema(s, t, h)
+		return
 	}
 
 	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
 	if err != nil {
-		panic(fmt.Sprintf("AddTool: %q: resolve: %v", t.Name, err))
+		slog.Warn("AddTool: schema resolve failed, using open schema",
+			slog.String("tool", t.Name), slog.Any("error", err))
+		registerOpenSchema(s, t, h)
+		return
 	}
 
 	tt := *t
@@ -89,7 +99,8 @@ func coerceStringTypes(m map[string]any, schema *jsonschema.Schema) {
 		if !isStr {
 			continue
 		}
-		switch prop.Type {
+		typ := propType(prop)
+		switch typ {
 		case "boolean":
 			switch strings.ToLower(s) {
 			case strTrue, "1":
@@ -107,6 +118,45 @@ func coerceStringTypes(m map[string]any, schema *jsonschema.Schema) {
 			}
 		}
 	}
+}
+
+// propType returns the effective non-null type for a schema property.
+// Handles both Type ("boolean") and Types (["null", "boolean"]) forms.
+func propType(s *jsonschema.Schema) string {
+	if s.Type != "" {
+		return s.Type
+	}
+	for _, t := range s.Types {
+		if t != "null" {
+			return t
+		}
+	}
+	return ""
+}
+
+// registerOpenSchema registers the tool with a permissive schema (accepts any object).
+// Used as fallback when the typed schema cannot be inferred from struct tags.
+func registerOpenSchema[In any](s *mcp.Server, t *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, error)) {
+	tt := *t
+	tt.InputSchema = &jsonschema.Schema{Type: "object"}
+
+	s.AddTool(&tt, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.Params.Arguments
+		if len(args) == 0 {
+			args = json.RawMessage("{}")
+		}
+
+		var in In
+		if err := json.Unmarshal(args, &in); err != nil {
+			return toolError(fmt.Sprintf("unmarshal input: %v", err)), nil
+		}
+
+		res, err := h(ctx, req, in)
+		if err != nil {
+			return toolError(err.Error()), nil
+		}
+		return res, nil
+	})
 }
 
 func toolError(msg string) *mcp.CallToolResult {
