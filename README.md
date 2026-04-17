@@ -1,5 +1,6 @@
 # go_job
 
+[![SafeSkill 60/100](https://img.shields.io/badge/SafeSkill-60%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/anatolykoptev-go-job)
 Job, Remote & Freelance Search MCP server. Exposes 4 MCP tools for structured job discovery across major platforms.
 
 ## MCP Tools
