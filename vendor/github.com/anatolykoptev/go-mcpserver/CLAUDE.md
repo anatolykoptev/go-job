@@ -37,7 +37,7 @@ go vet ./... # additional checks
 
 - `gigiena-teksta` — anglicism checker MCP server
 - `go-wp` — WordPress MCP server
-- `go-content` — multi-tenant intelligence engine
+- `go-nerv` — multi-tenant intelligence engine
 - `go-billing` — license & billing service
 - `go-code` — code intelligence MCP server
 - `go-hully` — crypto twitter intelligence
