@@ -29,6 +29,9 @@ type BearerAuth struct {
 	// Called for tools/list (filtering) and tools/call (enforcement).
 	// Nil = all tools allowed.
 	ToolFilter func(ctx context.Context, toolName string, info *TokenInfo) bool
+	// LoopbackBypass skips auth for requests from 127.0.0.1 and ::1.
+	// Useful for self-connect (workflow engine calling tools on same server).
+	LoopbackBypass bool
 }
 
 // ProtectedResourceMetadata re-exports oauthex type so consumers
