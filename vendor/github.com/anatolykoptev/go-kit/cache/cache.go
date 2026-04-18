@@ -11,64 +11,20 @@ import (
 	"time"
 )
 
-// Config configures the cache.
-type Config struct {
-	// RedisURL is the Redis connection URL. Empty means L1-only mode.
-	RedisURL string
-
-	// RedisDB selects the Redis database number (default 0).
-	RedisDB int
-
-	// Prefix is prepended to all Redis keys (e.g. "gs:" for go-search).
-	Prefix string
-
-	// L1MaxItems is the max number of items in memory (default 1000).
-	L1MaxItems int
-
-	// L1TTL is the TTL for L1 cache entries (default 30m).
-	L1TTL time.Duration
-
-	// L2TTL is the TTL for L2 Redis entries (default 24h). Ignored if no Redis.
-	L2TTL time.Duration
-
-	// JitterPercent adds random TTL variation to prevent cache stampedes.
-	// 0.1 means ±10% jitter. 0 disables jitter (default).
-	JitterPercent float64
-
-	// L2 is an optional L2 store (e.g. Redis). If set, overrides RedisURL.
-	// Pass a mock here in tests instead of using a real Redis.
-	L2 L2
-
-	// OnEvict is called after an entry is removed from L1.
-	// Called outside the cache lock — safe to call cache methods.
-	// Must be goroutine-safe (may fire from multiple goroutines concurrently).
-	OnEvict func(key string, data []byte, reason EvictReason)
-}
-
-func (c *Config) applyDefaults() {
-	if c.L1MaxItems <= 0 {
-		c.L1MaxItems = 1000
-	}
-	if c.L1TTL <= 0 {
-		c.L1TTL = 30 * time.Minute
-	}
-	if c.L2TTL <= 0 {
-		c.L2TTL = 24 * time.Hour
-	}
-}
-
 // maxFreq is the S3-FIFO frequency counter ceiling (0-3).
 const maxFreq = 3
 
 // entry is an item stored in the S3-FIFO cache.
 type entry struct {
-	key       string
-	data      []byte
-	expiresAt time.Time
-	freq      uint8         // 0-3, S3-FIFO frequency counter
-	elem      *list.Element // back-ref in small or main list
-	inMain    bool          // false=small, true=main
-	tags      []string      // tag-based invalidation groups
+	key        string
+	data       []byte
+	expiresAt  time.Time
+	freq       uint8         // 0-3, S3-FIFO frequency counter
+	elem       *list.Element // back-ref in small or main list
+	inMain     bool          // false=small, true=main
+	tags       []string      // tag-based invalidation groups
+	weight     int64         // byte weight; 0 when Weigher is nil
+	lastAccess time.Time     // last Get hit time; zero when IdleTTL == 0
 }
 
 // Cache is a tiered L1 (memory) + optional L2 (Redis) cache.
@@ -77,16 +33,18 @@ type Cache struct {
 	cfg Config
 
 	mu       sync.Mutex
-	items    map[string]*entry        // all active entries
-	small    *list.List               // probation queue (10% capacity)
-	main     *list.List               // main queue (90% capacity)
-	ghost    *list.List               // ghost queue (evicted keys, no values)
-	ghostMap map[string]*list.Element  // ghost key lookups
+	items    map[string]*entry              // all active entries
+	small    *list.List                     // probation queue (10% capacity)
+	main     *list.List                     // main queue (90% capacity)
+	ghost    *list.List                     // ghost queue (evicted keys, no values)
+	ghostMap map[string]*list.Element       // ghost key lookups
 	tagIndex map[string]map[string]struct{} // tag → set of keys
 
 	smallCap int // 10% of L1MaxItems
 	mainCap  int // 90% of L1MaxItems
 	ghostCap int // = mainCap
+
+	totalWeight int64 // protected by mu; 0 when Weigher is nil
 
 	hits      atomic.Int64
 	misses    atomic.Int64
@@ -183,4 +141,3 @@ func (c *Cache) Close() {
 		c.l2.Close()
 	}
 }
-
