@@ -14,6 +14,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 		c.small.Remove(front)
 
 		if now.After(e.expiresAt) {
+			c.totalWeight -= e.weight
 			c.removeFromTagIndex(e.key, e.tags)
 			delete(c.items, e.key)
 			c.evictions.Add(1)
@@ -30,6 +31,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 
 		// One-hit wonder — evict to ghost.
 		key, data := e.key, e.data
+		c.totalWeight -= e.weight
 		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
@@ -45,6 +47,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 		c.main.Remove(front)
 
 		if now.After(e.expiresAt) {
+			c.totalWeight -= e.weight
 			c.removeFromTagIndex(e.key, e.tags)
 			delete(c.items, e.key)
 			c.evictions.Add(1)
@@ -57,6 +60,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 			continue
 		}
 
+		c.totalWeight -= e.weight
 		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
@@ -67,6 +71,7 @@ func (c *Cache) evict() (string, []byte, bool) {
 	if front := c.main.Front(); front != nil {
 		e := front.Value.(*entry)
 		c.main.Remove(front)
+		c.totalWeight -= e.weight
 		c.removeFromTagIndex(e.key, e.tags)
 		delete(c.items, e.key)
 		c.evictions.Add(1)
@@ -98,8 +103,23 @@ func (c *Cache) removeEntry(e *entry) {
 	} else {
 		c.small.Remove(e.elem)
 	}
+	c.totalWeight -= e.weight
 	c.removeFromTagIndex(e.key, e.tags)
 	delete(c.items, e.key)
+}
+
+// evictByWeight evicts entries until totalWeight <= MaxWeight.
+// Must be called with mu held. Appends evicted entries to batch if OnEvict is set.
+func (c *Cache) evictByWeight(batch *[]evictedEntry) {
+	for c.totalWeight > c.cfg.MaxWeight && (c.small.Len() > 0 || c.main.Len() > 0) {
+		ek, ed, ok := c.evict()
+		if !ok {
+			break
+		}
+		if c.cfg.OnEvict != nil {
+			*batch = append(*batch, evictedEntry{ek, ed, EvictCapacity})
+		}
+	}
 }
 
 // cleanupLoop periodically removes expired entries from L1.
@@ -125,6 +145,7 @@ func (c *Cache) cleanupLoop(interval time.Duration) {
 					} else {
 						c.small.Remove(e.elem)
 					}
+					c.totalWeight -= e.weight
 					c.removeFromTagIndex(key, e.tags)
 					delete(c.items, key)
 				}
