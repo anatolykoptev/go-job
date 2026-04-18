@@ -172,8 +172,9 @@ func (c *Client) buildChain(i int) func(context.Context, *ChatRequest) (*ChatRes
 	}
 }
 
-// ExtractJSON extracts a JSON object from LLM output that may be wrapped
+// ExtractJSON extracts a JSON value from LLM output that may be wrapped
 // in markdown code fences or surrounded by text.
+// Handles both JSON objects ({...}) and arrays ([...]).
 func ExtractJSON(s string) string {
 	// Try markdown ```json ... ``` first.
 	start := strings.Index(s, "```json")
@@ -184,11 +185,35 @@ func ExtractJSON(s string) string {
 			return strings.TrimSpace(s[:end])
 		}
 	}
-	// Fall back to finding first { and last }.
-	first := strings.IndexByte(s, '{')
-	last := strings.LastIndexByte(s, '}')
-	if first >= 0 && last > first {
-		return s[first : last+1]
+	// Try plain ``` ... ``` fences.
+	start = strings.Index(s, "```")
+	if start >= 0 {
+		inner := s[start+3:]
+		end := strings.Index(inner, "```")
+		if end >= 0 {
+			return strings.TrimSpace(inner[:end])
+		}
+	}
+	// Fall back to finding first/last matching delimiters.
+	// Try object first, then array, pick whichever starts earlier.
+	firstObj := strings.IndexByte(s, '{')
+	lastObj := strings.LastIndexByte(s, '}')
+	firstArr := strings.IndexByte(s, '[')
+	lastArr := strings.LastIndexByte(s, ']')
+
+	objOK := firstObj >= 0 && lastObj > firstObj
+	arrOK := firstArr >= 0 && lastArr > firstArr
+
+	switch {
+	case objOK && arrOK:
+		if firstObj <= firstArr {
+			return s[firstObj : lastObj+1]
+		}
+		return s[firstArr : lastArr+1]
+	case objOK:
+		return s[firstObj : lastObj+1]
+	case arrOK:
+		return s[firstArr : lastArr+1]
 	}
 	return s
 }
