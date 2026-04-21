@@ -31,9 +31,9 @@ type L2 interface {
 }
 
 const (
-	pingTimeout      = 3 * time.Second
-	cbTimeout        = 30 * time.Second
-	cbFailThreshold  = 3
+	pingTimeout     = 3 * time.Second
+	cbTimeout       = 30 * time.Second
+	cbFailThreshold = 3
 )
 
 // RedisL2 implements L2 using Redis.
@@ -54,7 +54,13 @@ func NewRedisL2(redisURL string, db int, prefix string) *RedisL2 {
 		slog.Warn("cache: invalid redis URL, L2 disabled", slog.Any("error", err))
 		return nil
 	}
-	opts.DB = db
+	// Respect DB embedded in URL (e.g. redis://...@host:6379/8). Only override
+	// when caller passed an explicit non-zero db — otherwise URL-embedded DB
+	// wins over the zero-value default, fixing a silent collision where every
+	// service fell back to DB 0 regardless of its URL.
+	if db > 0 {
+		opts.DB = db
+	}
 
 	rdb := redis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
