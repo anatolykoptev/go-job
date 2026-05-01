@@ -8,8 +8,8 @@ github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
 github.com/anatolykoptev/go-engine v1.6.0 h1:VJrc1F9PhzikWCpjAvMAiqk9CJCZj0MIoxe3C9zb0WU=
 github.com/anatolykoptev/go-engine v1.6.0/go.mod h1:sWqTjIzyrOap041JUa7H7/Ffqm26IG4jhEuFc0431c8=
-github.com/anatolykoptev/go-kit v0.24.1 h1:xvNWn6e7BI76j98LBu+JFIYBLx3LSuVV45RqVjk6Wug=
-github.com/anatolykoptev/go-kit v0.24.1/go.mod h1:v4plvwT/sA9C7kSZhXU+nTWdzB0JFkNhIycb6awAHoU=
+github.com/anatolykoptev/go-kit v0.33.0 h1:YMan0A6rMubJTBIk/OO6yZjNCBxZ/lbQfTaGwWspueg=
+github.com/anatolykoptev/go-kit v0.33.0/go.mod h1:UqViC2HoCeIoIj6Qi3dJREVQX43dgUeHV3SynpcL8Zs=
 github.com/anatolykoptev/go-mcpserver v0.11.0 h1:shz0WBhOvrPGHQpAeEMo3Fhx1F+p3AV6403FaKSiuSY=
 github.com/anatolykoptev/go-mcpserver v0.11.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.12.0 h1:bxvL0ctPxMbDFQgS2gpjZNbnEN+gH5cTSNTg8Lwyj8g=

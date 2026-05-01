@@ -49,6 +49,13 @@ type Config struct {
 	// 0 (default) disables time-to-idle eviction entirely — no goroutine is spawned,
 	// no lastAccess updates are checked. Exact existing behavior is preserved.
 	IdleTTL time.Duration
+
+	// Metrics, when non-nil, enables opt-in Prometheus metric publication for
+	// this cache instance. Construct via WithMetrics(reg, name). nil (default)
+	// disables emission entirely — no Prometheus registration, no goroutine,
+	// zero overhead for callers using statsd / OTel / no metrics. Exact
+	// existing behavior is preserved.
+	Metrics *MetricsConfig
 }
 
 func (c *Config) applyDefaults() {

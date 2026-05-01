@@ -101,6 +101,13 @@ func New(cfg Config) *Cache {
 	}
 	go c.cleanupLoop(interval)
 
+	// Opt-in Prometheus metrics — registered lazily via CounterFunc, so no
+	// background goroutine and no per-Get/Set overhead. Skipped entirely when
+	// cfg.Metrics is nil (default).
+	if cfg.Metrics != nil {
+		registerCacheMetrics(c, cfg.Metrics)
+	}
+
 	return c
 }
 
