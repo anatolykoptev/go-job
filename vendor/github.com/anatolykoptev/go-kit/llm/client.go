@@ -25,7 +25,7 @@ type Client struct {
 	apiKey       string
 	model        string
 	maxTokens    int
-	temperature  float64
+	temperature  *float64 // nil = omit from request (some models reject it)
 	httpClient   *http.Client
 	fallbackKeys []string
 	maxRetries   int
@@ -51,9 +51,11 @@ func WithMaxTokens(n int) Option {
 	return func(c *Client) { c.maxTokens = n }
 }
 
-// WithTemperature sets the sampling temperature.
+// WithTemperature sets the sampling temperature. Without this option the
+// request omits the field entirely — some providers (Anthropic claude-opus-4-7,
+// future variants) reject any temperature parameter with 400 invalid_request.
 func WithTemperature(t float64) Option {
-	return func(c *Client) { c.temperature = t }
+	return func(c *Client) { c.temperature = &t }
 }
 
 // WithMaxRetries sets how many times to retry on retryable errors.
@@ -87,14 +89,15 @@ func WithMiddleware(m Middleware) Option {
 
 // NewClient creates a new LLM client.
 func NewClient(baseURL, apiKey, model string, opts ...Option) *Client {
+	// Temperature is intentionally nil — see ChatRequest.Temperature comment.
+	// Callers who want non-default sampling pass WithTemperature(t).
 	c := &Client{
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		apiKey:      apiKey,
-		model:       model,
-		maxTokens:   defaultMaxTokens,
-		temperature: 0.1,
-		maxRetries:  defaultMaxRetries,
-		httpClient:  &http.Client{Timeout: defaultTimeout},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		apiKey:     apiKey,
+		model:      model,
+		maxTokens:  defaultMaxTokens,
+		maxRetries: defaultMaxRetries,
+		httpClient: &http.Client{Timeout: defaultTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)

@@ -8,8 +8,8 @@ import (
 	"github.com/anatolykoptev/go-engine/extract"
 	"github.com/anatolykoptev/go-engine/fetch"
 	engllm "github.com/anatolykoptev/go-engine/llm"
-	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/search"
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
@@ -76,9 +76,9 @@ var (
 	fetcherDirect *fetch.Fetcher     // no proxy, for raw content + internal APIs
 	extractorInst *extract.Extractor // HTML content extraction
 	searxngInst   *search.SearXNG    // SearXNG client
-	llmInst       *engllm.Client     // LLM client
-	reg           *metrics.Registry  // metrics counters
-	httpClient    *http.Client       // plain HTTP client for GitHub API etc.
+	llmInst       *engllm.Client      // LLM client
+	reg           *kitmetrics.Registry // metrics counters (Prometheus-bridged)
+	httpClient    *http.Client        // plain HTTP client for GitHub API etc.
 )
 
 // Cfg exposes the engine configuration for sub-packages (jobs, sources).
@@ -89,8 +89,8 @@ func Init(c Config) {
 	cfg = c
 	Cfg = &cfg
 
-	// Metrics registry.
-	reg = metrics.New()
+	// Metrics registry (Prometheus-bridged under "gojob" namespace).
+	reg = kitmetrics.NewPrometheusRegistry("gojob")
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}
@@ -139,3 +139,7 @@ func Init(c Config) {
 		slog.Bool("reddit", c.DirectReddit),
 	)
 }
+
+// Reg returns the package-level metrics registry for wiring middleware
+// (e.g. mcpmw.Middleware) and any external Prometheus integration.
+func Reg() *kitmetrics.Registry { return reg }

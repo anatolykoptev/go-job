@@ -34,10 +34,17 @@ type ImagePart struct {
 }
 
 // ChatRequest is a chat completion request. Exported for use with Middleware.
+//
+// Temperature is a pointer so it can be omitted from the request body when
+// nil — Anthropic's claude-opus-4-7 (and likely future variants) rejects
+// `temperature` entirely with `400 invalid_request_error`. Passing a pointer
+// keeps backward compatibility for callers who set it explicitly via
+// WithChatTemperature, while letting the request omit the field when no
+// override was requested.
 type ChatRequest struct {
 	Model          string    `json:"model"`
 	Messages       []Message `json:"messages"`
-	Temperature    float64   `json:"temperature"`
+	Temperature    *float64  `json:"temperature,omitempty"`
 	MaxTokens      int       `json:"max_tokens"`
 	Stream         bool      `json:"stream,omitempty"`
 	Tools          []Tool    `json:"tools,omitempty"`
@@ -116,7 +123,8 @@ func (cfg *chatConfig) apply(req *ChatRequest) {
 		req.ResponseFormat = cfg.responseFormat
 	}
 	if cfg.temperature != nil {
-		req.Temperature = *cfg.temperature
+		t := *cfg.temperature
+		req.Temperature = &t
 	}
 	if cfg.maxTokens != nil {
 		req.MaxTokens = *cfg.maxTokens

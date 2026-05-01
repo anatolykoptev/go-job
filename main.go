@@ -7,13 +7,18 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
+	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
+	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/go-stealth/proxypool"
-	linkedin "github.com/anatolykoptev/go-linkedin"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -33,6 +38,11 @@ func main() {
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
 	)
+
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	startPrometheusScrape(sigCtx, slog.Default())
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "go_job",
@@ -59,10 +69,36 @@ func main() {
 		SessionTimeout:         10 * time.Minute,
 		MCPLogger:              slog.Default(),
 		Metrics:                engine.FormatMetrics,
-		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware()},
+		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware(), mcpmw.Middleware(engine.Reg(), "tool")},
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
+}
+
+// startPrometheusScrape runs an HTTP server exposing /metrics on PROM_PORT
+// (default 9891 = MCP_PORT+1000) for prometheus scrape. Separate port avoids
+// BearerAuth on scrape traffic; bound to all interfaces for container scrape.
+func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
+	promPort := env.Str("PROM_PORT", "9891")
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", kitmetrics.MetricsHandler())
+	srv := &http.Server{
+		Addr:              ":" + promPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("prometheus scrape endpoint", slog.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("prom endpoint", slog.Any("error", err))
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
 }
 
 func initEngine() {
