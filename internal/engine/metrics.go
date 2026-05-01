@@ -6,37 +6,41 @@ import (
 )
 
 // Metric name constants.
+//
+// All counters carry the `_total` suffix to comply with Prometheus naming
+// conventions; the go-kit/metrics Prometheus bridge exposes them under the
+// `gojob_` namespace (e.g. `gojob_search_requests_total`).
 const (
-	MetricSearchRequests          = "search_requests"
-	MetricLLMCalls                = "llm_calls"
-	MetricLLMErrors               = "llm_errors"
-	MetricFetchRequests           = "fetch_requests"
-	MetricFetchErrors             = "fetch_errors"
-	MetricDirectDDGRequests       = "direct_ddg_requests"
-	MetricDirectStartpageRequests = "direct_startpage_requests"
-	MetricFreelancerAPIRequests   = "freelancer_api_requests"
-	MetricRemoteOKRequests        = "remoteok_requests"
-	MetricWWRRequests             = "wwr_requests"
-	MetricGitingestRequests       = "gitingest_requests"
-	MetricYouTubeSearchRequests   = "youtube_search_requests"
-	MetricYouTubeTranscriptReqs   = "youtube_transcript_requests"
-	MetricHNJobsRequests          = "hn_jobs_requests"
-	MetricGreenhouseRequests      = "greenhouse_requests"
-	MetricLeverRequests           = "lever_requests"
-	MetricYCJobsRequests          = "yc_jobs_requests"
-	MetricIndeedRequests          = "indeed_requests"
-	MetricHabrRequests            = "habr_requests"
-	MetricCraigslistRequests      = "craigslist_requests"
-	MetricAlgoraRequests          = "algora_requests"
-	MetricToolCalls               = "tool_calls"
+	MetricSearchRequests          = "search_requests_total"
+	MetricLLMCalls                = "llm_calls_total"
+	MetricLLMErrors               = "llm_errors_total"
+	MetricFetchRequests           = "fetch_requests_total"
+	MetricFetchErrors             = "fetch_errors_total"
+	MetricDirectDDGRequests       = "direct_ddg_requests_total"
+	MetricDirectStartpageRequests = "direct_startpage_requests_total"
+	MetricFreelancerAPIRequests   = "freelancer_api_requests_total"
+	MetricRemoteOKRequests        = "remoteok_requests_total"
+	MetricWWRRequests             = "wwr_requests_total"
+	MetricGitingestRequests       = "gitingest_requests_total"
+	MetricYouTubeSearchRequests   = "youtube_search_requests_total"
+	MetricYouTubeTranscriptReqs   = "youtube_transcript_requests_total"
+	MetricHNJobsRequests          = "hn_jobs_requests_total"
+	MetricGreenhouseRequests      = "greenhouse_requests_total"
+	MetricLeverRequests           = "lever_requests_total"
+	MetricYCJobsRequests          = "yc_jobs_requests_total"
+	MetricIndeedRequests          = "indeed_requests_total"
+	MetricHabrRequests            = "habr_requests_total"
+	MetricCraigslistRequests      = "craigslist_requests_total"
+	MetricAlgoraRequests          = "algora_requests_total"
+	MetricToolCalls               = "tool_calls_total"
 )
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
 func GetMetrics() map[string]int64 {
 	m := reg.Snapshot()
 	hits, misses := CacheStats()
-	m["cache_hits"] = hits
-	m["cache_misses"] = misses
+	m["cache_hits_total"] = hits
+	m["cache_misses_total"] = misses
 	return m
 }
 
@@ -54,7 +58,7 @@ func FormatMetrics() string {
 		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
 		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests, MetricAlgoraRequests,
 		MetricToolCalls,
-		"cache_hits", "cache_misses",
+		"cache_hits_total", "cache_misses_total",
 	}
 	var sb strings.Builder
 	for _, k := range keys {
