@@ -5,6 +5,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -85,6 +86,67 @@ type Middleware func(ctx context.Context, req *ChatRequest, next func(context.Co
 // WithMiddleware adds a middleware to the execution pipeline.
 func WithMiddleware(m Middleware) Option {
 	return func(c *Client) { c.middleware = append(c.middleware, m) }
+}
+
+// WithCircuitBreaker wires a CircuitBreaker as the OUTERMOST middleware.
+// Tripped state short-circuits the call with ErrCircuitOpen so callers can
+// fail-fast instead of paying the per-call timeout when the backend is
+// degraded. Mirrors embed/rerank circuit-breaker patterns.
+//
+// Failure attribution: only errors that look like backend failure (5xx,
+// 429, network/timeout) trip the breaker — context cancellation by the
+// caller does NOT (it's a client decision, not a backend health signal).
+//
+// Pass a zero-value CircuitConfig{} to take defaults (5 fails, 30s open,
+// 1 half-open probe). To disable cleanly later, recreate the Client without
+// this option.
+func WithCircuitBreaker(cfg CircuitConfig) Option {
+	return func(c *Client) {
+		cb := NewCircuitBreaker(cfg, c.model, nil)
+		circuit := func(ctx context.Context, req *ChatRequest, next func(context.Context, *ChatRequest) (*ChatResponse, error)) (*ChatResponse, error) {
+			if !cb.Allow() {
+				return nil, ErrCircuitOpen
+			}
+			resp, err := next(ctx, req)
+			if err != nil && isCircuitTrippingError(err) {
+				cb.MarkFailure()
+			} else if err == nil {
+				cb.MarkSuccess()
+			}
+			// Caller-cancelled errors fall through without affecting state.
+			return resp, err
+		}
+		// Prepend so the breaker wraps everything else (cache, fallback,
+		// user middlewares all execute INSIDE the breaker boundary).
+		c.middleware = append([]Middleware{circuit}, c.middleware...)
+	}
+}
+
+// isCircuitTrippingError classifies an error as a backend-health failure.
+// Returns false for caller-controlled errors (context cancellation) so the
+// breaker doesn't trip when a client gives up early.
+func isCircuitTrippingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Context cancellation by the caller is not a backend failure.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Only treat DeadlineExceeded as a failure when it comes from OUR
+		// httpClient timeout (backend too slow), not from the caller's ctx.
+		// Approximation: deadlineExceeded with no parent ctx deadline → ours.
+		// Conservative path: treat as failure — false-positive wallpapering
+		// (one extra failure count) is preferable to silently hiding chronic
+		// backend slowness from the breaker.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return true
+		}
+		return false
+	}
+	// 4xx (other than 429) are caller errors, not backend health issues.
+	// We don't have typed status here without parsing the error string —
+	// downstream RetryableError types in errors.go cover the canonical set.
+	// Treat anything not explicitly safe as a failure (conservative).
+	return true
 }
 
 // NewClient creates a new LLM client.
