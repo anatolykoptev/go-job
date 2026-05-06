@@ -16,7 +16,7 @@ const (
 	defaultReadTimeout     = 30 * time.Second
 	defaultWriteTimeout    = 0 // disabled for SSE — tools manage own timeout via context
 	defaultShutdownTimeout = 10 * time.Second
-	defaultToolTimeout     = 60 * time.Second
+	defaultToolTimeout     = 90 * time.Second
 	portEnvVar             = "MCP_PORT"
 )
 
@@ -44,6 +44,14 @@ type Config struct {
 	DisableRequestLog bool  // default false (request logging ON)
 	DisableMCP        bool  // skip /mcp route registration; server param may be nil
 	Stateless         *bool // nil = default true; *false = stateful (session) mode
+
+	// LogSkipPaths lists URL paths that RequestLog should NOT emit Info logs
+	// for. Matches by exact path. nil → defaults to /health, /health/live,
+	// /health/ready, /metrics. Set LogSkipDefaults=true to disable all default
+	// skipping. Skipped paths are still served normally; only the access-log
+	// Info entry is suppressed (a Debug-level entry is still emitted).
+	LogSkipPaths    []string
+	LogSkipDefaults bool // true → never apply default skip list, only LogSkipPaths is used
 
 	MCPReceivingMiddleware []mcp.Middleware // applied to incoming JSON-RPC (client→server)
 	MCPSendingMiddleware   []mcp.Middleware // applied to outgoing JSON-RPC (server→client)
@@ -95,6 +103,9 @@ func withDefaults(cfg Config) Config {
 	if cfg.ToolTimeout == 0 {
 		cfg.ToolTimeout = defaultToolTimeout
 	}
+	if !cfg.LogSkipDefaults && cfg.LogSkipPaths == nil {
+		cfg.LogSkipPaths = defaultLogSkipPaths()
+	}
 	// Enable stream resumption by default — prevents lost events after reconnect.
 	if cfg.EventStore == nil {
 		cfg.EventStore = mcp.NewMemoryEventStore(nil)
@@ -120,6 +131,10 @@ func applyMCPMiddleware(server *mcp.Server, cfg Config) {
 	}
 }
 
+func defaultLogSkipPaths() []string {
+	return []string{"/health", "/health/live", "/health/ready", "/metrics"}
+}
+
 func buildMiddleware(cfg Config, logger *slog.Logger) []Middleware {
 	var mws []Middleware
 	if !cfg.DisableRecovery {
@@ -127,7 +142,7 @@ func buildMiddleware(cfg Config, logger *slog.Logger) []Middleware {
 	}
 	mws = append(mws, RequestID())
 	if !cfg.DisableRequestLog {
-		mws = append(mws, RequestLog(logger))
+		mws = append(mws, RequestLogWithSkip(logger, cfg.LogSkipPaths))
 	}
 	if len(cfg.CORSOrigins) > 0 {
 		mws = append(mws, CORS(CORSConfig{

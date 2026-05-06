@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,16 +25,25 @@ const (
 
 var validToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// defaultToolsCacheTTL is how long the REST bridge caches the tools/list
+// response before re-fetching. Short enough to pick up dynamically registered
+// tools within a minute; long enough to keep tools/list calls cheap.
+const defaultToolsCacheTTL = 60 * time.Second
+
 // restBridge proxies HTTP requests to an in-process MCP client session.
 type restBridge struct {
-	session     *mcp.ClientSession
-	prefix      string
-	cfg         Config
-	logger      *slog.Logger
-	cachedOnce    sync.Once
-	cachedTools   []*mcp.Tool
-	cachedByName  map[string]*mcp.Tool
-	cachedErr     error
+	session *mcp.ClientSession
+	prefix  string
+	cfg     Config
+	logger  *slog.Logger
+
+	cacheTTL time.Duration
+
+	cacheMu      sync.Mutex
+	cachedTools  []*mcp.Tool
+	cachedByName map[string]*mcp.Tool
+	cachedErr    error
+	cachedAt     time.Time
 }
 
 // startRESTBridge creates an in-process MCP client, connects it to the server,
@@ -40,7 +51,8 @@ type restBridge struct {
 func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux, cfg Config, logger *slog.Logger) error {
 	serverT, clientT := mcp.NewInMemoryTransports()
 
-	if _, err := server.Connect(ctx, serverT, nil); err != nil {
+	serverSession, err := server.Connect(ctx, serverT, nil)
+	if err != nil {
 		return err
 	}
 
@@ -51,6 +63,12 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 
 	session, err := client.Connect(ctx, clientT, nil)
 	if err != nil {
+		// Best-effort cleanup: client connect failed, but the server side
+		// session is already up and would otherwise leak.
+		if cerr := serverSession.Close(); cerr != nil {
+			logger.Warn("REST bridge server session close after client failure",
+				slog.Any("error", cerr))
+		}
 		return err
 	}
 
@@ -61,10 +79,11 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 	prefix = strings.TrimRight(prefix, "/")
 
 	b := &restBridge{
-		session: session,
-		prefix:  prefix,
-		cfg:     cfg,
-		logger:  logger,
+		session:  session,
+		prefix:   prefix,
+		cfg:      cfg,
+		logger:   logger,
+		cacheTTL: defaultToolsCacheTTL,
 	}
 
 	restMux := http.NewServeMux()
@@ -73,7 +92,7 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 	restMux.HandleFunc("POST /tools/{name}", b.handleCallTool)
 	restMux.HandleFunc("GET /openapi.json", b.handleOpenAPI)
 
-	var handler = http.StripPrefix(prefix, restMux)
+	handler := http.Handler(http.StripPrefix(prefix, restMux))
 	if cfg.BearerAuth != nil {
 		handler = applyBearerAuth(handler, cfg.BearerAuth)
 	}
@@ -82,7 +101,10 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 	go func() {
 		<-ctx.Done()
 		if err := session.Close(); err != nil {
-			logger.Error("REST bridge session close error", slog.Any("error", err))
+			logger.Error("REST bridge client session close error", slog.Any("error", err))
+		}
+		if err := serverSession.Close(); err != nil {
+			logger.Error("REST bridge server session close error", slog.Any("error", err))
 		}
 	}()
 
@@ -93,16 +115,48 @@ func startRESTBridge(ctx context.Context, server *mcp.Server, mux *http.ServeMux
 }
 
 // handleListTools returns all available tools as a JSON array.
+// When BearerAuth.ToolFilter is configured, tools the caller cannot access
+// are filtered out — matching the behaviour of the MCP tools/list path.
 func (b *restBridge) handleListTools(w http.ResponseWriter, r *http.Request) {
 	tools, err := b.getTools(r.Context())
 	if err != nil {
 		b.writeError(w, http.StatusInternalServerError, "failed to list tools", err)
 		return
 	}
+	tools = b.applyToolFilter(r.Context(), tools)
 	if tools == nil {
 		tools = []*mcp.Tool{}
 	}
 	b.writeJSON(w, http.StatusOK, tools)
+}
+
+// applyToolFilter returns the subset of tools the caller is allowed to see
+// according to the configured BearerAuth.ToolFilter. When no filter is set,
+// or BearerAuth itself is not configured, the input slice is returned
+// unchanged.
+func (b *restBridge) applyToolFilter(ctx context.Context, tools []*mcp.Tool) []*mcp.Tool {
+	if b.cfg.BearerAuth == nil || b.cfg.BearerAuth.ToolFilter == nil {
+		return tools
+	}
+	info := auth.TokenInfoFromContext(ctx)
+	out := make([]*mcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		if b.cfg.BearerAuth.ToolFilter(ctx, t.Name, info) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// toolPermitted returns true when the caller may invoke or inspect toolName.
+// For requests that bypassed bearer auth (LoopbackBypass) TokenInfo is nil,
+// matching the contract of the MCP-layer toolFilterMiddleware.
+func (b *restBridge) toolPermitted(ctx context.Context, toolName string) bool {
+	if b.cfg.BearerAuth == nil || b.cfg.BearerAuth.ToolFilter == nil {
+		return true
+	}
+	info := auth.TokenInfoFromContext(ctx)
+	return b.cfg.BearerAuth.ToolFilter(ctx, toolName, info)
 }
 
 // handleGetTool returns a single tool's schema, or 404 if not found.
@@ -122,6 +176,12 @@ func (b *restBridge) handleGetTool(w http.ResponseWriter, r *http.Request) {
 		b.writeError(w, http.StatusNotFound, "tool not found: "+name, nil)
 		return
 	}
+	// Hide tools the caller is not permitted to see — return 404 (not 403)
+	// so probing for tool existence does not leak the per-token tool catalog.
+	if !b.toolPermitted(r.Context(), name) {
+		b.writeError(w, http.StatusNotFound, "tool not found: "+name, nil)
+		return
+	}
 
 	b.writeJSON(w, http.StatusOK, tool)
 }
@@ -131,6 +191,16 @@ func (b *restBridge) handleCallTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !validToolName.MatchString(name) {
 		b.writeError(w, http.StatusBadRequest, "invalid tool name", nil)
+		return
+	}
+
+	// Enforce ToolFilter at the HTTP layer. The in-process MCP client used by
+	// this bridge does not propagate HTTP request context into the server's
+	// MCP middleware (RequestExtra.TokenInfo is unset on in-memory transport),
+	// so the MCP-layer toolFilterMiddleware would see nil and permit
+	// everything. Mirror the same filter call here to close the gap.
+	if !b.toolPermitted(r.Context(), name) {
+		b.writeError(w, http.StatusForbidden, "tool not permitted: "+name, nil)
 		return
 	}
 
@@ -181,18 +251,27 @@ type toolCallResponse struct {
 	IsError    bool          `json:"is_error"`
 }
 
-// getTools returns the cached tools list, fetching once on first call.
+// getTools returns the cached tools list, refreshing if older than cacheTTL.
+//
+// A TTL cache (rather than a sync.Once) is used so dynamically registered
+// tools become visible without restarting the server. Default TTL is 60s,
+// so tools/list is at most as stale as the configured TTL.
 func (b *restBridge) getTools(ctx context.Context) ([]*mcp.Tool, error) {
-	b.cachedOnce.Do(func() {
-		b.cachedTools, b.cachedErr = b.listAllTools(ctx)
-		if b.cachedErr == nil {
-			m := make(map[string]*mcp.Tool, len(b.cachedTools))
-			for _, t := range b.cachedTools {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if b.cachedAt.IsZero() || time.Since(b.cachedAt) > b.cacheTTL {
+		tools, err := b.listAllTools(ctx)
+		b.cachedTools = tools
+		b.cachedErr = err
+		if err == nil {
+			m := make(map[string]*mcp.Tool, len(tools))
+			for _, t := range tools {
 				m[t.Name] = t
 			}
 			b.cachedByName = m
 		}
-	})
+		b.cachedAt = time.Now()
+	}
 	return b.cachedTools, b.cachedErr
 }
 
@@ -201,6 +280,8 @@ func (b *restBridge) getTool(ctx context.Context, name string) (*mcp.Tool, error
 	if _, err := b.getTools(ctx); err != nil {
 		return nil, err
 	}
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
 	return b.cachedByName[name], nil
 }
 
