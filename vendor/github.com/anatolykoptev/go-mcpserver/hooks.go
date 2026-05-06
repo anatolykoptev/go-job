@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,7 +29,7 @@ type MCPHooks struct {
 func (h MCPHooks) Middleware() mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method == "tools/call" {
+			if method == methodToolsCall {
 				return h.handleToolCall(ctx, method, req, next)
 			}
 			result, err := next(ctx, method, req)
@@ -64,18 +65,33 @@ func (h MCPHooks) handleToolCall(
 	return result, err
 }
 
+// methodToolsCall is the JSON-RPC method name for an MCP tools/call request.
+const methodToolsCall = "tools/call"
+
+// leakWarnFactor controls when the timeout watchdog logs a warning.
+// If the worker goroutine eventually returns more than (factor × timeout)
+// after the deadline elapsed, that suggests the tool is ignoring ctx.Done().
+const leakWarnFactor = 2
+
 // ToolTimeoutMiddleware returns MCP middleware that enforces tool execution timeouts.
 //
 // Timeout resolution order (first wins):
 //  1. "timeout_secs" in the tool call arguments (LLM per-request override)
 //  2. cfg.ToolTimeouts[toolName] (per-tool config)
-//  3. cfg.ToolTimeout (global default, 30s)
+//  3. cfg.ToolTimeout (global default, 90s)
 //
 // On timeout the tool returns an error result instead of hanging.
+//
+// The worker goroutine is detached on timeout: if the underlying tool does
+// not honor ctx.Done(), it keeps running and may leak. To surface that, a
+// best-effort watchdog logs a slog.Warn when the worker eventually returns
+// more than leakWarnFactor × timeout after the deadline. This does not
+// kill the goroutine — Go has no way to do that — but makes the leak
+// visible in operator logs so the underlying tool can be fixed.
 func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method != "tools/call" {
+			if method != methodToolsCall {
 				return next(ctx, method, req)
 			}
 			params := req.GetParams().(*mcp.CallToolParamsRaw)
@@ -89,9 +105,24 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 				err    error
 			}
 			ch := make(chan callResult, 1)
+			start := time.Now()
 			go func() {
 				r, e := next(ctx, method, req)
+				// Buffered send never blocks — keeps the goroutine itself from
+				// leaking forever waiting on a receiver. Receiver consumes
+				// from ch only inside the select below, before the parent
+				// timeout fires.
 				ch <- callResult{r, e}
+				// If we returned long after the deadline, the parent gave up
+				// already and the underlying tool is probably ignoring
+				// ctx.Done(). Surface this so operators can fix the tool.
+				if elapsed := time.Since(start); elapsed > leakWarnFactor*timeout {
+					slog.Warn("tool goroutine outlived its timeout — tool likely ignores ctx.Done()",
+						slog.String("tool", params.Name),
+						slog.Duration("timeout", timeout),
+						slog.Duration("elapsed", elapsed),
+					)
+				}
 			}()
 
 			select {
