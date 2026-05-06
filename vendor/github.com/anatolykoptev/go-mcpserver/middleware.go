@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -16,6 +17,11 @@ const (
 	requestIDHeader = "X-Request-ID"
 	idBytes         = 16
 )
+
+// validRequestID accepts the same charset used by tracing systems
+// (Datadog, OpenTelemetry, AWS X-Ray): URL-safe ASCII, no control chars.
+// Anything else is treated as untrusted and replaced.
+var validRequestID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type requestIDContextKey struct{}
 
@@ -51,13 +57,17 @@ func Recovery(logger *slog.Logger) Middleware {
 }
 
 // RequestID returns middleware that generates or propagates X-Request-ID.
-// If the incoming request has the header, it is reused; otherwise a random
-// hex ID is generated. The value is stored in the request context.
+//
+// If the incoming request has the header AND the value matches
+// [A-Za-z0-9_-]{1,64}, it is reused. Otherwise — empty, too long, or
+// containing characters that could confuse log parsers (newlines, control
+// chars, quotes) — a fresh random hex ID is generated. This prevents
+// log-forging via attacker-supplied request IDs.
 func RequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := r.Header.Get(requestIDHeader)
-			if id == "" {
+			if !validRequestID.MatchString(id) {
 				id = generateID()
 			}
 			w.Header().Set(requestIDHeader, id)
@@ -83,18 +93,37 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 }
 
 // RequestLog returns middleware that logs method, path, status, duration,
-// and request_id for every request.
+// and request_id for every request at Info level.
+//
+// Equivalent to RequestLogWithSkip(logger, nil) — no paths skipped.
 func RequestLog(logger *slog.Logger) Middleware {
+	return RequestLogWithSkip(logger, nil)
+}
+
+// RequestLogWithSkip returns middleware that logs method, path, status,
+// duration, and request_id for every request. Paths in skipPaths are demoted
+// to Debug level so liveness/metrics traffic does not flood Info-level
+// access logs. nil or empty skipPaths means log everything at Info.
+func RequestLogWithSkip(logger *slog.Logger, skipPaths []string) Middleware {
+	skip := make(map[string]struct{}, len(skipPaths))
+	for _, p := range skipPaths {
+		skip[p] = struct{}{}
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+			rw := &responseWriter{ResponseWriter: w}
+			rw.status.Store(int32(http.StatusOK))
 			next.ServeHTTP(rw, r)
-			logger.Info("request",
+			level := slog.LevelInfo
+			if _, ok := skip[r.URL.Path]; ok {
+				level = slog.LevelDebug
+			}
+			logger.LogAttrs(r.Context(), level, "request",
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
-				slog.Int("status", rw.status),
-				slog.Int("bytes", rw.bytesWritten),
+				slog.Int("status", int(rw.status.Load())),
+				slog.Int64("bytes", rw.bytesWritten.Load()),
 				slog.Duration("duration", time.Since(start)),
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 			)

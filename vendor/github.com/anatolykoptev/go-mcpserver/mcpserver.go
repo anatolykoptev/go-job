@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -198,9 +199,25 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 	return Chain(mux, buildMiddleware(cfg, logger)...), nil
 }
 
+// warnLoopbackBypassOnce ensures the reverse-proxy warning fires at most once
+// per process even when applyBearerAuth is invoked for both /mcp and the
+// REST bridge prefix.
+var warnLoopbackBypassOnce sync.Once
+
 // applyBearerAuth wraps handler with bearer token verification.
 // When LoopbackBypass is set, requests from 127.0.0.1/::1 skip auth.
+//
+// Emits a one-shot slog.Warn on first call when LoopbackBypass=true and the
+// process looks containerised (KUBERNETES_SERVICE_HOST or /.dockerenv) — see
+// BearerAuth.LoopbackBypass for the rationale.
 func applyBearerAuth(handler http.Handler, cfg *BearerAuth) http.Handler {
+	if cfg.LoopbackBypass {
+		warnLoopbackBypassOnce.Do(func() {
+			if looksContainerised() {
+				slog.Warn("BearerAuth.LoopbackBypass=true on a containerised host — auth will be skipped for any request whose RemoteAddr is loopback. If a reverse proxy fronts this service, every external request looks like loopback and bearer auth is effectively DISABLED. Set LoopbackBypass=false unless you control the listener directly.")
+			}
+		})
+	}
 	metaPath := cfg.ResourceMetadataPath
 	if metaPath == "" && cfg.Metadata != nil {
 		metaPath = "/.well-known/oauth-protected-resource"
@@ -221,6 +238,20 @@ func applyBearerAuth(handler http.Handler, cfg *BearerAuth) http.Handler {
 		}
 		authed.ServeHTTP(w, r)
 	})
+}
+
+// looksContainerised reports whether this process appears to be running
+// inside a Kubernetes pod or a Docker container. Used purely for surfacing
+// a misconfiguration warning when LoopbackBypass is enabled in an
+// environment where reverse proxies typically front the service.
+func looksContainerised() bool {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return true
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return false
 }
 
 // isLoopback returns true if the request originates from localhost.

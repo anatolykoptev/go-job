@@ -86,6 +86,11 @@ const (
 
 // coerceStringTypes converts string values to their schema-declared types.
 // Only converts when the schema unambiguously declares a non-string type.
+//
+// Recurses into nested objects (matched against the property's Properties)
+// and array items (matched against the property's Items schema), so
+// "true"/"42" inside nested struct fields or list elements is coerced just
+// like top-level fields. LLMs frequently produce nested string scalars.
 func coerceStringTypes(m map[string]any, schema *jsonschema.Schema) {
 	if schema == nil || schema.Properties == nil {
 		return
@@ -95,29 +100,60 @@ func coerceStringTypes(m map[string]any, schema *jsonschema.Schema) {
 		if !ok {
 			continue
 		}
-		s, isStr := val.(string)
-		if !isStr {
-			continue
+		m[key] = coerceValue(val, prop)
+	}
+}
+
+// coerceValue applies type coercion to a single value against its schema.
+// Returns the coerced value, or the original on no-match. Handles scalar
+// strings, nested object maps, and arrays.
+func coerceValue(val any, prop *jsonschema.Schema) any {
+	if prop == nil {
+		return val
+	}
+	switch v := val.(type) {
+	case string:
+		return coerceScalarString(v, propType(prop))
+	case map[string]any:
+		// Nested object — recurse using the property's own Properties.
+		coerceStringTypes(v, prop)
+		return v
+	case []any:
+		// Array — apply Items schema (if any) to each element.
+		if prop.Items == nil {
+			return v
 		}
-		typ := propType(prop)
-		switch typ {
-		case "boolean":
-			switch strings.ToLower(s) {
-			case strTrue, "1":
-				m[key] = true
-			case strFalse, "0":
-				m[key] = false
-			}
-		case "integer":
-			if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-				m[key] = n
-			}
-		case "number":
-			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				m[key] = f
-			}
+		for i, el := range v {
+			v[i] = coerceValue(el, prop.Items)
+		}
+		return v
+	default:
+		return val
+	}
+}
+
+// coerceScalarString turns a string value into bool/int/float when the
+// schema declares the matching type. Returns the original string for
+// unrecognised values so jsonschema validation can report the real error.
+func coerceScalarString(s, typ string) any {
+	switch typ {
+	case "boolean":
+		switch strings.ToLower(s) {
+		case strTrue, "1":
+			return true
+		case strFalse, "0":
+			return false
+		}
+	case "integer":
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n
+		}
+	case "number":
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
 		}
 	}
+	return s
 }
 
 // propType returns the effective non-null type for a schema property.

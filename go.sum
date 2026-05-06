@@ -10,8 +10,8 @@ github.com/anatolykoptev/go-engine v1.6.0 h1:VJrc1F9PhzikWCpjAvMAiqk9CJCZj0MIoxe
 github.com/anatolykoptev/go-engine v1.6.0/go.mod h1:sWqTjIzyrOap041JUa7H7/Ffqm26IG4jhEuFc0431c8=
 github.com/anatolykoptev/go-kit v0.37.1 h1:6fbM5EAJf2pBme6XjftuKz8GzwN0iT4iqtn3sMWFdWU=
 github.com/anatolykoptev/go-kit v0.37.1/go.mod h1:D0qQqFqNkeBeKuajrdvpIhgNxBZ/nr/lTcjessF09Bg=
-github.com/anatolykoptev/go-mcpserver v0.11.0 h1:shz0WBhOvrPGHQpAeEMo3Fhx1F+p3AV6403FaKSiuSY=
-github.com/anatolykoptev/go-mcpserver v0.11.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
+github.com/anatolykoptev/go-mcpserver v0.13.0 h1:vG4hDzcTYho4t27E64K84XyD3E4QHRWs+5A5EYx0/tE=
+github.com/anatolykoptev/go-mcpserver v0.13.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.12.0 h1:bxvL0ctPxMbDFQgS2gpjZNbnEN+gH5cTSNTg8Lwyj8g=
 github.com/anatolykoptev/go-stealth v1.12.0/go.mod h1:4A6l+zJ0OEi9aPehdg4/4CospLDqFtW3bCgXdV4kwYE=
 github.com/anatolykoptev/go-twitter v0.5.2 h1:z2Gq9Q7cIqCTNzXDt+P+i497CNo84/j77b6ikf4PWdU=
