@@ -39,7 +39,7 @@ github.com/anatolykoptev/go-kit/retry
 # github.com/anatolykoptev/go-linkedin v0.4.2 => /home/krolik/src/go-linkedin
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
-# github.com/anatolykoptev/go-mcpserver v0.11.0
+# github.com/anatolykoptev/go-mcpserver v0.13.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 # github.com/anatolykoptev/go-stealth v1.12.0
