@@ -320,7 +320,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	// Clear MemDB vectors
 	mdb := GetMemDB()
 	if mdb != nil {
-		if err := mdb.ClearAllBySearch(ctx); err != nil {
+		if err := mdb.ClearAll(ctx); err != nil {
 			slog.Error("memdb clear failed before rebuild", slog.Any("error", err))
 			return nil, fmt.Errorf("clear memdb failed before rebuild: %w", err)
 		}
