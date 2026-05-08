@@ -134,11 +134,18 @@ func (c *MemDBClient) Search(ctx context.Context, query string, topK int, relati
 	return results, nil
 }
 
-// DeleteByUser deletes all memories for the gojob user/cube.
+// DeleteByUser deletes the specified memories for the gojob user/cube.
 // Retries on HTTP 500 (e.g. Postgres 40P01 deadlock) using engine.DefaultRetryConfig.
 func (c *MemDBClient) DeleteByUser(ctx context.Context, memoryIDs []string) error {
+	_, err := c.deleteByUserWithCount(ctx, memoryIDs)
+	return err
+}
+
+// deleteByUserWithCount deletes the specified memories and returns the deleted_count
+// reported by the server. Used by ClearAllBySearch to detect stuck-loop conditions.
+func (c *MemDBClient) deleteByUserWithCount(ctx context.Context, memoryIDs []string) (int64, error) {
 	if len(memoryIDs) == 0 {
-		return nil
+		return 0, nil
 	}
 	body := map[string]any{
 		"user_id":    "gojob",
@@ -149,19 +156,60 @@ func (c *MemDBClient) DeleteByUser(ctx context.Context, memoryIDs []string) erro
 		return c.post(ctx, "/product/delete_memory", body)
 	})
 	if err != nil {
-		return fmt.Errorf("memdb delete: %w", err)
+		return 0, fmt.Errorf("memdb delete: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("memdb delete: status %d: %s", resp.StatusCode, string(b))
+		return 0, fmt.Errorf("memdb delete: status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var raw struct {
+		Data struct {
+			DeletedCount int64 `json:"deleted_count"`
+		} `json:"data"`
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// Body read failed after 200 — treat as 0 deleted, not fatal for DeleteByUser.
+		return 0, nil
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		// Parse failed after 200 — treat as 0 deleted, not fatal for DeleteByUser.
+		return 0, nil
+	}
+	return raw.Data.DeletedCount, nil
+}
+
+// ClearAll wipes all memories for the gojob user/cube via the MemDB bulk
+// endpoint. Single round-trip, server-side handles SQL + Qdrant + VSET cleanup.
+// Use this instead of ClearAllBySearch for full-cube rebuilds.
+func (c *MemDBClient) ClearAll(ctx context.Context) error {
+	body := map[string]any{
+		"user_id": "gojob",
+	}
+	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		return c.post(ctx, "/product/delete_all_memories", body)
+	})
+	if err != nil {
+		return fmt.Errorf("memdb clear_all: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("memdb clear_all: status %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
 }
 
 // ClearAllBySearch iteratively searches and deletes all memories for gojob.
+// Deprecated: prefer ClearAll for full-cube rebuilds — it uses a single bulk
+// endpoint instead of a search loop. This method is retained for backwards
+// compatibility but aborts after 2 consecutive iterations where deleted_count=0
+// to prevent silent stuck-loop failures.
 func (c *MemDBClient) ClearAllBySearch(ctx context.Context) error {
+	consecutiveZeroDeletes := 0
 	for {
 		results, err := c.Search(ctx, "resume experience project skill achievement", 100, 0.0)
 		if err != nil {
@@ -179,8 +227,17 @@ func (c *MemDBClient) ClearAllBySearch(ctx context.Context) error {
 		if len(ids) == 0 {
 			return nil
 		}
-		if err := c.DeleteByUser(ctx, ids); err != nil {
+		deleted, err := c.deleteByUserWithCount(ctx, ids)
+		if err != nil {
 			return fmt.Errorf("memdb clear delete: %w", err)
+		}
+		if deleted == 0 {
+			consecutiveZeroDeletes++
+			if consecutiveZeroDeletes >= 2 {
+				return fmt.Errorf("memdb clear: stuck loop — search returns IDs but deleted_count=0 across %d iterations; use ClearAll() instead", consecutiveZeroDeletes)
+			}
+		} else {
+			consecutiveZeroDeletes = 0
 		}
 	}
 }
