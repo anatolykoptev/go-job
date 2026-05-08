@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -26,8 +27,10 @@ type MasterResumeBuildResult struct {
 	SubProjects    int    `json:"sub_projects"`
 	GraphNodes     int    `json:"graph_nodes"`
 	GraphEdges     int    `json:"graph_edges"`
-	VectorsStored  int    `json:"vectors_stored"`
-	Summary        string `json:"summary"`
+	VectorsStored      int    `json:"vectors_stored"`
+	Truncated          bool   `json:"truncated,omitempty"`
+	TruncatedFromRunes  int    `json:"truncated_from_runes,omitempty"`
+	Summary            string `json:"summary"`
 }
 
 type parsedResume struct {
@@ -265,7 +268,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	}
 
 	// 1. Parse resume via LLM (call #1)
+	isTruncated, origLen := checkResumeTruncation(resumeText, 12000)
 	resumeTrunc := engine.TruncateRunes(resumeText, 12000, "")
+	if isTruncated {
+		slog.Warn("resume truncated before LLM parse", slog.Int("original_runes", origLen), slog.Int("limit", 12000))
+	}
 	prompt := fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)
 
 	raw, err := engine.CallLLM(ctx, prompt)
@@ -302,17 +309,20 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 
 	// 3. Clear existing data (single-user, rebuild from scratch)
 	if err := db.ClearAllPersons(ctx); err != nil {
-		slog.Debug("clear persons failed", slog.Any("error", err))
+		slog.Error("clear persons failed before rebuild", slog.Any("error", err))
+		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
 	}
 	if err := db.ClearGraph(ctx); err != nil {
-		slog.Debug("clear graph failed", slog.Any("error", err))
+		slog.Error("clear graph failed before rebuild", slog.Any("error", err))
+		return nil, fmt.Errorf("clear graph failed before rebuild: %w", err)
 	}
 
 	// Clear MemDB vectors
 	mdb := GetMemDB()
 	if mdb != nil {
 		if err := mdb.ClearAllBySearch(ctx); err != nil {
-			slog.Debug("memdb clear failed", slog.Any("error", err))
+			slog.Error("memdb clear failed before rebuild", slog.Any("error", err))
+			return nil, fmt.Errorf("clear memdb failed before rebuild: %w", err)
 		}
 	}
 
@@ -330,6 +340,10 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	}
 
 	result := &MasterResumeBuildResult{PersonID: personID}
+	if isTruncated {
+		result.Truncated = true
+		result.TruncatedFromRunes = origLen
+	}
 	var vectorTexts []vectorEntry
 
 	// Track skill name → skill ID for graph edges
@@ -748,7 +762,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		slog.Debug("mark person enriched failed", slog.Int("person_id", personID), slog.Any("error", err))
 	}
 
-	result.Summary = fmt.Sprintf("Master resume built for %s: %d experiences, %d skills (%d implicit), %d projects (%d sub-projects), %d achievements, %d educations, %d certifications, %d domains, %d methodologies. Graph: %d nodes, %d edges. Vectors: %d stored.",
+	summary := fmt.Sprintf("Master resume built for %s: %d experiences, %d skills (%d implicit), %d projects (%d sub-projects), %d achievements, %d educations, %d certifications, %d domains, %d methodologies. Graph: %d nodes, %d edges. Vectors: %d stored.",
 		parsed.Person.Name,
 		result.Experiences, result.Skills, result.ImplicitSkills,
 		result.Projects, result.SubProjects,
@@ -756,6 +770,10 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		result.Domains, result.Methodologies,
 		result.GraphNodes, result.GraphEdges, result.VectorsStored,
 	)
+	if result.Truncated {
+		summary += fmt.Sprintf(" (WARNING: resume was truncated from %d runes to 12000 before parsing; tail may be missing)", result.TruncatedFromRunes)
+	}
+	result.Summary = summary
 
 	slog.Info("master resume built",
 		slog.Int("person_id", personID),
@@ -891,4 +909,11 @@ func StripMarkdownFences(raw string) string {
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
 	return strings.TrimSpace(raw)
+}
+
+// checkResumeTruncation returns whether text exceeds limit runes and the actual rune count.
+// Extracted as a pure helper to allow unit testing without a database dependency.
+func checkResumeTruncation(text string, limit int) (truncated bool, origLen int) {
+	n := utf8.RuneCountInString(text)
+	return n > limit, n
 }
