@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // MemDBClient talks to the memdb-go HTTP API.
@@ -133,6 +135,7 @@ func (c *MemDBClient) Search(ctx context.Context, query string, topK int, relati
 }
 
 // DeleteByUser deletes all memories for the gojob user/cube.
+// Retries on HTTP 500 (e.g. Postgres 40P01 deadlock) using engine.DefaultRetryConfig.
 func (c *MemDBClient) DeleteByUser(ctx context.Context, memoryIDs []string) error {
 	if len(memoryIDs) == 0 {
 		return nil
@@ -142,7 +145,9 @@ func (c *MemDBClient) DeleteByUser(ctx context.Context, memoryIDs []string) erro
 		"memory_ids": memoryIDs,
 	}
 
-	resp, err := c.post(ctx, "/product/delete_memory", body)
+	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		return c.post(ctx, "/product/delete_memory", body)
+	})
 	if err != nil {
 		return fmt.Errorf("memdb delete: %w", err)
 	}
