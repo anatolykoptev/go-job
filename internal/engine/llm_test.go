@@ -102,9 +102,18 @@ func TestBuildSourcesTextTruncation(t *testing.T) {
 	}
 
 	text := BuildSourcesText(results, contents, 100)
-	// Content should be truncated with "..."
-	if !contains(text, "...") {
-		t.Error("expected truncation indicator")
+
+	// go-engine v1.12+ BuildSourcesText uses TruncateToTokenBudget (no "..." marker).
+	// For i=0, rankedWeights[0]=0.30, budget=100 → 30 tokens * 3.5 charsPerToken = 105 chars max.
+	// Full output is header (~40 chars) + truncated content (~105 chars) ≈ 145 chars total.
+	// Verify Content: prefix is present and output is shorter than the original 500-char content.
+	if !contains(text, "Content:") {
+		t.Error("expected Content: prefix in output")
+	}
+	// 500 chars content + header overhead would be >500 without truncation.
+	// After truncation output must be well under 500.
+	if len(text) >= 500 {
+		t.Errorf("content not truncated: len=%d (expected < 500)", len(text))
 	}
 }
 
