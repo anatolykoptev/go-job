@@ -50,7 +50,7 @@ func yandexStartSearch(
 		return "", fmt.Errorf("yandex new request: %w", err)
 	}
 	req.Header.Set("Authorization", "Api-Key "+cfg.APIKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", acceptJSON)
 
 	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed below
 	if err != nil {

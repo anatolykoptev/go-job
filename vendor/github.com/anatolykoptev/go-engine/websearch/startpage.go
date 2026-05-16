@@ -2,6 +2,7 @@ package websearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -48,7 +49,7 @@ func NewStartpage(opts ...StartpageOption) *Startpage {
 // Search implements Provider. Queries Startpage via POST form.
 func (sp *Startpage) Search(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if sp.browser == nil {
-		return nil, fmt.Errorf("startpage: BrowserDoer is required (use WithStartpageBrowser)")
+		return nil, errors.New("startpage: BrowserDoer is required (use WithStartpageBrowser)")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -64,7 +65,7 @@ func (sp *Startpage) Search(ctx context.Context, query string, opts SearchOpts) 
 	headers := ChromeHeaders()
 	headers["referer"] = startpageReferer
 	headers["content-type"] = "application/x-www-form-urlencoded"
-	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	headers["accept"] = acceptHTML
 
 	data, _, status, err := sp.browser.Do(http.MethodPost, startpageEndpoint, headers, strings.NewReader(formBody))
 	if err != nil {

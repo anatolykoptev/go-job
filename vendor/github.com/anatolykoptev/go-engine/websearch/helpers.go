@@ -10,6 +10,12 @@ import (
 
 var reHTMLTag = regexp.MustCompile(`<[^>]*>`)
 
+// Common Accept header values reused across search providers.
+const (
+	acceptJSON = "application/json"
+	acceptHTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+)
+
 // CleanHTML strips HTML tags and trims whitespace.
 func CleanHTML(s string) string {
 	return strings.TrimSpace(reHTMLTag.ReplaceAllString(s, ""))

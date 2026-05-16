@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -43,7 +44,7 @@ func NewBing(opts ...BingOption) *Bing {
 // Search implements Provider. Queries Bing Search via GET.
 func (b *Bing) Search(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if b.browser == nil {
-		return nil, fmt.Errorf("bing: BrowserDoer is required (use WithBingBrowser)")
+		return nil, errors.New("bing: BrowserDoer is required (use WithBingBrowser)")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -53,7 +54,7 @@ func (b *Bing) Search(ctx context.Context, query string, opts SearchOpts) ([]Res
 
 	headers := ChromeHeaders()
 	headers["referer"] = bingReferer
-	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	headers["accept"] = acceptHTML
 
 	data, _, status, err := b.browser.Do(http.MethodGet, u, headers, nil)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -53,7 +54,7 @@ const soDailyLimit = 300
 
 // soCheckLimit enforces the daily quota. Returns true if under limit.
 func soCheckLimit() bool {
-	today := int32(time.Now().UTC().YearDay())
+	today := int32(time.Now().UTC().YearDay()) //nolint:gosec // YearDay ≤366, safe int32
 	if stored := soDaily.day.Load(); stored != today {
 		soDaily.day.CompareAndSwap(stored, today)
 		soDaily.count.Store(0)
@@ -77,7 +78,7 @@ func (so *StackOverflow) Search(ctx context.Context, query string, opts SearchOp
 		"site":     {"stackoverflow"},
 		"order":    {"desc"},
 		"sort":     {"relevance"},
-		"pagesize": {fmt.Sprintf("%d", limit)},
+		"pagesize": {strconv.Itoa(limit)},
 		"filter":   {"withbody"},
 	}.Encode())
 
