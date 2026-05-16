@@ -6,10 +6,13 @@ import (
 
 	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
-	"github.com/anatolykoptev/go-stealth/websearch"
+	"github.com/anatolykoptev/go-engine/websearch"
 )
 
-const metricSearchRequests = "search_requests"
+const (
+	metricSearchRequests = "search_requests_total"
+	metricSearchErrors   = "search_errors_total"
+)
 
 // SearXNG queries a local SearXNG instance for search results.
 // Wraps websearch.SearXNG with go-engine metrics support.
@@ -64,7 +67,7 @@ func (s *SearXNG) SearchQuery(ctx context.Context, q sources.Query) ([]sources.R
 	if err != nil {
 		return nil, err
 	}
-	return wsToSourceResults(ws), nil
+	return ws, nil
 }
 
 // Search queries SearXNG and returns results.
@@ -76,5 +79,5 @@ func (s *SearXNG) Search(ctx context.Context, query, language, timeRange, engine
 	if err != nil {
 		return nil, err
 	}
-	return wsToSourceResults(ws), nil
+	return ws, nil
 }

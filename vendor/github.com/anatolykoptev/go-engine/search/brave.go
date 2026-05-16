@@ -5,7 +5,7 @@ import (
 
 	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
-	"github.com/anatolykoptev/go-stealth/websearch"
+	"github.com/anatolykoptev/go-engine/websearch"
 )
 
 const metricBraveRequests = "brave_requests"
@@ -21,5 +21,5 @@ func SearchBraveDirect(ctx context.Context, bc BrowserDoer, query string, m *met
 	if err != nil {
 		return nil, err
 	}
-	return wsToSourceResults(ws), nil
+	return ws, nil
 }

@@ -1,15 +1,13 @@
 package websearch
 
-import "context"
+import (
+	"context"
 
-// Result is a single search result from any engine.
-type Result struct {
-	Title    string
-	URL      string
-	Content  string
-	Score    float64
-	Metadata map[string]string
-}
+	"github.com/anatolykoptev/go-engine/sources"
+)
+
+// Result is a type alias for sources.Result — eliminates conversion overhead.
+type Result = sources.Result
 
 // SearchOpts are optional search parameters.
 type SearchOpts struct {
