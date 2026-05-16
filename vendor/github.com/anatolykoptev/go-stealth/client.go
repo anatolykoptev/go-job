@@ -165,7 +165,12 @@ func (bc *BrowserClient) DoWithHeaderOrder(method, urlStr string, headers map[st
 
 // isBlockStatus returns true if the HTTP status indicates a proxy block.
 func isBlockStatus(code int) bool {
-	return code == http.StatusForbidden || code == http.StatusTooManyRequests
+	switch code {
+	case http.StatusForbidden, http.StatusTooManyRequests,
+		http.StatusBadGateway, http.StatusServiceUnavailable:
+		return true
+	}
+	return false
 }
 
 // doWithRetry executes a request through the handler, retrying with proxy
@@ -197,6 +202,14 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 
 		resp, err := handler(req)
 		if err != nil {
+			// Retry on proxy errors (502, connection refused, etc.) with a new proxy.
+			if attempt < maxAttempts-1 && bc.proxyPool != nil {
+				slog.Debug("request error, retrying with new proxy",
+					slog.String("url", req.URL),
+					slog.Int("attempt", attempt+1),
+					slog.Any("error", err))
+				continue
+			}
 			if resp != nil {
 				return nil, nil, resp.StatusCode, err
 			}

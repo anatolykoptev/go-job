@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/anatolykoptev/go-engine/sources"
@@ -40,20 +41,47 @@ Include commands, code, or URLs where available in sources.`,
 Be practical — if the question implies a choice, give a recommendation.`,
 }
 
-// BuildSourcesText formats search results and their fetched content for LLM context.
-// Each source's content is truncated to fit within maxTokens using charsPerToken estimation.
-func BuildSourcesText(results []sources.Result, contents map[string]string, maxTokens int, charsPerToken float64) string {
+// BuildSourcesTextWeighted formats search results with custom weight allocation.
+func BuildSourcesTextWeighted(results []sources.Result, contents map[string]string, totalBudget int, charsPerToken float64, weights []float64) string {
 	var sb strings.Builder
 	for i, r := range results {
 		fmt.Fprintf(&sb, "\n[%d] %s\nURL: %s\n", i+1, r.Title, r.URL)
-		if c, ok := contents[r.URL]; ok && c != "" {
-			c = text.TruncateToTokenBudget(c, maxTokens, charsPerToken)
+		c, hasContent := contents[r.URL]
+		if hasContent && c != "" && i < len(weights) {
+			tokens := int(math.Ceil(float64(totalBudget) * weights[i]))
+			c = text.TruncateToTokenBudget(c, tokens, charsPerToken)
 			fmt.Fprintf(&sb, "Content: %s\n", c)
+			continue
 		}
 		if r.Content != "" {
-			if _, ok := contents[r.URL]; !ok {
-				fmt.Fprintf(&sb, "Snippet: %s\n", r.Content)
-			}
+			fmt.Fprintf(&sb, "Snippet: %s\n", r.Content)
+		}
+	}
+	return sb.String()
+}
+
+// rankedWeights defines the percentage of total budget each source gets by rank.
+// Sources beyond this list get snippet-only treatment (no fetched content).
+var rankedWeights = []float64{0.30, 0.25, 0.20, 0.15, 0.10}
+
+// BuildSourcesText formats search results with ranked token allocation.
+// totalBudget is the TOTAL token budget across all sources (not per-source).
+// Higher-ranked sources get proportionally more content; low-ranked ones get snippets only.
+func BuildSourcesText(results []sources.Result, contents map[string]string, totalBudget int, charsPerToken float64) string {
+	var sb strings.Builder
+	for i, r := range results {
+		fmt.Fprintf(&sb, "\n[%d] %s\nURL: %s\n", i+1, r.Title, r.URL)
+
+		c, hasContent := contents[r.URL]
+		if hasContent && c != "" && i < len(rankedWeights) {
+			tokens := int(math.Ceil(float64(totalBudget) * rankedWeights[i]))
+			c = text.TruncateToTokenBudget(c, tokens, charsPerToken)
+			fmt.Fprintf(&sb, "Content: %s\n", c)
+			continue
+		}
+
+		if r.Content != "" {
+			fmt.Fprintf(&sb, "Snippet: %s\n", r.Content)
 		}
 	}
 	return sb.String()
@@ -110,6 +138,77 @@ func (c *Client) SummarizeDeep(ctx context.Context, query, instruction string, m
 	return &out, nil
 }
 
+// SummarizeOpts configures a summarization call.
+type SummarizeOpts struct {
+	Query           string
+	Instruction     string
+	TotalBudget     int // total token budget for source context
+	CharsPerToken   float64
+	MaxOutputTokens int // 0 = use client default
+}
+
+// SummarizeWithOpts summarizes search results with full control over budget.
+func (c *Client) SummarizeWithOpts(ctx context.Context, opts SummarizeOpts, results []sources.Result, contents map[string]string) (*StructuredOutput, error) {
+	srcs := BuildSourcesText(results, contents, opts.TotalBudget, opts.CharsPerToken)
+
+	var prompt string
+	if opts.Instruction != "" {
+		prompt = fmt.Sprintf(PromptBase, currentDate(), opts.Instruction, opts.Query, srcs)
+	} else {
+		qt := text.DetectQueryType(opts.Query)
+		instruction := TypeInstructions[qt]
+		prompt = fmt.Sprintf(PromptBase, currentDate(), instruction, opts.Query, srcs)
+	}
+
+	maxOut := opts.MaxOutputTokens
+	if maxOut == 0 {
+		maxOut = c.maxTokens
+	}
+
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	if err != nil {
+		return nil, err
+	}
+
+	var out StructuredOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		if answer := ExtractJSONAnswer(raw); answer != "" {
+			return &StructuredOutput{Answer: answer}, nil
+		}
+		return &StructuredOutput{Answer: raw}, nil
+	}
+	return &out, nil
+}
+
+// SummarizeDeepWithOpts summarizes with exhaustive fact extraction and output cap.
+func (c *Client) SummarizeDeepWithOpts(ctx context.Context, opts SummarizeOpts, results []sources.Result, contents map[string]string) (*StructuredOutput, error) {
+	srcs := BuildSourcesText(results, contents, opts.TotalBudget, opts.CharsPerToken)
+	instructionSection := ""
+	if opts.Instruction != "" {
+		instructionSection = opts.Instruction + "\n\n"
+	}
+	prompt := fmt.Sprintf(PromptDeep, currentDate(), instructionSection, opts.Query, srcs)
+
+	maxOut := opts.MaxOutputTokens
+	if maxOut == 0 {
+		maxOut = c.maxTokens
+	}
+
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	if err != nil {
+		return nil, err
+	}
+
+	var out StructuredOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		if answer := ExtractJSONAnswer(raw); answer != "" {
+			return &StructuredOutput{Answer: answer}, nil
+		}
+		return &StructuredOutput{Answer: raw}, nil
+	}
+	return &out, nil
+}
+
 // SummarizeToJSON builds an LLM prompt from search results and parses the response as JSON into T.
 // Returns (parsed, "", nil) on success, (nil, raw, nil) on parse failure (caller handles fallback),
 // or (nil, "", err) on LLM error.
@@ -127,6 +226,42 @@ func SummarizeToJSON[T any](ctx context.Context, c *Client, query, instruction s
 		return nil, raw, nil //nolint:nilerr // by design: parse failure returns raw for caller handling
 	}
 	return &out, "", nil
+}
+
+// SummarizeWithTier summarizes with tier-specific weights and prompt selection.
+func (c *Client) SummarizeWithTier(ctx context.Context, opts SummarizeOpts, results []sources.Result, contents map[string]string, weights []float64, useDeepPrompt bool) (*StructuredOutput, error) {
+	srcs := BuildSourcesTextWeighted(results, contents, opts.TotalBudget, opts.CharsPerToken, weights)
+	var prompt string
+	if useDeepPrompt {
+		instructionSection := ""
+		if opts.Instruction != "" {
+			instructionSection = opts.Instruction + "\n\n"
+		}
+		prompt = fmt.Sprintf(PromptDeep, currentDate(), instructionSection, opts.Query, srcs)
+	} else {
+		instruction := opts.Instruction
+		if instruction == "" {
+			qt := text.DetectQueryType(opts.Query)
+			instruction = TypeInstructions[qt]
+		}
+		prompt = fmt.Sprintf(PromptBase, currentDate(), instruction, opts.Query, srcs)
+	}
+	maxOut := opts.MaxOutputTokens
+	if maxOut == 0 {
+		maxOut = c.maxTokens
+	}
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	if err != nil {
+		return nil, err
+	}
+	var out StructuredOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		if answer := ExtractJSONAnswer(raw); answer != "" {
+			return &StructuredOutput{Answer: answer}, nil
+		}
+		return &StructuredOutput{Answer: raw}, nil
+	}
+	return &out, nil
 }
 
 // ExtractJSONAnswer extracts the "answer" field from malformed JSON

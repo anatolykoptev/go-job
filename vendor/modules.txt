@@ -18,7 +18,7 @@ github.com/PuerkitoBio/goquery
 # github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc
 ## explicit; go 1.12
 github.com/RadhiFadlillah/whatlanggo
-# github.com/anatolykoptev/go-engine v1.6.0
+# github.com/anatolykoptev/go-engine v1.12.1
 ## explicit; go 1.26
 github.com/anatolykoptev/go-engine/extract
 github.com/anatolykoptev/go-engine/fetch
@@ -28,6 +28,7 @@ github.com/anatolykoptev/go-engine/pipeline
 github.com/anatolykoptev/go-engine/search
 github.com/anatolykoptev/go-engine/sources
 github.com/anatolykoptev/go-engine/text
+github.com/anatolykoptev/go-engine/websearch
 # github.com/anatolykoptev/go-kit v0.37.1
 ## explicit; go 1.26
 github.com/anatolykoptev/go-kit/cache
@@ -42,13 +43,12 @@ github.com/anatolykoptev/go-linkedin
 # github.com/anatolykoptev/go-mcpserver v0.13.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
-# github.com/anatolykoptev/go-stealth v1.12.0
+# github.com/anatolykoptev/go-stealth v1.13.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/pool
 github.com/anatolykoptev/go-stealth/proxypool
 github.com/anatolykoptev/go-stealth/ratelimit
-github.com/anatolykoptev/go-stealth/websearch
 github.com/anatolykoptev/go-stealth/webtext
 # github.com/anatolykoptev/go-twitter v0.5.2
 ## explicit; go 1.26

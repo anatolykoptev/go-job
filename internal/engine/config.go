@@ -42,14 +42,19 @@ type Config struct {
 	DirectStartpage           bool                // enable Startpage direct scraper
 	DirectBrave               bool                // enable Brave direct scraper
 	DirectReddit              bool                // enable Reddit direct scraper
-	IndeedAPIKey              string              // overrideable via INDEED_API_KEY env
-	TwitterClient             *twitter.Client     // nil = Twitter search disabled
-	SocialClient              *social.Client      // nil = go-social disabled, use local twitter
-	LinkedInClient            *linkedin.Client    // nil = LinkedIn tools disabled
-	DatabaseURL               string              // DATABASE_URL for PostgreSQL (resume graph)
-	MemDBURL                  string              // MEMDB_URL for vector search
-	MemDBServiceSecret        string              // INTERNAL_SERVICE_SECRET for MemDB auth
-	EmbedURL                  string              // EMBED_URL for direct embedding server
+	// FetchDirectFirst enables go-engine v1.12+ direct-first tiered fallback.
+	// When true, the fetcher tries Chrome-TLS direct first and escalates to proxy
+	// only on anti-bot signals (HTTP 401/403/429/503, Cloudflare/PerimeterX/DataDome
+	// markers, soft-block heuristic, TLS errors). Controlled by FETCH_DIRECT_FIRST env var.
+	FetchDirectFirst   bool
+	IndeedAPIKey       string           // overrideable via INDEED_API_KEY env
+	TwitterClient      *twitter.Client  // nil = Twitter search disabled
+	SocialClient       *social.Client   // nil = go-social disabled, use local twitter
+	LinkedInClient     *linkedin.Client // nil = LinkedIn tools disabled
+	DatabaseURL        string           // DATABASE_URL for PostgreSQL (resume graph)
+	MemDBURL           string           // MEMDB_URL for vector search
+	MemDBServiceSecret string           // INTERNAL_SERVICE_SECRET for MemDB auth
+	EmbedURL           string           // EMBED_URL for direct embedding server
 
 	// Bounty search tuning.
 	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
@@ -72,13 +77,13 @@ type Config struct {
 // Package-level go-engine instances, set by Init().
 var (
 	cfg           Config
-	fetcherProxy  *fetch.Fetcher     // with proxy, for web pages
-	fetcherDirect *fetch.Fetcher     // no proxy, for raw content + internal APIs
-	extractorInst *extract.Extractor // HTML content extraction
-	searxngInst   *search.SearXNG    // SearXNG client
-	llmInst       *engllm.Client      // LLM client
+	fetcherProxy  *fetch.Fetcher       // with proxy, for web pages
+	fetcherDirect *fetch.Fetcher       // no proxy, for raw content + internal APIs
+	extractorInst *extract.Extractor   // HTML content extraction
+	searxngInst   *search.SearXNG      // SearXNG client
+	llmInst       *engllm.Client       // LLM client
 	reg           *kitmetrics.Registry // metrics counters (Prometheus-bridged)
-	httpClient    *http.Client        // plain HTTP client for GitHub API etc.
+	httpClient    *http.Client         // plain HTTP client for GitHub API etc.
 )
 
 // Cfg exposes the engine configuration for sub-packages (jobs, sources).
@@ -94,6 +99,14 @@ func Init(c Config) {
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}
+	if c.FetchDirectFirst {
+		// Direct-first tiered fallback (go-engine v1.12+, Webshare bandwidth optimization).
+		// Tries Chrome-TLS BrowserClient directly first; escalates to Webshare proxy pool
+		// only on anti-bot signals (401/403/429/503, CF/PerimeterX/DataDome/Akamai markers).
+		// When ProxyPool is nil (FETCH_DIRECT_FIRST=direct or no WEBSHARE_* vars), operates
+		// direct-only with no fallback.
+		fetcherOpts = append(fetcherOpts, fetch.WithDirectFirst(true))
+	}
 	if c.ProxyPool != nil {
 		fetcherOpts = append(fetcherOpts, fetch.WithProxyPool(c.ProxyPool))
 	}

@@ -8,8 +8,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,8 +28,9 @@ import (
 )
 
 var (
-	version = "dev"
-	mcpPort = env.Str("MCP_PORT", "8891")
+	version          = "dev"
+	mcpPort          = env.Str("MCP_PORT", "8891")
+	fetchDirectFirst = env.Str("FETCH_DIRECT_FIRST", "auto")
 )
 
 func main() {
@@ -102,6 +103,8 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 }
 
 func initEngine() {
+	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
+
 	c := engine.Config{
 		SearxngURL:            env.Str("SEARXNG_URL", ""),
 		LLMAPIKey:             env.Str("LLM_API_KEY", ""),
@@ -134,16 +137,20 @@ func initEngine() {
 		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
 		DirectReddit:          env.Bool("DIRECT_REDDIT", false),
+		FetchDirectFirst:      directFirst,
 	}
 
 	// Initialize proxy pool from Webshare API (optional).
-	if apiKey := os.Getenv("WEBSHARE_API_KEY"); apiKey != "" {
-		pool, err := proxypool.NewWebshare(apiKey)
-		if err != nil {
-			slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
-		} else {
-			c.ProxyPool = pool
-			slog.Info("proxy pool initialized", slog.Int("proxies", pool.Len()))
+	// Skipped when FETCH_DIRECT_FIRST=direct (direct-only) or FETCH_DIRECT_FIRST=off.
+	if initPool {
+		if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
+			pool, err := proxypool.NewWebshare(apiKey)
+			if err != nil {
+				slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
+			} else {
+				c.ProxyPool = pool
+				slog.Info("proxy pool initialized", slog.Int("proxies", pool.Len()))
+			}
 		}
 	}
 
@@ -222,4 +229,27 @@ func initEngine() {
 	jobs.StartBountyMonitor(context.Background())
 	jobs.StartSecurityMonitor(context.Background())
 	jobs.StartFreelanceMonitor(context.Background())
+}
+
+// resolveFetchMode maps FETCH_DIRECT_FIRST env value to (directFirst, initPool) flags.
+// Unknown values fall back to legacy proxy-first + pool init with a warning.
+//
+//   - "auto"   — direct-first with proxy fallback on anti-bot signals (default).
+//   - "direct" — direct-only, no proxy pool initialized (Webshare disabled entirely).
+//   - "proxy"  — legacy proxy-first behavior (regression rollback).
+//   - "off"    — disable Webshare pool; direct-only without anti-bot fallback.
+func resolveFetchMode(s string) (directFirst, initPool bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "auto":
+		return true, true
+	case "direct":
+		return true, false
+	case "proxy":
+		return false, true
+	case "off":
+		return false, false
+	default:
+		slog.Warn("unknown FETCH_DIRECT_FIRST value, falling back to 'proxy'", slog.String("value", s))
+		return false, true
+	}
 }
