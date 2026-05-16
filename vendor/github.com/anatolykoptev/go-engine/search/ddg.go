@@ -5,7 +5,7 @@ import (
 
 	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
-	"github.com/anatolykoptev/go-stealth/websearch"
+	"github.com/anatolykoptev/go-engine/websearch"
 )
 
 const metricDDGRequests = "ddg_requests"
@@ -29,14 +29,14 @@ func SearchDDGDirect(ctx context.Context, bc BrowserDoer, query, region string, 
 	if err != nil {
 		return nil, err
 	}
-	return wsToSourceResults(ws), nil
+	return ws, nil
 }
 
 // ParseDDGHTML extracts search results from DDG HTML lite response.
 // Delegates to websearch.ParseDDGHTML.
 func ParseDDGHTML(data []byte) ([]sources.Result, error) {
 	ws, err := websearch.ParseDDGHTML(data)
-	return wsToSourceResults(ws), err
+	return ws, err
 }
 
 // DDGUnwrapURL extracts the actual URL from DDG redirect wrappers.
@@ -49,7 +49,7 @@ func DDGUnwrapURL(href string) string {
 // Delegates to websearch.ParseDDGResponse.
 func ParseDDGResponse(data []byte) ([]sources.Result, error) {
 	ws, err := websearch.ParseDDGResponse(data)
-	return wsToSourceResults(ws), err
+	return ws, err
 }
 
 // ExtractVQD extracts the VQD token from DDG response HTML.

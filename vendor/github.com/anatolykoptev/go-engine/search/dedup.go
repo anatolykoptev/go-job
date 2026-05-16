@@ -6,17 +6,13 @@ import (
 	"unicode"
 
 	"github.com/anatolykoptev/go-engine/sources"
-	"github.com/anatolykoptev/go-stealth/websearch"
+	"github.com/anatolykoptev/go-engine/websearch"
 )
 
-// DedupSnippets removes near-duplicate results based on BoW cosine similarity
-// of their Content fields. When two results exceed the threshold, the one
-// with the lower Score is removed.
+// DedupSnippets removes near-duplicate results based on BoW cosine similarity.
 // Delegates to websearch.DedupSnippets.
 func DedupSnippets(results []sources.Result, threshold float64) []sources.Result {
-	ws := sourceToWSResults(results)
-	deduped := websearch.DedupSnippets(ws, threshold)
-	return wsToSourceResults(deduped)
+	return websearch.DedupSnippets(results, threshold)
 }
 
 // tokenize converts text to a bag-of-words frequency vector.

@@ -15,11 +15,14 @@ type DirectConfig struct {
 	Startpage        bool
 	Brave            bool
 	Reddit           bool
+	Bing             bool
+	Yep              bool
 	Yandex           YandexConfig
 	DDGLimiter       *rate.Limiter
 	StartpageLimiter *rate.Limiter
 	BraveLimiter     *rate.Limiter
 	RedditLimiter    *rate.Limiter
+	BingLimiter      *rate.Limiter
 }
 
 // SearchDirect queries enabled direct scrapers in parallel.
@@ -80,6 +83,25 @@ func SearchDirect(ctx context.Context, cfg DirectConfig, query, language string)
 		}()
 	}
 
+	if cfg.Bing {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results, err := runBingDirect(ctx, cfg, query)
+			collect(results, err, "bing")
+		}()
+	}
+
+	if cfg.Yep {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			y := NewYep(WithYepBrowser(cfg.Browser))
+			results, err := y.Search(ctx, query, SearchOpts{})
+			collect(results, err, "yep")
+		}()
+	}
+
 	if cfg.Yandex.APIKey != "" {
 		wg.Add(1)
 		go func() {
@@ -129,6 +151,18 @@ func runBraveDirect(ctx context.Context, cfg DirectConfig, query string) ([]Resu
 		}
 	}
 	b := NewBrave(WithBraveBrowser(cfg.Browser))
+	return b.Search(ctx, query, SearchOpts{})
+}
+
+// runBingDirect waits on the optional rate limiter then fetches Bing results.
+func runBingDirect(ctx context.Context, cfg DirectConfig, query string) ([]Result, error) {
+	if cfg.BingLimiter != nil {
+		if err := cfg.BingLimiter.Wait(ctx); err != nil {
+			slog.Debug("bing rate limit wait", slog.Any("error", err))
+			return nil, nil //nolint:nilerr // limiter cancelled: skip engine
+		}
+	}
+	b := NewBing(WithBingBrowser(cfg.Browser))
 	return b.Search(ctx, query, SearchOpts{})
 }
 

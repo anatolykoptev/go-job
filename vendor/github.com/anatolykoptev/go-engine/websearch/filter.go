@@ -20,7 +20,14 @@ func FilterByScore(results []Result, minScore float64, minKeep int) []Result {
 }
 
 // DedupByDomain limits results to maxPerDomain per domain.
-func DedupByDomain(results []Result, maxPerDomain int) []Result {
+// High-score results (score >= highScoreThreshold) bypass the per-domain limit.
+// Pass highScoreThreshold=0 to disable bypass (strict mode, old behavior).
+func DedupByDomain(results []Result, maxPerDomain int, highScoreThreshold ...float64) []Result {
+	threshold := 0.0
+	if len(highScoreThreshold) > 0 {
+		threshold = highScoreThreshold[0]
+	}
+
 	counts := make(map[string]int)
 	var out []Result
 	for _, r := range results {
@@ -29,6 +36,12 @@ func DedupByDomain(results []Result, maxPerDomain int) []Result {
 			continue
 		}
 		domain := u.Hostname()
+		if threshold > 0 && r.Score >= threshold {
+			// High-score results always pass through.
+			out = append(out, r)
+			counts[domain]++
+			continue
+		}
 		if counts[domain] < maxPerDomain {
 			out = append(out, r)
 			counts[domain]++

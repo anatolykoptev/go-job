@@ -59,10 +59,11 @@ func (t *tlsClientDoer) Do(req *Request) (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	rawData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", err)
+	rawData, readErr := io.ReadAll(resp.Body)
+	if readErr != nil && len(rawData) == 0 {
+		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", readErr)
 	}
+	// Partial read (e.g. brotli decode error mid-stream) — use what we got.
 
 	respHeaders := make(map[string]string, len(resp.Header))
 	for k, v := range resp.Header {
@@ -100,12 +101,12 @@ func (t *tlsClientDoer) GetCookieValue(rawURL, name string) string {
 
 // profileMap maps go-stealth TLSProfile values to bogdanfinn profiles.
 var profileMap = map[TLSProfile]profiles.ClientProfile{
-	ProfileChrome131:    profiles.Chrome_131,
-	ProfileChrome133:    profiles.Chrome_133,
-	ProfileFirefox133:   profiles.Firefox_133,
-	ProfileSafari16:     profiles.Safari_16_0,
-	ProfileSafariIOS18:  profiles.Safari_IOS_18_0,
-	ProfileSafariIOS17:  profiles.Safari_IOS_17_0,
+	ProfileChrome131:   profiles.Chrome_131,
+	ProfileChrome133:   profiles.Chrome_133,
+	ProfileFirefox133:  profiles.Firefox_133,
+	ProfileSafari16:    profiles.Safari_16_0,
+	ProfileSafariIOS18: profiles.Safari_IOS_18_0,
+	ProfileSafariIOS17: profiles.Safari_IOS_17_0,
 }
 
 // mapTLSProfile converts a TLSProfile to a bogdanfinn ClientProfile.
