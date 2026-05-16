@@ -18,7 +18,7 @@ github.com/PuerkitoBio/goquery
 # github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc
 ## explicit; go 1.12
 github.com/RadhiFadlillah/whatlanggo
-# github.com/anatolykoptev/go-engine v1.12.1
+# github.com/anatolykoptev/go-engine v1.13.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-engine/extract
 github.com/anatolykoptev/go-engine/fetch

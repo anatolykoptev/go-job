@@ -75,6 +75,13 @@ func (c *DirectBlockCache) Mark(host string) {
 	c.items[host] = time.Now().Add(c.ttl)
 }
 
+// Len returns the current number of tracked hosts.
+func (c *DirectBlockCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
+}
+
 // evictOldest removes the oldest entry by insertion order. Must be called with mu held.
 func (c *DirectBlockCache) evictOldest() {
 	for len(c.order) > 0 {

@@ -68,6 +68,7 @@ type Fetcher struct {
 	directFirst       bool                   // when true, try direct before proxy
 	blockCache        *DirectBlockCache      // tracks hosts that blocked direct requests
 	proxyFirstDomains *ProxyFirstDomains     // domains that always skip direct tier
+	metrics           fetchMetrics           // tier observability; noopMetrics unless WithMetrics is called
 }
 
 // Option configures a Fetcher.
@@ -144,6 +145,13 @@ func WithBlockTTL(d time.Duration) Option {
 	}
 }
 
+// WithMetrics wires a fetchMetrics implementation into the Fetcher for tier
+// observability. Use NewPromMetrics(prometheus.DefaultRegisterer) for production.
+// Not called by default — metrics are no-ops until this option is applied.
+func WithMetrics(m fetchMetrics) Option {
+	return func(f *Fetcher) { f.metrics = m }
+}
+
 // New creates a Fetcher with the given options.
 func New(opts ...Option) *Fetcher {
 	f := &Fetcher{
@@ -164,6 +172,7 @@ func New(opts ...Option) *Fetcher {
 			},
 		},
 		retryConfig: FetchRetryConfig,
+		metrics:     noopMetrics{},
 	}
 	for _, o := range opts {
 		o(f)
@@ -277,7 +286,8 @@ func (f *Fetcher) fetchViaProxyOrHTTP(ctx context.Context, url string) ([]byte, 
 func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, error) {
 	// 1. Domain hint → skip direct, go straight to proxy.
 	if f.proxyFirstDomains != nil && f.proxyFirstDomains.MatchURL(url) {
-		return f.fetchViaProxyOrHTTP(ctx, url)
+		f.metrics.incEscalation("domain_hint")
+		return f.fetchProxyAndRecord(ctx, url)
 	}
 
 	// 2. blockCache hit → skip direct, go straight to proxy.
@@ -286,7 +296,8 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 		host = u.Host
 	}
 	if f.blockCache != nil && f.blockCache.IsBlocked(host) {
-		return f.fetchViaProxyOrHTTP(ctx, url)
+		f.metrics.incEscalation("cached")
+		return f.fetchProxyAndRecord(ctx, url)
 	}
 
 	// 3. Direct attempt via Chrome-TLS directClient (no proxy).
@@ -297,19 +308,24 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 	if sig == sigNone {
 		// Direct succeeded cleanly.
 		if directErr != nil {
+			f.metrics.incTier("direct", "err")
 			return nil, directErr
 		}
+		f.metrics.incTier("direct", "ok")
 		return body, nil
 	}
 
-	// Blocked — mark host in cache and escalate.
+	// Blocked — record signal, mark host in cache.
+	f.metrics.incBlockSignal(sig.label())
 	if f.blockCache != nil && host != "" {
 		f.blockCache.Mark(host)
+		f.metrics.setBlockCacheHosts(f.blockCache.Len())
 	}
 
 	// 5. Escalate to proxy if available.
 	if f.proxyClient != nil {
-		return f.fetchViaProxy(ctx, url)
+		f.metrics.incEscalation(sig.label())
+		return f.fetchProxyAndRecord(ctx, url)
 	}
 
 	// No proxy budget — handling depends on signal strength:
@@ -325,6 +341,17 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 		return nil, directErr
 	}
 	return nil, &HttpStatusError{StatusCode: status}
+}
+
+// fetchProxyAndRecord routes to proxy tier and records the tier counter.
+func (f *Fetcher) fetchProxyAndRecord(ctx context.Context, url string) ([]byte, error) {
+	body, err := f.fetchViaProxyOrHTTP(ctx, url)
+	if err != nil {
+		f.metrics.incTier("proxy", "err")
+	} else {
+		f.metrics.incTier("proxy", "ok")
+	}
+	return body, err
 }
 
 // tryFallbacks runs the fallback chain when the primary fetch fails.

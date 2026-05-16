@@ -2,6 +2,7 @@ package websearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -50,7 +51,7 @@ func NewDDG(opts ...DDGOption) (*DDG, error) {
 		o(d)
 	}
 	if d.browser == nil {
-		return nil, fmt.Errorf("ddg: BrowserDoer is required (use WithDDGBrowser)")
+		return nil, errors.New("ddg: BrowserDoer is required (use WithDDGBrowser)")
 	}
 	return d, nil
 }
