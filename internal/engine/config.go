@@ -14,6 +14,7 @@ import (
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Config holds all engine configuration, injected from main.
@@ -109,6 +110,14 @@ func Init(c Config) {
 	}
 	if c.ProxyPool != nil {
 		fetcherOpts = append(fetcherOpts, fetch.WithProxyPool(c.ProxyPool))
+	}
+	// go-engine v1.13.0 tier router metrics — counts direct/proxy fetches,
+	// block signals, escalations, sticky cache size. Exposed via existing
+	// /metrics endpoint (prometheus.DefaultRegisterer).
+	if pm, err := fetch.NewPromMetrics(prometheus.DefaultRegisterer); err != nil {
+		slog.Warn("fetch tier metrics registration failed, running without", slog.Any("error", err))
+	} else {
+		fetcherOpts = append(fetcherOpts, fetch.WithMetrics(pm))
 	}
 	fetcherProxy = fetch.New(fetcherOpts...)
 
