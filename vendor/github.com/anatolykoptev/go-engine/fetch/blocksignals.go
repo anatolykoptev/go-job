@@ -20,6 +20,21 @@ const (
 // to be considered a soft block page. Real HTML pages are typically >1KB.
 const softBlockBodyThreshold = 512
 
+// label returns the prometheus label value for the block signal.
+// Used by fetchDirectFirst to avoid switch-on-sig duplication.
+func (s blockSig) label() string {
+	switch s {
+	case sigHard:
+		return "hard"
+	case sigSoft:
+		return "soft"
+	case sigTLS:
+		return "tls"
+	default:
+		return "unknown"
+	}
+}
+
 // classifyBlock inspects a response and returns the appropriate block signal.
 // Called after a direct (no-proxy) fetch to decide whether to escalate to proxy.
 //

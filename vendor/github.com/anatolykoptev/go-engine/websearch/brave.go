@@ -3,6 +3,7 @@ package websearch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,7 +43,7 @@ func NewBrave(opts ...BraveOption) *Brave {
 // Search implements Provider. Queries Brave Search via GET.
 func (b *Brave) Search(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if b.browser == nil {
-		return nil, fmt.Errorf("brave: BrowserDoer is required (use WithBraveBrowser)")
+		return nil, errors.New("brave: BrowserDoer is required (use WithBraveBrowser)")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -52,7 +53,7 @@ func (b *Brave) Search(ctx context.Context, query string, opts SearchOpts) ([]Re
 
 	headers := ChromeHeaders()
 	headers["referer"] = braveReferer
-	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	headers["accept"] = acceptHTML
 
 	data, _, status, err := b.browser.Do(http.MethodGet, u, headers, nil)
 	if err != nil {

@@ -3,6 +3,7 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -41,7 +42,7 @@ func NewReddit(opts ...RedditOption) *Reddit {
 // Search implements Provider. Queries Reddit JSON API.
 func (r *Reddit) Search(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if r.browser == nil {
-		return nil, fmt.Errorf("reddit: BrowserDoer is required (use WithRedditBrowser)")
+		return nil, errors.New("reddit: BrowserDoer is required (use WithRedditBrowser)")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -51,7 +52,7 @@ func (r *Reddit) Search(ctx context.Context, query string, opts SearchOpts) ([]R
 		"&limit=10&sort=relevance&t=all"
 
 	headers := ChromeHeaders()
-	headers["accept"] = "application/json"
+	headers["accept"] = acceptJSON
 
 	data, _, status, err := r.browser.Do(http.MethodGet, u, headers, nil)
 	if err != nil {
@@ -142,11 +143,8 @@ func isRedditRateLimited(data []byte) bool {
 		return false
 	}
 
-	switch v := errResp.Error.(type) {
-	case float64:
-		if int(v) == http.StatusTooManyRequests {
-			return true
-		}
+	if v, ok := errResp.Error.(float64); ok && int(v) == http.StatusTooManyRequests {
+		return true
 	}
 
 	return strings.EqualFold(errResp.Message, "Too Many Requests")
