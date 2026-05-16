@@ -11,6 +11,7 @@ import (
 	"github.com/anatolykoptev/go-engine/fetch"
 	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
+	"github.com/anatolykoptev/go-engine/websearch"
 )
 
 // BrowserDoer performs HTTP requests with browser-like TLS fingerprint.
@@ -22,10 +23,13 @@ type BrowserDoer interface {
 // DirectConfig controls the SearchDirect fan-out behavior.
 type DirectConfig struct {
 	Browser          BrowserDoer
+	FallbackBrowser  BrowserDoer // optional: used when Browser fails on proxy-quota/gateway statuses (402/407/5xx)
 	DDG              bool
 	Startpage        bool
 	Brave            bool
 	Reddit           bool
+	Bing             bool
+	Yep              bool
 	Yandex           YandexConfig
 	Retry            fetch.RetryConfig
 	Metrics          *metrics.Registry
@@ -33,70 +37,28 @@ type DirectConfig struct {
 	StartpageLimiter *rate.Limiter
 	BraveLimiter     *rate.Limiter
 	RedditLimiter    *rate.Limiter
-}
-
-// runDDG waits on the optional rate limiter then fetches DDG results.
-// Returns nil on limiter cancellation.
-func runDDG(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
-	if cfg.DDGLimiter != nil {
-		if err := cfg.DDGLimiter.Wait(ctx); err != nil {
-			slog.Debug("ddg rate limit wait", slog.Any("error", err))
-			return nil, nil //nolint:nilerr // limiter cancelled: skip engine
-		}
-	}
-	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchDDGDirect(ctx, cfg.Browser, query, "wt-wt", cfg.Metrics)
-	})
-}
-
-// runStartpage waits on the optional rate limiter then fetches Startpage results.
-// Returns nil on limiter cancellation.
-func runStartpage(ctx context.Context, cfg DirectConfig, query, language string) ([]sources.Result, error) {
-	if cfg.StartpageLimiter != nil {
-		if err := cfg.StartpageLimiter.Wait(ctx); err != nil {
-			slog.Debug("startpage rate limit wait", slog.Any("error", err))
-			return nil, nil //nolint:nilerr // limiter cancelled: skip engine
-		}
-	}
-	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchStartpageDirect(ctx, cfg.Browser, query, language, cfg.Metrics)
-	})
-}
-
-// runBrave waits on the optional rate limiter then fetches Brave results.
-// Returns nil on limiter cancellation.
-func runBrave(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
-	if cfg.BraveLimiter != nil {
-		if err := cfg.BraveLimiter.Wait(ctx); err != nil {
-			slog.Debug("brave rate limit wait", slog.Any("error", err))
-			return nil, nil //nolint:nilerr // limiter cancelled: skip engine
-		}
-	}
-	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchBraveDirect(ctx, cfg.Browser, query, cfg.Metrics)
-	})
-}
-
-// runReddit waits on the optional rate limiter then fetches Reddit results.
-// Returns nil on limiter cancellation.
-func runReddit(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
-	if cfg.RedditLimiter != nil {
-		if err := cfg.RedditLimiter.Wait(ctx); err != nil {
-			slog.Debug("reddit rate limit wait", slog.Any("error", err))
-			return nil, nil //nolint:nilerr // limiter cancelled: skip engine
-		}
-	}
-	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchRedditDirect(ctx, cfg.Browser, query, cfg.Metrics)
-	})
+	BingLimiter      *rate.Limiter
 }
 
 // SearchDirect queries enabled direct scrapers in parallel.
 // Returns merged results from all direct sources. Failures are non-fatal.
 func SearchDirect(ctx context.Context, cfg DirectConfig, query, language string) []sources.Result {
 	if cfg.Browser == nil {
+		slog.Info("search direct: browser nil, skipping all scrapers")
 		return nil
 	}
+	slog.Info("search direct: starting",
+		slog.Bool("ddg", cfg.DDG),
+		slog.Bool("startpage", cfg.Startpage),
+		slog.Bool("brave", cfg.Brave),
+		slog.Bool("reddit", cfg.Reddit),
+		slog.Bool("bing", cfg.Bing),
+		slog.Bool("yep", cfg.Yep),
+		slog.Bool("yandex", cfg.Yandex.APIKey != ""),
+		slog.Bool("fallback_browser", cfg.FallbackBrowser != nil),
+	)
+
+	cfg.Browser = newDualBrowser(cfg.Browser, cfg.FallbackBrowser)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -104,58 +66,46 @@ func SearchDirect(ctx context.Context, cfg DirectConfig, query, language string)
 
 	collect := func(results []sources.Result, err error, label string) {
 		if err != nil {
-			slog.Debug(label+" direct failed", slog.Any("error", err))
+			slog.Warn("search source failed", slog.String("source", label), slog.Any("error", err))
 			return
 		}
-		slog.Debug(label+" direct results", slog.Int("count", len(results)))
+		slog.Info("search source results", slog.String("source", label), slog.Int("count", len(results)))
 		mu.Lock()
 		all = append(all, results...)
 		mu.Unlock()
 	}
 
-	if cfg.DDG {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results, err := runDDG(ctx, cfg, query)
-			collect(results, err, "ddg")
-		}()
+	type job struct {
+		enabled bool
+		label   string
+		fn      func() ([]sources.Result, error)
 	}
 
-	if cfg.Startpage {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results, err := runStartpage(ctx, cfg, query, language)
-			collect(results, err, "startpage")
-		}()
+	jobs := []job{
+		{cfg.DDG, "ddg", func() ([]sources.Result, error) { return runDDG(ctx, cfg, query) }},
+		{cfg.Startpage, "startpage", func() ([]sources.Result, error) { return runStartpage(ctx, cfg, query, language) }},
+		{cfg.Brave, "brave", func() ([]sources.Result, error) { return runBrave(ctx, cfg, query) }},
+		{cfg.Reddit, "reddit", func() ([]sources.Result, error) { return runReddit(ctx, cfg, query) }},
+		{cfg.Bing, "bing", func() ([]sources.Result, error) { return runBing(ctx, cfg, query) }},
+		{cfg.Yep, "yep", func() ([]sources.Result, error) {
+			y := websearch.NewYep(websearch.WithYepBrowser(cfg.Browser))
+			return y.Search(ctx, query, websearch.SearchOpts{})
+		}},
+		{cfg.Yandex.APIKey != "", "yandex", func() ([]sources.Result, error) {
+			return SearchYandexAPI(ctx, cfg.Yandex, query, "", cfg.Metrics)
+		}},
 	}
 
-	if cfg.Brave {
+	for _, j := range jobs {
+		if !j.enabled {
+			continue
+		}
 		wg.Add(1)
-		go func() {
+		go func(label string, fn func() ([]sources.Result, error)) {
 			defer wg.Done()
-			results, err := runBrave(ctx, cfg, query)
-			collect(results, err, "brave")
-		}()
-	}
-
-	if cfg.Reddit {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results, err := runReddit(ctx, cfg, query)
-			collect(results, err, "reddit")
-		}()
-	}
-
-	if cfg.Yandex.APIKey != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results, err := SearchYandexAPI(ctx, cfg.Yandex, query, "", cfg.Metrics)
-			collect(results, err, "yandex")
-		}()
+			results, err := fn()
+			collect(results, err, label)
+		}(j.label, j.fn)
 	}
 
 	wg.Wait()

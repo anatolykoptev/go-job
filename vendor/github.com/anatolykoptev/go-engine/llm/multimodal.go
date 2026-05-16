@@ -4,6 +4,7 @@ import (
 	"context"
 
 	kitllm "github.com/anatolykoptev/go-kit/llm"
+	"github.com/anatolykoptev/go-kit/metrics"
 )
 
 // ImagePart describes an image for multimodal prompts.
@@ -14,22 +15,19 @@ type ImagePart struct {
 
 // CompleteMultimodal sends a vision prompt with images using OpenAI format.
 func (c *Client) CompleteMultimodal(ctx context.Context, prompt string, images []ImagePart) (string, error) {
-	if c.metrics != nil {
-		c.metrics.Incr("llm_calls")
-	}
-
 	kitImages := make([]kitllm.ImagePart, len(images))
 	for i, img := range images {
 		kitImages[i] = kitllm.ImagePart{URL: img.URL, MIMEType: img.MIMEType}
 	}
 
-	raw, err := c.kit.CompleteMultimodal(ctx, prompt, kitImages)
+	var raw string
+	err := metrics.TrackCall(c.metrics, "llm_calls_total", "llm_errors_total", func() error {
+		var e error
+		raw, e = c.kit.CompleteMultimodal(ctx, prompt, kitImages)
+		return e
+	})
 	if err != nil {
-		if c.metrics != nil {
-			c.metrics.Incr("llm_errors")
-		}
 		return "", err
 	}
-
 	return stripFences(raw), nil
 }

@@ -106,43 +106,36 @@ func (c *Client) Complete(ctx context.Context, prompt string) (string, error) {
 
 // CompleteParams sends a prompt with explicit temperature and maxTokens.
 func (c *Client) CompleteParams(ctx context.Context, prompt string, temperature float64, maxTokens int) (string, error) {
-	if c.metrics != nil {
-		c.metrics.Incr("llm_calls")
-	}
-
-	raw, err := c.kit.Complete(ctx, "", prompt,
-		kitllm.WithChatTemperature(temperature),
-		kitllm.WithChatMaxTokens(maxTokens),
-	)
+	var raw string
+	err := metrics.TrackCall(c.metrics, "llm_calls_total", "llm_errors_total", func() error {
+		var e error
+		raw, e = c.kit.Complete(ctx, "", prompt,
+			kitllm.WithChatTemperature(temperature),
+			kitllm.WithChatMaxTokens(maxTokens),
+		)
+		return e
+	})
 	if err != nil {
-		if c.metrics != nil {
-			c.metrics.Incr("llm_errors")
-		}
 		return "", err
 	}
-
-	raw = stripFences(raw)
-	return raw, nil
+	return stripFences(raw), nil
 }
 
 // CompleteWithSystem sends a prompt with an explicit system message.
 // Empty system string omits the system message (same as Complete).
 func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string) (string, error) {
-	if c.metrics != nil {
-		c.metrics.Incr("llm_calls")
-	}
-
-	raw, err := c.kit.Complete(ctx, system, prompt,
-		kitllm.WithChatTemperature(c.temperature),
-		kitllm.WithChatMaxTokens(c.maxTokens),
-	)
+	var raw string
+	err := metrics.TrackCall(c.metrics, "llm_calls_total", "llm_errors_total", func() error {
+		var e error
+		raw, e = c.kit.Complete(ctx, system, prompt,
+			kitllm.WithChatTemperature(c.temperature),
+			kitllm.WithChatMaxTokens(c.maxTokens),
+		)
+		return e
+	})
 	if err != nil {
-		if c.metrics != nil {
-			c.metrics.Incr("llm_errors")
-		}
 		return "", err
 	}
-
 	return stripFences(raw), nil
 }
 
