@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -72,24 +71,31 @@ func SearchSherlock(ctx context.Context, limit int) ([]engine.SecurityProgram, e
 }
 
 func fetchSherlockRepos(ctx context.Context) ([]sherlockRepo, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
+	defer cancel()
+
 	var all []sherlockRepo
 	// Paginate up to 3 pages (300 repos max — Sherlock has fewer).
 	for page := 1; page <= 3; page++ {
 		url := fmt.Sprintf("%s?per_page=100&sort=updated&page=%d", sherlockBaseURL, page)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("sherlock: build request: %w", err)
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
-		if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		req.Header.Set("User-Agent", engine.UserAgentBot)
+		if tok := engine.Cfg.GithubToken; tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := engine.Cfg.HTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("sherlock: fetch page %d: %w", page, err)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
 		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("sherlock: read page %d: %w", page, err)
+		}
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("sherlock: status %d on page %d: %s", resp.StatusCode, page, sherlockTruncate(string(body), 200))
 		}

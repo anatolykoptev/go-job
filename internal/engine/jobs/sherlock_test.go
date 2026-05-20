@@ -5,12 +5,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
+
+// TestMain initializes engine.Cfg.HTTPClient so unit tests can exercise fetchSherlockRepos
+// without calling engine.Init (which requires a full config including proxy pool etc.).
+func TestMain(m *testing.M) {
+	engine.Cfg.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	engine.Cfg.FetchTimeout = 10 * time.Second
+	os.Exit(m.Run())
+}
 
 // TestPrettifySherlockName verifies repo name → display name conversion.
 func TestPrettifySherlockName(t *testing.T) {
