@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -90,7 +91,7 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 	}
 
 	if len(trpcResp) == 0 {
-		return nil, fmt.Errorf("algora tRPC: empty response array")
+		return nil, errors.New("algora tRPC: empty response array")
 	}
 
 	items := trpcResp[0].Result.Data.JSON.Items
