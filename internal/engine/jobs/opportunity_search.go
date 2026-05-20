@@ -183,6 +183,13 @@ func fetchAllSecurity(ctx context.Context) []engine.SecurityProgram {
 		all = append(all, cantina...)
 	}
 
+	c4r, err := SearchCode4rena(ctx, perSourceLimit)
+	if err != nil {
+		slog.Warn("opportunity_search: code4rena error", slog.Any("error", err))
+	} else {
+		all = append(all, c4r...)
+	}
+
 	if len(all) > perSourceLimit {
 		all = all[:perSourceLimit]
 	}
