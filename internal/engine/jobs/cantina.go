@@ -24,6 +24,7 @@ var reCantinaAmount = regexp.MustCompile(`\$[\d,]+`)
 // SearchCantina fetches active audit contests from cantina.xyz.
 // Uses go-wowa Chrome render. Results are cached.
 func SearchCantina(ctx context.Context, limit int) ([]engine.SecurityProgram, error) {
+	engine.IncrCantinaRequests()
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
