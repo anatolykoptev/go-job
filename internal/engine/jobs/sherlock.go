@@ -31,6 +31,7 @@ type sherlockRepo struct {
 // Returns recently-updated, non-archived, non-fork repos as audit_contest programs.
 // Results are cached.
 func SearchSherlock(ctx context.Context, limit int) ([]engine.SecurityProgram, error) {
+	engine.IncrSherlockRequests()
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}

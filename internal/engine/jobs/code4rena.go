@@ -40,6 +40,7 @@ var reC4RAuditHref = regexp.MustCompile(`href="/audits/(20\d{2}-\d{2}-[^"]{1,80}
 // SearchCode4rena fetches audit contests from code4rena.com.
 // Uses go-wowa Chrome render. Results are cached.
 func SearchCode4rena(ctx context.Context, limit int) ([]engine.SecurityProgram, error) {
+	engine.IncrCode4renaRequests()
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
