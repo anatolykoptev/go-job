@@ -59,8 +59,29 @@ func checkNewSecurityPrograms(ctx context.Context) {
 	}
 	programs = append(programs, immunefiProgs...)
 
+	sherlockProgs, shErr := SearchSherlock(ctx, 500)
+	if shErr != nil {
+		slog.Warn("security_monitor: sherlock fetch failed", slog.Any("error", shErr))
+	} else {
+		programs = append(programs, sherlockProgs...)
+	}
+
+	cantinaProgs, cnErr := SearchCantina(ctx, 500)
+	if cnErr != nil {
+		slog.Warn("security_monitor: cantina fetch failed", slog.Any("error", cnErr))
+	} else {
+		programs = append(programs, cantinaProgs...)
+	}
+
+	c4rProgs, c4rErr := SearchCode4rena(ctx, 500)
+	if c4rErr != nil {
+		slog.Warn("security_monitor: code4rena fetch failed", slog.Any("error", c4rErr))
+	} else {
+		programs = append(programs, c4rProgs...)
+	}
+
 	if len(programs) == 0 {
-		if err != nil || imErr != nil {
+		if err != nil || imErr != nil || shErr != nil || cnErr != nil || c4rErr != nil {
 			slog.Warn("security_monitor: all sources failed")
 		}
 		return

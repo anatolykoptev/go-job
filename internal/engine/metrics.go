@@ -32,6 +32,9 @@ const (
 	MetricHabrRequests            = "habr_requests_total"
 	MetricCraigslistRequests      = "craigslist_requests_total"
 	MetricAlgoraRequests          = "algora_requests_total"
+	MetricSherlockRequests        = "sherlock_requests_total"
+	MetricCantinaRequests         = "cantina_requests_total"
+	MetricCode4renaRequests       = "code4rena_requests_total"
 	MetricToolCalls               = "tool_calls_total"
 )
 
@@ -57,6 +60,7 @@ func FormatMetrics() string {
 		MetricYouTubeSearchRequests, MetricYouTubeTranscriptReqs,
 		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
 		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests, MetricAlgoraRequests,
+		MetricSherlockRequests, MetricCantinaRequests, MetricCode4renaRequests,
 		MetricToolCalls,
 		"cache_hits_total", "cache_misses_total",
 	}
@@ -81,6 +85,9 @@ func IncrHabrRequests()          { reg.Incr(MetricHabrRequests) }
 func IncrCraigslistRequests()    { reg.Incr(MetricCraigslistRequests) }
 func IncrFreelancerAPIRequests() { reg.Incr(MetricFreelancerAPIRequests) }
 func IncrAlgoraRequests()        { reg.Incr(MetricAlgoraRequests) }
+func IncrSherlockRequests()      { reg.Incr(MetricSherlockRequests) }
+func IncrCantinaRequests()       { reg.Incr(MetricCantinaRequests) }
+func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall()              { reg.Incr(MetricToolCalls) }
