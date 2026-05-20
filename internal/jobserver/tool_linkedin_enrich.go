@@ -86,13 +86,13 @@ func sendToNerv(ctx context.Context, tenantID string, profile *linkedin.Profile)
 	ctx, cancel := context.WithTimeout(ctx, nervIngestTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, nervURL+"/mcp", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, nervURL+"/mcp", bytes.NewReader(payload)) //nolint:gosec // nervURL is an internal service endpoint, not user input
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // req is constructed from internal nervURL, not tainted
 	if err != nil {
 		return nil, fmt.Errorf("nerv request: %w", err)
 	}
