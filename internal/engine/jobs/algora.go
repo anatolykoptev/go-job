@@ -22,7 +22,7 @@ var (
 	reAlgoraBountyBlock = regexp.MustCompile(
 		`(?s)<a\s+href="(https://github\.com/[^"]+/issues/\d+)"[^>]*>.*?</a>`)
 	reAlgoraAmount = regexp.MustCompile(`\$[\d,]+`)
-	reAlgoraIssue  = regexp.MustCompile(`#(\d+)`)
+	reAlgoraIssue  = regexp.MustCompile(`#(\d+)`) //nolint:unused // reserved for issue number extraction
 	reHTMLTag      = regexp.MustCompile(`<[^>]+>`)
 	reWhitespace   = regexp.MustCompile(`\s+`)
 	reTitleNoise   = regexp.MustCompile(`(?i)^\d+\s+(seconds?|minutes?|hours?|days?|weeks?|months?)\s+ago$`)

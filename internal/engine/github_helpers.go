@@ -31,6 +31,8 @@ func IsRawGitHubURL(u string) bool {
 }
 
 // searchRepoTree returns all blob paths in the repo whose basename matches filename.
+//
+//nolint:unused // reserved for future repo scanning features
 func searchRepoTree(ctx context.Context, owner, repo, filename string) ([]string, error) {
 	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/HEAD?recursive=1", owner, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)

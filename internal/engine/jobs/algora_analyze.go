@@ -126,7 +126,7 @@ func buildAnalyzePrompt(title, amount, owner, repo, body string, prs []engine.Co
 	if len(prs) > 0 {
 		sb.WriteString("COMPETING PULL REQUESTS (already submitted for this issue):\n")
 		for _, pr := range prs {
-			sb.WriteString(fmt.Sprintf("  - PR #%d by @%s [%s]: %s\n", pr.Number, pr.Author, pr.State, pr.Title))
+			fmt.Fprintf(&sb, "  - PR #%d by @%s [%s]: %s\n", pr.Number, pr.Author, pr.State, pr.Title)
 		}
 		sb.WriteString("\n")
 	}

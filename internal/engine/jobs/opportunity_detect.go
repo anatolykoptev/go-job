@@ -5,6 +5,12 @@ import (
 	"strings"
 )
 
+const (
+	oppTypeBounty   = "bounty"
+	oppTypeSecurity = "security"
+	oppTypeFreelance = "freelance"
+)
+
 // DetectOpportunityType determines the opportunity type from a URL.
 // Returns "bounty", "security", "freelance", or "" if unknown.
 func DetectOpportunityType(rawURL string) string {
@@ -19,45 +25,45 @@ func DetectOpportunityType(rawURL string) string {
 	// Bounty platforms.
 	switch {
 	case host == "github.com" && strings.Contains(path, "/issues/"):
-		return "bounty"
+		return oppTypeBounty
 	case strings.Contains(host, "algora.io"):
-		return "bounty"
+		return oppTypeBounty
 	case strings.Contains(host, "opire.dev"):
-		return "bounty"
+		return oppTypeBounty
 	case strings.Contains(host, "boss.dev"):
-		return "bounty"
+		return oppTypeBounty
 	case strings.Contains(host, "bountyhub.dev"):
-		return "bounty"
+		return oppTypeBounty
 	case strings.Contains(host, "console.algora.io"):
-		return "bounty"
+		return oppTypeBounty
 	}
 
 	// Security bounty platforms.
 	switch {
 	case strings.Contains(host, "hackerone.com"):
-		return "security"
+		return oppTypeSecurity
 	case strings.Contains(host, "bugcrowd.com"):
-		return "security"
+		return oppTypeSecurity
 	case strings.Contains(host, "intigriti.com"):
-		return "security"
+		return oppTypeSecurity
 	case strings.Contains(host, "yeswehack.com"):
-		return "security"
+		return oppTypeSecurity
 	case strings.Contains(host, "immunefi.com"):
-		return "security"
+		return oppTypeSecurity
 	}
 
 	// Freelance platforms.
 	switch {
 	case strings.Contains(host, "remoteok.com"):
-		return "freelance"
+		return oppTypeFreelance
 	case strings.Contains(host, "himalayas.app"):
-		return "freelance"
+		return oppTypeFreelance
 	case strings.Contains(host, "upwork.com"):
-		return "freelance"
+		return oppTypeFreelance
 	case strings.Contains(host, "freelancer.com"):
-		return "freelance"
+		return oppTypeFreelance
 	case strings.Contains(host, "weworkremotely.com"):
-		return "freelance"
+		return oppTypeFreelance
 	}
 
 	return ""

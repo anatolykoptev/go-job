@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +25,7 @@ type commentResponse struct {
 // CommentOnIssue posts a comment on a GitHub issue and returns the comment HTML URL.
 func CommentOnIssue(ctx context.Context, owner, repo string, number int, body string) (string, error) {
 	if engine.Cfg.GithubToken == "" {
-		return "", fmt.Errorf("GITHUB_TOKEN is not set; cannot comment on issues")
+		return "", errors.New("GITHUB_TOKEN is not set; cannot comment on issues")
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, number)

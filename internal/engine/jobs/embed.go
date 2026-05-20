@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -57,12 +58,13 @@ func (c *EmbedClient) EmbedQuery(ctx context.Context, query string) ([]float32, 
 		return nil, err
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return nil, fmt.Errorf("empty query vector")
+		return nil, errors.New("empty query vector")
 	}
 	return vecs[0], nil
 }
 
 // EmbedTexts sends texts to the embedding server and returns vectors.
+//
 // Deprecated: use EmbedPassages or EmbedQuery for proper e5-large retrieval.
 func (c *EmbedClient) EmbedTexts(ctx context.Context, texts []string) ([][]float32, error) {
 	return c.embedRaw(ctx, texts)
