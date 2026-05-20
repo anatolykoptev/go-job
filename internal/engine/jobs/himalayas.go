@@ -78,7 +78,7 @@ func fetchHimalayas(ctx context.Context, query string, limit int) ([]engine.Free
 	if query != "" {
 		params.Set("q", query)
 	}
-	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("limit", strconv.Itoa(limit))
 
 	apiURL := himalayasAPIURL + "?" + params.Encode()
 

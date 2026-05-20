@@ -169,6 +169,13 @@ func fetchAllSecurity(ctx context.Context) []engine.SecurityProgram {
 		all = append(all, imm...)
 	}
 
+	shr, err := SearchSherlock(ctx, perSourceLimit)
+	if err != nil {
+		slog.Warn("opportunity_search: sherlock error", slog.Any("error", err))
+	} else {
+		all = append(all, shr...)
+	}
+
 	if len(all) > perSourceLimit {
 		all = all[:perSourceLimit]
 	}

@@ -47,9 +47,9 @@ func parseIntigritiData(data []byte) ([]engine.SecurityProgram, error) {
 			}
 		}
 
-		progType := "vdp"
+		progType := progTypeVDP
 		if r.Max.Value > 0 {
-			progType = "bug_bounty"
+			progType = progTypeBugBounty
 		}
 
 		programs = append(programs, engine.SecurityProgram{
@@ -100,9 +100,9 @@ func parseYesWeHackData(data []byte) ([]engine.SecurityProgram, error) {
 			}
 		}
 
-		progType := "vdp"
+		progType := progTypeVDP
 		if r.MaxBounty > 0 {
-			progType = "bug_bounty"
+			progType = progTypeBugBounty
 		}
 
 		programs = append(programs, engine.SecurityProgram{

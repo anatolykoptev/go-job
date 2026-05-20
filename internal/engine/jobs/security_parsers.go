@@ -7,6 +7,11 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
+const (
+	progTypeVDP       = "vdp"
+	progTypeBugBounty = "bug_bounty"
+)
+
 // --- HackerOne ---
 
 type h1Program struct {
@@ -34,9 +39,9 @@ func parseHackerOneData(data []byte) ([]engine.SecurityProgram, error) {
 			continue
 		}
 
-		progType := "vdp"
+		progType := progTypeVDP
 		if r.OffersBounties {
-			progType = "bug_bounty"
+			progType = progTypeBugBounty
 		}
 
 		targets := make([]string, 0, len(r.Targets.InScope))
@@ -85,9 +90,9 @@ func parseBugcrowdData(data []byte) ([]engine.SecurityProgram, error) {
 			continue
 		}
 
-		progType := "vdp"
+		progType := progTypeVDP
 		if r.MaxPayout > 0 {
-			progType = "bug_bounty"
+			progType = progTypeBugBounty
 		}
 
 		targets := make([]string, 0, len(r.Targets.InScope))
@@ -116,4 +121,3 @@ func parseBugcrowdData(data []byte) ([]engine.SecurityProgram, error) {
 func formatOptionalUSD(dollars int) string {
 	return formatCentsUSD(dollars * 100)
 }
-

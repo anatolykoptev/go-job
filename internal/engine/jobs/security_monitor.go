@@ -110,17 +110,17 @@ func checkNewSecurityPrograms(ctx context.Context) {
 
 func formatSecurityNotification(p engine.SecurityProgram) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("New Security Program [%s]\n", p.Platform))
-	sb.WriteString(fmt.Sprintf("%s\n", p.Name))
+	fmt.Fprintf(&sb, "New Security Program [%s]\n", p.Platform)
+	fmt.Fprintf(&sb, "%s\n", p.Name)
 	if p.MaxBounty != "" && p.MaxBounty != "$0" {
-		sb.WriteString(fmt.Sprintf("Max bounty: %s\n", p.MaxBounty))
+		fmt.Fprintf(&sb, "Max bounty: %s\n", p.MaxBounty)
 	}
 	if len(p.Targets) > 0 {
 		limit := 3
 		if len(p.Targets) < limit {
 			limit = len(p.Targets)
 		}
-		sb.WriteString(fmt.Sprintf("Scope: %s\n", strings.Join(p.Targets[:limit], ", ")))
+		fmt.Fprintf(&sb, "Scope: %s\n", strings.Join(p.Targets[:limit], ", "))
 	}
 	sb.WriteString(p.URL)
 	return sb.String()

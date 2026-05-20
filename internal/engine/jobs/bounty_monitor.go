@@ -137,10 +137,10 @@ func checkNewBounties(ctx context.Context) {
 
 func formatBountyNotification(b engine.BountyListing) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("New Bounty %s\n", b.Amount))
-	sb.WriteString(fmt.Sprintf("%s\n", b.Title))
+	fmt.Fprintf(&sb, "New Bounty %s\n", b.Amount)
+	fmt.Fprintf(&sb, "%s\n", b.Title)
 	if len(b.Skills) > 0 {
-		sb.WriteString(fmt.Sprintf("Skills: %s\n", strings.Join(b.Skills, ", ")))
+		fmt.Fprintf(&sb, "Skills: %s\n", strings.Join(b.Skills, ", "))
 	}
 	sb.WriteString(b.URL)
 	return sb.String()

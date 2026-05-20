@@ -71,7 +71,7 @@ func registerBountySearch(server *mcp.Server) {
 
 		if len(bvecs) == 0 {
 			if err != nil && opireErr != nil && bhErr != nil && bossErr != nil && lnErr != nil && collabErr != nil {
-				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v; lightning: %v; collaborators: %v", err, opireErr, bhErr, bossErr, lnErr, collabErr)
+				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v; lightning: %v; collaborators: %v", err, opireErr, bhErr, bossErr, lnErr, collabErr) //nolint:errorlint // multiple errors joined; errors.Join not used here for readability
 			}
 			return bountyResult(engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
 		}

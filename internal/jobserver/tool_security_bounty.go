@@ -25,7 +25,8 @@ func registerSecurityBountySearch(server *mcp.Server) {
 		btdPrograms, btdErr := jobs.SearchSecurityPrograms(ctx, 500)
 		immPrograms, immErr := jobs.SearchImmunefi(ctx, 500)
 
-		all := append(btdPrograms, immPrograms...)
+		btdPrograms = append(btdPrograms, immPrograms...)
+		all := btdPrograms
 		if len(all) == 0 {
 			if btdErr != nil || immErr != nil {
 				return nil, engine.SmartSearchOutput{}, errors.New("all security sources failed")

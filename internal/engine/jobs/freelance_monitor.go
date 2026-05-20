@@ -117,15 +117,15 @@ func checkNewFreelanceJobs(ctx context.Context) {
 
 func formatFreelanceNotification(j engine.FreelanceJob) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[%s] %s\n", j.Source, j.Title))
+	fmt.Fprintf(&sb, "[%s] %s\n", j.Source, j.Title)
 	if j.Company != "" {
-		sb.WriteString(fmt.Sprintf("Company: %s\n", j.Company))
+		fmt.Fprintf(&sb, "Company: %s\n", j.Company)
 	}
 	if j.SalaryMin > 0 || j.SalaryMax > 0 {
-		sb.WriteString(fmt.Sprintf("Salary: $%d–$%d\n", j.SalaryMin, j.SalaryMax))
+		fmt.Fprintf(&sb, "Salary: $%d–$%d\n", j.SalaryMin, j.SalaryMax)
 	}
 	if len(j.Tags) > 0 {
-		sb.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(j.Tags, ", ")))
+		fmt.Fprintf(&sb, "Tags: %s\n", strings.Join(j.Tags, ", "))
 	}
 	sb.WriteString(j.URL)
 	return sb.String()

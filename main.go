@@ -94,7 +94,7 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 			logger.Error("prom endpoint", slog.Any("error", err))
 		}
 	}()
-	go func() {
+	go func() { //nolint:gosec // G118: intentional — request ctx is done, shutdown needs a fresh context
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,7 @@ type vaelorToolRequest struct {
 func SendTelegramNotification(ctx context.Context, message string) error {
 	baseURL := engine.Cfg.VaelorNotifyURL
 	if baseURL == "" {
-		return fmt.Errorf("VAELOR_NOTIFY_URL not configured")
+		return errors.New("VAELOR_NOTIFY_URL not configured")
 	}
 	chatID := engine.Cfg.BountyNotifyChatID
 	if chatID == "" {

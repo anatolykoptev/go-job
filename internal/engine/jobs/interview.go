@@ -80,11 +80,11 @@ func PrepareInterview(ctx context.Context, resume, jobDescription, company, focu
 	jdTrunc := engine.TruncateRunes(jobDescription, 3000, "")
 
 	if focus == "" {
-		focus = "all"
+		focus = "all" //nolint:goconst
 	}
 	validFocus := map[string]bool{"all": true, "behavioral": true, "technical": true, "system_design": true}
 	if !validFocus[strings.ToLower(focus)] {
-		focus = "all"
+		focus = "all" //nolint:goconst
 	}
 
 	// Optional company enrichment

@@ -204,10 +204,11 @@ func (c *MemDBClient) ClearAll(ctx context.Context) error {
 }
 
 // ClearAllBySearch iteratively searches and deletes all memories for gojob.
+// This method is retained for backwards compatibility but aborts after 2
+// consecutive iterations where deleted_count=0 to prevent silent stuck-loop failures.
+//
 // Deprecated: prefer ClearAll for full-cube rebuilds — it uses a single bulk
-// endpoint instead of a search loop. This method is retained for backwards
-// compatibility but aborts after 2 consecutive iterations where deleted_count=0
-// to prevent silent stuck-loop failures.
+// endpoint instead of a search loop.
 func (c *MemDBClient) ClearAllBySearch(ctx context.Context) error {
 	consecutiveZeroDeletes := 0
 	for {

@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -101,7 +102,7 @@ func parseOpireResponse(body string) ([]engine.BountyListing, error) {
 	const marker = `"initialRewards":[`
 	idx := strings.Index(body, marker)
 	if idx < 0 {
-		return nil, fmt.Errorf("opire: initialRewards not found in response")
+		return nil, errors.New("opire: initialRewards not found in response")
 	}
 
 	// Start right after "initialRewards":
@@ -116,7 +117,7 @@ func parseOpireResponse(body string) ([]engine.BountyListing, error) {
 			depth--
 			if depth == 0 {
 				arrEnd = i + 1
-				break
+				break //nolint:staticcheck // exits switch; loop exits via arrEnd > 0 check below
 			}
 		}
 		if arrEnd > 0 {
@@ -124,7 +125,7 @@ func parseOpireResponse(body string) ([]engine.BountyListing, error) {
 		}
 	}
 	if arrEnd < 0 {
-		return nil, fmt.Errorf("opire: could not find closing bracket for initialRewards")
+		return nil, errors.New("opire: could not find closing bracket for initialRewards")
 	}
 
 	var rewards []opireReward

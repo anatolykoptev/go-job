@@ -19,7 +19,7 @@ func TestEmbedTexts(t *testing.T) {
 		}
 		var req embedRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), 400)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		resp := embedResponse{Object: "list", Model: "test"}
@@ -31,7 +31,7 @@ func TestEmbedTexts(t *testing.T) {
 			})
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
