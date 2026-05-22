@@ -13,7 +13,7 @@ func registerMasterResumeBuild(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "master_resume_build",
 		Description: "Build a master resume from your full resume text. Parses into a structured knowledge graph (skills, experiences, projects, achievements) with vector embeddings for semantic search. Run once, then use resume_generate to create tailored versions.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.MasterResumeBuildInput) (*mcp.CallToolResult, *jobs.MasterResumeBuildResult, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.MasterResumeBuildInput) (*mcp.CallToolResult, any, error) {
 		if input.Resume == "" {
 			return nil, nil, errors.New("resume is required")
 		}
@@ -21,6 +21,6 @@ func registerMasterResumeBuild(server *mcp.Server) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, result, nil
+		return nil, maybeSpill(ctx, "master_resume_build", result), nil
 	})
 }

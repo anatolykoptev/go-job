@@ -37,7 +37,7 @@ func registerJobSearch(server *mcp.Server) {
 		Name:        "job_search",
 		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, any, error) {
 		if input.Query == "" {
 			return nil, engine.JobSearchOutput{}, errors.New("query is required")
 		}
@@ -380,7 +380,7 @@ func registerJobSearch(server *mcp.Server) {
 		}
 
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
-		return nil, *jobOut, nil
+		return nil, maybeSpill(ctx, "job_search", *jobOut), nil
 	})
 }
 

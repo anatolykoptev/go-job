@@ -20,7 +20,7 @@ func registerLinkedInProfile(server *mcp.Server) {
 		Name:        "linkedin_profile",
 		Description: "Full LinkedIn profile by handle or URL. Returns experience, education, skills, contact info.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInProfileInput) (*mcp.CallToolResult, *linkedin.Profile, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInProfileInput) (*mcp.CallToolResult, any, error) {
 		if input.Handle == "" {
 			return nil, nil, errors.New("handle is required")
 		}
@@ -28,7 +28,7 @@ func registerLinkedInProfile(server *mcp.Server) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, profile, nil
+		return nil, maybeSpill(ctx, "linkedin_profile", profile), nil
 	})
 }
 
@@ -75,7 +75,7 @@ func registerLinkedInJobs(server *mcp.Server) {
 		Name:        "linkedin_jobs",
 		Description: "Search LinkedIn job listings via Voyager API (authenticated). Requires LinkedIn credentials.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInJobsInput) (*mcp.CallToolResult, linkedInJobsOutput, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInJobsInput) (*mcp.CallToolResult, any, error) {
 		if input.Query == "" {
 			return nil, linkedInJobsOutput{}, errors.New("query is required")
 		}
@@ -94,7 +94,8 @@ func registerLinkedInJobs(server *mcp.Server) {
 		if err != nil {
 			return nil, linkedInJobsOutput{}, err
 		}
-		return nil, linkedInJobsOutput{Query: input.Query, Count: len(result), Jobs: result}, nil
+		out := linkedInJobsOutput{Query: input.Query, Count: len(result), Jobs: result}
+		return nil, maybeSpill(ctx, "linkedin_jobs", out), nil
 	})
 }
 
@@ -118,7 +119,7 @@ func registerLinkedInSearch(server *mcp.Server) {
 		Name:        "linkedin_search",
 		Description: "Search LinkedIn for people or companies via Voyager API.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInSearchInput) (*mcp.CallToolResult, linkedInSearchOutput, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInSearchInput) (*mcp.CallToolResult, any, error) {
 		if input.Query == "" {
 			return nil, linkedInSearchOutput{}, errors.New("query is required")
 		}
@@ -139,7 +140,8 @@ func registerLinkedInSearch(server *mcp.Server) {
 		if err != nil {
 			return nil, linkedInSearchOutput{}, err
 		}
-		return nil, linkedInSearchOutput{Query: input.Query, Type: searchType, Count: len(results), Results: results}, nil
+		out := linkedInSearchOutput{Query: input.Query, Type: searchType, Count: len(results), Results: results}
+		return nil, maybeSpill(ctx, "linkedin_search", out), nil
 	})
 }
 

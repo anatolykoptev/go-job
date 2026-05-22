@@ -52,7 +52,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	slog.Info("tools registered", slog.Int("count", 36))
+	slog.Info("tools registered", slog.Int("count", 39))
 
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {

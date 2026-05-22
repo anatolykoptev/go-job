@@ -36,6 +36,13 @@ const (
 	MetricCantinaRequests         = "cantina_requests_total"
 	MetricCode4renaRequests       = "code4rena_requests_total"
 	MetricToolCalls               = "tool_calls_total"
+
+	// MetricOversizeSpill is the base name for the labelled counter
+	// gojob_oversize_spill_total{tool=<name>}.
+	MetricOversizeSpill = "oversize_spill_total"
+
+	// MetricOversizeBytes is the histogram of spilled payload sizes in bytes.
+	MetricOversizeBytes = "oversize_bytes"
 )
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
@@ -90,4 +97,17 @@ func IncrCantinaRequests()       { reg.Incr(MetricCantinaRequests) }
 func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
-func IncrToolCall()              { reg.Incr(MetricToolCalls) }
+func IncrToolCall() { reg.Incr(MetricToolCalls) }
+
+// IncrOversizeSpill bumps gojob_oversize_spill_total{tool=<toolName>}.
+// The go-kit/metrics prom bridge resolves the labelled name syntax
+// "oversize_spill_total{tool=security_bounty_search}" into a CounterVec.
+func IncrOversizeSpill(toolName string) {
+	reg.Incr(MetricOversizeSpill + "{tool=" + toolName + "}")
+}
+
+// ObserveOversizeBytes records a spilled payload size in bytes in the
+// gojob_oversize_bytes histogram.
+func ObserveOversizeBytes(sizeBytes int) {
+	reg.Observe(MetricOversizeBytes, float64(sizeBytes))
+}

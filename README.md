@@ -130,3 +130,39 @@ make restart  # restart only
 curl http://localhost:8891/health
 # {"status":"ok","service":"go_job","version":"1.0.0"}
 ```
+
+## Spillover store
+
+Large MCP responses (security_bounty_search, opportunity_search, etc.) can
+exceed the MCP envelope limit (~25KB). To preserve full data without
+truncation, go-job spills oversized payloads to a Postgres table
+`oversize_responses` (auto-migrated on startup).
+
+When a tool's response exceeds `GO_JOB_OVERSIZE_THRESHOLD_BYTES` (default
+24576), the client receives a small envelope:
+
+```json
+{
+  "oversize_id": 42,
+  "tool_name": "security_bounty_search",
+  "size_bytes": 57397,
+  "sha256": "abc...",
+  "item_count": 1500,
+  "sample": [first 3 items],
+  "retrieve_via": "oversize_get",
+  "hint": "payload spilled to oversize store; call oversize_get with id=42"
+}
+```
+
+Three management tools:
+- `oversize_get(id)` — fetch full payload by id
+- `oversize_list(tool?, since?, limit?)` — list recent spills with metadata
+- `oversize_purge(older_than_days)` — clean up old entries
+
+Metrics:
+- `gojob_oversize_spill_total{tool}` — counter of spills per tool
+- `gojob_oversize_bytes` — histogram of payload sizes
+
+Env:
+- `DATABASE_URL` — required for spillover (graceful fallback to direct response if unset)
+- `GO_JOB_OVERSIZE_THRESHOLD_BYTES` — override default 24KB
