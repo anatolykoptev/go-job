@@ -21,6 +21,9 @@ func registerMasterResumeBuild(server *mcp.Server) {
 		if err != nil {
 			return nil, nil, err
 		}
+		if cr, spilled := handleSpill(ctx, "master_resume_build", result); spilled {
+			return cr, nil, nil
+		}
 		return nil, result, nil
 	})
 }

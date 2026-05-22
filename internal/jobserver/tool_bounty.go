@@ -73,13 +73,13 @@ func registerBountySearch(server *mcp.Server) {
 			if err != nil && opireErr != nil && bhErr != nil && bossErr != nil && lnErr != nil && collabErr != nil {
 				return nil, engine.SmartSearchOutput{}, fmt.Errorf("bounty fetch failed: algora: %v; opire: %v; bountyhub: %v; boss: %v; lightning: %v; collaborators: %v", err, opireErr, bhErr, bossErr, lnErr, collabErr) //nolint:errorlint // multiple errors joined; errors.Join not used here for readability
 			}
-			return bountyResult(engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
+			return bountyResult(ctx, engine.BountySearchOutput{Query: input.Query, Summary: "No bounties found."})
 		}
 
 		// Apply input filters (min_amount, skills).
 		bvecs = filterBountyInputs(bvecs, input)
 		if len(bvecs) == 0 {
-			return bountyResult(engine.BountySearchOutput{
+			return bountyResult(ctx, engine.BountySearchOutput{
 				Query:   input.Query,
 				Summary: "No bounties match the specified filters.",
 			})
@@ -93,7 +93,7 @@ func registerBountySearch(server *mcp.Server) {
 			if err != nil {
 				slog.Warn("bounty_search: embed pipeline failed, falling back to LLM", slog.Any("error", err))
 			} else {
-				return bountyResult(result)
+				return bountyResult(ctx, result)
 			}
 		}
 
@@ -119,7 +119,7 @@ func bountyLLMFallback(ctx context.Context, input engine.BountySearchInput, boun
 			Bounties: bounties,
 			Summary:  fmt.Sprintf("Found %d bounties (LLM summary unavailable).", len(bounties)),
 		}
-		return bountyResult(out)
+		return bountyResult(ctx, out)
 	}
 
 	for i := range bountyOut.Bounties {
@@ -131,10 +131,10 @@ func bountyLLMFallback(ctx context.Context, input engine.BountySearchInput, boun
 			b.Source = "algora"
 		}
 	}
-	return bountyResult(*bountyOut)
+	return bountyResult(ctx, *bountyOut)
 }
 
-func bountyResult(out engine.BountySearchOutput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
+func bountyResult(ctx context.Context, out engine.BountySearchOutput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 	jsonBytes, err := json.Marshal(out)
 	if err != nil {
 		return nil, engine.SmartSearchOutput{}, errors.New("json marshal failed")
@@ -143,6 +143,10 @@ func bountyResult(out engine.BountySearchOutput) (*mcp.CallToolResult, engine.Sm
 		Query:   out.Query,
 		Answer:  string(jsonBytes),
 		Sources: []engine.SourceItem{},
+	}
+	if cr, spilled := handleSpill(ctx, "bounty_search", result); spilled {
+		var zero engine.SmartSearchOutput
+		return cr, zero, nil
 	}
 	return nil, result, nil
 }

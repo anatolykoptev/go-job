@@ -33,10 +33,15 @@ func registerOpportunitySearch(server *mcp.Server) {
 			return nil, engine.SmartSearchOutput{}, errors.New("json marshal failed")
 		}
 
-		return nil, engine.SmartSearchOutput{
+		result := engine.SmartSearchOutput{
 			Query:   input.Query,
 			Answer:  string(jsonBytes),
 			Sources: []engine.SourceItem{},
-		}, nil
+		}
+		if cr, spilled := handleSpill(ctx, "opportunity_search", result); spilled {
+			var zero engine.SmartSearchOutput
+			return cr, zero, nil
+		}
+		return nil, result, nil
 	})
 }

@@ -60,4 +60,8 @@ func RegisterTools(server *mcp.Server) {
 	registerResumeMemorySearch(server)
 	registerResumeMemoryAdd(server)
 	registerResumeMemoryUpdate(server)
+	// Oversize store management
+	registerOversizeGet(server)
+	registerOversizeList(server)
+	registerOversizePurge(server)
 }

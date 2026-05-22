@@ -76,7 +76,7 @@ func (c *Client) doRequest(ctx context.Context, baseURL, apiKey string, req *Cha
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, newAPIError(resp.StatusCode, string(respBody), isRetryableStatus(resp.StatusCode))
+		return nil, newAPIError(resp.StatusCode, string(respBody), isRetryableStatus(resp.StatusCode), parseRetryAfter(resp.Header.Get("Retry-After")))
 	}
 
 	var chatResp chatResponse

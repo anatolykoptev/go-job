@@ -28,6 +28,9 @@ func registerLinkedInProfile(server *mcp.Server) {
 		if err != nil {
 			return nil, nil, err
 		}
+		if cr, spilled := handleSpill(ctx, "linkedin_profile", profile); spilled {
+			return cr, nil, nil
+		}
 		return nil, profile, nil
 	})
 }
@@ -94,7 +97,12 @@ func registerLinkedInJobs(server *mcp.Server) {
 		if err != nil {
 			return nil, linkedInJobsOutput{}, err
 		}
-		return nil, linkedInJobsOutput{Query: input.Query, Count: len(result), Jobs: result}, nil
+		out := linkedInJobsOutput{Query: input.Query, Count: len(result), Jobs: result}
+		if cr, spilled := handleSpill(ctx, "linkedin_jobs", out); spilled {
+			var zero linkedInJobsOutput
+			return cr, zero, nil
+		}
+		return nil, out, nil
 	})
 }
 
@@ -139,7 +147,12 @@ func registerLinkedInSearch(server *mcp.Server) {
 		if err != nil {
 			return nil, linkedInSearchOutput{}, err
 		}
-		return nil, linkedInSearchOutput{Query: input.Query, Type: searchType, Count: len(results), Results: results}, nil
+		out := linkedInSearchOutput{Query: input.Query, Type: searchType, Count: len(results), Results: results}
+		if cr, spilled := handleSpill(ctx, "linkedin_search", out); spilled {
+			var zero linkedInSearchOutput
+			return cr, zero, nil
+		}
+		return nil, out, nil
 	})
 }
 
