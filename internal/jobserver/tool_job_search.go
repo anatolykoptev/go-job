@@ -11,6 +11,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/sources"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -379,6 +380,7 @@ func registerJobSearch(server *mcp.Server) {
 			}
 		}
 
+		persistJobListings(ctx, jobOut.Jobs)
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
 		if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
 			var zero engine.JobSearchOutput
@@ -453,4 +455,22 @@ func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.S
 		}
 	}
 	return filtered
+}
+
+// persistJobListings writes LLM-extracted job listings into the hunt store (best-effort).
+func persistJobListings(ctx context.Context, jobListings []engine.JobListing) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, j := range jobListings {
+		if j.URL == "" {
+			continue
+		}
+		_, outcome, err := store.UpsertJob(ctx, jobs.JobListingToHunt(j))
+		engine.IncrHuntIngest(hunt.KindJob, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert job failed", slog.Any("error", err))
+		}
+	}
 }

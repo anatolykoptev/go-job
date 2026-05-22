@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // SearchOpportunities aggregates bounties, security programs, and freelance jobs
@@ -40,6 +41,8 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, bountyToOpportunity(b))
 			}
 
+			persistBounties(ctx, bounties)
+
 			mu.Lock()
 			opps = append(opps, converted...)
 			mu.Unlock()
@@ -59,6 +62,8 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, securityToOpportunity(s))
 			}
 
+			persistSecurity(ctx, programs)
+
 			mu.Lock()
 			opps = append(opps, converted...)
 			mu.Unlock()
@@ -71,12 +76,14 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 		go func() {
 			defer wg.Done()
 
-			jobs := fetchAllFreelance(ctx)
-			converted := make([]engine.Opportunity, 0, len(jobs))
+			freelanceJobs := fetchAllFreelance(ctx)
+			converted := make([]engine.Opportunity, 0, len(freelanceJobs))
 
-			for _, f := range jobs {
+			for _, f := range freelanceJobs {
 				converted = append(converted, freelanceToOpportunity(f))
 			}
+
+			persistFreelanceJobs(ctx, freelanceJobs)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -222,4 +229,49 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 	}
 
 	return all
+}
+
+// persistBounties writes BountyListings into the hunt store (best-effort, non-blocking on nil store).
+func persistBounties(ctx context.Context, bounties []engine.BountyListing) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, b := range bounties {
+		_, outcome, err := store.UpsertBounty(ctx, BountyListingToHunt(b))
+		engine.IncrHuntIngest(hunt.KindBounty, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert bounty failed", slog.Any("error", err))
+		}
+	}
+}
+
+// persistSecurity writes SecurityPrograms into the hunt store.
+func persistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, sp := range programs {
+		_, outcome, err := store.UpsertSecurity(ctx, SecurityProgramToHunt(sp))
+		engine.IncrHuntIngest(hunt.KindSecurity, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert security failed", slog.Any("error", err))
+		}
+	}
+}
+
+// persistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store.
+func persistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, f := range freelanceJobs {
+		_, outcome, err := store.UpsertFreelance(ctx, FreelanceJobToHunt(f))
+		engine.IncrHuntIngest(hunt.KindFreelance, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert freelance failed", slog.Any("error", err))
+		}
+	}
 }

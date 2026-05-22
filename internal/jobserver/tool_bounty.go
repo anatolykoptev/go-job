@@ -9,6 +9,7 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -85,6 +86,9 @@ func registerBountySearch(server *mcp.Server) {
 			})
 		}
 
+		// Persist all fetched bounties into hunt_bounties (best-effort, nil store = no-op).
+		persistBountyVecs(ctx, bvecs)
+
 		// Try embedding pipeline (query only — bounty vectors are precomputed).
 		embedClient := jobs.GetEmbedClient()
 		hasVectors := len(bvecs) > 0 && len(bvecs[0].Vector) > 0
@@ -132,6 +136,21 @@ func bountyLLMFallback(ctx context.Context, input engine.BountySearchInput, boun
 		}
 	}
 	return bountyResult(ctx, *bountyOut)
+}
+
+// persistBountyVecs writes all fetched bounties into the hunt store (best-effort).
+func persistBountyVecs(ctx context.Context, bvecs []jobs.BountyWithVector) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, bv := range bvecs {
+		_, outcome, err := store.UpsertBounty(ctx, jobs.BountyListingToHunt(bv.Bounty))
+		engine.IncrHuntIngest(hunt.KindBounty, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert bounty failed", slog.Any("error", err))
+		}
+	}
 }
 
 func bountyResult(ctx context.Context, out engine.BountySearchOutput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
