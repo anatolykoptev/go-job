@@ -26,8 +26,11 @@ const (
 	OutcomeCreated Outcome = iota
 	// OutcomeMerged means an existing row was touched (last_seen_at updated).
 	OutcomeMerged
-	// OutcomeSkipped is reserved for future use (e.g. rate-limited callers).
+	// OutcomeSkipped means the record was intentionally skipped (e.g. empty URL filtered by caller).
 	OutcomeSkipped
+	// OutcomeError means a DB or marshal failure occurred. Distinct from OutcomeSkipped so
+	// gojob_hunt_ingest_total{outcome="error"} is visible separately in dashboards.
+	OutcomeError
 )
 
 // String returns the Prometheus-safe label value for the outcome.
@@ -37,8 +40,10 @@ func (o Outcome) String() string {
 		return "created"
 	case OutcomeMerged:
 		return "merged"
-	default:
+	case OutcomeSkipped:
 		return "skipped"
+	default:
+		return "error"
 	}
 }
 
@@ -107,7 +112,7 @@ func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome O
 		b.PostedAt, nullRaw(b.Raw),
 	).Scan(&id, &created)
 	if err != nil {
-		return 0, OutcomeSkipped, fmt.Errorf("hunt: upsert bounty: %w", err)
+		return 0, OutcomeError, fmt.Errorf("hunt: upsert bounty: %w", err)
 	}
 	if created {
 		return id, OutcomeCreated, nil
@@ -143,6 +148,12 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 		args = append(args, f.MinAmount)
 		argN++
 	}
+	if len(f.Skills) > 0 {
+		conds = append(conds, fmt.Sprintf("skills && $%d::text[]", argN))
+		args = append(args, f.Skills)
+		argN++
+	}
+	// TODO(phase2): wire f.Stage via hunt_ratings join
 
 	where := ""
 	if len(conds) > 0 {
@@ -271,7 +282,7 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		j.PostedAt, nullRaw(j.Raw),
 	).Scan(&id, &created)
 	if err != nil {
-		return 0, OutcomeSkipped, fmt.Errorf("hunt: upsert job: %w", err)
+		return 0, OutcomeError, fmt.Errorf("hunt: upsert job: %w", err)
 	}
 	if created {
 		return id, OutcomeCreated, nil
@@ -465,7 +476,7 @@ func (s *Store) UpsertFreelance(ctx context.Context, f Freelance) (id int64, out
 		nullStr(f.ClientInfo), f.PostedAt, nullRaw(f.Raw),
 	).Scan(&id, &created)
 	if err != nil {
-		return 0, OutcomeSkipped, fmt.Errorf("hunt: upsert freelance: %w", err)
+		return 0, OutcomeError, fmt.Errorf("hunt: upsert freelance: %w", err)
 	}
 	if created {
 		return id, OutcomeCreated, nil
@@ -534,7 +545,7 @@ func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, out
 		nullSlice(sec.Targets), sec.Managed, nullStr(sec.Description), nullRaw(sec.Raw),
 	).Scan(&id, &created)
 	if err != nil {
-		return 0, OutcomeSkipped, fmt.Errorf("hunt: upsert security: %w", err)
+		return 0, OutcomeError, fmt.Errorf("hunt: upsert security: %w", err)
 	}
 	if created {
 		return id, OutcomeCreated, nil
@@ -593,7 +604,7 @@ func (s *Store) UpsertAuditContest(ctx context.Context, ac AuditContest) (id int
 		nullSlice(ac.Languages), nullStr(ac.Description), nullRaw(ac.Raw),
 	).Scan(&id, &created)
 	if err != nil {
-		return 0, OutcomeSkipped, fmt.Errorf("hunt: upsert audit_contest: %w", err)
+		return 0, OutcomeError, fmt.Errorf("hunt: upsert audit_contest: %w", err)
 	}
 	if created {
 		return id, OutcomeCreated, nil
@@ -671,6 +682,375 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 		r.Note = *note
 	}
 	return &r, nil
+}
+
+// GetBountyWithRaw returns a single bounty by id including the Raw JSONB column.
+// Use this for audit/debug scenarios where raw source data is needed.
+func (s *Store) GetBountyWithRaw(ctx context.Context, id int64) (*Bounty, error) {
+	var b Bounty
+	var org, currency, desc *string
+	var amountCents *int64
+	var issueNum *int
+	var relevance *float32
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, dedup_hash, title, url, org, source, amount_cents, currency,
+		       issue_number, skills, description, relevance, posted_at,
+		       first_seen_at, last_seen_at, raw
+		FROM hunt_bounties WHERE id = $1`, id).Scan(
+		&b.ID, &b.DedupHash, &b.Title, &b.URL,
+		&org, &b.Source, &amountCents, &currency,
+		&issueNum, &b.Skills, &desc, &relevance, &b.PostedAt,
+		&b.FirstSeenAt, &b.LastSeenAt, &b.Raw,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("hunt: get bounty with raw: %w", err)
+	}
+	if org != nil {
+		b.Org = *org
+	}
+	if currency != nil {
+		b.Currency = *currency
+	}
+	if desc != nil {
+		b.Description = *desc
+	}
+	if amountCents != nil {
+		b.AmountCents = *amountCents
+	}
+	if issueNum != nil {
+		b.IssueNumber = *issueNum
+	}
+	if relevance != nil {
+		b.Relevance = *relevance
+	}
+	return &b, nil
+}
+
+// FreelanceFilter narrows ListFreelance results.
+type FreelanceFilter struct {
+	Platform  string
+	MinBudget int
+	Skills    []string
+	Limit     int // default 50, max 500
+	Offset    int
+}
+
+// ListFreelance returns freelance projects newest-first with optional filters.
+func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelance, error) {
+	limit := clampLimit(f.Limit, 50, 500)
+
+	conds := []string{}
+	args := []any{}
+	argN := 1
+
+	if f.Platform != "" {
+		conds = append(conds, fmt.Sprintf("platform = $%d", argN))
+		args = append(args, f.Platform)
+		argN++
+	}
+	if f.MinBudget > 0 {
+		conds = append(conds, fmt.Sprintf("budget_max >= $%d", argN))
+		args = append(args, f.MinBudget)
+		argN++
+	}
+	if len(f.Skills) > 0 {
+		conds = append(conds, fmt.Sprintf("skills && $%d::text[]", argN))
+		args = append(args, f.Skills)
+		argN++
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	args = append(args, limit, f.Offset)
+	q := fmt.Sprintf(`
+		SELECT id, dedup_hash, title, url, platform, source, budget_min, budget_max,
+		       budget_currency, budget_raw, location, skills, tags, description,
+		       client_info, posted_at, first_seen_at, last_seen_at
+		FROM hunt_freelance
+		%s
+		ORDER BY last_seen_at DESC
+		LIMIT $%d OFFSET $%d`, where, argN, argN+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: list freelance: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Freelance
+	for rows.Next() {
+		var fl Freelance
+		var location, budCur, budRaw, desc, clientInfo *string
+		var budMin, budMax *int
+		if err := rows.Scan(
+			&fl.ID, &fl.DedupHash, &fl.Title, &fl.URL, &fl.Platform, &fl.Source,
+			&budMin, &budMax, &budCur, &budRaw, &location,
+			&fl.Skills, &fl.Tags, &desc, &clientInfo, &fl.PostedAt,
+			&fl.FirstSeenAt, &fl.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("hunt: list freelance scan: %w", err)
+		}
+		if location != nil {
+			fl.Location = *location
+		}
+		if budCur != nil {
+			fl.BudgetCurrency = *budCur
+		}
+		if budRaw != nil {
+			fl.BudgetRaw = *budRaw
+		}
+		if desc != nil {
+			fl.Description = *desc
+		}
+		if clientInfo != nil {
+			fl.ClientInfo = *clientInfo
+		}
+		if budMin != nil {
+			fl.BudgetMin = *budMin
+		}
+		if budMax != nil {
+			fl.BudgetMax = *budMax
+		}
+		result = append(result, fl)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: list freelance rows: %w", err)
+	}
+	return result, nil
+}
+
+// SecurityFilter narrows ListSecurity results.
+type SecurityFilter struct {
+	Platform  string
+	MinBounty int
+	Limit     int // default 50, max 500
+	Offset    int
+}
+
+// ListSecurity returns security programs newest-first with optional filters.
+func (s *Store) ListSecurity(ctx context.Context, f SecurityFilter) ([]Security, error) {
+	limit := clampLimit(f.Limit, 50, 500)
+
+	conds := []string{}
+	args := []any{}
+	argN := 1
+
+	if f.Platform != "" {
+		conds = append(conds, fmt.Sprintf("platform = $%d", argN))
+		args = append(args, f.Platform)
+		argN++
+	}
+	if f.MinBounty > 0 {
+		conds = append(conds, fmt.Sprintf("max_bounty >= $%d", argN))
+		args = append(args, f.MinBounty)
+		argN++
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	args = append(args, limit, f.Offset)
+	q := fmt.Sprintf(`
+		SELECT id, dedup_hash, name, url, platform, program_type, min_bounty, max_bounty,
+		       targets, managed, description, first_seen_at, last_seen_at
+		FROM hunt_security
+		%s
+		ORDER BY last_seen_at DESC
+		LIMIT $%d OFFSET $%d`, where, argN, argN+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: list security: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Security
+	for rows.Next() {
+		var sec Security
+		var progType, desc *string
+		var minB, maxB *int
+		if err := rows.Scan(
+			&sec.ID, &sec.DedupHash, &sec.Name, &sec.URL, &sec.Platform,
+			&progType, &minB, &maxB, &sec.Targets, &sec.Managed, &desc,
+			&sec.FirstSeenAt, &sec.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("hunt: list security scan: %w", err)
+		}
+		if progType != nil {
+			sec.ProgramType = *progType
+		}
+		if desc != nil {
+			sec.Description = *desc
+		}
+		if minB != nil {
+			sec.MinBounty = *minB
+		}
+		if maxB != nil {
+			sec.MaxBounty = *maxB
+		}
+		result = append(result, sec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: list security rows: %w", err)
+	}
+	return result, nil
+}
+
+// AuditContestFilter narrows ListAuditContests results.
+type AuditContestFilter struct {
+	Platform string
+	MinPool  int
+	Limit    int // default 50, max 500
+	Offset   int
+}
+
+// ListAuditContests returns audit contests newest-first with optional filters.
+func (s *Store) ListAuditContests(ctx context.Context, f AuditContestFilter) ([]AuditContest, error) {
+	limit := clampLimit(f.Limit, 50, 500)
+
+	conds := []string{}
+	args := []any{}
+	argN := 1
+
+	if f.Platform != "" {
+		conds = append(conds, fmt.Sprintf("platform = $%d", argN))
+		args = append(args, f.Platform)
+		argN++
+	}
+	if f.MinPool > 0 {
+		conds = append(conds, fmt.Sprintf("total_pool >= $%d", argN))
+		args = append(args, f.MinPool)
+		argN++
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	args = append(args, limit, f.Offset)
+	q := fmt.Sprintf(`
+		SELECT id, dedup_hash, title, url, platform, total_pool, currency,
+		       starts_at, ends_at, languages, description, first_seen_at, last_seen_at
+		FROM hunt_audit_contests
+		%s
+		ORDER BY last_seen_at DESC
+		LIMIT $%d OFFSET $%d`, where, argN, argN+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: list audit_contests: %w", err)
+	}
+	defer rows.Close()
+
+	var result []AuditContest
+	for rows.Next() {
+		var ac AuditContest
+		var currency, desc *string
+		var pool *int
+		if err := rows.Scan(
+			&ac.ID, &ac.DedupHash, &ac.Title, &ac.URL, &ac.Platform,
+			&pool, &currency, &ac.StartsAt, &ac.EndsAt,
+			&ac.Languages, &desc, &ac.FirstSeenAt, &ac.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("hunt: list audit_contests scan: %w", err)
+		}
+		if currency != nil {
+			ac.Currency = *currency
+		}
+		if desc != nil {
+			ac.Description = *desc
+		}
+		if pool != nil {
+			ac.TotalPool = *pool
+		}
+		result = append(result, ac)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: list audit_contests rows: %w", err)
+	}
+	return result, nil
+}
+
+// RatingFilter narrows ListRatings results.
+type RatingFilter struct {
+	Kind   string // entry_kind: bounty, job, freelance, security, audit_contest
+	Stage  string // e.g. "interesting", "saved"
+	User   string // user_name filter
+	Limit  int    // default 50, max 500
+	Offset int
+}
+
+// ListRatings returns ratings newest-updated-first with optional filters.
+func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, error) {
+	limit := clampLimit(f.Limit, 50, 500)
+
+	conds := []string{}
+	args := []any{}
+	argN := 1
+
+	if f.Kind != "" {
+		conds = append(conds, fmt.Sprintf("entry_kind = $%d", argN))
+		args = append(args, f.Kind)
+		argN++
+	}
+	if f.Stage != "" {
+		conds = append(conds, fmt.Sprintf("stage = $%d", argN))
+		args = append(args, f.Stage)
+		argN++
+	}
+	if f.User != "" {
+		conds = append(conds, fmt.Sprintf("user_name = $%d", argN))
+		args = append(args, f.User)
+		argN++
+	}
+
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	args = append(args, limit, f.Offset)
+	q := fmt.Sprintf(`
+		SELECT id, entry_kind, entry_id, user_name, stage, note, rated_at, updated_at
+		FROM hunt_ratings
+		%s
+		ORDER BY updated_at DESC
+		LIMIT $%d OFFSET $%d`, where, argN, argN+1)
+
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: list ratings: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Rating
+	for rows.Next() {
+		var r Rating
+		var note *string
+		if err := rows.Scan(
+			&r.ID, &r.EntryKind, &r.EntryID, &r.UserName,
+			&r.Stage, &note, &r.RatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("hunt: list ratings scan: %w", err)
+		}
+		if note != nil {
+			r.Note = *note
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: list ratings rows: %w", err)
+	}
+	return result, nil
 }
 
 // --- nullable helpers ---

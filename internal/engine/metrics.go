@@ -110,11 +110,25 @@ func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall() { reg.Incr(MetricToolCalls) }
 
+// validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
+// Unknown kinds are rejected to prevent Prometheus cardinality explosion.
+var validHuntKinds = map[string]bool{
+	"bounty":        true,
+	"job":           true,
+	"freelance":     true,
+	"security":      true,
+	"audit_contest": true,
+}
+
 // IncrHuntIngest bumps gojob_hunt_ingest_total{kind=<kind>,outcome=<outcome>}.
 // Called once per Upsert in the search-tool ingest path.
 // Bounded label values: kind ∈ {bounty,job,freelance,security,audit_contest},
-// outcome ∈ {created,merged,skipped}.
+// outcome ∈ {created,merged,skipped,error}.
+// Unrecognised kind values are silently dropped to prevent label cardinality blowup.
 func IncrHuntIngest(kind, outcome string) {
+	if !validHuntKinds[kind] {
+		return
+	}
 	reg.Incr(MetricHuntIngest + "{kind=" + kind + ",outcome=" + outcome + "}")
 }
 

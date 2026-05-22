@@ -9,6 +9,7 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -170,12 +171,31 @@ func registerRemoteWorkSearch(server *mcp.Server) {
 			enrichedJobs[i] = job
 		}
 
+		persistRemoteJobListings(ctx, enrichedJobs)
 		return remoteWorkResult(ctx, cacheKey, engine.RemoteWorkSearchOutput{
 			Query:   remoteOut.Query,
 			Jobs:    enrichedJobs,
 			Summary: remoteOut.Summary,
 		})
 	})
+}
+
+// persistRemoteJobListings writes remote job listings into the hunt store (best-effort).
+func persistRemoteJobListings(ctx context.Context, listings []engine.RemoteJobListing) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, r := range listings {
+		if r.URL == "" {
+			continue
+		}
+		_, outcome, err := store.UpsertJob(ctx, jobs.RemoteJobListingToHunt(r))
+		engine.IncrHuntIngest(hunt.KindJob, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert remote job failed", slog.Any("error", err))
+		}
+	}
 }
 
 func remoteWorkResult(ctx context.Context, cacheKey string, out engine.RemoteWorkSearchOutput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
