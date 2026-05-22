@@ -29,7 +29,7 @@ github.com/anatolykoptev/go-engine/search
 github.com/anatolykoptev/go-engine/sources
 github.com/anatolykoptev/go-engine/text
 github.com/anatolykoptev/go-engine/websearch
-# github.com/anatolykoptev/go-kit v0.65.0
+# github.com/anatolykoptev/go-kit v0.66.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-kit/cache
 github.com/anatolykoptev/go-kit/env

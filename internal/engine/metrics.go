@@ -41,13 +41,16 @@ const (
 	// gojob_oversize_spill_total{tool=<name>}.
 	MetricOversizeSpill = "oversize_spill_total"
 
-	// MetricOversizeBytesTotal is the monotonically increasing counter of bytes
-	// spilled into the oversize store (gojob_oversize_bytes_total).
-	// Use a counter (not histogram) because byte values land in the +Inf bucket
-	// of ExponentialBuckets(0.001, 2, 16) — those buckets are designed for
-	// seconds, not bytes.  avg-size = rate(bytes_total)/rate(spill_total).
-	MetricOversizeBytesTotal = "oversize_bytes_total"
+	// MetricOversizeBytes is the histogram of spill payload sizes in bytes
+	// (gojob_oversize_bytes). Exposes P50/P95/P99 for capacity planning.
+	// Bucket boundaries are configured in OversizeBytesBuckets (1KB–4MB log-scale).
+	MetricOversizeBytes = "oversize_bytes"
 )
+
+// OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
+// Range 1KB–4MB covers typical MCP response overflow; each step is ~4×.
+// Registered via reg.RegisterHistogram in engine.Init() before first Observe.
+var OversizeBytesBuckets = []float64{1024, 4096, 16384, 65536, 262144, 1048576, 4194304}
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
 func GetMetrics() map[string]int64 {
@@ -110,8 +113,9 @@ func IncrOversizeSpill(toolName string) {
 	reg.Incr(MetricOversizeSpill + "{tool=" + toolName + "}")
 }
 
-// AddOversizeBytes adds n bytes to the gojob_oversize_bytes_total counter.
+// ObserveOversizeBytes records n bytes into the gojob_oversize_bytes histogram.
 // Called once per spill with the payload size in bytes.
-func AddOversizeBytes(n int64) {
-	reg.Add(MetricOversizeBytesTotal, n)
+// Buckets are pre-configured via reg.RegisterHistogram in engine.Init().
+func ObserveOversizeBytes(n int) {
+	reg.Observe(MetricOversizeBytes, float64(n))
 }

@@ -56,7 +56,7 @@ func spillIfOversize[T any](ctx context.Context, toolName string, payload T) (*m
 	}
 
 	engine.IncrOversizeSpill(toolName)
-	engine.AddOversizeBytes(int64(env.SizeBytes))
+	engine.ObserveOversizeBytes(env.SizeBytes)
 
 	raw, mErr := json.Marshal(env)
 	if mErr != nil {
