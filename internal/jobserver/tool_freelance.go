@@ -155,6 +155,10 @@ func registerFreelanceSearch(server *mcp.Server) {
 		}
 
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
+		if cr, spilled := handleSpill(ctx, "freelance_search", *freelanceOut); spilled {
+			var zero engine.FreelanceSearchOutput
+			return cr, zero, nil
+		}
 		return nil, *freelanceOut, nil
 	})
 }

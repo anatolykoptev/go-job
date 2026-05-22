@@ -380,6 +380,10 @@ func registerJobSearch(server *mcp.Server) {
 		}
 
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+		if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
+			var zero engine.JobSearchOutput
+			return cr, zero, nil
+		}
 		return nil, *jobOut, nil
 	})
 }

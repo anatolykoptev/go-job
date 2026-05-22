@@ -8,8 +8,8 @@ github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
 github.com/anatolykoptev/go-engine v1.13.0 h1:g4yYdGhx2Ksrhaoa+1nURemOgxbLbJwKvPa1l3E1kNs=
 github.com/anatolykoptev/go-engine v1.13.0/go.mod h1:OYssPUBP7WMQtVpj0upwy20hNLv28sQJtpshFH6S6cE=
-github.com/anatolykoptev/go-kit v0.37.1 h1:6fbM5EAJf2pBme6XjftuKz8GzwN0iT4iqtn3sMWFdWU=
-github.com/anatolykoptev/go-kit v0.37.1/go.mod h1:D0qQqFqNkeBeKuajrdvpIhgNxBZ/nr/lTcjessF09Bg=
+github.com/anatolykoptev/go-kit v0.65.0 h1:zsBOP4Pb1igvQMPxjOC3H0HHvohyb2typa2w1ICl+Vc=
+github.com/anatolykoptev/go-kit v0.65.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.13.0 h1:vG4hDzcTYho4t27E64K84XyD3E4QHRWs+5A5EYx0/tE=
 github.com/anatolykoptev/go-mcpserver v0.13.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.13.0 h1:NslhTU1Zu1k6y5+//ncOUbqkVCJ/wUrSTVdl6ieRz3U=

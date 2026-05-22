@@ -150,6 +150,7 @@ func isCircuitTrippingError(err error) bool {
 }
 
 // NewClient creates a new LLM client.
+// For callers that want to gracefully disable LLM when apiKey is empty, see NewOptional.
 func NewClient(baseURL, apiKey, model string, opts ...Option) *Client {
 	// Temperature is intentionally nil — see ChatRequest.Temperature comment.
 	// Callers who want non-default sampling pass WithTemperature(t).
@@ -271,10 +272,20 @@ func ExtractJSON(s string) string {
 
 	switch {
 	case objOK && arrOK:
-		if firstObj <= firstArr {
-			return s[firstObj : lastObj+1]
+		// Earliest opener wins ("object before array" returns the outer object;
+		// "array before object" returns the array). Closer is the LATEST of
+		// either type, which captures the case  where the
+		// caller wants both JSON values returned for downstream multi-value
+		// parsing — not just the leading array.
+		start := firstObj
+		if firstArr < firstObj {
+			start = firstArr
 		}
-		return s[firstArr : lastArr+1]
+		end := lastObj
+		if lastArr > lastObj {
+			end = lastArr
+		}
+		return s[start : end+1]
 	case objOK:
 		return s[firstObj : lastObj+1]
 	case arrOK:

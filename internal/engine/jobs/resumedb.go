@@ -104,6 +104,11 @@ func (db *ResumeDB) Close() {
 	db.pool.Close()
 }
 
+// Pool returns the underlying pgx connection pool for shared use (e.g. oversize store).
+func (db *ResumeDB) Pool() *pgxpool.Pool {
+	return db.pool
+}
+
 func (db *ResumeDB) runMigrations(ctx context.Context) error {
 	entries, err := schemaFS.ReadDir("schema")
 	if err != nil {
