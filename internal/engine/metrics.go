@@ -45,6 +45,10 @@ const (
 	// (gojob_oversize_bytes). Exposes P50/P95/P99 for capacity planning.
 	// Bucket boundaries are configured in OversizeBytesBuckets (1KB–4MB log-scale).
 	MetricOversizeBytes = "oversize_bytes"
+
+	// MetricHuntIngest is the labelled counter gojob_hunt_ingest_total{kind,outcome}.
+	// Incremented once per Upsert call in each search-tool ingest path.
+	MetricHuntIngest = "hunt_ingest_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -105,6 +109,28 @@ func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall() { reg.Incr(MetricToolCalls) }
+
+// validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
+// Unknown kinds are rejected to prevent Prometheus cardinality explosion.
+var validHuntKinds = map[string]bool{
+	"bounty":        true,
+	"job":           true,
+	"freelance":     true,
+	"security":      true,
+	"audit_contest": true,
+}
+
+// IncrHuntIngest bumps gojob_hunt_ingest_total{kind=<kind>,outcome=<outcome>}.
+// Called once per Upsert in the search-tool ingest path.
+// Bounded label values: kind ∈ {bounty,job,freelance,security,audit_contest},
+// outcome ∈ {created,merged,skipped,error}.
+// Unrecognised kind values are silently dropped to prevent label cardinality blowup.
+func IncrHuntIngest(kind, outcome string) {
+	if !validHuntKinds[kind] {
+		return
+	}
+	reg.Incr(MetricHuntIngest + "{kind=" + kind + ",outcome=" + outcome + "}")
+}
 
 // IncrOversizeSpill bumps gojob_oversize_spill_total{tool=<toolName>}.
 // The go-kit/metrics prom bridge resolves the labelled name syntax

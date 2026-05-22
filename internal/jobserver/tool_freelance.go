@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/sources"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -154,6 +156,7 @@ func registerFreelanceSearch(server *mcp.Server) {
 			}
 		}
 
+		persistFreelanceProjects(ctx, freelanceOut.Projects)
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
 		if cr, spilled := handleSpill(ctx, "freelance_search", *freelanceOut); spilled {
 			var zero engine.FreelanceSearchOutput
@@ -161,4 +164,22 @@ func registerFreelanceSearch(server *mcp.Server) {
 		}
 		return nil, *freelanceOut, nil
 	})
+}
+
+// persistFreelanceProjects writes LLM-extracted freelance projects into the hunt store (best-effort).
+func persistFreelanceProjects(ctx context.Context, projects []engine.FreelanceProject) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, p := range projects {
+		if p.URL == "" {
+			continue
+		}
+		_, outcome, err := store.UpsertFreelance(ctx, jobs.FreelanceProjectToHunt(p))
+		engine.IncrHuntIngest(hunt.KindFreelance, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert freelance failed", slog.Any("error", err))
+		}
+	}
 }

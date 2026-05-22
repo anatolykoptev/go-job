@@ -23,6 +23,7 @@ import (
 	"github.com/anatolykoptev/go-twitter/social"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -217,6 +218,15 @@ func initEngine() {
 			} else {
 				engine.SetOversizeStore(osStore)
 				slog.Info("oversize store ready")
+			}
+
+			// Wire hunt store on the same pool (fails-soft: search results persist only when DB is available).
+			hStore := hunt.NewStore(rdb.Pool())
+			if err := hStore.Migrate(context.Background()); err != nil {
+				slog.Error("hunt migrate failed", slog.Any("error", err))
+			} else {
+				engine.SetHuntStore(hStore)
+				slog.Info("hunt store ready")
 			}
 		}
 	}

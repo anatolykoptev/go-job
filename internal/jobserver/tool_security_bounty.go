@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -35,6 +37,7 @@ func registerSecurityBountySearch(server *mcp.Server) {
 		}
 
 		filtered := filterSecurityPrograms(all, input)
+		persistSecurityPrograms(ctx, all) // persist unfiltered; filter is a view concern
 		jsonBytes, _ := json.Marshal(filtered)
 		out := engine.SmartSearchOutput{
 			Query:   input.Query,
@@ -47,6 +50,24 @@ func registerSecurityBountySearch(server *mcp.Server) {
 		}
 		return nil, out, nil
 	})
+}
+
+// persistSecurityPrograms writes security programs into the hunt store (best-effort).
+func persistSecurityPrograms(ctx context.Context, programs []engine.SecurityProgram) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return
+	}
+	for _, sp := range programs {
+		if sp.URL == "" {
+			continue
+		}
+		_, outcome, err := store.UpsertSecurity(ctx, jobs.SecurityProgramToHunt(sp))
+		engine.IncrHuntIngest(hunt.KindSecurity, outcome.String())
+		if err != nil {
+			slog.Warn("hunt: upsert security failed", slog.Any("error", err))
+		}
+	}
 }
 
 func filterSecurityPrograms(programs []engine.SecurityProgram, input securitySearchInput) []engine.SecurityProgram {
