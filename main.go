@@ -24,6 +24,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
+	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -207,6 +208,16 @@ func initEngine() {
 		} else {
 			jobs.SetResumeDB(rdb)
 			slog.Info("resume DB initialized")
+
+			// Wire oversize store on the same pool (fails-soft: optional spill feature).
+			osStore := oversize.NewStore(rdb.Pool())
+			if err := osStore.Migrate(context.Background()); err != nil {
+				slog.Error("oversize migrate failed", slog.Any("error", err))
+				// Non-fatal: oversize spill is optional; continue startup.
+			} else {
+				engine.SetOversizeStore(osStore)
+				slog.Info("oversize store ready")
+			}
 		}
 	}
 
