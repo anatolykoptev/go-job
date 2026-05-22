@@ -97,6 +97,11 @@ func Init(c Config) {
 
 	// Metrics registry (Prometheus-bridged under "gojob" namespace).
 	reg = kitmetrics.NewPrometheusRegistry("gojob")
+	// Pre-configure byte-scale buckets for the oversize histogram before any
+	// Observe call. Must happen at startup (before traffic) — buckets lock at
+	// first Observe. The seconds-shaped default (ExponentialBuckets(0.001,2,16))
+	// is useless for bytes; OversizeBytesBuckets covers 1KB–4MB log-scale.
+	reg.RegisterHistogram(MetricOversizeBytes, kitmetrics.WithBuckets(OversizeBytesBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}
