@@ -18,7 +18,7 @@ func registerFreelanceSearch(server *mcp.Server) {
 		Name:        "freelance_search",
 		Description: "Search for freelance projects and gigs on Upwork and Freelancer.com. Returns structured JSON with project details (title, budget, skills, platform, URL). Freelancer.com uses direct API for rich data (budgets, bids, skills). Filter by platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.FreelanceSearchInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.FreelanceSearchInput) (*mcp.CallToolResult, engine.FreelanceSearchOutput, error) {
 		if input.Query == "" {
 			return nil, engine.FreelanceSearchOutput{}, errors.New("query is required")
 		}
@@ -155,6 +155,10 @@ func registerFreelanceSearch(server *mcp.Server) {
 		}
 
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *freelanceOut)
-		return nil, maybeSpill(ctx, "freelance_search", *freelanceOut), nil
+		if cr, spilled := handleSpill(ctx, "freelance_search", *freelanceOut); spilled {
+			var zero engine.FreelanceSearchOutput
+			return cr, zero, nil
+		}
+		return nil, *freelanceOut, nil
 	})
 }

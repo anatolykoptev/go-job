@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -61,7 +62,7 @@ type EntrySummary struct {
 	QueryHash string          `json:"query_hash,omitempty"`
 	SizeBytes int             `json:"size_bytes"`
 	SHA256    string          `json:"sha256"`
-	Sample    interface{}     `json:"sample,omitempty"`
+	Sample    json.RawMessage `json:"sample,omitempty"`
 	ItemCount int             `json:"item_count"`
 	CreatedAt time.Time       `json:"created_at"`
 }

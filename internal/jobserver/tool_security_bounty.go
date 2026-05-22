@@ -21,7 +21,7 @@ func registerSecurityBountySearch(server *mcp.Server) {
 		Name:        "security_bounty_search",
 		Description: "Search for security bug bounty programs across HackerOne, Bugcrowd, Intigriti, YesWeHack, and Immunefi. Returns program name, platform, max bounty, and in-scope targets.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input securitySearchInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input securitySearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		btdPrograms, btdErr := jobs.SearchSecurityPrograms(ctx, 500)
 		immPrograms, immErr := jobs.SearchImmunefi(ctx, 500)
 
@@ -41,7 +41,11 @@ func registerSecurityBountySearch(server *mcp.Server) {
 			Answer:  string(jsonBytes),
 			Sources: []engine.SourceItem{},
 		}
-		return nil, maybeSpill(ctx, "security_bounty_search", out), nil
+		if cr, spilled := handleSpill(ctx, "security_bounty_search", out); spilled {
+			var zero engine.SmartSearchOutput
+			return cr, zero, nil
+		}
+		return nil, out, nil
 	})
 }
 
