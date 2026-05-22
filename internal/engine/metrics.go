@@ -45,6 +45,10 @@ const (
 	// (gojob_oversize_bytes). Exposes P50/P95/P99 for capacity planning.
 	// Bucket boundaries are configured in OversizeBytesBuckets (1KB–4MB log-scale).
 	MetricOversizeBytes = "oversize_bytes"
+
+	// MetricHuntIngest is the labelled counter gojob_hunt_ingest_total{kind,outcome}.
+	// Incremented once per Upsert call in each search-tool ingest path.
+	MetricHuntIngest = "hunt_ingest_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -105,6 +109,14 @@ func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall() { reg.Incr(MetricToolCalls) }
+
+// IncrHuntIngest bumps gojob_hunt_ingest_total{kind=<kind>,outcome=<outcome>}.
+// Called once per Upsert in the search-tool ingest path.
+// Bounded label values: kind ∈ {bounty,job,freelance,security,audit_contest},
+// outcome ∈ {created,merged,skipped}.
+func IncrHuntIngest(kind, outcome string) {
+	reg.Incr(MetricHuntIngest + "{kind=" + kind + ",outcome=" + outcome + "}")
+}
 
 // IncrOversizeSpill bumps gojob_oversize_spill_total{tool=<toolName>}.
 // The go-kit/metrics prom bridge resolves the labelled name syntax
