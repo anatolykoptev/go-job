@@ -19,6 +19,17 @@ const (
 	StageClaimed     = "claimed"
 )
 
+// Status values for hunt entry lifecycle. Default is "open".
+// "closed" — issue closed without merge; "merged" — PR merged / bounty claimed;
+// "archived" — repo/program archived; "ended" — time-bound contest expired.
+const (
+	StatusOpen     = "open"
+	StatusClosed   = "closed"
+	StatusMerged   = "merged"
+	StatusArchived = "archived"
+	StatusEnded    = "ended"
+)
+
 // Kind values identify which hunt table an entry_id refers to.
 const (
 	KindBounty       = "bounty"
@@ -30,22 +41,25 @@ const (
 
 // Bounty is a persistent open-source bounty record (widest projection of BountyListing).
 type Bounty struct {
-	ID          int64           `json:"id"`
-	DedupHash   string          `json:"dedup_hash"`
-	Title       string          `json:"title"`
-	URL         string          `json:"url"`
-	Org         string          `json:"org,omitempty"`
-	Source      string          `json:"source"`
-	AmountCents int64           `json:"amount_cents,omitempty"`
-	Currency    string          `json:"currency,omitempty"`
-	IssueNumber int             `json:"issue_number,omitempty"`
-	Skills      []string        `json:"skills,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Relevance   float32         `json:"relevance,omitempty"`
-	PostedAt    *time.Time      `json:"posted_at,omitempty"`
-	FirstSeenAt time.Time       `json:"first_seen_at"`
-	LastSeenAt  time.Time       `json:"last_seen_at"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
+	ID             int64           `json:"id"`
+	DedupHash      string          `json:"dedup_hash"`
+	Title          string          `json:"title"`
+	URL            string          `json:"url"`
+	Org            string          `json:"org,omitempty"`
+	Source         string          `json:"source"`
+	AmountCents    int64           `json:"amount_cents,omitempty"`
+	Currency       string          `json:"currency,omitempty"`
+	IssueNumber    int             `json:"issue_number,omitempty"`
+	Skills         []string        `json:"skills,omitempty"`
+	Description    string          `json:"description,omitempty"`
+	Relevance      float32         `json:"relevance,omitempty"`
+	Status         string          `json:"status"` // "open" / "closed" / "merged" / "archived"
+	ClosedAt       *time.Time      `json:"closed_at,omitempty"`
+	LastCheckedAt  *time.Time      `json:"last_checked_at,omitempty"`
+	PostedAt       *time.Time      `json:"posted_at,omitempty"`
+	FirstSeenAt    time.Time       `json:"first_seen_at"`
+	LastSeenAt     time.Time       `json:"last_seen_at"`
+	Raw            json.RawMessage `json:"raw,omitempty"`
 }
 
 // Job is a persistent job listing record (widest projection of JobListing).
@@ -68,6 +82,9 @@ type Job struct {
 	Skills         []string        `json:"skills,omitempty"`
 	Tags           []string        `json:"tags,omitempty"`
 	Description    string          `json:"description,omitempty"`
+	Status         string          `json:"status"` // "open" / "closed" / "merged" / "archived"
+	ClosedAt       *time.Time      `json:"closed_at,omitempty"`
+	LastCheckedAt  *time.Time      `json:"last_checked_at,omitempty"`
 	PostedAt       *time.Time      `json:"posted_at,omitempty"`
 	FirstSeenAt    time.Time       `json:"first_seen_at"`
 	LastSeenAt     time.Time       `json:"last_seen_at"`
@@ -91,6 +108,9 @@ type Freelance struct {
 	Tags           []string        `json:"tags,omitempty"`
 	Description    string          `json:"description,omitempty"`
 	ClientInfo     string          `json:"client_info,omitempty"`
+	Status         string          `json:"status"` // "open" / "closed" / "archived"
+	ClosedAt       *time.Time      `json:"closed_at,omitempty"`
+	LastCheckedAt  *time.Time      `json:"last_checked_at,omitempty"`
 	PostedAt       *time.Time      `json:"posted_at,omitempty"`
 	FirstSeenAt    time.Time       `json:"first_seen_at"`
 	LastSeenAt     time.Time       `json:"last_seen_at"`
@@ -99,20 +119,23 @@ type Freelance struct {
 
 // Security is a persistent bug-bounty / security program record.
 type Security struct {
-	ID          int64           `json:"id"`
-	DedupHash   string          `json:"dedup_hash"`
-	Name        string          `json:"name"`
-	URL         string          `json:"url"`
-	Platform    string          `json:"platform"`
-	ProgramType string          `json:"program_type,omitempty"`
-	MinBounty   int             `json:"min_bounty,omitempty"`
-	MaxBounty   int             `json:"max_bounty,omitempty"`
-	Targets     []string        `json:"targets,omitempty"`
-	Managed     bool            `json:"managed"`
-	Description string          `json:"description,omitempty"`
-	FirstSeenAt time.Time       `json:"first_seen_at"`
-	LastSeenAt  time.Time       `json:"last_seen_at"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
+	ID            int64           `json:"id"`
+	DedupHash     string          `json:"dedup_hash"`
+	Name          string          `json:"name"`
+	URL           string          `json:"url"`
+	Platform      string          `json:"platform"`
+	ProgramType   string          `json:"program_type,omitempty"`
+	MinBounty     int             `json:"min_bounty,omitempty"`
+	MaxBounty     int             `json:"max_bounty,omitempty"`
+	Targets       []string        `json:"targets,omitempty"`
+	Managed       bool            `json:"managed"`
+	Description   string          `json:"description,omitempty"`
+	Status        string          `json:"status"` // "open" / "closed" / "archived"
+	ClosedAt      *time.Time      `json:"closed_at,omitempty"`
+	LastCheckedAt *time.Time      `json:"last_checked_at,omitempty"`
+	FirstSeenAt   time.Time       `json:"first_seen_at"`
+	LastSeenAt    time.Time       `json:"last_seen_at"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
 }
 
 // AuditContest is a persistent smart-contract audit contest record.

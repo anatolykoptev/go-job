@@ -97,9 +97,9 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 	items := trpcResp[0].Result.Data.JSON.Items
 	bounties := make([]engine.BountyListing, 0, len(items))
 	for _, item := range items {
-		if item.Status != "open" {
-			continue
-		}
+		// Pass all statuses through; non-open statuses are mapped to hunt status by the mapper.
+		// Previously, non-open bounties were silently dropped here — now they propagate
+		// so that the ingest layer can persist their status (e.g. claimed → merged).
 		ghURL := item.Task.URL
 		if ghURL == "" {
 			ghURL = buildGitHubURL(item.Task.Forge, item.Task.RepoOwner, item.Task.RepoName, item.Task.Number)
@@ -118,6 +118,7 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 			Source:   "algora",
 			IssueNum: "#" + strconv.Itoa(item.Task.Number),
 			Posted:   item.CreatedAt,
+			Status:   item.Status, // "open", "claimed", "completed", "closed", etc.
 		})
 	}
 
