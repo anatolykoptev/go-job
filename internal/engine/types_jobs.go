@@ -263,16 +263,19 @@ type BountySearchInput struct {
 
 // BountyListing is a structured representation of an open-source bounty.
 type BountyListing struct {
-	Title    string   `json:"title"`
-	Org      string   `json:"org"`
-	URL      string   `json:"url"`
-	Amount   string   `json:"amount"`
-	Currency string   `json:"currency,omitempty"`
-	Skills   []string `json:"skills,omitempty"`
-	Source   string   `json:"source"`
-	IssueNum string   `json:"issue_num,omitempty"`
+	Title     string   `json:"title"`
+	Org       string   `json:"org"`
+	URL       string   `json:"url"`
+	Amount    string   `json:"amount"`
+	Currency  string   `json:"currency,omitempty"`
+	Skills    []string `json:"skills,omitempty"`
+	Source    string   `json:"source"`
+	IssueNum  string   `json:"issue_num,omitempty"`
 	Posted    string   `json:"posted,omitempty"`
 	Relevance float32  `json:"relevance,omitempty"`
+	// Status is the source-reported lifecycle status (e.g. "open", "claimed", "closed").
+	// Populated by scrapers that surface this field; empty means assume "open".
+	Status string `json:"status,omitempty"`
 }
 
 // BountySearchOutput is the structured output for bounty_search.
