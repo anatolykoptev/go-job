@@ -10,9 +10,24 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
+// mapAlgoraStatus converts Algora-specific status strings to hunt lifecycle constants.
+// "open" / "" → StatusOpen; "claimed" / "completed" → StatusMerged;
+// "closed" / "cancelled" → StatusClosed.
+func mapAlgoraStatus(s string) string {
+	switch strings.ToLower(s) {
+	case "claimed", "completed":
+		return hunt.StatusMerged
+	case "closed", "cancelled":
+		return hunt.StatusClosed
+	default:
+		return hunt.StatusOpen
+	}
+}
+
 // BountyListingToHunt converts a BountyListing (widest bounty type) to a hunt.Bounty.
 // AmountCents is parsed from the human-readable Amount string (e.g. "$50k" → 5000000).
 // IssueNum "#42" prefix is stripped before Atoi — all 7 sources emit the hash prefix.
+// Status is mapped from Algora-style strings to hunt status constants.
 // Raw is populated with the serialized source struct for audit trail.
 func BountyListingToHunt(b engine.BountyListing) hunt.Bounty {
 	amountCents := parseDollarCents(b.Amount)
@@ -30,6 +45,7 @@ func BountyListingToHunt(b engine.BountyListing) hunt.Bounty {
 		IssueNumber: issueNum,
 		Skills:      b.Skills,
 		Relevance:   b.Relevance,
+		Status:      mapAlgoraStatus(b.Status),
 		PostedAt:    parseTimestamp(b.Posted),
 		Raw:         rawJSON,
 	}
@@ -132,10 +148,15 @@ func FreelanceJobToHunt(f engine.FreelanceJob) hunt.Freelance {
 
 // SecurityProgramToHunt converts a SecurityProgram to a hunt.Security.
 // Min/MaxBounty are parsed from human-readable strings (e.g. "$50,000").
+// Archived=true (Sherlock) maps to StatusArchived.
 // Raw is populated with the serialized source struct for audit trail.
 func SecurityProgramToHunt(s engine.SecurityProgram) hunt.Security {
 	minB := parseDollarAmount(s.MinBounty)
 	maxB := parseDollarAmount(s.MaxBounty)
+	status := hunt.StatusOpen
+	if s.Archived {
+		status = hunt.StatusArchived
+	}
 	rawJSON, _ := json.Marshal(s)
 	return hunt.Security{
 		DedupHash:   hunt.DedupHash(s.URL),
@@ -147,6 +168,7 @@ func SecurityProgramToHunt(s engine.SecurityProgram) hunt.Security {
 		MaxBounty:   maxB,
 		Targets:     s.Targets,
 		Managed:     s.Managed,
+		Status:      status,
 		Raw:         rawJSON,
 	}
 }

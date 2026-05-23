@@ -65,10 +65,9 @@ type Config struct {
 	BountySkillBoost     float32 // boost when query matches bounty skills (default 0.05)
 	BountyMinRelevance   float32 // minimum best-score to return results (default 0.75)
 
-	// Bounty monitor.
-	VaelorNotifyURL       string        // VAELOR_NOTIFY_URL for sending Telegram notifications
-	BountyNotifyChatID    string        // BOUNTY_NOTIFY_CHAT_ID (default "428660")
-	BountyMonitorInterval time.Duration // BOUNTY_MONITOR_INTERVAL (default 15m)
+	// Bounty notify (ingest-side hook — no background monitor since Phase 3).
+	VaelorNotifyURL    string // VAELOR_NOTIFY_URL for sending Telegram notifications
+	BountyNotifyChatID string // BOUNTY_NOTIFY_CHAT_ID (default "428660")
 
 	// Computed fields — populated by Init(), not set by caller.
 	HTTPClient    *http.Client   // plain HTTP client for API calls

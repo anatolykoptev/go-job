@@ -49,6 +49,11 @@ const (
 	// MetricHuntIngest is the labelled counter gojob_hunt_ingest_total{kind,outcome}.
 	// Incremented once per Upsert call in each search-tool ingest path.
 	MetricHuntIngest = "hunt_ingest_total"
+
+	// MetricHuntNotify is the labelled counter gojob_hunt_notify_total{outcome}.
+	// Incremented by the Telegram notifier after each send attempt.
+	// outcome ∈ {"sent", "failed"}.
+	MetricHuntNotify = "hunt_notify_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -144,4 +149,11 @@ func IncrOversizeSpill(toolName string) {
 // Buckets are pre-configured via reg.RegisterHistogram in engine.Init().
 func ObserveOversizeBytes(n int) {
 	reg.Observe(MetricOversizeBytes, float64(n))
+}
+
+// IncrHuntNotify bumps gojob_hunt_notify_total{outcome=<outcome>}.
+// outcome must be "sent" or "failed" — bounded label (no cardinality risk).
+// Called by the Telegram notifier after each send attempt.
+func IncrHuntNotify(outcome string) {
+	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
 }

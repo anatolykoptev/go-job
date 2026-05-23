@@ -64,4 +64,9 @@ func RegisterTools(server *mcp.Server) {
 	registerOversizeGet(server)
 	registerOversizeList(server)
 	registerOversizePurge(server)
+	// Hunt entry listing (triggers lazy enricher on each call)
+	registerHuntListBounties(server)
+	registerHuntListJobs(server)
+	registerHuntListFreelance(server)
+	registerHuntListSecurity(server)
 }
