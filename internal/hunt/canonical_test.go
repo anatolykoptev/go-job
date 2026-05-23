@@ -154,3 +154,58 @@ func TestDedupHashForSource_PlainGitHubURLIsIdempotent(t *testing.T) {
 	h2 := hunt.DedupHashForSource(ghURL, "algora")
 	assert.Equal(t, h1, h2, "plain GitHub URL must hash identically regardless of source")
 }
+
+// --- MAJOR: ref= and source= must survive canonicalization ---
+
+// TestCanonicalURL_PreservesGitHubRef verifies that GitHub branch-navigation param
+// "ref=" is NOT stripped (it is content-addressing, not tracking).
+func TestCanonicalURL_PreservesGitHubRef(t *testing.T) {
+	in := "https://github.com/foo/bar/blob/main/README.md?ref=feature"
+	got := hunt.CanonicalURL(in)
+	assert.Contains(t, got, "ref=feature", "ref= navigation param must survive canonicalization")
+}
+
+// TestCanonicalURL_PreservesSourceParam verifies that "source=" is NOT stripped
+// (it is a distinct landing context, not a tracking cookie).
+func TestCanonicalURL_PreservesSourceParam(t *testing.T) {
+	in := "https://github.com/foo/bar?source=docs"
+	got := hunt.CanonicalURL(in)
+	assert.Contains(t, got, "source=docs", "source= context param must survive canonicalization")
+}
+
+// TestCanonicalURL_StripsRefUnderscorePrefix verifies that ref_* (LinkedIn-style
+// utm-aliases such as ref_id, ref_source) are still stripped.
+func TestCanonicalURL_StripsRefUnderscorePrefix(t *testing.T) {
+	in := "https://linkedin.com/jobs/123?ref_id=abc&ref_source=email"
+	got := hunt.CanonicalURL(in)
+	assert.NotContains(t, got, "ref_id", "ref_id must be stripped (LinkedIn tracking alias)")
+	assert.NotContains(t, got, "ref_source", "ref_source must be stripped (LinkedIn tracking alias)")
+}
+
+// --- MINOR #1: IPv6 bracket restoration ---
+
+// TestCanonicalURL_IPv6_DefaultPort verifies that stripping the default HTTPS port from
+// an IPv6 address restores the brackets ([::1]:443 → [::1]).
+func TestCanonicalURL_IPv6_DefaultPort(t *testing.T) {
+	in := "https://[::1]:443/a"
+	got := hunt.CanonicalURL(in)
+	assert.Equal(t, "https://[::1]/a", got)
+}
+
+// TestCanonicalURL_IPv6_NonDefaultPort verifies that a non-default port on IPv6 is
+// preserved, including brackets.
+func TestCanonicalURL_IPv6_NonDefaultPort(t *testing.T) {
+	in := "https://[::1]:8080/a"
+	got := hunt.CanonicalURL(in)
+	assert.Equal(t, "https://[::1]:8080/a", got)
+}
+
+// --- MINOR #2: multi-value query sort ---
+
+// TestCanonicalURL_MultiValueQuerySorted verifies that multi-value query params
+// with the same set but different order produce identical canonical form.
+func TestCanonicalURL_MultiValueQuerySorted(t *testing.T) {
+	a := hunt.CanonicalURL("https://x.com/?tag=b&tag=a")
+	b := hunt.CanonicalURL("https://x.com/?tag=a&tag=b")
+	assert.Equal(t, a, b, "multi-value query with same set must canonicalize identically")
+}

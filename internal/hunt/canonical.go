@@ -1,6 +1,7 @@
 package hunt
 
 import (
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -12,8 +13,9 @@ import (
 //  2. Lowercase scheme + host.
 //  3. Strip default port (http:80, https:443).
 //  4. Trim trailing slash from path (root path becomes empty string).
-//  5. Drop tracking query params (utm_*, gclid, fbclid, ref, ref_*, trk, src, source, mc_cid, mc_eid).
-//  6. Sort remaining query params alphabetically (stable order).
+//  5. Drop tracking query params (utm_*, gclid, fbclid, ref_*, trk, src, mc_cid, mc_eid).
+//     Note: bare "ref" and "source" are NOT stripped — they are GitHub navigation params.
+//  6. Sort remaining query params alphabetically; sort multi-value params by value.
 //  7. Strip fragment (#section).
 func CanonicalURL(raw string) string {
 	raw = strings.TrimSpace(raw)
@@ -28,10 +30,15 @@ func CanonicalURL(raw string) string {
 	u.Host = strings.ToLower(u.Host)
 
 	// Strip default ports.
-	host := u.Hostname()
-	port := u.Port()
-	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
-		u.Host = host
+	// net.SplitHostPort strips brackets from IPv6 literals; restore them if needed.
+	host, port, err := net.SplitHostPort(u.Host)
+	if err == nil {
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+		if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+			u.Host = host
+		}
 	}
 
 	// Trim trailing slash from path; root "/" becomes "".
@@ -58,6 +65,7 @@ func CanonicalURL(raw string) string {
 		var pairs []string
 		for _, k := range keys {
 			vals := q[k]
+			sort.Strings(vals)
 			for _, v := range vals {
 				pairs = append(pairs, url.QueryEscape(k)+"="+url.QueryEscape(v))
 			}
@@ -132,7 +140,11 @@ func normalizeGitHubIssueParam(val string) string {
 	return "https://github.com/" + parts[0] + "/" + parts[1] + "/issues/" + parts[3]
 }
 
-// trackingParams is the set of exact query keys stripped during canonicalization.
+// trackingParams is the set of query keys stripped during canonicalization.
+// Marketing-only — does NOT include "ref" or "source" (those are GitHub
+// navigation params; see TestCanonicalURL_PreservesGitHubRef).
+// TODO: extend with yclid (yandex), msclkid (microsoft), li_fat_id (linkedin),
+// _ga (google analytics) as they appear in real ingest.
 var trackingParams = map[string]struct{}{
 	"utm_source":   {},
 	"utm_medium":   {},
@@ -141,10 +153,8 @@ var trackingParams = map[string]struct{}{
 	"utm_content":  {},
 	"gclid":        {},
 	"fbclid":       {},
-	"ref":          {},
 	"trk":          {},
 	"src":          {},
-	"source":       {},
 	"mc_cid":       {},
 	"mc_eid":       {},
 }
