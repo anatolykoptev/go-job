@@ -55,7 +55,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	slog.Info("tools registered", slog.Int("count", 39))
+	slog.Info("tools registered", slog.Int("count", 43))
 
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {
@@ -134,9 +134,8 @@ func initEngine() {
 		BountyMedConfMax:      env.Int("BOUNTY_MED_CONF_MAX", 3),
 		BountySkillBoost:      float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
 		BountyMinRelevance:    float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
-		VaelorNotifyURL:       env.Str("VAELOR_NOTIFY_URL", ""),
-		BountyNotifyChatID:    env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
-		BountyMonitorInterval: env.Duration("BOUNTY_MONITOR_INTERVAL", 15*time.Minute),
+		VaelorNotifyURL:    env.Str("VAELOR_NOTIFY_URL", ""),
+		BountyNotifyChatID: env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
 		DirectDDG:             env.Bool("DIRECT_DDG", false),
 		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
@@ -232,11 +231,14 @@ func initEngine() {
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.
 				hStore.SetEnricher(enrich.NewEnricher(jobs.NewGithubFetcherAdapter()))
-				// Notifier: fires on OutcomeCreated for any ingest path.
-				hStore.SetNotifier(notify.NewFromEnv(
+				// Notifier: fires on OutcomeCreated (open-only) for any ingest path.
+				// OnSend wires gojob_hunt_notify_total{outcome=sent|failed} metric.
+				notif := notify.NewFromEnv(
 					engine.Cfg.VaelorNotifyURL,
 					engine.Cfg.BountyNotifyChatID,
-				))
+				)
+				notif.OnSend = engine.IncrHuntNotify
+				hStore.SetNotifier(notif)
 
 				slog.Info("hunt store ready")
 			}

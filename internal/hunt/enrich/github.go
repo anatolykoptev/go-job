@@ -11,6 +11,15 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
+// enrichSemSize is the maximum number of concurrent EnrichBountyStatusGitHub runs.
+// Prevents unbounded fan-out when many concurrent ListBounties calls fire simultaneously
+// (N callers × M URLs each = N×M concurrent GitHub API calls without this guard).
+const enrichSemSize = 4
+
+// enrichSem is a counting semaphore that bounds concurrent enrich runs.
+// A goroutine acquires a slot by sending to the channel; releases by receiving.
+var enrichSem = make(chan struct{}, enrichSemSize)
+
 // GithubIssueInfo holds enrichment data fetched from the GitHub API.
 type GithubIssueInfo struct {
 	Title  string
@@ -35,7 +44,16 @@ type StatusUpdater interface {
 //
 // It is designed to run in a goroutine spawned by Store.ListBounties — it must
 // NOT block the caller, must NOT panic on fetch failure, and should be idempotent.
+// Concurrency is bounded by enrichSem (max enrichSemSize concurrent runs).
 func EnrichBountyStatusGitHub(ctx context.Context, store StatusUpdater, fetcher GithubIssueFetcher, entries []hunt.Bounty, maxAge time.Duration) {
+	// Acquire semaphore slot — blocks if enrichSemSize runs are already in flight.
+	select {
+	case enrichSem <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
+	defer func() { <-enrichSem }()
+
 	var urls []string
 	indexByURL := make(map[string]int64, len(entries))
 	cutoff := time.Now().Add(-maxAge)

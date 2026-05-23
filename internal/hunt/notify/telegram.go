@@ -18,6 +18,17 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
+// defaultBountyChatID is the Telegram chat ID used when BOUNTY_NOTIFY_CHAT_ID is unset.
+// NIT: extracted from inline literal "428660" to a named constant for clarity.
+const defaultBountyChatID = "428660"
+
+// notifySemSize is the maximum number of concurrent Telegram send goroutines.
+// Prevents unbounded fan-out: 50 new bounties = 50 simultaneous POSTs without this guard.
+const notifySemSize = 8
+
+// notifySem is a counting semaphore that bounds concurrent notify.send goroutines.
+var notifySem = make(chan struct{}, notifySemSize)
+
 // vaelorMsgRequest is the request body for vaelor's message tool API.
 type vaelorMsgRequest struct {
 	Content string `json:"content"`
@@ -26,21 +37,22 @@ type vaelorMsgRequest struct {
 }
 
 // Notifier sends Telegram messages via the vaelor message tool.
-// A nil Notifier is safe — all methods are no-ops.
+// Methods are no-ops when URL is empty. Never construct with a nil pointer —
+// NewFromEnv always returns a valid *Notifier (URL="" = disabled).
 type Notifier struct {
-	URL    string
-	ChatID string
-	Client *http.Client
+	URL     string
+	ChatID  string
+	Client  *http.Client
+	OnSend  func(outcome string) // optional metric hook: called with "sent" or "failed"
 }
 
 // NewFromEnv constructs a Notifier from VAELOR_NOTIFY_URL and BOUNTY_NOTIFY_CHAT_ID
-// environment variables. Returns nil if URL is empty (notifications disabled).
+// environment variables. Always returns non-nil; methods are no-ops if URL is empty.
+// The nil-in-interface trap is avoided: callers can store a *Notifier unconditionally;
+// the nil-URL guard inside each method prevents actual sends when URL is empty.
 func NewFromEnv(url, chatID string) *Notifier {
-	if url == "" {
-		return nil
-	}
 	if chatID == "" {
-		chatID = "428660"
+		chatID = defaultBountyChatID
 	}
 	return &Notifier{
 		URL:    url,
@@ -50,13 +62,13 @@ func NewFromEnv(url, chatID string) *Notifier {
 }
 
 // NotifyNewBounty sends a notification for a new bounty entry.
-// Fire-and-forget: runs in the caller's goroutine if already async, otherwise wraps in go.
+// Fire-and-forget: spawns a goroutine bounded by the notify semaphore.
 func (n *Notifier) NotifyNewBounty(b hunt.Bounty) {
 	if n == nil || n.URL == "" {
 		return
 	}
 	msg := formatBountyMsg(b)
-	go n.send(msg)
+	go n.sendBounded(msg)
 }
 
 // NotifyNewJob sends a notification for a new job entry.
@@ -65,7 +77,7 @@ func (n *Notifier) NotifyNewJob(j hunt.Job) {
 		return
 	}
 	msg := formatJobMsg(j)
-	go n.send(msg)
+	go n.sendBounded(msg)
 }
 
 // NotifyNewFreelance sends a notification for a new freelance entry.
@@ -74,7 +86,7 @@ func (n *Notifier) NotifyNewFreelance(f hunt.Freelance) {
 		return
 	}
 	msg := formatFreelanceMsg(f)
-	go n.send(msg)
+	go n.sendBounded(msg)
 }
 
 // NotifyNewSecurity sends a notification for a new security program entry.
@@ -83,7 +95,14 @@ func (n *Notifier) NotifyNewSecurity(s hunt.Security) {
 		return
 	}
 	msg := formatSecurityMsg(s)
-	go n.send(msg)
+	go n.sendBounded(msg)
+}
+
+// sendBounded acquires a semaphore slot before calling send, bounding concurrent POSTs.
+func (n *Notifier) sendBounded(msg string) {
+	notifySem <- struct{}{}
+	defer func() { <-notifySem }()
+	n.send(msg)
 }
 
 func (n *Notifier) send(msg string) {
@@ -99,6 +118,9 @@ func (n *Notifier) send(msg string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.URL+"/api/tools/message", bytes.NewReader(payload))
 	if err != nil {
 		slog.Warn("hunt notify: build request failed", slog.Any("error", err))
+		if n.OnSend != nil {
+			n.OnSend("failed")
+		}
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -106,6 +128,9 @@ func (n *Notifier) send(msg string) {
 	resp, err := n.Client.Do(req)
 	if err != nil {
 		slog.Warn("hunt notify: send failed", slog.Any("error", err))
+		if n.OnSend != nil {
+			n.OnSend("failed")
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -115,6 +140,13 @@ func (n *Notifier) send(msg string) {
 		slog.Warn("hunt notify: non-200 response",
 			slog.Int("status", resp.StatusCode),
 			slog.String("body", string(body)))
+		if n.OnSend != nil {
+			n.OnSend("failed")
+		}
+		return
+	}
+	if n.OnSend != nil {
+		n.OnSend("sent")
 	}
 }
 

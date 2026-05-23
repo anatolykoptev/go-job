@@ -89,9 +89,10 @@ func fetchSingleIssueInfo(ctx context.Context, owner, repo string, number int) g
 	}
 
 	var issue struct {
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		Labels []struct {
+		Title       string `json:"title"`
+		State       string `json:"state"`
+		StateReason string `json:"state_reason"` // "completed", "not_planned", "reopened", or ""
+		Labels      []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	}
@@ -104,9 +105,10 @@ func fetchSingleIssueInfo(ctx context.Context, owner, repo string, number int) g
 		labels[i] = l.Name
 	}
 	return githubIssueInfo{
-		Title:  issue.Title,
-		State:  issue.State,
-		Labels: labels,
+		Title:       issue.Title,
+		State:       issue.State,
+		StateReason: issue.StateReason,
+		Labels:      labels,
 	}
 }
 

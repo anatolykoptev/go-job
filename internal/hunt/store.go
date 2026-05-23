@@ -148,6 +148,7 @@ func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome O
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (dedup_hash) DO UPDATE
 			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_bounties.status = 'open' THEN EXCLUDED.status ELSE hunt_bounties.status END,
 			    closed_at = COALESCE(hunt_bounties.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
@@ -160,7 +161,9 @@ func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome O
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert bounty: %w", err)
 	}
 	if created {
-		if s.notifier != nil {
+		// Only notify for open bounties — prevents Telegram blast on first deploy when
+		// historical claimed/completed/archived bounties are ingested for the first time.
+		if s.notifier != nil && status == StatusOpen {
 			s.notifier.NotifyNewBounty(b)
 		}
 		return id, OutcomeCreated, nil
@@ -244,10 +247,17 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 	}
 
 	// Lazy enrichment: background GitHub status check for open rows. Non-blocking.
+	// Uses a detached context (not coupled to the request) with a 30s hard deadline
+	// to ensure graceful shutdown even if the caller's ctx is cancelled.
+	// G118: context.Background() is intentional — enrich must outlive the request context.
 	if s.enricher != nil && len(result) > 0 {
 		snap := make([]Bounty, len(result))
 		copy(snap, result)
-		go s.enricher.EnrichBountyStatus(context.Background(), s, snap, defaultEnrichTTL)
+		go func() { //nolint:gosec // G118: intentional detached context with explicit 30s deadline
+			enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			s.enricher.EnrichBountyStatus(enrichCtx, s, snap, defaultEnrichTTL)
+		}()
 	}
 
 	return result, nil
@@ -286,6 +296,7 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (dedup_hash) DO UPDATE
 			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_jobs.status = 'open' THEN EXCLUDED.status ELSE hunt_jobs.status END,
 			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
@@ -301,7 +312,8 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert job: %w", err)
 	}
 	if created {
-		if s.notifier != nil {
+		// Only notify for open jobs — non-open status means already-closed listing.
+		if s.notifier != nil && status == StatusOpen {
 			s.notifier.NotifyNewJob(j)
 		}
 		return id, OutcomeCreated, nil
@@ -501,6 +513,7 @@ func (s *Store) UpsertFreelance(ctx context.Context, f Freelance) (id int64, out
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (dedup_hash) DO UPDATE
 			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_freelance.status = 'open' THEN EXCLUDED.status ELSE hunt_freelance.status END,
 			    closed_at = COALESCE(hunt_freelance.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
@@ -514,7 +527,8 @@ func (s *Store) UpsertFreelance(ctx context.Context, f Freelance) (id int64, out
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert freelance: %w", err)
 	}
 	if created {
-		if s.notifier != nil {
+		// Only notify for open freelance projects — non-open status means archived listing.
+		if s.notifier != nil && status == StatusOpen {
 			s.notifier.NotifyNewFreelance(f)
 		}
 		return id, OutcomeCreated, nil
@@ -584,6 +598,7 @@ func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, out
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (dedup_hash) DO UPDATE
 			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_security.status = 'open' THEN EXCLUDED.status ELSE hunt_security.status END,
 			    closed_at = COALESCE(hunt_security.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
@@ -596,7 +611,8 @@ func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, out
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert security: %w", err)
 	}
 	if created {
-		if s.notifier != nil {
+		// Only notify for open security programs — non-open status means archived program.
+		if s.notifier != nil && status == StatusOpen {
 			s.notifier.NotifyNewSecurity(sec)
 		}
 		return id, OutcomeCreated, nil
