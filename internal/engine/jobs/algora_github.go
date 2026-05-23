@@ -20,10 +20,11 @@ type githubIssueState struct {
 
 // githubIssueInfo holds enrichment data from a single GitHub API call.
 type githubIssueInfo struct {
-	Title    string   // issue title
-	State    string   // "open" or "closed"
-	Labels   []string // label names
-	Language string   // repo primary language (from fetchRepoLanguages)
+	Title       string   // issue title
+	State       string   // "open" or "closed"
+	StateReason string   // GitHub state_reason: "completed", "not_planned", "reopened", or ""
+	Labels      []string // label names
+	Language    string   // repo primary language (from fetchRepoLanguages)
 }
 
 // FilterOpenBounties checks GitHub issue status in parallel and returns only open issues.

@@ -10,6 +10,9 @@ type SecurityProgram struct {
 	Targets   []string `json:"targets"`    // in-scope domains/apps
 	Type      string   `json:"type"`       // bug_bounty, vdp
 	Managed   bool     `json:"managed"`    // managed/triaged by platform
+	// Archived is set by Sherlock scraper for repos that are archived on GitHub.
+	// Mapper translates this to hunt.StatusArchived.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // FreelanceJob represents a remote job or freelance gig.

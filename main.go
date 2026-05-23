@@ -24,6 +24,8 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/hunt/enrich"
+	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -53,7 +55,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server)
-	slog.Info("tools registered", slog.Int("count", 39))
+	slog.Info("tools registered", slog.Int("count", 43))
 
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {
@@ -132,9 +134,8 @@ func initEngine() {
 		BountyMedConfMax:      env.Int("BOUNTY_MED_CONF_MAX", 3),
 		BountySkillBoost:      float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
 		BountyMinRelevance:    float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
-		VaelorNotifyURL:       env.Str("VAELOR_NOTIFY_URL", ""),
-		BountyNotifyChatID:    env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
-		BountyMonitorInterval: env.Duration("BOUNTY_MONITOR_INTERVAL", 15*time.Minute),
+		VaelorNotifyURL:    env.Str("VAELOR_NOTIFY_URL", ""),
+		BountyNotifyChatID: env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
 		DirectDDG:             env.Bool("DIRECT_DDG", false),
 		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
@@ -226,6 +227,19 @@ func initEngine() {
 				slog.Error("hunt migrate failed", slog.Any("error", err))
 			} else {
 				engine.SetHuntStore(hStore)
+
+				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
+				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.
+				hStore.SetEnricher(enrich.NewEnricher(jobs.NewGithubFetcherAdapter()))
+				// Notifier: fires on OutcomeCreated (open-only) for any ingest path.
+				// OnSend wires gojob_hunt_notify_total{outcome=sent|failed} metric.
+				notif := notify.NewFromEnv(
+					engine.Cfg.VaelorNotifyURL,
+					engine.Cfg.BountyNotifyChatID,
+				)
+				notif.OnSend = engine.IncrHuntNotify
+				hStore.SetNotifier(notif)
+
 				slog.Info("hunt store ready")
 			}
 		}
@@ -246,10 +260,9 @@ func initEngine() {
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
 	engine.InitCache(env.Str("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
 
-	// Start background monitors.
-	jobs.StartBountyMonitor(context.Background())
-	jobs.StartSecurityMonitor(context.Background())
-	jobs.StartFreelanceMonitor(context.Background())
+	// Background monitors replaced by lazy on-read enrichment (Phase 3).
+	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
+	// so it fires on any ingest path — not just from the old monitor goroutines.
 }
 
 // resolveFetchMode maps FETCH_DIRECT_FIRST env value to (directFirst, initPool) flags.

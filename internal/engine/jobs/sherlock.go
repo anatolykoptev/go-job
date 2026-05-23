@@ -51,7 +51,9 @@ func SearchSherlock(ctx context.Context, limit int) ([]engine.SecurityProgram, e
 
 	programs := make([]engine.SecurityProgram, 0, len(repos))
 	for _, r := range repos {
-		if r.Archived || r.Fork {
+		// Fork repos are always noise — exclude. Archived repos now pass through
+		// so the mapper can set StatusArchived instead of silently dropping them.
+		if r.Fork {
 			continue
 		}
 		programs = append(programs, engine.SecurityProgram{
@@ -60,6 +62,7 @@ func SearchSherlock(ctx context.Context, limit int) ([]engine.SecurityProgram, e
 			URL:      r.HTMLURL,
 			Type:     "audit_contest",
 			Managed:  true,
+			Archived: r.Archived, // propagated to mapper → hunt.StatusArchived
 		})
 	}
 

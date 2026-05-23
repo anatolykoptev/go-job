@@ -77,11 +77,14 @@ func TestSearchSherlock_HTTPMock(t *testing.T) {
 		t.Fatalf("SearchSherlock: unexpected error: %v", err)
 	}
 
-	// 2 non-archived non-fork repos expected.
-	if len(programs) != 2 {
-		t.Fatalf("want 2 programs, got %d", len(programs))
+	// 3 programs expected: 2 active + 1 archived; fork is always excluded.
+	// Phase 3 change: archived repos now pass through so the mapper can set StatusArchived
+	// instead of silently dropping them. Fork repos are still excluded (always noise).
+	if len(programs) != 3 {
+		t.Fatalf("want 3 programs (2 active + 1 archived), got %d", len(programs))
 	}
 
+	var archivedCount int
 	for i, p := range programs {
 		if p.Platform != "sherlock" {
 			t.Errorf("[%d] Platform = %q, want %q", i, p.Platform, "sherlock")
@@ -98,6 +101,12 @@ func TestSearchSherlock_HTTPMock(t *testing.T) {
 		if p.Name == "" {
 			t.Errorf("[%d] Name is empty", i)
 		}
+		if p.Archived {
+			archivedCount++
+		}
+	}
+	if archivedCount != 1 {
+		t.Errorf("want 1 archived program in results, got %d", archivedCount)
 	}
 }
 
@@ -151,10 +160,10 @@ func TestSearchSherlock_Cache(t *testing.T) {
 		}
 	}
 
-	// Spot-check: no "archived" or "fork" names in results.
+	// Spot-check: fork names must not appear; archived repos ARE now included (Phase 3).
 	for _, p := range second {
-		if strings.Contains(strings.ToLower(p.Name), "archived") {
-			t.Errorf("archived repo leaked into results: %q", p.Name)
+		if strings.Contains(strings.ToLower(p.Name), "forked") {
+			t.Errorf("forked repo leaked into results: %q", p.Name)
 		}
 	}
 }

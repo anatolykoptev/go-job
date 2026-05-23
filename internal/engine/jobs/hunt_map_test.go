@@ -213,3 +213,55 @@ func TestJobListingToHunt_PostedAt(t *testing.T) {
 	})
 	assert.NotNil(t, j.PostedAt, "Posted timestamp must be parsed into PostedAt")
 }
+
+// --- Phase 3: status mapping ---
+
+// TestBountyListingToHunt_PreservesStatus verifies Algora status→hunt status mapping.
+// "open" → StatusOpen, "claimed"/"completed" → StatusMerged, "closed"/"cancelled" → StatusClosed.
+func TestBountyListingToHunt_PreservesStatus(t *testing.T) {
+	cases := []struct {
+		sourceStatus string
+		wantHunt     string
+	}{
+		{"", hunt.StatusOpen},
+		{"open", hunt.StatusOpen},
+		{"claimed", hunt.StatusMerged},
+		{"completed", hunt.StatusMerged},
+		{"closed", hunt.StatusClosed},
+		{"cancelled", hunt.StatusClosed},
+	}
+	for _, tc := range cases {
+		b := BountyListingToHunt(engine.BountyListing{
+			Title:  "Test",
+			URL:    "https://github.com/org/repo/issues/77",
+			Source: "algora",
+			Status: tc.sourceStatus,
+		})
+		assert.Equal(t, tc.wantHunt, b.Status,
+			"sourceStatus=%q should map to %q", tc.sourceStatus, tc.wantHunt)
+	}
+}
+
+// TestSecurityProgramToHunt_ArchivedMapsToArchived verifies Sherlock archived repos
+// are mapped to StatusArchived in the hunt.Security record.
+func TestSecurityProgramToHunt_ArchivedMapsToArchived(t *testing.T) {
+	sec := SecurityProgramToHunt(engine.SecurityProgram{
+		Name:     "Archived Protocol",
+		URL:      "https://github.com/sherlock-audit/2024-01-archived-judging",
+		Platform: "sherlock",
+		Archived: true,
+	})
+	assert.Equal(t, hunt.StatusArchived, sec.Status,
+		"archived security program must map to StatusArchived")
+}
+
+// TestSecurityProgramToHunt_NonArchivedMapsToOpen verifies non-archived programs → open.
+func TestSecurityProgramToHunt_NonArchivedMapsToOpen(t *testing.T) {
+	sec := SecurityProgramToHunt(engine.SecurityProgram{
+		Name:     "Active Protocol",
+		URL:      "https://github.com/sherlock-audit/2024-01-active-judging",
+		Platform: "sherlock",
+		Archived: false,
+	})
+	assert.Equal(t, hunt.StatusOpen, sec.Status)
+}

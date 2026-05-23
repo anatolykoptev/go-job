@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,15 +48,52 @@ func (o Outcome) String() string {
 	}
 }
 
+// defaultEnrichTTL is how long a bounty can go unchecked before lazy enrichment re-fetches it.
+const defaultEnrichTTL = 1 * time.Hour
+
+// BountyEnricher triggers background GitHub status enrichment for open bounties.
+// The concrete implementation lives in internal/hunt/enrich to avoid import cycles.
+type BountyEnricher interface {
+	EnrichBountyStatus(ctx context.Context, store StatusUpdater, entries []Bounty, maxAge time.Duration)
+}
+
+// StatusUpdater is the subset of Store that the enricher needs (avoids circular import).
+type StatusUpdater interface {
+	UpdateStatus(ctx context.Context, kind string, id int64, status string, closedAt *time.Time) error
+}
+
+// Notifier fires on ingest outcomes.
+type Notifier interface {
+	NotifyNewBounty(b Bounty)
+	NotifyNewJob(j Job)
+	NotifyNewFreelance(f Freelance)
+	NotifyNewSecurity(s Security)
+}
+
+// StatusUpdate carries one status change for UpdateStatusBatch.
+type StatusUpdate struct {
+	ID       int64
+	Status   string
+	ClosedAt *time.Time
+}
+
 // Store is the Postgres-backed hunt store.
 type Store struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	enricher BountyEnricher
+	notifier Notifier
 }
 
 // NewStore returns a Store using the given pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
+
+// SetEnricher wires a background GitHub enricher that triggers on ListBounties reads.
+func (s *Store) SetEnricher(e BountyEnricher) { s.enricher = e }
+
+// SetNotifier wires a Telegram notifier that fires on OutcomeCreated ingest events.
+func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
 
 // Migrate runs schema migrations in lexical order. Idempotent (all DDL uses IF NOT EXISTS).
 func (s *Store) Migrate(ctx context.Context) error {
@@ -96,25 +134,38 @@ func (s *Store) Migrate(ctx context.Context) error {
 // UpsertBounty inserts a new bounty or updates last_seen_at on dedup_hash conflict.
 // Returns (id, OutcomeCreated) for new rows, (id, OutcomeMerged) for existing rows.
 // Uses the xmax=0 Postgres trick: xmax is 0 iff the row was just inserted.
+// Status is preserved on conflict: once closed/merged, a re-ingest with "open" does NOT revert it.
 func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome Outcome, err error) {
+	status := b.Status
+	if status == "" {
+		status = StatusOpen
+	}
 	var created bool
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO hunt_bounties
 			(dedup_hash, title, url, org, source, amount_cents, currency, issue_number,
-			 skills, description, relevance, posted_at, raw)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			 skills, description, relevance, posted_at, raw, status, closed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (dedup_hash) DO UPDATE
-			SET last_seen_at = NOW()
+			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
+			    status = CASE WHEN hunt_bounties.status = 'open' THEN EXCLUDED.status ELSE hunt_bounties.status END,
+			    closed_at = COALESCE(hunt_bounties.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
 		b.DedupHash, b.Title, b.URL, nullStr(b.Org), b.Source,
 		nullInt64(b.AmountCents), nullStr(b.Currency), nullInt(b.IssueNumber),
 		nullSlice(b.Skills), nullStr(b.Description), nullFloat32(b.Relevance),
-		b.PostedAt, nullRaw(b.Raw),
+		b.PostedAt, nullRaw(b.Raw), status, b.ClosedAt,
 	).Scan(&id, &created)
 	if err != nil {
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert bounty: %w", err)
 	}
 	if created {
+		// Only notify for open bounties — prevents Telegram blast on first deploy when
+		// historical claimed/completed/archived bounties are ingested for the first time.
+		if s.notifier != nil && status == StatusOpen {
+			s.notifier.NotifyNewBounty(b)
+		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -122,15 +173,19 @@ func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome O
 
 // BountyFilter narrows ListBounties results.
 type BountyFilter struct {
-	Source    string
-	MinAmount int64
-	Skills    []string
-	Stage     string // join hunt_ratings
-	Limit     int    // default 50, max 500
-	Offset    int
+	Source        string
+	MinAmount     int64
+	Skills        []string
+	Stage         string // join hunt_ratings
+	IncludeClosed bool   // when false (default), only status='open' rows are returned
+	Limit         int    // default 50, max 500
+	Offset        int
 }
 
 // ListBounties returns bounties newest-first with optional filters.
+// By default, only status='open' rows are returned. Set IncludeClosed=true for all.
+// After fetching, triggers a lazy background GitHub enrichment pass for open rows
+// that haven't been checked within defaultEnrichTTL (non-blocking).
 func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, error) {
 	limit := clampLimit(f.Limit, 50, 500)
 
@@ -138,6 +193,9 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 	args := []any{}
 	argN := 1
 
+	if !f.IncludeClosed {
+		conds = append(conds, "status = 'open'")
+	}
 	if f.Source != "" {
 		conds = append(conds, fmt.Sprintf("source = $%d", argN))
 		args = append(args, f.Source)
@@ -164,7 +222,7 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 	q := fmt.Sprintf(`
 		SELECT id, dedup_hash, title, url, org, source, amount_cents, currency,
 		       issue_number, skills, description, relevance, posted_at,
-		       first_seen_at, last_seen_at
+		       first_seen_at, last_seen_at, status, closed_at, last_checked_at
 		FROM hunt_bounties
 		%s
 		ORDER BY last_seen_at DESC
@@ -178,100 +236,69 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 
 	var result []Bounty
 	for rows.Next() {
-		var b Bounty
-		var org, currency, desc *string
-		var amountCents *int64
-		var issueNum *int
-		var relevance *float32
-		if err := rows.Scan(
-			&b.ID, &b.DedupHash, &b.Title, &b.URL,
-			&org, &b.Source, &amountCents, &currency,
-			&issueNum, &b.Skills, &desc, &relevance, &b.PostedAt,
-			&b.FirstSeenAt, &b.LastSeenAt,
-		); err != nil {
-			return nil, fmt.Errorf("hunt: list bounties scan: %w", err)
-		}
-		if org != nil {
-			b.Org = *org
-		}
-		if currency != nil {
-			b.Currency = *currency
-		}
-		if desc != nil {
-			b.Description = *desc
-		}
-		if amountCents != nil {
-			b.AmountCents = *amountCents
-		}
-		if issueNum != nil {
-			b.IssueNumber = *issueNum
-		}
-		if relevance != nil {
-			b.Relevance = *relevance
+		b, scanErr := scanBountyRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("hunt: list bounties scan: %w", scanErr)
 		}
 		result = append(result, b)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("hunt: list bounties rows: %w", err)
 	}
+
+	// Lazy enrichment: background GitHub status check for open rows. Non-blocking.
+	// Uses a detached context (not coupled to the request) with a 30s hard deadline
+	// to ensure graceful shutdown even if the caller's ctx is cancelled.
+	// G118: context.Background() is intentional — enrich must outlive the request context.
+	if s.enricher != nil && len(result) > 0 {
+		snap := make([]Bounty, len(result))
+		copy(snap, result)
+		go func() { //nolint:gosec // G118: intentional detached context with explicit 30s deadline
+			enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			s.enricher.EnrichBountyStatus(enrichCtx, s, snap, defaultEnrichTTL)
+		}()
+	}
+
 	return result, nil
 }
 
 // GetBounty returns a single bounty by id; ErrNotFound if missing.
 func (s *Store) GetBounty(ctx context.Context, id int64) (*Bounty, error) {
-	var b Bounty
-	var org, currency, desc *string
-	var amountCents *int64
-	var issueNum *int
-	var relevance *float32
-	err := s.pool.QueryRow(ctx, `
+	row := s.pool.QueryRow(ctx, `
 		SELECT id, dedup_hash, title, url, org, source, amount_cents, currency,
 		       issue_number, skills, description, relevance, posted_at,
-		       first_seen_at, last_seen_at
-		FROM hunt_bounties WHERE id = $1`, id).Scan(
-		&b.ID, &b.DedupHash, &b.Title, &b.URL,
-		&org, &b.Source, &amountCents, &currency,
-		&issueNum, &b.Skills, &desc, &relevance, &b.PostedAt,
-		&b.FirstSeenAt, &b.LastSeenAt,
-	)
+		       first_seen_at, last_seen_at, status, closed_at, last_checked_at
+		FROM hunt_bounties WHERE id = $1`, id)
+	b, err := scanBountyRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("hunt: get bounty: %w", err)
 	}
-	if org != nil {
-		b.Org = *org
-	}
-	if currency != nil {
-		b.Currency = *currency
-	}
-	if desc != nil {
-		b.Description = *desc
-	}
-	if amountCents != nil {
-		b.AmountCents = *amountCents
-	}
-	if issueNum != nil {
-		b.IssueNumber = *issueNum
-	}
-	if relevance != nil {
-		b.Relevance = *relevance
-	}
 	return &b, nil
 }
 
 // UpsertJob inserts a new job or updates last_seen_at on dedup_hash conflict.
+// Status is preserved on conflict: once closed, a re-ingest with "open" does NOT revert it.
 func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome, err error) {
+	status := j.Status
+	if status == "" {
+		status = StatusOpen
+	}
 	var created bool
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO hunt_jobs
 			(dedup_hash, title, company, url, source, external_id, location, remote,
 			 job_type, experience, salary_min, salary_max, salary_currency, salary_interval,
-			 skills, tags, description, posted_at, raw)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			 skills, tags, description, posted_at, raw, status, closed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (dedup_hash) DO UPDATE
-			SET last_seen_at = NOW()
+			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
+			    status = CASE WHEN hunt_jobs.status = 'open' THEN EXCLUDED.status ELSE hunt_jobs.status END,
+			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
 		j.DedupHash, j.Title, nullStr(j.Company), j.URL, j.Source,
 		nullStr(j.ExternalID), nullStr(j.Location), nullStr(j.Remote),
@@ -279,12 +306,16 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		nullInt(j.SalaryMin), nullInt(j.SalaryMax),
 		nullStr(j.SalaryCurrency), nullStr(j.SalaryInterval),
 		nullSlice(j.Skills), nullSlice(j.Tags), nullStr(j.Description),
-		j.PostedAt, nullRaw(j.Raw),
+		j.PostedAt, nullRaw(j.Raw), status, j.ClosedAt,
 	).Scan(&id, &created)
 	if err != nil {
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert job: %w", err)
 	}
 	if created {
+		// Only notify for open jobs — non-open status means already-closed listing.
+		if s.notifier != nil && status == StatusOpen {
+			s.notifier.NotifyNewJob(j)
+		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -292,14 +323,16 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 
 // JobFilter narrows ListJobs results.
 type JobFilter struct {
-	Source  string
-	Company string
-	Remote  string
-	Limit   int
-	Offset  int
+	Source        string
+	Company       string
+	Remote        string
+	IncludeClosed bool // when false (default), only status='open' rows are returned
+	Limit         int
+	Offset        int
 }
 
 // ListJobs returns jobs newest-first with optional filters.
+// By default, only status='open' rows are returned. Set IncludeClosed=true for all.
 func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, error) {
 	limit := clampLimit(f.Limit, 50, 500)
 
@@ -307,6 +340,9 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, error) {
 	args := []any{}
 	argN := 1
 
+	if !f.IncludeClosed {
+		conds = append(conds, "status = 'open'")
+	}
 	if f.Source != "" {
 		conds = append(conds, fmt.Sprintf("source = $%d", argN))
 		args = append(args, f.Source)
@@ -332,7 +368,8 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, error) {
 	q := fmt.Sprintf(`
 		SELECT id, dedup_hash, title, company, url, source, external_id, location, remote,
 		       job_type, experience, salary_min, salary_max, salary_currency, salary_interval,
-		       skills, tags, description, posted_at, first_seen_at, last_seen_at
+		       skills, tags, description, posted_at, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_jobs
 		%s
 		ORDER BY last_seen_at DESC
@@ -355,6 +392,7 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, error) {
 			&salMin, &salMax, &cur, &interval,
 			&j.Skills, &j.Tags, &desc, &j.PostedAt,
 			&j.FirstSeenAt, &j.LastSeenAt,
+			&j.Status, &j.ClosedAt, &j.LastCheckedAt,
 		); err != nil {
 			return nil, fmt.Errorf("hunt: list jobs scan: %w", err)
 		}
@@ -407,13 +445,15 @@ func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, dedup_hash, title, company, url, source, external_id, location, remote,
 		       job_type, experience, salary_min, salary_max, salary_currency, salary_interval,
-		       skills, tags, description, posted_at, first_seen_at, last_seen_at
+		       skills, tags, description, posted_at, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_jobs WHERE id = $1`, id).Scan(
 		&j.ID, &j.DedupHash, &j.Title, &company, &j.URL, &j.Source,
 		&extID, &location, &remote, &jobType, &exp,
 		&salMin, &salMax, &cur, &interval,
 		&j.Skills, &j.Tags, &desc, &j.PostedAt,
 		&j.FirstSeenAt, &j.LastSeenAt,
+		&j.Status, &j.ClosedAt, &j.LastCheckedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -458,27 +498,39 @@ func (s *Store) GetJob(ctx context.Context, id int64) (*Job, error) {
 }
 
 // UpsertFreelance inserts a new freelance project or updates last_seen_at on conflict.
+// Status is preserved on conflict: once archived/closed, a re-ingest with "open" does NOT revert it.
 func (s *Store) UpsertFreelance(ctx context.Context, f Freelance) (id int64, outcome Outcome, err error) {
+	status := f.Status
+	if status == "" {
+		status = StatusOpen
+	}
 	var created bool
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO hunt_freelance
 			(dedup_hash, title, url, platform, source, budget_min, budget_max,
 			 budget_currency, budget_raw, location, skills, tags, description,
-			 client_info, posted_at, raw)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			 client_info, posted_at, raw, status, closed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (dedup_hash) DO UPDATE
-			SET last_seen_at = NOW()
+			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
+			    status = CASE WHEN hunt_freelance.status = 'open' THEN EXCLUDED.status ELSE hunt_freelance.status END,
+			    closed_at = COALESCE(hunt_freelance.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
 		f.DedupHash, f.Title, f.URL, f.Platform, f.Source,
 		nullInt(f.BudgetMin), nullInt(f.BudgetMax),
 		nullStr(f.BudgetCurrency), nullStr(f.BudgetRaw), nullStr(f.Location),
 		nullSlice(f.Skills), nullSlice(f.Tags), nullStr(f.Description),
-		nullStr(f.ClientInfo), f.PostedAt, nullRaw(f.Raw),
+		nullStr(f.ClientInfo), f.PostedAt, nullRaw(f.Raw), status, f.ClosedAt,
 	).Scan(&id, &created)
 	if err != nil {
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert freelance: %w", err)
 	}
 	if created {
+		// Only notify for open freelance projects — non-open status means archived listing.
+		if s.notifier != nil && status == StatusOpen {
+			s.notifier.NotifyNewFreelance(f)
+		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -492,12 +544,14 @@ func (s *Store) GetFreelance(ctx context.Context, id int64) (*Freelance, error) 
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, dedup_hash, title, url, platform, source, budget_min, budget_max,
 		       budget_currency, budget_raw, location, skills, tags, description,
-		       client_info, posted_at, first_seen_at, last_seen_at
+		       client_info, posted_at, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_freelance WHERE id = $1`, id).Scan(
 		&f.ID, &f.DedupHash, &f.Title, &f.URL, &f.Platform, &f.Source,
 		&budMin, &budMax, &budCur, &budRaw, &location,
 		&f.Skills, &f.Tags, &desc, &clientInfo, &f.PostedAt,
 		&f.FirstSeenAt, &f.LastSeenAt,
+		&f.Status, &f.ClosedAt, &f.LastCheckedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -530,24 +584,37 @@ func (s *Store) GetFreelance(ctx context.Context, id int64) (*Freelance, error) 
 }
 
 // UpsertSecurity inserts a new security program or updates last_seen_at on conflict.
+// Status is preserved on conflict: once archived, a re-ingest with "open" does NOT revert it.
 func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, outcome Outcome, err error) {
+	status := sec.Status
+	if status == "" {
+		status = StatusOpen
+	}
 	var created bool
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO hunt_security
 			(dedup_hash, name, url, platform, program_type, min_bounty, max_bounty,
-			 targets, managed, description, raw)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			 targets, managed, description, raw, status, closed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (dedup_hash) DO UPDATE
-			SET last_seen_at = NOW()
+			SET last_seen_at = NOW(),
+			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
+			    status = CASE WHEN hunt_security.status = 'open' THEN EXCLUDED.status ELSE hunt_security.status END,
+			    closed_at = COALESCE(hunt_security.closed_at, EXCLUDED.closed_at)
 		RETURNING id, (xmax = 0) AS created`,
 		sec.DedupHash, sec.Name, sec.URL, sec.Platform,
 		nullStr(sec.ProgramType), nullInt(sec.MinBounty), nullInt(sec.MaxBounty),
 		nullSlice(sec.Targets), sec.Managed, nullStr(sec.Description), nullRaw(sec.Raw),
+		status, sec.ClosedAt,
 	).Scan(&id, &created)
 	if err != nil {
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert security: %w", err)
 	}
 	if created {
+		// Only notify for open security programs — non-open status means archived program.
+		if s.notifier != nil && status == StatusOpen {
+			s.notifier.NotifyNewSecurity(sec)
+		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -560,11 +627,13 @@ func (s *Store) GetSecurity(ctx context.Context, id int64) (*Security, error) {
 	var minB, maxB *int
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, dedup_hash, name, url, platform, program_type, min_bounty, max_bounty,
-		       targets, managed, description, first_seen_at, last_seen_at
+		       targets, managed, description, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_security WHERE id = $1`, id).Scan(
 		&sec.ID, &sec.DedupHash, &sec.Name, &sec.URL, &sec.Platform,
 		&progType, &minB, &maxB, &sec.Targets, &sec.Managed, &desc,
 		&sec.FirstSeenAt, &sec.LastSeenAt,
+		&sec.Status, &sec.ClosedAt, &sec.LastCheckedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -695,12 +764,13 @@ func (s *Store) GetBountyWithRaw(ctx context.Context, id int64) (*Bounty, error)
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, dedup_hash, title, url, org, source, amount_cents, currency,
 		       issue_number, skills, description, relevance, posted_at,
-		       first_seen_at, last_seen_at, raw
+		       first_seen_at, last_seen_at, raw, status, closed_at, last_checked_at
 		FROM hunt_bounties WHERE id = $1`, id).Scan(
 		&b.ID, &b.DedupHash, &b.Title, &b.URL,
 		&org, &b.Source, &amountCents, &currency,
 		&issueNum, &b.Skills, &desc, &relevance, &b.PostedAt,
 		&b.FirstSeenAt, &b.LastSeenAt, &b.Raw,
+		&b.Status, &b.ClosedAt, &b.LastCheckedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -731,14 +801,16 @@ func (s *Store) GetBountyWithRaw(ctx context.Context, id int64) (*Bounty, error)
 
 // FreelanceFilter narrows ListFreelance results.
 type FreelanceFilter struct {
-	Platform  string
-	MinBudget int
-	Skills    []string
-	Limit     int // default 50, max 500
-	Offset    int
+	Platform      string
+	MinBudget     int
+	Skills        []string
+	IncludeClosed bool // when false (default), only status='open' rows are returned
+	Limit         int  // default 50, max 500
+	Offset        int
 }
 
 // ListFreelance returns freelance projects newest-first with optional filters.
+// By default, only status='open' rows are returned. Set IncludeClosed=true for all.
 func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelance, error) {
 	limit := clampLimit(f.Limit, 50, 500)
 
@@ -746,6 +818,9 @@ func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelan
 	args := []any{}
 	argN := 1
 
+	if !f.IncludeClosed {
+		conds = append(conds, "status = 'open'")
+	}
 	if f.Platform != "" {
 		conds = append(conds, fmt.Sprintf("platform = $%d", argN))
 		args = append(args, f.Platform)
@@ -771,7 +846,8 @@ func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelan
 	q := fmt.Sprintf(`
 		SELECT id, dedup_hash, title, url, platform, source, budget_min, budget_max,
 		       budget_currency, budget_raw, location, skills, tags, description,
-		       client_info, posted_at, first_seen_at, last_seen_at
+		       client_info, posted_at, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_freelance
 		%s
 		ORDER BY last_seen_at DESC
@@ -793,6 +869,7 @@ func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelan
 			&budMin, &budMax, &budCur, &budRaw, &location,
 			&fl.Skills, &fl.Tags, &desc, &clientInfo, &fl.PostedAt,
 			&fl.FirstSeenAt, &fl.LastSeenAt,
+			&fl.Status, &fl.ClosedAt, &fl.LastCheckedAt,
 		); err != nil {
 			return nil, fmt.Errorf("hunt: list freelance scan: %w", err)
 		}
@@ -827,13 +904,15 @@ func (s *Store) ListFreelance(ctx context.Context, f FreelanceFilter) ([]Freelan
 
 // SecurityFilter narrows ListSecurity results.
 type SecurityFilter struct {
-	Platform  string
-	MinBounty int
-	Limit     int // default 50, max 500
-	Offset    int
+	Platform      string
+	MinBounty     int
+	IncludeClosed bool // when false (default), only status='open' rows are returned
+	Limit         int  // default 50, max 500
+	Offset        int
 }
 
 // ListSecurity returns security programs newest-first with optional filters.
+// By default, only status='open' rows are returned. Set IncludeClosed=true for all.
 func (s *Store) ListSecurity(ctx context.Context, f SecurityFilter) ([]Security, error) {
 	limit := clampLimit(f.Limit, 50, 500)
 
@@ -841,6 +920,9 @@ func (s *Store) ListSecurity(ctx context.Context, f SecurityFilter) ([]Security,
 	args := []any{}
 	argN := 1
 
+	if !f.IncludeClosed {
+		conds = append(conds, "status = 'open'")
+	}
 	if f.Platform != "" {
 		conds = append(conds, fmt.Sprintf("platform = $%d", argN))
 		args = append(args, f.Platform)
@@ -860,7 +942,8 @@ func (s *Store) ListSecurity(ctx context.Context, f SecurityFilter) ([]Security,
 	args = append(args, limit, f.Offset)
 	q := fmt.Sprintf(`
 		SELECT id, dedup_hash, name, url, platform, program_type, min_bounty, max_bounty,
-		       targets, managed, description, first_seen_at, last_seen_at
+		       targets, managed, description, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
 		FROM hunt_security
 		%s
 		ORDER BY last_seen_at DESC
@@ -881,6 +964,7 @@ func (s *Store) ListSecurity(ctx context.Context, f SecurityFilter) ([]Security,
 			&sec.ID, &sec.DedupHash, &sec.Name, &sec.URL, &sec.Platform,
 			&progType, &minB, &maxB, &sec.Targets, &sec.Managed, &desc,
 			&sec.FirstSeenAt, &sec.LastSeenAt,
+			&sec.Status, &sec.ClosedAt, &sec.LastCheckedAt,
 		); err != nil {
 			return nil, fmt.Errorf("hunt: list security scan: %w", err)
 		}
@@ -1051,6 +1135,150 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 		return nil, fmt.Errorf("hunt: list ratings rows: %w", err)
 	}
 	return result, nil
+}
+
+// --- status enrichment methods ---
+
+// UpdateStatus sets the status, closed_at and last_checked_at for a single entry.
+// kind must be one of the KindXxx constants ("bounty", "job", "freelance", "security").
+func (s *Store) UpdateStatus(ctx context.Context, kind string, id int64, status string, closedAt *time.Time) error {
+	table, err := kindTable(kind)
+	if err != nil {
+		return err
+	}
+	_, execErr := s.pool.Exec(ctx,
+		"UPDATE "+table+" SET status=$1, closed_at=$2, last_checked_at=NOW() WHERE id=$3",
+		status, closedAt, id,
+	)
+	if execErr != nil {
+		return fmt.Errorf("hunt: update status (%s id=%d): %w", kind, id, execErr)
+	}
+	return nil
+}
+
+// UpdateStatusBatch applies multiple status updates for a given kind in a single transaction.
+func (s *Store) UpdateStatusBatch(ctx context.Context, kind string, updates []StatusUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	table, err := kindTable(kind)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("hunt: begin batch update: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, u := range updates {
+		if _, execErr := tx.Exec(ctx,
+			"UPDATE "+table+" SET status=$1, closed_at=$2, last_checked_at=NOW() WHERE id=$3",
+			u.Status, u.ClosedAt, u.ID,
+		); execErr != nil {
+			return fmt.Errorf("hunt: batch update status (%s id=%d): %w", kind, u.ID, execErr)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("hunt: commit batch update: %w", err)
+	}
+	return nil
+}
+
+// GetBountiesNeedingCheck returns open bounties whose last_checked_at is NULL
+// or older than maxAge, ordered NULLS FIRST. Limit caps the result set.
+func (s *Store) GetBountiesNeedingCheck(ctx context.Context, maxAge time.Duration, limit int) ([]Bounty, error) {
+	limit = clampLimit(limit, 50, 500)
+	cutoff := time.Now().Add(-maxAge)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, dedup_hash, title, url, org, source, amount_cents, currency,
+		       issue_number, skills, description, relevance, posted_at,
+		       first_seen_at, last_seen_at, status, closed_at, last_checked_at
+		FROM hunt_bounties
+		WHERE status = 'open'
+		  AND (last_checked_at IS NULL OR last_checked_at < $1)
+		ORDER BY last_checked_at NULLS FIRST
+		LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: get bounties needing check: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Bounty
+	for rows.Next() {
+		b, scanErr := scanBountyRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("hunt: get bounties needing check scan: %w", scanErr)
+		}
+		result = append(result, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: get bounties needing check rows: %w", err)
+	}
+	return result, nil
+}
+
+// kindTable maps a KindXxx string to the corresponding table name.
+func kindTable(kind string) (string, error) {
+	switch kind {
+	case KindBounty:
+		return "hunt_bounties", nil
+	case KindJob:
+		return "hunt_jobs", nil
+	case KindFreelance:
+		return "hunt_freelance", nil
+	case KindSecurity:
+		return "hunt_security", nil
+	default:
+		return "", fmt.Errorf("hunt: unknown kind %q", kind)
+	}
+}
+
+// --- row scanner helpers ---
+
+// bountyScanner is the subset of pgx.Rows used by scanBountyRow.
+// Using an interface avoids importing pgx in callers and enables testing.
+type bountyScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanBountyRow scans one row from hunt_bounties (full projection including status columns).
+// Centralizes the nullable-field unwrapping that was previously copy-pasted across
+// ListBounties, GetBountiesNeedingCheck, and similar selects.
+func scanBountyRow(row bountyScanner) (Bounty, error) {
+	var b Bounty
+	var org, currency, desc *string
+	var amountCents *int64
+	var issueNum *int
+	var relevance *float32
+	if err := row.Scan(
+		&b.ID, &b.DedupHash, &b.Title, &b.URL,
+		&org, &b.Source, &amountCents, &currency,
+		&issueNum, &b.Skills, &desc, &relevance, &b.PostedAt,
+		&b.FirstSeenAt, &b.LastSeenAt,
+		&b.Status, &b.ClosedAt, &b.LastCheckedAt,
+	); err != nil {
+		return Bounty{}, err
+	}
+	if org != nil {
+		b.Org = *org
+	}
+	if currency != nil {
+		b.Currency = *currency
+	}
+	if desc != nil {
+		b.Description = *desc
+	}
+	if amountCents != nil {
+		b.AmountCents = *amountCents
+	}
+	if issueNum != nil {
+		b.IssueNumber = *issueNum
+	}
+	if relevance != nil {
+		b.Relevance = *relevance
+	}
+	return b, nil
 }
 
 // --- nullable helpers ---
