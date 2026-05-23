@@ -20,7 +20,7 @@ func BountyListingToHunt(b engine.BountyListing) hunt.Bounty {
 	issueNum, _ := strconv.Atoi(strings.TrimPrefix(b.IssueNum, "#"))
 	rawJSON, _ := json.Marshal(b) // ignore err — Raw is optional audit trail
 	return hunt.Bounty{
-		DedupHash:   hunt.DedupHash(b.URL),
+		DedupHash:   hunt.DedupHashForSource(b.URL, b.Source),
 		Title:       b.Title,
 		URL:         b.URL,
 		Org:         b.Org,
