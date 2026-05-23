@@ -15,10 +15,14 @@ func TestDedupHash_Deterministic(t *testing.T) {
 	assert.Len(t, h1, 32, "hash must be 32 hex chars (16 bytes)")
 }
 
+// TestDedupHash_NormalizesCase verifies that scheme and host are case-normalised.
+// Phase 2: only scheme+host are lowercased; URL path is kept as-is (paths are
+// case-sensitive on GitHub and most hosts). Two URLs that differ only in
+// scheme/host case must hash identically.
 func TestDedupHash_NormalizesCase(t *testing.T) {
 	lower := hunt.DedupHash("https://github.com/org/repo/issues/42")
-	upper := hunt.DedupHash("HTTPS://GITHUB.COM/ORG/REPO/ISSUES/42")
-	assert.Equal(t, lower, upper, "case normalisation must produce equal hashes")
+	upper := hunt.DedupHash("HTTPS://GITHUB.COM/org/repo/issues/42")
+	assert.Equal(t, lower, upper, "scheme+host case normalisation must produce equal hashes")
 }
 
 func TestDedupHash_TrimsWhitespace(t *testing.T) {
