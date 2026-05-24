@@ -16,11 +16,22 @@ type SourceItem struct {
 }
 
 // SearchOutput is the complete structured output of a search pipeline.
+//
+// LLMSkipped/DegradeReason mark output produced by a no-LLM degrade path
+// (e.g. when the configured LLM backend is unavailable or all models in a
+// caller-defined fallback chain are exhausted). When LLMSkipped=true, the
+// Answer is typically composed from top-N similar sentences rather than
+// from an LLM summary, and Facts will usually be empty. Callers that
+// require LLM-quality answers can branch on LLMSkipped to retry or surface
+// the degraded state to their user. Both fields are omitempty so output
+// shape is unchanged for the LLM-success path.
 type SearchOutput struct {
-	Query   string         `json:"query"`
-	Answer  string         `json:"answer"`
-	Facts   []llm.FactItem `json:"facts"`
-	Sources []SourceItem   `json:"sources"`
+	Query         string         `json:"query"`
+	Answer        string         `json:"answer"`
+	Facts         []llm.FactItem `json:"facts"`
+	Sources       []SourceItem   `json:"sources"`
+	LLMSkipped    bool           `json:"llm_skipped,omitempty"`
+	DegradeReason string         `json:"degrade_reason,omitempty"`
 }
 
 // OutputOpts controls the size and shape of SearchOutput.
@@ -37,7 +48,9 @@ var DefaultOutputOpts = OutputOpts{
 	IncludeSnippets: false,
 }
 
-// FormatOutput trims SearchOutput to fit within the given budget.
+// FormatOutput trims SearchOutput to fit within the given budget. The
+// LLMSkipped/DegradeReason flags pass through unmodified so the caller-
+// visible degrade state survives the trim.
 func FormatOutput(out SearchOutput, opts OutputOpts) SearchOutput {
 	if opts.MaxAnswerChars > 0 && len(out.Answer) > opts.MaxAnswerChars {
 		out.Answer = out.Answer[:opts.MaxAnswerChars] + "..."
