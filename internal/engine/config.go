@@ -69,6 +69,17 @@ type Config struct {
 	VaelorNotifyURL    string // VAELOR_NOTIFY_URL for sending Telegram notifications
 	BountyNotifyChatID string // BOUNTY_NOTIFY_CHAT_ID (default "428660")
 
+	// LLMModelFallback is a CSV cross-provider model fallback chain
+	// (e.g. "cerebras-qwen-3-235b,groq-llama-3.3-70b"). When non-empty,
+	// the LLM client tries LLMModel first, then each model in chain on
+	// retryable failure. All entries share LLMAPIBase+LLMAPIKey —
+	// cliproxyapi routes by model id.
+	//
+	// MUTEX with LLMAPIKeyFallbacks: WithModelFallbackChain (WithEndpoints
+	// internally) disables key rotation. Set either, not both.
+	// Env: LLM_MODEL_FALLBACK (mounted via config/llm.env).
+	LLMModelFallback string
+
 	// Computed fields — populated by Init(), not set by caller.
 	HTTPClient    *http.Client   // plain HTTP client for API calls
 	BrowserClient *BrowserClient // proxy browser client (nil if no proxy)
@@ -145,7 +156,13 @@ func Init(c Config) {
 		engllm.WithMaxTokens(c.LLMMaxTokens),
 		engllm.WithMetrics(reg),
 	}
-	if len(c.LLMAPIKeyFallbacks) > 0 {
+	if chain := engllm.ParseModelFallbackChain(c.LLMModelFallback); len(chain) > 0 {
+		// Cross-provider model chain: primary model → each chain entry on retryable
+		// failure. Internally uses WithEndpoints which disables key rotation
+		// (WithAPIKeyFallbacks becomes a no-op). Chain OR key-rotation, not both.
+		llmOpts = append(llmOpts, engllm.WithModelFallbackChain(chain))
+		slog.Info("llm: model fallback chain enabled", slog.Int("chain_len", len(chain)))
+	} else if len(c.LLMAPIKeyFallbacks) > 0 {
 		llmOpts = append(llmOpts, engllm.WithAPIKeyFallbacks(c.LLMAPIKeyFallbacks))
 	}
 	llmInst = engllm.New(llmOpts...)

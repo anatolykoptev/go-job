@@ -15,6 +15,9 @@ type ImagePart struct {
 
 // CompleteMultimodal sends a vision prompt with images using OpenAI format.
 func (c *Client) CompleteMultimodal(ctx context.Context, prompt string, images []ImagePart) (string, error) {
+	if c.disabled {
+		return "", ErrUnavailable
+	}
 	kitImages := make([]kitllm.ImagePart, len(images))
 	for i, img := range images {
 		kitImages[i] = kitllm.ImagePart{URL: img.URL, MIMEType: img.MIMEType}
