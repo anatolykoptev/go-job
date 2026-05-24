@@ -413,6 +413,23 @@ func (f *Fetcher) BrowserClient() *stealth.BrowserClient {
 	return f.browserClient
 }
 
+// DirectClient returns the no-proxy Chrome-TLS stealth client built when
+// WithDirectFirst(true) was set. Returns nil otherwise. Consumers should
+// nil-check before use.
+//
+// Implementation note: the internal directClient field is typed as stealthDoer
+// (an unexported interface) to allow test injection of mocks. In production the
+// concrete type is always *stealth.BrowserClient (built by New()). The type
+// assertion returns nil for test doubles, which is safe — callers only use
+// DirectClient() to obtain the real client for wiring into search.BrowserDoer.
+func (f *Fetcher) DirectClient() *stealth.BrowserClient {
+	if f.directClient == nil {
+		return nil
+	}
+	bc, _ := f.directClient.(*stealth.BrowserClient)
+	return bc
+}
+
 // fetchViaProxy routes through the proxy-tier stealthDoer (BrowserClient with Chrome TLS fingerprint).
 func (f *Fetcher) fetchViaProxy(ctx context.Context, fetchURL string) ([]byte, error) {
 	headers := ChromeHeaders()
