@@ -104,6 +104,9 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 				epReq.Model = ep.Model
 			}
 			result, err := c.doWithRetry(ctx, ep.URL, ep.Key, &epReq)
+			if c.endpointObserver != nil {
+				c.endpointObserver(ep, err)
+			}
 			if err == nil {
 				return result, nil
 			}
