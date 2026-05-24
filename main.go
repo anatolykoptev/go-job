@@ -115,6 +115,7 @@ func initEngine() {
 		LLMAPIKeyFallbacks:    env.List("LLM_API_KEY_FALLBACKS", ""),
 		LLMAPIBase:            env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
 		LLMModel:              env.Str("LLM_MODEL", "gemini-3.1-flash-lite-preview"),
+		LLMModelFallback:      env.Str("LLM_MODEL_FALLBACK", ""),
 		LLMTemperature:        env.Float("LLM_TEMPERATURE", 0.1),
 		LLMMaxTokens:          env.Int("LLM_MAX_TOKENS", 16384),
 		MaxFetchURLs:          env.Int("MAX_FETCH_URLS", 8),
