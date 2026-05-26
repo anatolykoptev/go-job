@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -357,13 +358,62 @@ func TestOpenTrackerDB_EnvPath(t *testing.T) {
 		t.Fatalf("AddTrackedJob error: %v", err)
 	}
 
-	if _, statErr := filepath.Abs(dbPath); statErr != nil {
-		t.Errorf("DB not created at expected path %s", dbPath)
+	stat, statErr := os.Stat(dbPath)
+	if statErr != nil {
+		t.Fatalf("tracker DB file not created at expected path %s: %v", dbPath, statErr)
+	}
+	if !stat.Mode().IsRegular() {
+		t.Errorf("expected regular file at %s, got mode %v", dbPath, stat.Mode())
 	}
 	// Verify it's the exact path by listing and ensuring no tracker.db sibling.
 	entries, _ := filepath.Glob(filepath.Join(filepath.Dir(dbPath), "tracker.db"))
 	if len(entries) > 0 {
 		t.Errorf("unexpected tracker.db sibling created alongside explicit path")
+	}
+}
+
+// TestOpenTrackerDB_FallsBackOnReadOnlyHome verifies that openTrackerDB falls back
+// to os.TempDir() when the XDG_DATA_HOME-derived path is on a read-only filesystem.
+// This reproduces the container scenario where HOME=/root and /root is read-only.
+func TestOpenTrackerDB_FallsBackOnReadOnlyHome(t *testing.T) {
+	// Create a directory we immediately make read-only to simulate EROFS.
+	readOnlyParent := t.TempDir()
+	if err := os.Chmod(readOnlyParent, 0555); err != nil {
+		t.Skipf("cannot chmod dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore so t.TempDir cleanup can remove it.
+		_ = os.Chmod(readOnlyParent, 0755)
+	})
+
+	// Clear all env overrides; point XDG_DATA_HOME at the read-only dir.
+	t.Setenv("GO_JOB_TRACKER_DB", "")
+	t.Setenv("GO_JOB_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", readOnlyParent)
+
+	// Reset singleton.
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
+	ctx := context.Background()
+	_, err := AddTrackedJob(ctx, JobTrackerAddInput{Title: "Fallback Job", Company: "Corp"})
+	if err != nil {
+		t.Fatalf("AddTrackedJob should succeed via tempdir fallback, got: %v", err)
+	}
+
+	// Verify the DB landed under os.TempDir(), not under the read-only dir.
+	if trackerDB == nil {
+		t.Fatal("trackerDB is nil after successful AddTrackedJob")
+	}
+	// Confirm go-job subdir exists under TempDir.
+	expectedFallbackDir := filepath.Join(os.TempDir(), "go-job")
+	stat, statErr := os.Stat(expectedFallbackDir)
+	if statErr != nil {
+		t.Fatalf("fallback dir %s not created: %v", expectedFallbackDir, statErr)
+	}
+	if !stat.IsDir() {
+		t.Errorf("expected dir at fallback path %s", expectedFallbackDir)
 	}
 }
 

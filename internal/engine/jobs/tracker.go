@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -113,8 +115,24 @@ func openTrackerDB() (*sql.DB, error) {
 			return
 		}
 		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from env/home, not user input
-			trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
-			return
+			// On EROFS or permission error (e.g. containerized /root mounted read-only),
+			// fall back to a writable tempdir. resolveTrackerDir may have returned a
+			// HOME-based path even when HOME itself is on a read-only filesystem.
+			if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {
+				fallback := filepath.Join(os.TempDir(), "go-job")
+				if ferr := os.MkdirAll(fallback, 0750); ferr != nil { //nolint:gosec
+					trackerErr = fmt.Errorf("tracker: mkdir fallback %s: %w (original: %w)", fallback, ferr, err)
+					return
+				}
+				slog.Warn("tracker: home path not writable, using tempdir fallback",
+					slog.String("original_path", dir),
+					slog.String("fallback_path", fallback),
+					slog.Any("original_error", err))
+				dir = fallback
+			} else {
+				trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
+				return
+			}
 		}
 		dbPath := filepath.Join(dir, "tracker.db")
 		if env := os.Getenv("GO_JOB_TRACKER_DB"); env != "" {
