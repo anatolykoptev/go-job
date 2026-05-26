@@ -5,14 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/uploads"
 	_ "modernc.org/sqlite"
 )
 
@@ -83,64 +80,19 @@ var (
 	trackerErr  error
 )
 
-// resolveTrackerDir returns the directory where tracker.db should live.
-// Priority order:
-//  1. GO_JOB_TRACKER_DB env (full path) — use its parent dir
-//  2. GO_JOB_DATA_DIR env — <dir>/tracker
-//  3. XDG_DATA_HOME env — <dir>/go-job
-//  4. os.UserHomeDir() — <home>/.go_job
-//  5. os.TempDir() fallback — always writable
-func resolveTrackerDir() (string, error) {
-	if p := os.Getenv("GO_JOB_TRACKER_DB"); p != "" {
-		return filepath.Dir(p), nil
-	}
-	if d := os.Getenv("GO_JOB_DATA_DIR"); d != "" {
-		return filepath.Join(d, "tracker"), nil
-	}
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
-		return filepath.Join(x, "go-job"), nil
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".go_job"), nil
-	}
-	return filepath.Join(os.TempDir(), "go-job"), nil
-}
-
 // openTrackerDB opens (or creates) the SQLite tracker database.
+// Storage: $UPLOADS_ROOT/go-job/tracker/tracker.db (go-kit/uploads canonical convention).
+// The uploads root defaults to $HOME/uploads; override via UPLOADS_ROOT env var.
 func openTrackerDB() (*sql.DB, error) {
 	trackerOnce.Do(func() {
-		dir, err := resolveTrackerDir()
+		dbPath, err := uploads.Path("go-job", "tracker", "tracker.db")
 		if err != nil {
-			trackerErr = fmt.Errorf("tracker: resolve dir: %w", err)
+			trackerErr = fmt.Errorf("tracker: resolve path: %w", err)
 			return
-		}
-		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from env/home, not user input
-			// On EROFS or permission error (e.g. containerized /root mounted read-only),
-			// fall back to a writable tempdir. resolveTrackerDir may have returned a
-			// HOME-based path even when HOME itself is on a read-only filesystem.
-			if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {
-				fallback := filepath.Join(os.TempDir(), "go-job")
-				if ferr := os.MkdirAll(fallback, 0750); ferr != nil { //nolint:gosec
-					trackerErr = fmt.Errorf("tracker: mkdir fallback %s: %w (original: %w)", fallback, ferr, err)
-					return
-				}
-				slog.Warn("tracker: home path not writable, using tempdir fallback",
-					slog.String("original_path", dir),
-					slog.String("fallback_path", fallback),
-					slog.Any("original_error", err))
-				dir = fallback
-			} else {
-				trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
-				return
-			}
-		}
-		dbPath := filepath.Join(dir, "tracker.db")
-		if env := os.Getenv("GO_JOB_TRACKER_DB"); env != "" {
-			dbPath = env
 		}
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
-			trackerErr = fmt.Errorf("tracker: open db: %w", err)
+			trackerErr = fmt.Errorf("tracker: open db %s: %w", dbPath, err)
 			return
 		}
 		db.SetMaxOpenConns(1) // SQLite: single writer

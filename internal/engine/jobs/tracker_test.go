@@ -9,20 +9,78 @@ import (
 )
 
 // resetTracker resets the singleton so each test gets a fresh DB.
-// Uses GO_JOB_TRACKER_DB to pin the DB path to a temp file,
-// avoiding any dependency on HOME or container read-only filesystem.
-func resetTracker(t *testing.T) string {
+// Sets UPLOADS_ROOT to a temp dir so the DB lands at
+// $UPLOADS_ROOT/go-job/tracker/tracker.db — the canonical uploads convention.
+func resetTracker(t *testing.T) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "tracker.db")
-	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
-	// Clear any stale XDG/DATA_DIR overrides from parent env.
-	t.Setenv("GO_JOB_DATA_DIR", "")
-	t.Setenv("XDG_DATA_HOME", "")
-	// Reset the singleton.
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	return dbPath
+}
+
+// TestOpenTrackerDB_UsesUploadsConvention verifies that openTrackerDB places
+// the DB at $UPLOADS_ROOT/go-job/tracker/tracker.db as per go-kit/uploads convention.
+func TestOpenTrackerDB_UsesUploadsConvention(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
+	db, err := openTrackerDB()
+	if err != nil {
+		t.Fatalf("openTrackerDB: %v", err)
+	}
+	if db == nil {
+		t.Fatal("openTrackerDB returned nil db")
+	}
+
+	expected := filepath.Join(root, "go-job", "tracker", "tracker.db")
+	info, err := os.Stat(expected)
+	if err != nil {
+		t.Fatalf("stat %s: %v", expected, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file, got mode %v", info.Mode())
+	}
+}
+
+// TestOpenTrackerDB_RoundTrip verifies AddTrackedJob + ListTrackedJobs
+// through the uploads-convention path end-to-end.
+func TestOpenTrackerDB_RoundTrip(t *testing.T) {
+	resetTracker(t)
+	ctx := context.Background()
+
+	added, err := AddTrackedJob(ctx, JobTrackerAddInput{
+		Title:   "Staff Engineer",
+		Company: "Stripe",
+		Status:  "applied",
+	})
+	if err != nil {
+		t.Fatalf("AddTrackedJob: %v", err)
+	}
+	if added.ID <= 0 {
+		t.Fatalf("expected positive ID, got %d", added.ID)
+	}
+
+	list, err := ListTrackedJobs(ctx, JobTrackerListInput{Status: "applied"})
+	if err != nil {
+		t.Fatalf("ListTrackedJobs: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("total = %d, want 1", list.Total)
+	}
+	if list.Jobs[0].Title != "Staff Engineer" {
+		t.Errorf("title = %q, want 'Staff Engineer'", list.Jobs[0].Title)
+	}
 }
 
 func TestAddTrackedJob_Basic(t *testing.T) {
@@ -30,12 +88,12 @@ func TestAddTrackedJob_Basic(t *testing.T) {
 	ctx := context.Background()
 
 	result, err := AddTrackedJob(ctx, JobTrackerAddInput{
-		Title:   "Senior Go Developer",
-		Company: "Stripe",
-		URL:     "https://stripe.com/jobs/123",
-		Status:  "applied",
-		Notes:   "Applied via LinkedIn",
-		Salary:  "$180k",
+		Title:    "Senior Go Developer",
+		Company:  "Stripe",
+		URL:      "https://stripe.com/jobs/123",
+		Status:   "applied",
+		Notes:    "Applied via LinkedIn",
+		Salary:   "$180k",
 		Location: "Remote",
 	})
 	if err != nil {
@@ -289,136 +347,16 @@ func TestValidStatus(t *testing.T) {
 	}
 }
 
-// TestResolveTrackerDir verifies env-variable path priority.
-func TestResolveTrackerDir(t *testing.T) {
-	// Clear all overrides before each sub-test.
-	clearTrackerEnv := func(t *testing.T) {
-		t.Helper()
-		t.Setenv("GO_JOB_TRACKER_DB", "")
-		t.Setenv("GO_JOB_DATA_DIR", "")
-		t.Setenv("XDG_DATA_HOME", "")
-	}
-
-	t.Run("GO_JOB_TRACKER_DB takes priority", func(t *testing.T) {
-		clearTrackerEnv(t)
-		dbPath := filepath.Join(t.TempDir(), "custom.db")
-		t.Setenv("GO_JOB_TRACKER_DB", dbPath)
-		got, err := resolveTrackerDir()
-		if err != nil {
-			t.Fatalf("resolveTrackerDir error: %v", err)
-		}
-		if got != filepath.Dir(dbPath) {
-			t.Errorf("got %q, want %q", got, filepath.Dir(dbPath))
-		}
-	})
-
-	t.Run("GO_JOB_DATA_DIR second priority", func(t *testing.T) {
-		clearTrackerEnv(t)
-		dataDir := t.TempDir()
-		t.Setenv("GO_JOB_DATA_DIR", dataDir)
-		got, err := resolveTrackerDir()
-		if err != nil {
-			t.Fatalf("resolveTrackerDir error: %v", err)
-		}
-		want := filepath.Join(dataDir, "tracker")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("XDG_DATA_HOME third priority", func(t *testing.T) {
-		clearTrackerEnv(t)
-		xdg := t.TempDir()
-		t.Setenv("XDG_DATA_HOME", xdg)
-		got, err := resolveTrackerDir()
-		if err != nil {
-			t.Fatalf("resolveTrackerDir error: %v", err)
-		}
-		want := filepath.Join(xdg, "go-job")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-}
-
-// TestOpenTrackerDB_EnvPath verifies that GO_JOB_TRACKER_DB creates the DB
-// at the specified exact path (not an appended tracker.db inside it).
-func TestOpenTrackerDB_EnvPath(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "explicit.db")
-	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
-	t.Setenv("GO_JOB_DATA_DIR", "")
-	t.Setenv("XDG_DATA_HOME", "")
-	trackerDB = nil
-	trackerErr = nil
-	trackerOnce = sync.Once{}
-
-	ctx := context.Background()
-	_, err := AddTrackedJob(ctx, JobTrackerAddInput{Title: "T", Company: "C"})
-	if err != nil {
-		t.Fatalf("AddTrackedJob error: %v", err)
-	}
-
-	stat, statErr := os.Stat(dbPath)
-	if statErr != nil {
-		t.Fatalf("tracker DB file not created at expected path %s: %v", dbPath, statErr)
-	}
-	if !stat.Mode().IsRegular() {
-		t.Errorf("expected regular file at %s, got mode %v", dbPath, stat.Mode())
-	}
-	// Verify it's the exact path by listing and ensuring no tracker.db sibling.
-	entries, _ := filepath.Glob(filepath.Join(filepath.Dir(dbPath), "tracker.db"))
-	if len(entries) > 0 {
-		t.Errorf("unexpected tracker.db sibling created alongside explicit path")
-	}
-}
-
-// TestOpenTrackerDB_FallsBackOnReadOnlyHome verifies that openTrackerDB falls back
-// to os.TempDir() when the XDG_DATA_HOME-derived path is on a read-only filesystem.
-// This reproduces the container scenario where HOME=/root and /root is read-only.
-func TestOpenTrackerDB_FallsBackOnReadOnlyHome(t *testing.T) {
-	// Create a directory we immediately make read-only to simulate EROFS.
-	readOnlyParent := t.TempDir()
-	if err := os.Chmod(readOnlyParent, 0555); err != nil {
-		t.Skipf("cannot chmod dir read-only: %v", err)
-	}
-	t.Cleanup(func() {
-		// Restore so t.TempDir cleanup can remove it.
-		_ = os.Chmod(readOnlyParent, 0755)
-	})
-
-	// Clear all env overrides; point XDG_DATA_HOME at the read-only dir.
-	t.Setenv("GO_JOB_TRACKER_DB", "")
-	t.Setenv("GO_JOB_DATA_DIR", "")
-	t.Setenv("XDG_DATA_HOME", readOnlyParent)
-
-	// Reset singleton.
-	trackerDB = nil
-	trackerErr = nil
-	trackerOnce = sync.Once{}
-
-	ctx := context.Background()
-	_, err := AddTrackedJob(ctx, JobTrackerAddInput{Title: "Fallback Job", Company: "Corp"})
-	if err != nil {
-		t.Fatalf("AddTrackedJob should succeed via tempdir fallback, got: %v", err)
-	}
-
-	// Verify the DB landed under os.TempDir(), not under the read-only dir.
-	if trackerDB == nil {
-		t.Fatal("trackerDB is nil after successful AddTrackedJob")
-	}
-	// Confirm go-job subdir exists under TempDir.
-	expectedFallbackDir := filepath.Join(os.TempDir(), "go-job")
-	stat, statErr := os.Stat(expectedFallbackDir)
-	if statErr != nil {
-		t.Fatalf("fallback dir %s not created: %v", expectedFallbackDir, statErr)
-	}
-	if !stat.IsDir() {
-		t.Errorf("expected dir at fallback path %s", expectedFallbackDir)
-	}
-}
-
 func TestInitTrackerSchema_Idempotent(t *testing.T) {
-	dbPath := resetTracker(t)
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
 	ctx := context.Background()
 
 	// Open DB twice — schema init should be idempotent.
@@ -427,11 +365,13 @@ func TestInitTrackerSchema_Idempotent(t *testing.T) {
 		t.Fatalf("first add error: %v", err)
 	}
 
-	// Reset singleton but keep same DB path (same file, re-open).
+	// Reset singleton; keep same UPLOADS_ROOT so re-open hits same file.
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
 
 	_, err = AddTrackedJob(ctx, JobTrackerAddInput{Title: "C", Company: "D"})
 	if err != nil {
