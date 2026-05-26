@@ -20,6 +20,9 @@ func RegisterTools(server *mcp.Server) {
 	registerJobTrackerAdd(server)
 	registerJobTrackerList(server)
 	registerJobTrackerUpdate(server)
+	// ATS direct tools
+	registerATSURLParse(server)
+	registerATSBoardFetch(server)
 	// Person research
 	registerPersonResearch(server)
 	// Interview & Career Prep

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	linkedin "github.com/anatolykoptev/go-linkedin"
+	"github.com/anatolykoptev/go-kit/breaker"
+	"github.com/anatolykoptev/go-kit/ratelimit"
 	"github.com/anatolykoptev/go_job/internal/engine"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
@@ -23,6 +25,24 @@ import (
 
 // LinkedIn Guest API endpoint — returns HTML, no auth required.
 const linkedInGuestAPI = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+
+// linkedinLimiter caps concurrent LinkedIn Guest API calls independently of ATS.
+// LinkedIn Voyager is far more aggressive about rate-limiting parallel requests.
+//
+//nolint:gochecknoglobals // package-level limiter, init-once, never mutated
+var linkedinLimiter = ratelimit.NewConcurrencyLimiter(2)
+
+// linkedinBreaker protects against LinkedIn 429/503 storms.
+// After 3 consecutive failures, blocks for 60s with 2× exponential backoff.
+//
+//nolint:gochecknoglobals // package-level breaker, init-once, never mutated
+var linkedinBreaker = breaker.New(breaker.Options{
+	Name:              "linkedin",
+	FailThreshold:     3,
+	OpenDuration:      60 * time.Second,
+	BackoffMultiplier: 2.0,
+	MaxOpenDuration:   10 * time.Minute,
+})
 
 // experienceMap maps human-readable experience levels to LinkedIn filter codes.
 var experienceMap = map[string]string{
@@ -219,6 +239,17 @@ func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobTyp
 // when available, falling back to standard net/http client.
 // LinkedIn blocks non-browser TLS fingerprints, so BrowserClient is strongly preferred.
 func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
+	if !linkedinBreaker.Allow() {
+		return nil, fmt.Errorf("linkedin breaker open: %w", breaker.ErrOpen)
+	}
+
+	release, err := linkedinLimiter.Acquire(ctx)
+	if err != nil {
+		linkedinBreaker.Record(false)
+		return nil, err
+	}
+	defer release()
+
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
@@ -239,8 +270,10 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 			return d, nil
 		})
 		if err != nil {
+			linkedinBreaker.Record(false)
 			return nil, err
 		}
+		linkedinBreaker.Record(true)
 		return data, nil
 	}
 
@@ -256,15 +289,19 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
+		linkedinBreaker.Record(false)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		linkedinBreaker.Record(false)
 		return nil, fmt.Errorf("linkedin status %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	linkedinBreaker.Record(err == nil)
+	return data, err
 }
 
 // parseLinkedInHTML extracts job cards from the Guest API HTML response
