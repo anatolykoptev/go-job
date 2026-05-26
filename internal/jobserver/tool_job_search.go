@@ -20,23 +20,24 @@ const (
 	platLinkedIn   = "linkedin"
 	platGreenhouse = "greenhouse"
 	platLever      = "lever"
+	platAshby      = "ashby"
 	platIndeed     = "indeed"
 	platATS        = "ats"
 	platStartup    = "startup"
 	platGoogle     = "google"
 	platCraigslist = "craigslist"
-	platRemoteOK    = "remoteok"
-	platWWR         = "weworkremotely"
-	platFreelancer  = "freelancer"
-	platRemotive    = "remotive"
-	platRemote      = "remote"
+	platRemoteOK   = "remoteok"
+	platWWR        = "weworkremotely"
+	platFreelancer = "freelancer"
+	platRemotive   = "remotive"
+	platRemote     = "remote"
 )
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -84,6 +85,7 @@ func registerJobSearch(server *mcp.Server) {
 		useLinkedIn := platform == platAll || platform == platLinkedIn
 		useGreenhouse := platform == platAll || platform == platGreenhouse || platform == platATS || platform == platStartup
 		useLever := platform == platAll || platform == platLever || platform == platATS || platform == platStartup
+		useAshby := platform == platAll || platform == platAshby || platform == platATS || platform == platStartup
 		useYC := platform == platAll || platform == "yc" || platform == platStartup
 		useHN := platform == platAll || platform == "hn" || platform == platStartup
 		useIndeed := platform == platAll || platform == platIndeed
@@ -112,6 +114,9 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useLever {
 			srcs = append(srcs, "lever")
+		}
+		if useAshby {
+			srcs = append(srcs, platAshby)
 		}
 		if useYC {
 			srcs = append(srcs, "yc")
@@ -173,6 +178,13 @@ func registerJobSearch(server *mcp.Server) {
 					results, err := jobs.SearchLeverJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: lever error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platAshby:
+					results, err := jobs.SearchAshbyJobs(ctx, input.Query, input.Location, 10)
+					if err != nil {
+						slog.Warn("job_search: ashby error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
@@ -399,6 +411,8 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:boards.greenhouse.io"
 	case "lever":
 		sitePart = "site:jobs.lever.co"
+	case platAshby:
+		sitePart = "site:jobs.ashbyhq.com"
 	case "yc":
 		sitePart = "site:workatastartup.com"
 	case "hn":

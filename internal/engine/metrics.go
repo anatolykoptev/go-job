@@ -27,6 +27,7 @@ const (
 	MetricHNJobsRequests          = "hn_jobs_requests_total"
 	MetricGreenhouseRequests      = "greenhouse_requests_total"
 	MetricLeverRequests           = "lever_requests_total"
+	MetricAshbyRequests           = "ashby_requests_total"
 	MetricYCJobsRequests          = "yc_jobs_requests_total"
 	MetricIndeedRequests          = "indeed_requests_total"
 	MetricHabrRequests            = "habr_requests_total"
@@ -81,7 +82,7 @@ func FormatMetrics() string {
 		MetricRemoteOKRequests, MetricWWRRequests,
 		MetricGitingestRequests,
 		MetricYouTubeSearchRequests, MetricYouTubeTranscriptReqs,
-		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricYCJobsRequests,
+		MetricHNJobsRequests, MetricGreenhouseRequests, MetricLeverRequests, MetricAshbyRequests, MetricYCJobsRequests,
 		MetricIndeedRequests, MetricHabrRequests, MetricCraigslistRequests, MetricAlgoraRequests,
 		MetricSherlockRequests, MetricCantinaRequests, MetricCode4renaRequests,
 		MetricToolCalls,
@@ -100,6 +101,7 @@ func IncrGitingestRequests()     { reg.Incr(MetricGitingestRequests) }
 func IncrHNJobsRequests()        { reg.Incr(MetricHNJobsRequests) }
 func IncrGreenhouseRequests()    { reg.Incr(MetricGreenhouseRequests) }
 func IncrLeverRequests()         { reg.Incr(MetricLeverRequests) }
+func IncrAshbyRequests()         { reg.Incr(MetricAshbyRequests) }
 func IncrYCJobsRequests()        { reg.Incr(MetricYCJobsRequests) }
 func IncrRemoteOKRequests()      { reg.Incr(MetricRemoteOKRequests) }
 func IncrWWRRequests()           { reg.Incr(MetricWWRRequests) }

@@ -5,12 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/uploads"
 	_ "modernc.org/sqlite"
 )
 
@@ -82,17 +81,18 @@ var (
 )
 
 // openTrackerDB opens (or creates) the SQLite tracker database.
+// Storage: $UPLOADS_ROOT/go-job/tracker/tracker.db (go-kit/uploads canonical convention).
+// The uploads root defaults to $HOME/uploads; override via UPLOADS_ROOT env var.
 func openTrackerDB() (*sql.DB, error) {
 	trackerOnce.Do(func() {
-		dir := filepath.Join(os.Getenv("HOME"), ".go_job")
-		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from HOME env var, not user input
-			trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
+		dbPath, err := uploads.Path("go-job", "tracker", "tracker.db")
+		if err != nil {
+			trackerErr = fmt.Errorf("tracker: resolve path: %w", err)
 			return
 		}
-		dbPath := filepath.Join(dir, "tracker.db")
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
-			trackerErr = fmt.Errorf("tracker: open db: %w", err)
+			trackerErr = fmt.Errorf("tracker: open db %s: %w", dbPath, err)
 			return
 		}
 		db.SetMaxOpenConns(1) // SQLite: single writer
