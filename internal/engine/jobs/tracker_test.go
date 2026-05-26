@@ -2,23 +2,26 @@ package jobs
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
 
 // resetTracker resets the singleton so each test gets a fresh DB.
+// Uses GO_JOB_TRACKER_DB to pin the DB path to a temp file,
+// avoiding any dependency on HOME or container read-only filesystem.
 func resetTracker(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	// Override HOME so openTrackerDB uses the temp dir.
-	t.Setenv("HOME", dir)
+	dbPath := filepath.Join(t.TempDir(), "tracker.db")
+	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
+	// Clear any stale XDG/DATA_DIR overrides from parent env.
+	t.Setenv("GO_JOB_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "")
 	// Reset the singleton.
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	return filepath.Join(dir, ".go_job", "tracker.db")
+	return dbPath
 }
 
 func TestAddTrackedJob_Basic(t *testing.T) {
@@ -285,8 +288,87 @@ func TestValidStatus(t *testing.T) {
 	}
 }
 
+// TestResolveTrackerDir verifies env-variable path priority.
+func TestResolveTrackerDir(t *testing.T) {
+	// Clear all overrides before each sub-test.
+	clearTrackerEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("GO_JOB_TRACKER_DB", "")
+		t.Setenv("GO_JOB_DATA_DIR", "")
+		t.Setenv("XDG_DATA_HOME", "")
+	}
+
+	t.Run("GO_JOB_TRACKER_DB takes priority", func(t *testing.T) {
+		clearTrackerEnv(t)
+		dbPath := filepath.Join(t.TempDir(), "custom.db")
+		t.Setenv("GO_JOB_TRACKER_DB", dbPath)
+		got, err := resolveTrackerDir()
+		if err != nil {
+			t.Fatalf("resolveTrackerDir error: %v", err)
+		}
+		if got != filepath.Dir(dbPath) {
+			t.Errorf("got %q, want %q", got, filepath.Dir(dbPath))
+		}
+	})
+
+	t.Run("GO_JOB_DATA_DIR second priority", func(t *testing.T) {
+		clearTrackerEnv(t)
+		dataDir := t.TempDir()
+		t.Setenv("GO_JOB_DATA_DIR", dataDir)
+		got, err := resolveTrackerDir()
+		if err != nil {
+			t.Fatalf("resolveTrackerDir error: %v", err)
+		}
+		want := filepath.Join(dataDir, "tracker")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("XDG_DATA_HOME third priority", func(t *testing.T) {
+		clearTrackerEnv(t)
+		xdg := t.TempDir()
+		t.Setenv("XDG_DATA_HOME", xdg)
+		got, err := resolveTrackerDir()
+		if err != nil {
+			t.Fatalf("resolveTrackerDir error: %v", err)
+		}
+		want := filepath.Join(xdg, "go-job")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// TestOpenTrackerDB_EnvPath verifies that GO_JOB_TRACKER_DB creates the DB
+// at the specified exact path (not an appended tracker.db inside it).
+func TestOpenTrackerDB_EnvPath(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "explicit.db")
+	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
+	t.Setenv("GO_JOB_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
+	ctx := context.Background()
+	_, err := AddTrackedJob(ctx, JobTrackerAddInput{Title: "T", Company: "C"})
+	if err != nil {
+		t.Fatalf("AddTrackedJob error: %v", err)
+	}
+
+	if _, statErr := filepath.Abs(dbPath); statErr != nil {
+		t.Errorf("DB not created at expected path %s", dbPath)
+	}
+	// Verify it's the exact path by listing and ensuring no tracker.db sibling.
+	entries, _ := filepath.Glob(filepath.Join(filepath.Dir(dbPath), "tracker.db"))
+	if len(entries) > 0 {
+		t.Errorf("unexpected tracker.db sibling created alongside explicit path")
+	}
+}
+
 func TestInitTrackerSchema_Idempotent(t *testing.T) {
-	resetTracker(t)
+	dbPath := resetTracker(t)
 	ctx := context.Background()
 
 	// Open DB twice — schema init should be idempotent.
@@ -295,12 +377,11 @@ func TestInitTrackerSchema_Idempotent(t *testing.T) {
 		t.Fatalf("first add error: %v", err)
 	}
 
-	// Reset singleton but keep same HOME dir (same DB file).
-	home := os.Getenv("HOME")
+	// Reset singleton but keep same DB path (same file, re-open).
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	t.Setenv("HOME", home)
+	t.Setenv("GO_JOB_TRACKER_DB", dbPath)
 
 	_, err = AddTrackedJob(ctx, JobTrackerAddInput{Title: "C", Company: "D"})
 	if err != nil {

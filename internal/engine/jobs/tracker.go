@@ -81,15 +81,45 @@ var (
 	trackerErr  error
 )
 
+// resolveTrackerDir returns the directory where tracker.db should live.
+// Priority order:
+//  1. GO_JOB_TRACKER_DB env (full path) — use its parent dir
+//  2. GO_JOB_DATA_DIR env — <dir>/tracker
+//  3. XDG_DATA_HOME env — <dir>/go-job
+//  4. os.UserHomeDir() — <home>/.go_job
+//  5. os.TempDir() fallback — always writable
+func resolveTrackerDir() (string, error) {
+	if p := os.Getenv("GO_JOB_TRACKER_DB"); p != "" {
+		return filepath.Dir(p), nil
+	}
+	if d := os.Getenv("GO_JOB_DATA_DIR"); d != "" {
+		return filepath.Join(d, "tracker"), nil
+	}
+	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
+		return filepath.Join(x, "go-job"), nil
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".go_job"), nil
+	}
+	return filepath.Join(os.TempDir(), "go-job"), nil
+}
+
 // openTrackerDB opens (or creates) the SQLite tracker database.
 func openTrackerDB() (*sql.DB, error) {
 	trackerOnce.Do(func() {
-		dir := filepath.Join(os.Getenv("HOME"), ".go_job")
-		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from HOME env var, not user input
+		dir, err := resolveTrackerDir()
+		if err != nil {
+			trackerErr = fmt.Errorf("tracker: resolve dir: %w", err)
+			return
+		}
+		if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // path derived from env/home, not user input
 			trackerErr = fmt.Errorf("tracker: mkdir %s: %w", dir, err)
 			return
 		}
 		dbPath := filepath.Join(dir, "tracker.db")
+		if env := os.Getenv("GO_JOB_TRACKER_DB"); env != "" {
+			dbPath = env
+		}
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
 			trackerErr = fmt.Errorf("tracker: open db: %w", err)
