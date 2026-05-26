@@ -31,11 +31,13 @@ github.com/anatolykoptev/go-engine/text
 github.com/anatolykoptev/go-engine/websearch
 # github.com/anatolykoptev/go-kit v0.73.0
 ## explicit; go 1.26
+github.com/anatolykoptev/go-kit/breaker
 github.com/anatolykoptev/go-kit/cache
 github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/metrics/mcpmw
+github.com/anatolykoptev/go-kit/ratelimit
 github.com/anatolykoptev/go-kit/retry
 github.com/anatolykoptev/go-kit/uploads
 # github.com/anatolykoptev/go-linkedin v0.4.2 => /home/krolik/src/go-linkedin

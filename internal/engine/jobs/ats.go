@@ -8,11 +8,55 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/anatolykoptev/go-kit/breaker"
+	"github.com/anatolykoptev/go-kit/ratelimit"
 	"github.com/anatolykoptev/go_job/internal/engine"
+)
+
+// atsLimiter caps concurrent outbound ATS API calls across all providers.
+// Configurable via GO_JOB_ATS_MAX_CONCURRENT env (default 3).
+//
+//nolint:gochecknoglobals // package-level limiter, mirrors atsBreakers pattern below
+var atsLimiter = ratelimit.NewConcurrencyLimiter(getATSMaxConcurrent())
+
+func getATSMaxConcurrent() int {
+	if v := os.Getenv("GO_JOB_ATS_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 3
+}
+
+// Per-provider circuit breakers. After FailThreshold consecutive failures the
+// breaker opens for OpenDuration, blocking further attempts. After cooldown it
+// half-opens for one probe; if that succeeds the breaker resets to closed.
+//
+//nolint:gochecknoglobals // package-level breakers, init-once, never mutated
+var (
+	ashbyBreaker = breaker.New(breaker.Options{
+		Name:              "ashby",
+		FailThreshold:     3,
+		OpenDuration:      30 * time.Second,
+		BackoffMultiplier: 2.0,
+		MaxOpenDuration:   5 * time.Minute,
+	})
+	greenhouseBreaker = breaker.New(breaker.Options{
+		Name:          "greenhouse",
+		FailThreshold: 3,
+		OpenDuration:  30 * time.Second,
+	})
+	leverBreaker = breaker.New(breaker.Options{
+		Name:          "lever",
+		FailThreshold: 3,
+		OpenDuration:  30 * time.Second,
+	})
 )
 
 // --- Greenhouse ---
@@ -133,10 +177,22 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 //
 //nolint:dupl // structurally similar to fetchAshbyJobs/fetchLeverPostings — different types, URLs, body limits
 func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, error) {
+	if !greenhouseBreaker.Allow() {
+		return nil, fmt.Errorf("greenhouse breaker open: %w", breaker.ErrOpen)
+	}
+
+	release, err := atsLimiter.Acquire(ctx)
+	if err != nil {
+		greenhouseBreaker.Record(false)
+		return nil, err
+	}
+	defer release()
+
 	apiURL := fmt.Sprintf(greenhouseBoardsAPI, slug)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
+		greenhouseBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -146,26 +202,32 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
+		greenhouseBreaker.Record(false)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		greenhouseBreaker.Record(true) // 404 = valid response, not a failure
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		greenhouseBreaker.Record(false)
 		return nil, fmt.Errorf("greenhouse API status %d for %s", resp.StatusCode, slug)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
+		greenhouseBreaker.Record(false)
 		return nil, err
 	}
 
 	var gr greenhouseResponse
 	if err := json.Unmarshal(body, &gr); err != nil {
+		greenhouseBreaker.Record(false)
 		return nil, fmt.Errorf("greenhouse parse: %w", err)
 	}
+	greenhouseBreaker.Record(true)
 	return gr.Jobs, nil
 }
 
@@ -316,10 +378,22 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 
 // fetchLeverPostings fetches all job postings for a given company slug.
 func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error) {
+	if !leverBreaker.Allow() {
+		return nil, fmt.Errorf("lever breaker open: %w", breaker.ErrOpen)
+	}
+
+	release, err := atsLimiter.Acquire(ctx)
+	if err != nil {
+		leverBreaker.Record(false)
+		return nil, err
+	}
+	defer release()
+
 	apiURL := fmt.Sprintf(leverAPIBase, slug)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
+		leverBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -329,26 +403,32 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
+		leverBreaker.Record(false)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		leverBreaker.Record(true) // 404 = valid response, not a failure
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		leverBreaker.Record(false)
 		return nil, fmt.Errorf("lever API status %d for %s", resp.StatusCode, slug)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
+		leverBreaker.Record(false)
 		return nil, err
 	}
 
 	var postings []leverPosting
 	if err := json.Unmarshal(body, &postings); err != nil {
+		leverBreaker.Record(false)
 		return nil, fmt.Errorf("lever parse: %w", err)
 	}
+	leverBreaker.Record(true)
 	return postings, nil
 }
 
@@ -497,10 +577,22 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 //
 //nolint:dupl // structurally similar to fetchGreenhouseJobs — different types, API URL pattern, and body limit (5MB vs 2MB)
 func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
+	if !ashbyBreaker.Allow() {
+		return nil, fmt.Errorf("ashby breaker open: %w", breaker.ErrOpen)
+	}
+
+	release, err := atsLimiter.Acquire(ctx)
+	if err != nil {
+		ashbyBreaker.Record(false)
+		return nil, err
+	}
+	defer release()
+
 	apiURL := fmt.Sprintf(ashbyBoardAPI, slug)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
+		ashbyBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -510,27 +602,33 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
+		ashbyBreaker.Record(false)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		ashbyBreaker.Record(true) // 404 = valid response, not a failure
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		ashbyBreaker.Record(false)
 		return nil, fmt.Errorf("ashby API status %d for %s", resp.StatusCode, slug)
 	}
 
 	// Use 5MB limit: large boards (Notion, OpenAI) can approach 2MB.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
+		ashbyBreaker.Record(false)
 		return nil, err
 	}
 
 	var ar ashbyResponse
 	if err := json.Unmarshal(body, &ar); err != nil {
+		ashbyBreaker.Record(false)
 		return nil, fmt.Errorf("ashby parse: %w", err)
 	}
+	ashbyBreaker.Record(true)
 	return ar.Jobs, nil
 }
 
