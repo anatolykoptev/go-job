@@ -95,7 +95,7 @@ func TestBuildAshbyLocation(t *testing.T) {
 		{
 			name: "remote no primary location",
 			job:  ashbyJob{IsRemote: true},
-			want: "| Remote",
+			want: "Remote",
 		},
 		{
 			name: "secondary locations appended",
@@ -137,19 +137,30 @@ func TestBuildAshbyLocation(t *testing.T) {
 
 // --- fetchAshbyJobs via httptest ---
 
-func newAshbyTestServer(t *testing.T, slug string, jobs []ashbyJob) *httptest.Server {
+// newAshbyTestServer returns a test server that responds to the Ashby board API format.
+// It serves /<slug> with the given jobs list; any other path returns 404.
+func newAshbyTestServer(t *testing.T, slug string, jobsList []ashbyJob) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, slug) {
 			http.NotFound(w, r)
 			return
 		}
-		resp := ashbyResponse{Jobs: jobs}
+		resp := ashbyResponse{Jobs: jobsList}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			t.Errorf("encode error: %v", err)
 		}
 	}))
+}
+
+// patchAshbyAPI replaces ashbyBoardAPI with a test-server URL template and restores
+// the original on test cleanup.
+func patchAshbyAPI(t *testing.T, serverURL string) {
+	t.Helper()
+	orig := ashbyBoardAPI
+	ashbyBoardAPI = serverURL + "/posting-api/job-board/%s?includeCompensation=true"
+	t.Cleanup(func() { ashbyBoardAPI = orig })
 }
 
 func TestFetchAshbyJobs_Success(t *testing.T) {
@@ -168,29 +179,17 @@ func TestFetchAshbyJobs_Success(t *testing.T) {
 
 	srv := newAshbyTestServer(t, "modal", want)
 	defer srv.Close()
+	patchAshbyAPI(t, srv.URL)
 
-	// Patch ashbyBoardAPI to point at test server.
-	origAPI := ashbyBoardAPI
-	// Since ashbyBoardAPI is a const we can't modify it directly — use a
-	// httptest.NewServer that serves any path and test fetchAshbyJobs via
-	// the engine client pointed at the stub.
-	_ = origAPI
-
-	// Instead test indirectly via FetchATSBoard with a stubbed HTTP client.
-	// Re-scope: test the normalisation logic without network by validating
-	// that the slug extraction + JSON struct decode works correctly.
 	ctx := context.Background()
-
-	// Direct JSON decode test — verifies ashbyResponse unmarshalling.
-	body := `{"jobs":[{"id":"uuid-1","title":"Staff Engineer","location":"Remote","isRemote":true,"workplaceType":"Remote","jobUrl":"https://jobs.ashbyhq.com/modal/uuid-1","descriptionPlain":"Build infrastructure.","publishedAt":"2026-05-01T00:00:00Z"}]}`
-	var ar ashbyResponse
-	if err := json.Unmarshal([]byte(body), &ar); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
+	got, err := fetchAshbyJobs(ctx, "modal")
+	if err != nil {
+		t.Fatalf("fetchAshbyJobs error: %v", err)
 	}
-	if len(ar.Jobs) != 1 {
-		t.Fatalf("expected 1 job, got %d", len(ar.Jobs))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(got))
 	}
-	j := ar.Jobs[0]
+	j := got[0]
 	if j.ID != "uuid-1" {
 		t.Errorf("id = %q, want 'uuid-1'", j.ID)
 	}
@@ -200,9 +199,9 @@ func TestFetchAshbyJobs_Success(t *testing.T) {
 	if !j.IsRemote {
 		t.Error("expected IsRemote=true")
 	}
-
-	_ = ctx
-	srv.Close()
+	if j.DescriptionPlain != "Build infrastructure." {
+		t.Errorf("description = %q", j.DescriptionPlain)
+	}
 }
 
 func TestFetchAshbyJobs_NotFound(t *testing.T) {
@@ -210,12 +209,45 @@ func TestFetchAshbyJobs_NotFound(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
+	patchAshbyAPI(t, srv.URL)
 
-	// 404 should return nil, nil (not an error) — verify via direct JSON decode logic.
-	// fetchAshbyJobs calls engine.Cfg.HTTPClient which we can't easily stub here,
-	// so we test the response-handling invariant: nil, nil on 404.
-	// This is validated by the integration path; unit-level: verify slug not found is nil.
-	t.Log("404-returns-nil tested via integration; stub server created to confirm no panic")
+	ctx := context.Background()
+	got, err := fetchAshbyJobs(ctx, "nonexistent-slug")
+	if err != nil {
+		t.Fatalf("expected nil error on 404, got: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil jobs on 404, got %v", got)
+	}
+}
+
+func TestFetchAshbyJobs_InvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not valid json`))
+	}))
+	defer srv.Close()
+	patchAshbyAPI(t, srv.URL)
+
+	ctx := context.Background()
+	_, err := fetchAshbyJobs(ctx, "any-slug")
+	if err == nil {
+		t.Fatal("expected error on invalid JSON, got nil")
+	}
+}
+
+func TestFetchAshbyJobs_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	patchAshbyAPI(t, srv.URL)
+
+	ctx := context.Background()
+	_, err := fetchAshbyJobs(ctx, "any-slug")
+	if err == nil {
+		t.Fatal("expected error on 500 response, got nil")
+	}
 }
 
 // --- Ashby result content format ---

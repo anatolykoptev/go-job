@@ -20,6 +20,9 @@ import (
 const greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards/%s/jobs"
 const greenhouseSiteSearch = "site:boards.greenhouse.io"
 
+// maxATSSlugsPerSearch caps how many company slugs we fan-out to per ATS source per query.
+const maxATSSlugsPerSearch = 5
+
 // greenhouseSlugRe extracts company slug from boards.greenhouse.io URLs.
 var greenhouseSlugRe = regexp.MustCompile(`boards\.greenhouse\.io/([^/?#]+)`)
 
@@ -62,8 +65,8 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 		slog.Debug("greenhouse: no slugs found in SearXNG results")
 		return nil, nil
 	}
-	if len(slugs) > 5 {
-		slugs = slugs[:5]
+	if len(slugs) > maxATSSlugsPerSearch {
+		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	// Fetch jobs from each company's public API in parallel.
@@ -233,8 +236,8 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 		slog.Debug("lever: no slugs found in SearXNG results")
 		return nil, nil
 	}
-	if len(slugs) > 5 {
-		slugs = slugs[:5]
+	if len(slugs) > maxATSSlugsPerSearch {
+		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	type fetchResult struct {
@@ -367,7 +370,9 @@ func extractLeverSlugs(results []engine.SearxngResult) []string {
 
 // --- Ashby ---
 
-const ashbyBoardAPI = "https://api.ashbyhq.com/posting-api/job-board/%s?includeCompensation=true"
+//nolint:gochecknoglobals // var (not const) to allow test substitution
+var ashbyBoardAPI = "https://api.ashbyhq.com/posting-api/job-board/%s?includeCompensation=true"
+
 const ashbySiteSearch = "site:jobs.ashbyhq.com"
 
 // ashbySlugRe extracts company slug from jobs.ashbyhq.com URLs.
@@ -418,8 +423,8 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 		slog.Debug("ashby: no slugs found in SearXNG results")
 		return nil, nil
 	}
-	if len(slugs) > 5 {
-		slugs = slugs[:5]
+	if len(slugs) > maxATSSlugsPerSearch {
+		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	type fetchResult struct {
@@ -550,7 +555,11 @@ func extractAshbySlugs(results []engine.SearxngResult) []string {
 func buildAshbyLocation(j ashbyJob) string {
 	loc := j.Location
 	if j.IsRemote {
-		loc = strings.TrimSpace(loc + " | Remote")
+		if loc == "" {
+			loc = "Remote"
+		} else {
+			loc += " | Remote"
+		}
 	}
 	if len(j.SecondaryLocations) > 0 {
 		var sec []string
