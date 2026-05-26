@@ -9,16 +9,78 @@ import (
 )
 
 // resetTracker resets the singleton so each test gets a fresh DB.
-func resetTracker(t *testing.T) string {
+// Sets UPLOADS_ROOT to a temp dir so the DB lands at
+// $UPLOADS_ROOT/go-job/tracker/tracker.db — the canonical uploads convention.
+func resetTracker(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	// Override HOME so openTrackerDB uses the temp dir.
-	t.Setenv("HOME", dir)
-	// Reset the singleton.
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	return filepath.Join(dir, ".go_job", "tracker.db")
+}
+
+// TestOpenTrackerDB_UsesUploadsConvention verifies that openTrackerDB places
+// the DB at $UPLOADS_ROOT/go-job/tracker/tracker.db as per go-kit/uploads convention.
+func TestOpenTrackerDB_UsesUploadsConvention(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
+	db, err := openTrackerDB()
+	if err != nil {
+		t.Fatalf("openTrackerDB: %v", err)
+	}
+	if db == nil {
+		t.Fatal("openTrackerDB returned nil db")
+	}
+
+	expected := filepath.Join(root, "go-job", "tracker", "tracker.db")
+	info, err := os.Stat(expected)
+	if err != nil {
+		t.Fatalf("stat %s: %v", expected, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file, got mode %v", info.Mode())
+	}
+}
+
+// TestOpenTrackerDB_RoundTrip verifies AddTrackedJob + ListTrackedJobs
+// through the uploads-convention path end-to-end.
+func TestOpenTrackerDB_RoundTrip(t *testing.T) {
+	resetTracker(t)
+	ctx := context.Background()
+
+	added, err := AddTrackedJob(ctx, JobTrackerAddInput{
+		Title:   "Staff Engineer",
+		Company: "Stripe",
+		Status:  "applied",
+	})
+	if err != nil {
+		t.Fatalf("AddTrackedJob: %v", err)
+	}
+	if added.ID <= 0 {
+		t.Fatalf("expected positive ID, got %d", added.ID)
+	}
+
+	list, err := ListTrackedJobs(ctx, JobTrackerListInput{Status: "applied"})
+	if err != nil {
+		t.Fatalf("ListTrackedJobs: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("total = %d, want 1", list.Total)
+	}
+	if list.Jobs[0].Title != "Staff Engineer" {
+		t.Errorf("title = %q, want 'Staff Engineer'", list.Jobs[0].Title)
+	}
 }
 
 func TestAddTrackedJob_Basic(t *testing.T) {
@@ -26,12 +88,12 @@ func TestAddTrackedJob_Basic(t *testing.T) {
 	ctx := context.Background()
 
 	result, err := AddTrackedJob(ctx, JobTrackerAddInput{
-		Title:   "Senior Go Developer",
-		Company: "Stripe",
-		URL:     "https://stripe.com/jobs/123",
-		Status:  "applied",
-		Notes:   "Applied via LinkedIn",
-		Salary:  "$180k",
+		Title:    "Senior Go Developer",
+		Company:  "Stripe",
+		URL:      "https://stripe.com/jobs/123",
+		Status:   "applied",
+		Notes:    "Applied via LinkedIn",
+		Salary:   "$180k",
 		Location: "Remote",
 	})
 	if err != nil {
@@ -286,7 +348,15 @@ func TestValidStatus(t *testing.T) {
 }
 
 func TestInitTrackerSchema_Idempotent(t *testing.T) {
-	resetTracker(t)
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
+	trackerDB = nil
+	trackerErr = nil
+	trackerOnce = sync.Once{}
+
 	ctx := context.Background()
 
 	// Open DB twice — schema init should be idempotent.
@@ -295,12 +365,13 @@ func TestInitTrackerSchema_Idempotent(t *testing.T) {
 		t.Fatalf("first add error: %v", err)
 	}
 
-	// Reset singleton but keep same HOME dir (same DB file).
-	home := os.Getenv("HOME")
+	// Reset singleton; keep same UPLOADS_ROOT so re-open hits same file.
+	if trackerDB != nil {
+		_ = trackerDB.Close()
+	}
 	trackerDB = nil
 	trackerErr = nil
 	trackerOnce = sync.Once{}
-	t.Setenv("HOME", home)
 
 	_, err = AddTrackedJob(ctx, JobTrackerAddInput{Title: "C", Company: "D"})
 	if err != nil {
