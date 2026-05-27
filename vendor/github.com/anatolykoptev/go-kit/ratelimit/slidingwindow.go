@@ -105,6 +105,18 @@ func NewSlidingWindow(cfg SlidingWindowConfig) *SlidingWindow {
 
 // Allow records one attempt and reports whether the caller is within the rate
 // limit. It returns (allowed, remaining, error).
+//
+// remaining is the number of calls still permitted in the current window after
+// this call. On denial remaining is clamped to 0.
+//
+// On Redis errors the limiter fails open (allowed=true, err non-nil) when
+// FailOpen is true, or fails closed (allowed=false, err non-nil) when
+// FailOpen is false.
+//
+// INCR and TTL are set atomically via a Lua script (incrExpireScript): the key
+// is incremented and EXPIRE is called only on the first hit (v==1). Bucket keys
+// are therefore never orphaned — a process crash between INCR and EXPIRE cannot
+// produce a key without a TTL.
 func (s *SlidingWindow) Allow(ctx context.Context, key string) (allowed bool, remaining int, err error) {
 	now := s.now()
 	bucketSec := s.bucketTTLSeconds()
@@ -112,6 +124,7 @@ func (s *SlidingWindow) Allow(ctx context.Context, key string) (allowed bool, re
 	bucketKey := s.bucketKey(key, currentBucket)
 	ttlSecs := strconv.FormatInt(int64(s.bucketTTL.Seconds()), 10)
 
+	// Atomic INCR + conditional EXPIRE via Lua.
 	if err := incrExpireScript.Run(ctx, s.cfg.Redis, []string{bucketKey}, ttlSecs).Err(); err != nil && err != redis.Nil {
 		if s.cfg.FailOpen {
 			return true, 0, err
@@ -119,6 +132,8 @@ func (s *SlidingWindow) Allow(ctx context.Context, key string) (allowed bool, re
 		return false, 0, err
 	}
 
+	// Sum all buckets in the window (non-atomic with the INCR above; a rolling
+	// window tolerates this small skew, which is at most one bucket duration).
 	pipe := s.cfg.Redis.Pipeline()
 	getCmds := make([]*redis.StringCmd, s.numBuckets)
 	for i := 0; i < s.numBuckets; i++ {
@@ -147,6 +162,15 @@ func (s *SlidingWindow) Allow(ctx context.Context, key string) (allowed bool, re
 }
 
 // Reset deletes all bucket keys for key using SCAN + DEL.
+// Called on successful login so isolated typos do not erode the budget.
+//
+// All matching keys are collected first, then deleted in a single DEL call.
+// This avoids partial-reset semantics: either all keys are removed or none
+// (subject to Redis atomicity of DEL). A partial collection failure returns
+// an error without attempting deletion.
+//
+// Note: the donor used SCAN+DEL (not KEYS+DEL) to avoid blocking Redis.
+// This implementation preserves that choice.
 func (s *SlidingWindow) Reset(ctx context.Context, key string) error {
 	pattern := fmt.Sprintf("%s:%s:*", s.cfg.KeyPrefix, key)
 	var cursor uint64

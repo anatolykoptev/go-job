@@ -1,18 +1,16 @@
 package jobserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
 	linkedin "github.com/anatolykoptev/go-linkedin"
+	"github.com/anatolykoptev/go-mcpserver/mcpclient"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -28,6 +26,13 @@ type linkedInProfileIngestOutput struct {
 	Profile      *linkedin.Profile `json:"profile"`
 	NervIngested bool              `json:"nerv_ingested"`
 	NervResult   json.RawMessage   `json:"nerv_result,omitempty"`
+}
+
+func nervClientURL() string {
+	if u := os.Getenv("GO_NERV_URL"); u != "" {
+		return u
+	}
+	return "http://go-nerv:8895"
 }
 
 func registerLinkedInProfileIngest(server *mcp.Server) {
@@ -65,63 +70,30 @@ func registerLinkedInProfileIngest(server *mcp.Server) {
 }
 
 func sendToNerv(ctx context.Context, tenantID string, profile *linkedin.Profile) (json.RawMessage, error) {
-	nervURL := os.Getenv("GO_NERV_URL")
-	if nervURL == "" {
-		nervURL = "http://go-nerv:8895"
-	}
+	// nervClient is created per-call so it picks up dynamic GO_NERV_URL at
+	// runtime. The session is NOT reused (WithSessionReuse(false)) since calls
+	// are infrequent and per-call session avoids keeping a long-lived SSE
+	// connection open. The caller (registerLinkedInProfileIngest) branches on
+	// err!=nil to mark NervIngested=false — WithUnreachableTolerant is NOT set
+	// so that unreachable errors surface and the degraded path fires correctly.
+	nervClient := mcpclient.New(nervClientURL(),
+		mcpclient.WithTimeout(nervIngestTimeout),
+		mcpclient.WithSessionReuse(false),
+	)
+	defer nervClient.Close() //nolint:errcheck
 
-	payload, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name": "nerv_linkedin_ingest",
-			"arguments": map[string]any{
-				"tenant_id": tenantID,
-				"profile":   profile,
-			},
-		},
+	result, err := nervClient.Call(ctx, "nerv_linkedin_ingest", map[string]any{
+		"tenant_id": tenantID,
+		"profile":   profile,
 	})
-
-	ctx, cancel := context.WithTimeout(ctx, nervIngestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, nervURL+"/mcp", bytes.NewReader(payload)) //nolint:gosec // nervURL is an internal service endpoint, not user input
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // req is constructed from internal nervURL, not tainted
 	if err != nil {
 		return nil, fmt.Errorf("nerv request: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// go-nerv uses SSE transport: "event: message\ndata: {json}\n\n"
-	body, err := io.ReadAll(resp.Body)
+	// Marshal the CallToolResult back to JSON for the NervResult pass-through field.
+	raw, err := json.Marshal(result)
 	if err != nil {
-		return nil, fmt.Errorf("read nerv response: %w", err)
+		return nil, fmt.Errorf("nerv encode result: %w", err)
 	}
-	// Extract JSON from SSE "data: " line
-	jsonData := body
-	if idx := bytes.Index(body, []byte("data: ")); idx >= 0 {
-		jsonData = body[idx+6:]
-		if end := bytes.Index(jsonData, []byte("\n")); end >= 0 {
-			jsonData = jsonData[:end]
-		}
-	}
-	var rpcResp struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(jsonData, &rpcResp); err != nil {
-		return nil, fmt.Errorf("decode nerv response: %w (body: %s)", err, string(body[:min(200, len(body))]))
-	}
-	if rpcResp.Error != nil {
-		return nil, fmt.Errorf("nerv: %s", rpcResp.Error.Message)
-	}
-	return rpcResp.Result, nil
+	return json.RawMessage(raw), nil
 }

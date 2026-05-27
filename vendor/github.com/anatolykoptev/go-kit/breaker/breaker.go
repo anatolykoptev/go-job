@@ -102,6 +102,10 @@ func (b *Breaker) Record(success bool) {
 // RecordCycle records aggregate outcomes from a scan cycle. Requires
 // Options.FailRateThreshold to be > 0 — no-op otherwise (use Record for
 // count-based trip). Ignored if total <= 0.
+//
+// Callers may invoke RecordCycle in any state; it auto-transitions open→half-open
+// when the cooldown has elapsed, so a late Record after a long idle period stays
+// accurate even if Allow() was not called in between.
 func (b *Breaker) RecordCycle(total, failed int) {
 	if total <= 0 || b.opts.FailRateThreshold <= 0 {
 		return

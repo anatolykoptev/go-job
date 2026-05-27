@@ -1,20 +1,26 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/anatolykoptev/go-mcpserver/mcpclient"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-const goHullyURL = "http://127.0.0.1:8892/mcp"
+const goHullyURL = "http://127.0.0.1:8892"
+
+// hullyClient is the shared mcpclient for go-hully.
+// WithUnreachableTolerant is NOT set (defaults to false) so that errors surface
+// to the Twitter branch and it can record "(analysis failed)" — preserving the
+// original error-branch behavior where err!=nil triggers a degraded-text path.
+var hullyClient = mcpclient.New(goHullyURL,
+	mcpclient.WithTimeout(25*time.Second),
+)
 
 // PersonProfile is the structured output of person_research.
 type PersonProfile struct {
@@ -33,71 +39,10 @@ type PersonProfile struct {
 	InterviewTips  string   `json:"interview_tips"`
 }
 
-// callGoHully calls a go-hully MCP tool via JSON-RPC 2.0.
+// callGoHully calls a go-hully MCP tool via the shared mcpclient.
 // Returns empty string (not error) if go-hully is unavailable — it's optional.
 func callGoHully(ctx context.Context, toolName string, params map[string]any) (string, error) {
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": params,
-		},
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return "", err
-	}
-
-	httpCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, goHullyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(httpReq) //nolint:gosec // go-hully internal API, intentional outbound request
-	if err != nil {
-		return "", fmt.Errorf("go-hully unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
-		return "", fmt.Errorf("go-hully parse: %w (body: %s)", err, engine.TruncateRunes(string(respBody), 200, "..."))
-	}
-
-	if rpcResp.Error != nil {
-		return "", fmt.Errorf("go-hully error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
-	}
-
-	var parts []string
-	for _, c := range rpcResp.Result.Content {
-		if c.Text != "" {
-			parts = append(parts, c.Text)
-		}
-	}
-	return strings.Join(parts, "\n"), nil
+	return hullyClient.CallText(ctx, toolName, params)
 }
 
 // extractTwitterHandle tries to find a Twitter/X handle from a URL.

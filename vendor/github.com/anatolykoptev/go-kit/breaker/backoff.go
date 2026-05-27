@@ -8,6 +8,11 @@ import (
 
 // computeBackoff returns the cooldown duration for the given number of consecutive
 // trip cycles (1-indexed: first trip uses consecutiveOpens=1).
+//
+// Formula: base * multiplier^(consecutiveOpens-1), capped at maxOpenDuration,
+// then ±jitterPct% random jitter applied symmetrically.
+//
+// Zero or negative BackoffMultiplier collapses to constant backoff = OpenDuration.
 func computeBackoff(opts Options, consecutiveOpens int) time.Duration {
 	base := opts.OpenDuration
 	if consecutiveOpens < 1 {

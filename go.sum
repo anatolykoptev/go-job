@@ -6,12 +6,14 @@ github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31zw7fnfJ/G1ebisIesCDl44slkIVFqk3YTSadd8=
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
+github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
+github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/anatolykoptev/go-engine v1.17.0 h1:30s/yOyeAB+UyvNncdluF7gduHVvt3FJ30NmOBj2xm8=
 github.com/anatolykoptev/go-engine v1.17.0/go.mod h1:78LNL+F+7RMcDBV9mRtP3boYIey9uk3CmZguNfxwJA0=
 github.com/anatolykoptev/go-kit v0.73.0 h1:qsmUzh1NHGXMzDt9hFB70su/CZlUcqZF3dFyqjiDt9A=
 github.com/anatolykoptev/go-kit v0.73.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
-github.com/anatolykoptev/go-mcpserver v0.13.0 h1:vG4hDzcTYho4t27E64K84XyD3E4QHRWs+5A5EYx0/tE=
-github.com/anatolykoptev/go-mcpserver v0.13.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
+github.com/anatolykoptev/go-mcpserver v0.14.0 h1:Sj4fVtPYNNateDoZFG4oYf8BKFeZs5MqIVKARiPXDZQ=
+github.com/anatolykoptev/go-mcpserver v0.14.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.13.0 h1:NslhTU1Zu1k6y5+//ncOUbqkVCJ/wUrSTVdl6ieRz3U=
 github.com/anatolykoptev/go-stealth v1.13.0/go.mod h1:QQhjS2aB429MIELeoqmyN5pHppnfLDafwEZ9cjbrEkU=
 github.com/anatolykoptev/go-twitter v0.5.2 h1:z2Gq9Q7cIqCTNzXDt+P+i497CNo84/j77b6ikf4PWdU=
@@ -183,6 +185,8 @@ github.com/yosssi/gohtml v0.0.0-20201013000340-ee4748c638f4/go.mod h1:+ccdNT0xMY
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 github.com/yuin/goldmark v1.7.13 h1:GPddIs617DnBLFFVJFgpo1aBfe/4xcvMc3SB5t/D0pA=
 github.com/yuin/goldmark v1.7.13/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
+github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
+github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=
 github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
 go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
