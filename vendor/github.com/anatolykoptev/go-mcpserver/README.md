@@ -179,4 +179,4 @@ if mcpserver.IsStdio() {
 
 ## License
 
-MIT
+Apache 2.0
