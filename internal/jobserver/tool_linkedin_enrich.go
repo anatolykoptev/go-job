@@ -79,6 +79,7 @@ func sendToNerv(ctx context.Context, tenantID string, profile *linkedin.Profile)
 	nervClient := mcpclient.New(nervClientURL(),
 		mcpclient.WithTimeout(nervIngestTimeout),
 		mcpclient.WithSessionReuse(false),
+		mcpclient.WithBearer(os.Getenv("NERV_MCP_TOKEN")),
 	)
 	defer nervClient.Close() //nolint:errcheck
 
