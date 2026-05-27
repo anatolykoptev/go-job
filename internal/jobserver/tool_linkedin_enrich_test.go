@@ -3,7 +3,9 @@ package jobserver
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,5 +111,112 @@ func TestSendToNerv_Timeout(t *testing.T) {
 	_, err := sendToNerv(ctx, "startup", profile)
 	if err == nil {
 		t.Fatal("expected timeout/unreachable error, got nil")
+	}
+}
+
+// headerCapture wraps an http.Handler and records every Authorization header
+// received across all requests. Thread-safe via mu.
+type headerCapture struct {
+	mu      sync.Mutex
+	headers []string
+	next    http.Handler
+}
+
+func (hc *headerCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	hc.mu.Lock()
+	hc.headers = append(hc.headers, r.Header.Get("Authorization"))
+	hc.mu.Unlock()
+	hc.next.ServeHTTP(w, r)
+}
+
+func (hc *headerCapture) captured() []string {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	out := make([]string, len(hc.headers))
+	copy(out, hc.headers)
+	return out
+}
+
+// newNervStubWithCapture builds a nerv stub httptest.Server that records all
+// Authorization headers so tests can assert bearer token delivery.
+func newNervStubWithCapture(t *testing.T) (*httptest.Server, *headerCapture) {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "go-nerv-stub-capture", Version: "1.0"}, nil)
+
+	type ingestArgs struct {
+		TenantID string            `json:"tenant_id"`
+		Profile  *linkedin.Profile `json:"profile"`
+	}
+	mcpserver.AddTool(srv, &mcp.Tool{
+		Name:        "nerv_linkedin_ingest",
+		Description: "stub: acknowledges ingest (capture variant)",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, args ingestArgs) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "ok"}},
+		}, nil
+	})
+
+	inner, err := mcpserver.Build(srv, mcpserver.Config{Name: "go-nerv-stub-capture", Version: "1.0.0"})
+	if err != nil {
+		t.Fatalf("mcpserver.Build: %v", err)
+	}
+
+	hc := &headerCapture{next: inner}
+	ts := httptest.NewServer(hc)
+	t.Cleanup(ts.Close)
+	return ts, hc
+}
+
+// TestSendToNerv_BearerToken verifies that when NERV_MCP_TOKEN is set,
+// sendToNerv sends "Authorization: Bearer <token>" on every HTTP request to
+// go-nerv. Empty token must NOT send a header (safe before enforcement).
+//
+// RED: fails before mcpclient.WithBearer(os.Getenv("NERV_MCP_TOKEN")) is added.
+// GREEN: passes after the option is wired in sendToNerv.
+func TestSendToNerv_BearerToken(t *testing.T) {
+	ts, hc := newNervStubWithCapture(t)
+	const token = "test-nerv-token-abc123"
+	t.Setenv("GO_NERV_URL", ts.URL)
+	t.Setenv("NERV_MCP_TOKEN", token)
+
+	profile := &linkedin.Profile{FirstName: "Bearer", LastName: "Test"}
+	_, err := sendToNerv(context.Background(), "startup", profile)
+	if err != nil {
+		t.Fatalf("sendToNerv: %v", err)
+	}
+
+	headers := hc.captured()
+	if len(headers) == 0 {
+		t.Fatal("no requests reached the stub — cannot assert Authorization header")
+	}
+	want := "Bearer " + token
+	for i, h := range headers {
+		if h != want {
+			t.Errorf("request[%d] Authorization = %q, want %q", i, h, want)
+		}
+	}
+}
+
+// TestSendToNerv_NoTokenNoHeader verifies that when NERV_MCP_TOKEN is empty
+// (default), no Authorization header is sent. Safe before enforcement.
+func TestSendToNerv_NoTokenNoHeader(t *testing.T) {
+	ts, hc := newNervStubWithCapture(t)
+	t.Setenv("GO_NERV_URL", ts.URL)
+	t.Setenv("NERV_MCP_TOKEN", "")
+
+	profile := &linkedin.Profile{FirstName: "NoToken", LastName: "Test"}
+	_, err := sendToNerv(context.Background(), "startup", profile)
+	if err != nil {
+		t.Fatalf("sendToNerv: %v", err)
+	}
+
+	headers := hc.captured()
+	if len(headers) == 0 {
+		t.Fatal("no requests reached the stub — cannot assert absence of Authorization header")
+	}
+	for i, h := range headers {
+		if h != "" {
+			t.Errorf("request[%d] Authorization = %q, want empty (no token set)", i, h)
+		}
 	}
 }
