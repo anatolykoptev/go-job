@@ -51,8 +51,48 @@ func BountyListingToHunt(b engine.BountyListing) hunt.Bounty {
 	}
 }
 
+// SourceFromURL classifies a job URL to its origin scraper. Used as a
+// post-LLM safety net so hunt_jobs.source stays correct even when the
+// extractor enumerates "other" for sources outside its training set.
+// Returns empty string when the URL does not match any known portal.
+func SourceFromURL(jobURL string) string {
+	u := strings.ToLower(jobURL)
+	switch {
+	case strings.Contains(u, "careers.un.org"):
+		return "inspira"
+	case strings.Contains(u, "estm.fa.em2.oraclecloud.com/hcmui/candidateexperience") ||
+		strings.Contains(u, "jobs.undp.org"):
+		return "undp"
+	case strings.Contains(u, "linkedin.com/jobs"):
+		return "linkedin"
+	case strings.Contains(u, "boards.greenhouse.io") || strings.Contains(u, "boards-api.greenhouse.io"):
+		return "greenhouse"
+	case strings.Contains(u, "jobs.lever.co"):
+		return "lever"
+	case strings.Contains(u, "jobs.ashbyhq.com"):
+		return "ashby"
+	case strings.Contains(u, "workatastartup.com"):
+		return "yc"
+	case strings.Contains(u, "news.ycombinator.com"):
+		return "hn"
+	case strings.Contains(u, "indeed.com"):
+		return "indeed"
+	case strings.Contains(u, "career.habr.com") || strings.Contains(u, "habr.com/ru/jobs"):
+		return "habr"
+	case strings.Contains(u, "remoteok.com"):
+		return "remoteok"
+	case strings.Contains(u, "weworkremotely.com"):
+		return "weworkremotely"
+	case strings.Contains(u, "remotive.com"):
+		return "remotive"
+	}
+	return ""
+}
+
 // JobListingToHunt converts a JobListing to a hunt.Job.
 // Raw is populated with the serialized source struct for audit trail.
+// Source is URL-derived when the LLM emitted an empty or generic "other"
+// classification so hunt_jobs queries can filter by origin reliably.
 func JobListingToHunt(j engine.JobListing) hunt.Job {
 	salMin := 0
 	if j.SalaryMin != nil {
@@ -62,13 +102,19 @@ func JobListingToHunt(j engine.JobListing) hunt.Job {
 	if j.SalaryMax != nil {
 		salMax = *j.SalaryMax
 	}
+	source := j.Source
+	if source == "" || source == "other" {
+		if derived := SourceFromURL(j.URL); derived != "" {
+			source = derived
+		}
+	}
 	rawJSON, _ := json.Marshal(j)
 	return hunt.Job{
 		DedupHash:      hunt.DedupHash(j.URL),
 		Title:          j.Title,
 		Company:        j.Company,
 		URL:            j.URL,
-		Source:         j.Source,
+		Source:         source,
 		ExternalID:     j.JobID,
 		Location:       j.Location,
 		Remote:         j.Remote,
