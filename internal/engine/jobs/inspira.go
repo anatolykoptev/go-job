@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -221,14 +223,20 @@ func inspiraJobToResult(j inspiraJob) engine.SearxngResult {
 	}
 }
 
-// toTitleCase converts SHOUTY CASE place names to Title Case.
+// toTitleCase converts SHOUTY CASE place names to Title Case. UTF-8 aware
+// because the UN duty-station catalog contains accented and non-Latin names
+// (Côte d'Ivoire, Ñuble, N'Djamena, etc.).
 func toTitleCase(s string) string {
 	words := strings.Fields(strings.ToLower(s))
 	for i, w := range words {
-		if len(w) == 0 {
+		if w == "" {
 			continue
 		}
-		words[i] = strings.ToUpper(w[:1]) + w[1:]
+		r, size := utf8.DecodeRuneInString(w)
+		if r == utf8.RuneError {
+			continue
+		}
+		words[i] = string(unicode.ToUpper(r)) + w[size:]
 	}
 	return strings.Join(words, " ")
 }

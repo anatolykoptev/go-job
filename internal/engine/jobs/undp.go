@@ -82,6 +82,11 @@ func SearchUNDPJobs(ctx context.Context, query, _location string, limit int) ([]
 		facetsList, limit,
 	)
 	if q := strings.TrimSpace(query); q != "" {
+		// SECURITY INVARIANT: url.QueryEscape must percent-encode `,` `;` `&` `=`
+		// so the user-supplied keyword cannot break out of the keyword= value
+		// and inject extra finder params (e.g. limit=999, sortBy=anything, or
+		// a different facets list). url.PathEscape would NOT be safe here
+		// because it leaves `,` raw — do not refactor to it.
 		finder += ",keyword=" + url.QueryEscape(q)
 	}
 
