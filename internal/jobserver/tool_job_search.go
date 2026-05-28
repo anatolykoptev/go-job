@@ -31,13 +31,16 @@ const (
 	platFreelancer = "freelancer"
 	platRemotive   = "remotive"
 	platRemote     = "remote"
+	platInspira    = "inspira" // UN Secretariat careers.un.org
+	platUNDP       = "undp"    // UNDP Oracle HCM jobs portal
+	platUN         = "un"      // meta-platform fan-out: inspira + undp
 )
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, and Freelancer. Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform (platform=un fans out to both inspira+undp; inspira/undp pick one).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -97,6 +100,10 @@ func registerJobSearch(server *mcp.Server) {
 		useRemotive := platform == platAll || platform == platRemotive || platform == platRemote
 		useFreelancer := platform == platAll || platform == platFreelancer
 		useGoogle := platform == platAll || platform == platGoogle
+		// UN scrapers stay opt-in (NOT triggered by platform=all) — niche international-org
+		// consultancies would otherwise crowd out generic commercial searches.
+		useInspira := platform == platInspira || platform == platUN
+		useUNDP := platform == platUNDP || platform == platUN
 
 		type sourceResult struct {
 			name    string
@@ -150,6 +157,12 @@ func registerJobSearch(server *mcp.Server) {
 		}
 		if useGoogle {
 			srcs = append(srcs, platGoogle)
+		}
+		if useInspira {
+			srcs = append(srcs, platInspira)
+		}
+		if useUNDP {
+			srcs = append(srcs, platUNDP)
 		}
 
 		ch := make(chan sourceResult, len(srcs)+1)
@@ -263,6 +276,20 @@ func registerJobSearch(server *mcp.Server) {
 					results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
 					if err != nil {
 						slog.Warn("job_search: google error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platInspira:
+					results, err := jobs.SearchInspiraJobs(ctx, input.Query, input.Location, limit)
+					if err != nil {
+						slog.Warn("job_search: inspira error", slog.Any("error", err))
+					}
+					ch <- sourceResult{name: name, results: results, err: err}
+
+				case platUNDP:
+					results, err := jobs.SearchUNDPJobs(ctx, input.Query, input.Location, limit)
+					if err != nil {
+						slog.Warn("job_search: undp error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 				}
@@ -431,6 +458,12 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:freelancer.com/projects"
 	case platGoogle:
 		sitePart = "site:careers.google.com OR site:jobs.google.com"
+	case platInspira:
+		sitePart = "site:careers.un.org"
+	case platUNDP:
+		sitePart = "site:jobs.undp.org OR site:estm.fa.em2.oraclecloud.com"
+	case platUN:
+		sitePart = "site:careers.un.org OR site:jobs.undp.org"
 	default:
 		sitePart = "jobs"
 	}
