@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,17 +23,18 @@ const (
 
 // Client is an OpenAI-compatible LLM client with retry and fallback key support.
 type Client struct {
-	baseURL          string
-	apiKey           string
-	model            string
-	maxTokens        int
-	temperature      *float64 // nil = omit from request (some models reject it)
-	httpClient       *http.Client
-	fallbackKeys     []string
-	maxRetries       int
-	endpoints        []Endpoint
-	middleware       []Middleware
-	endpointObserver EndpointAttemptObserver
+	baseURL           string
+	apiKey            string
+	model             string
+	maxTokens         int
+	temperature       *float64 // nil = omit from request (some models reject it)
+	httpClient        *http.Client
+	fallbackKeys      []string
+	maxRetries        int
+	endpoints         []Endpoint
+	middleware        []Middleware
+	endpointObserver  EndpointAttemptObserver
+	perAttemptTimeout time.Duration // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
 }
 
 // Option configures the Client.
@@ -90,6 +92,24 @@ func WithEndpoints(endpoints []Endpoint) Option {
 // fires внутри executeInner request path. Не должен panic'нуть —
 // если recovery нужен, оборачивай в defer recover() сам.
 type EndpointAttemptObserver func(ep Endpoint, err error)
+
+// WithPerAttemptTimeout bounds EACH endpoint attempt in a WithEndpoints
+// chain by its own deadline d, derived from the caller's ctx. The outer
+// ctx remains an absolute ceiling: a per-attempt deadline is effectively
+// min(d, time left on the outer ctx). When d <= 0 (default) no per-attempt
+// wrapping is applied and the call path is byte-identical to before this
+// option existed.
+//
+// Semantics: the per-attempt deadline bounds the WHOLE per-endpoint attempt —
+// including that endpoint's internal doWithRetry backoff — matching what
+// hand-rolled caller loops did with context.WithTimeout(ctx, timeout) around a
+// single high-level call. One slow model can no longer starve the rest of the chain.
+//
+// No effect on the single-endpoint (no WithEndpoints) path — there is no
+// chain to bound. Does NOT change the WithEndpoints XOR WithFallbackKeys constraint.
+func WithPerAttemptTimeout(d time.Duration) Option {
+	return func(c *Client) { c.perAttemptTimeout = d }
+}
 
 // WithEndpointAttemptObserver регистрирует observer на per-endpoint
 // chain attempts. Use case: per-model fail counter, per-model latency
@@ -218,9 +238,20 @@ func (c *Client) Complete(ctx context.Context, system, user string, opts ...Chat
 func (c *Client) CompleteMultimodal(ctx context.Context, prompt string, images []ImagePart, opts ...ChatOption) (string, error) {
 	parts := []ContentPart{{Type: "text", Text: prompt}}
 	for _, img := range images {
+		if img.URL == "" && img.Base64 == "" {
+			continue
+		}
+		url := img.URL
+		if img.Base64 != "" {
+			mt := img.MIMEType
+			if mt == "" {
+				mt = "image/png"
+			}
+			url = "data:" + mt + ";base64," + img.Base64
+		}
 		parts = append(parts, ContentPart{
 			Type:     "image_url",
-			ImageURL: &ImageURL{URL: img.URL},
+			ImageURL: &ImageURL{URL: url, Detail: img.Detail},
 		})
 	}
 	msgs := []Message{{Role: "user", Content: parts}}
@@ -248,8 +279,10 @@ func (c *Client) CompleteRaw(ctx context.Context, messages []Message, opts ...Ch
 
 func (c *Client) newRequest(messages []Message) *ChatRequest {
 	return &ChatRequest{
-		Model:       c.model,
-		Messages:    messages,
+		Model: c.model,
+		// Clone: per-request options (e.g. WithMessageTimestamps) mutate
+		// req.Messages in place; never mutate the caller's slice/structs.
+		Messages:    slices.Clone(messages),
 		Temperature: c.temperature,
 		MaxTokens:   c.maxTokens,
 	}

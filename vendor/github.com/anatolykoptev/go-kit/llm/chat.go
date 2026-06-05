@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -59,13 +60,30 @@ type ContentPart struct {
 
 // ImageURL holds an image reference for vision requests.
 type ImageURL struct {
-	URL string `json:"url"`
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // ImagePart is a convenience type for passing images to CompleteMultimodal.
 type ImagePart struct {
 	URL      string
 	MIMEType string // optional
+	// Base64 is already base64-encoded image data. When non-empty, the request
+	// uses a data-URI instead of URL. MIMEType defaults to "image/png".
+	Base64 string
+	// Detail controls the vision resolution hint ("low", "high", "auto").
+	// Empty = omit (provider default).
+	Detail string
+}
+
+// DataURI constructs a base64 data-URI suitable for vision image_url.
+// Use this when you have raw bytes; pass the result as ImagePart.URL or directly
+// as an image_url.url value.
+func DataURI(mimeType string, data []byte) string {
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // ChatRequest is a chat completion request. Exported for use with Middleware.
@@ -152,6 +170,11 @@ type ChatResponse struct {
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        *Usage
+	// Reasoning is the model chain-of-thought, separated from Content by
+	// splitReasoning. Populated for reasoning models (inline <think> or a
+	// reasoning_content field). Empty for normal models. Content is always
+	// the clean answer with any leading <think> block removed.
+	Reasoning string
 }
 
 // ChatOption configures a per-request Chat option.
