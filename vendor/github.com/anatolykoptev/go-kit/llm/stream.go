@@ -162,8 +162,10 @@ func (c *Client) doStreamRequest(ctx context.Context, baseURL, apiKey string, re
 		return nil, newAPIError(resp.StatusCode, string(respBody), isRetryableStatus(resp.StatusCode), parseRetryAfter(resp.Header.Get("Retry-After")))
 	}
 
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // up to 1 MiB per SSE line
 	return &StreamResponse{
 		body:    resp.Body,
-		scanner: bufio.NewScanner(resp.Body),
+		scanner: sc,
 	}, nil
 }
