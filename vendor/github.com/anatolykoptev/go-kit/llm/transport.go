@@ -8,15 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+			Content          string     `json:"content"`
+			ReasoningContent string     `json:"reasoning_content,omitempty"`
+			ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -87,9 +87,12 @@ func (c *Client) doRequest(ctx context.Context, baseURL, apiKey string, req *Cha
 		return nil, errors.New("llm: empty choices in response")
 	}
 
+	msg := chatResp.Choices[0].Message
+	clean, reasoning := splitReasoning(msg.Content, msg.ReasoningContent)
 	return &ChatResponse{
-		Content:      strings.TrimSpace(chatResp.Choices[0].Message.Content),
-		ToolCalls:    chatResp.Choices[0].Message.ToolCalls,
+		Content:      clean,
+		Reasoning:    reasoning,
+		ToolCalls:    msg.ToolCalls,
 		FinishReason: chatResp.Choices[0].FinishReason,
 		Usage:        chatResp.Usage,
 	}, nil
@@ -103,7 +106,21 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 			if ep.Model != "" {
 				epReq.Model = ep.Model
 			}
-			result, err := c.doWithRetry(ctx, ep.URL, ep.Key, &epReq)
+
+			// Per-attempt timeout: derive a child ctx bounded by d, but only when
+			// d > 0 and WithEndpoints is in use. The outer ctx remains the absolute
+			// ceiling — context.WithTimeout takes min(d, time-left-on-outer).
+			attemptCtx := ctx
+			var cancelAttempt context.CancelFunc
+			if c.perAttemptTimeout > 0 {
+				attemptCtx, cancelAttempt = context.WithTimeout(ctx, c.perAttemptTimeout)
+			}
+
+			result, err := c.doWithRetry(attemptCtx, ep.URL, ep.Key, &epReq)
+
+			if cancelAttempt != nil {
+				cancelAttempt()
+			}
 			if c.endpointObserver != nil {
 				c.endpointObserver(ep, err)
 			}
@@ -111,6 +128,16 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 				return result, nil
 			}
 			lastErr = err
+
+			// A per-attempt DeadlineExceeded where the outer ctx is still alive
+			// means this endpoint was slow (not a genuine give-up by the caller).
+			// Treat it as retryable-advance: continue to the next endpoint.
+			// If the outer ctx is also done, fall through to the asRetryable gate,
+			// which will return non-retryable → abort the chain (correct).
+			if c.perAttemptTimeout > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				continue
+			}
+
 			if !asRetryable(err) {
 				return nil, err
 			}
