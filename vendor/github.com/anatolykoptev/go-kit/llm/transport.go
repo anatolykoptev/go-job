@@ -138,6 +138,16 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 				continue
 			}
 
+			// A "request too large for this model" failure (413 TPM/payload, or
+			// 400 context_length_exceeded) is non-retryable on THIS endpoint — the
+			// identical request recurs — but the next model in the chain may have a
+			// larger context window or token budget. Advance to it instead of
+			// aborting. The endpointObserver has already fired with this endpoint's
+			// error, so the failover stays observable.
+			if asFailover(err) {
+				continue
+			}
+
 			if !asRetryable(err) {
 				return nil, err
 			}
