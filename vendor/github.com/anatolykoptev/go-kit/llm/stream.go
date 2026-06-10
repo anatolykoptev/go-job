@@ -106,10 +106,19 @@ func (c *Client) Stream(ctx context.Context, messages []Message, opts ...ChatOpt
 				epReq.Model = ep.Model
 			}
 			sr, err := c.doStreamRequest(ctx, ep.URL, ep.Key, &epReq)
+			if c.endpointObserver != nil {
+				c.endpointObserver(ep, err)
+			}
 			if err == nil {
 				return sr, nil
 			}
 			lastErr = err
+			// "Request too large for this model" (413 / context_length_exceeded) is
+			// non-retryable on THIS endpoint but the next model may fit — advance
+			// instead of aborting the chain (mirrors executeInner in transport.go).
+			if asFailover(err) {
+				continue
+			}
 			if !asRetryable(err) {
 				return nil, err
 			}
