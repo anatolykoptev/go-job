@@ -10,8 +10,8 @@ github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/anatolykoptev/go-engine v1.17.0 h1:30s/yOyeAB+UyvNncdluF7gduHVvt3FJ30NmOBj2xm8=
 github.com/anatolykoptev/go-engine v1.17.0/go.mod h1:78LNL+F+7RMcDBV9mRtP3boYIey9uk3CmZguNfxwJA0=
-github.com/anatolykoptev/go-kit v0.78.0 h1:7pQa6ISM0JxfEZDgTp3w1iI1UOP4jUzqy9jcwGwq5EI=
-github.com/anatolykoptev/go-kit v0.78.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
+github.com/anatolykoptev/go-kit v0.81.1 h1:LTTs4CFANPY4Yv9i7OY00/4Bi5nMJMwYBWBzN4RgDXA=
+github.com/anatolykoptev/go-kit v0.81.1/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.14.0 h1:Sj4fVtPYNNateDoZFG4oYf8BKFeZs5MqIVKARiPXDZQ=
 github.com/anatolykoptev/go-mcpserver v0.14.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.13.0 h1:NslhTU1Zu1k6y5+//ncOUbqkVCJ/wUrSTVdl6ieRz3U=
