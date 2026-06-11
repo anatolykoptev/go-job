@@ -89,6 +89,20 @@ func (s *StreamResponse) Close() error { return s.body.Close() }
 func (s *StreamResponse) Usage() *Usage { return s.usage }
 
 // Stream starts a streaming chat completion. The caller must call Close() when done.
+//
+// Stream returns a *StreamResponse, not a *ChatResponse, so it carries no
+// ServedBy attribution — but the per-endpoint EndpointAttemptObserver still fires
+// here (line below), so a ChainMetrics.EndpointObserver wired on a streaming
+// client still records llm_chain_attempt_total{model,outcome} and, on the first
+// success, llm_chain_served_total{model,position}. Only the per-response
+// ServedBy field is absent on the stream path (mirrors the cooldown Stream
+// exclusion documented on WithModelCooldown).
+//
+// The cooldown gauge (llm_model_cooldown_active) is NOT driven on the stream
+// path: this loop deliberately neither reads cooling() nor records cooldown
+// outcomes (the stream path is not wired into cooldown, same as WithModelCooldown
+// documents), so no stream attempt ever enters or clears a model's cooldown and
+// the gauge reflects only non-stream (Complete/CompleteRaw) traffic.
 func (c *Client) Stream(ctx context.Context, messages []Message, opts ...ChatOption) (*StreamResponse, error) {
 	var cfg chatConfig
 	for _, opt := range opts {
