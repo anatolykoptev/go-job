@@ -34,7 +34,8 @@ type Client struct {
 	endpoints         []Endpoint
 	middleware        []Middleware
 	endpointObserver  EndpointAttemptObserver
-	perAttemptTimeout time.Duration // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
+	perAttemptTimeout time.Duration  // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
+	cooldown          *modelCooldown // nil = disabled; no per-model cooldown, behavior byte-identical to pre-feature
 }
 
 // Option configures the Client.
@@ -129,6 +130,65 @@ func WithPerAttemptTimeout(d time.Duration) Option {
 //	)
 func WithEndpointAttemptObserver(obs EndpointAttemptObserver) Option {
 	return func(c *Client) { c.endpointObserver = obs }
+}
+
+// WithModelCooldown enables per-model quota-aware cooldown for the WithEndpoints
+// fallback chain. After cfg.FailThreshold (default 2) observed quota-class
+// failures on a model (429, or a 503 marking quota/auth-unavailable), that model
+// is put in cooldown for the upstream's Retry-After (clamped to cfg.Max, default
+// 10m) or cfg.Default (60s) and subsequent calls SKIP it — going straight to the
+// next healthy model. The cooldown lifts when its window expires; a 200 from the
+// model clears it early (quota recovered). A cooled model receives no traffic
+// until then, so the "clear early" path only applies to a model still in the
+// rotation, not the one being skipped.
+//
+// Scope: this applies to the NON-STREAMING completion chain (Complete /
+// CompleteRaw / chat completions through executeInner). Stream is NOT
+// cooldown-aware yet — it neither consults nor records cooldown state; a chain
+// used for streaming sees no skipping (tracked as a P2 follow-up).
+//
+// Cooldown is MODEL-KEYED. BuildModelChainEndpoints dedups by model id, so a
+// helper-built chain has model-distinct endpoints. If you hand-build a []Endpoint
+// with the SAME Model on multiple entries (e.g. same model id behind different
+// keys/URLs), they SHARE one cooldown entry — cooling one cools all of them.
+// Give such entries distinct Model strings if you want independent cooldown.
+//
+// Opt-in: without this option there is zero cooldown state and behaviour is
+// byte-identical to before it existed. No effect on the single-endpoint (no
+// WithEndpoints) path.
+//
+// Never fail-closed: if EVERY model in the chain is cooled, the loop still
+// attempts the primary (degraded > dead) and returns the real upstream error.
+//
+// Composes with WithCircuitBreaker: the breaker is the outermost middleware
+// keyed on the construction model (whole-client granularity); cooldown is a
+// per-endpoint-model skip INSIDE the chain loop. They are orthogonal.
+func WithModelCooldown(cfg CooldownConfig) Option {
+	return func(c *Client) {
+		if c.cooldown == nil {
+			c.cooldown = newModelCooldown(cfg)
+		} else {
+			c.cooldown.cfg = cfg.withDefaults()
+		}
+	}
+}
+
+// WithModelCooldownObserver registers an optional, non-blocking callback fired
+// once on cooldown ENTRY (cooling=true, d = the cooldown duration) and once on
+// RECOVERY (cooling=false, d = 0) per model. This is the de-duped degraded-chain
+// signal: a consumer wanting a "primary quota exhausted" log line wires a 3-line
+// observer that logs on cooling==true && model==primary. The callback must not
+// block or panic (it fires inside the request path on a state transition).
+//
+// Implies WithModelCooldown with default config if the cooldown is not already
+// enabled, so the observer has something to observe.
+func WithModelCooldownObserver(fn func(model string, cooling bool, d time.Duration)) Option {
+	return func(c *Client) {
+		if c.cooldown == nil {
+			c.cooldown = newModelCooldown(CooldownConfig{})
+		}
+		c.cooldown.onChange = fn
+	}
 }
 
 // Middleware wraps chat completion calls. Use for logging, metrics, caching.

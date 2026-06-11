@@ -175,6 +175,12 @@ type ChatResponse struct {
 	// reasoning_content field). Empty for normal models. Content is always
 	// the clean answer with any leading <think> block removed.
 	Reasoning string
+	// ServedBy is the model id of the chain endpoint that actually returned the
+	// 200 — the answer to "which model served this call?" without grepping logs.
+	// Set on the WithEndpoints chain path (including the never-fail-closed
+	// last-resort attempt). Empty ("") on the single-endpoint (no WithEndpoints)
+	// path, where there is no chain to attribute, and on Stream (see Stream doc).
+	ServedBy string
 }
 
 // ChatOption configures a per-request Chat option.
