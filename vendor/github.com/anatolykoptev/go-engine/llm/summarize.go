@@ -229,7 +229,9 @@ func SummarizeToJSON[T any](ctx context.Context, c *Client, query, instruction s
 }
 
 // SummarizeWithTier summarizes with tier-specific weights and prompt selection.
-func (c *Client) SummarizeWithTier(ctx context.Context, opts SummarizeOpts, results []sources.Result, contents map[string]string, weights []float64, useDeepPrompt bool) (*StructuredOutput, error) {
+// Variadic chatOpts pass through to kit (e.g. WithChatModel для per-call
+// model override в chain loops с per-attempt timeout).
+func (c *Client) SummarizeWithTier(ctx context.Context, opts SummarizeOpts, results []sources.Result, contents map[string]string, weights []float64, useDeepPrompt bool, chatOpts ...ChatOption) (*StructuredOutput, error) {
 	srcs := BuildSourcesTextWeighted(results, contents, opts.TotalBudget, opts.CharsPerToken, weights)
 	var prompt string
 	if useDeepPrompt {
@@ -250,7 +252,7 @@ func (c *Client) SummarizeWithTier(ctx context.Context, opts SummarizeOpts, resu
 	if maxOut == 0 {
 		maxOut = c.maxTokens
 	}
-	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut, chatOpts...)
 	if err != nil {
 		return nil, err
 	}
