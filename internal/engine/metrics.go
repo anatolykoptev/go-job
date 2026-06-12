@@ -38,6 +38,17 @@ const (
 	MetricCode4renaRequests       = "code4rena_requests_total"
 	MetricToolCalls               = "tool_calls_total"
 
+	// MetricLLMModelsDropped counts model ids absent from /v1/models at chain
+	// construction time (gojob_llm_models_dropped_total).
+	// Bumped once per dropped model id; a non-zero value means the env chain has
+	// a dead entry that should be removed from LLM_MODEL_FALLBACK.
+	MetricLLMModelsDropped = "llm_models_dropped_total"
+
+	// MetricLLMChainDegraded counts chain construction calls where the health
+	// filter was skipped (gojob_llm_chain_degraded_total). reason label ∈
+	// {"no_registry","fetch_failed","empty_set","all_filtered"}.
+	MetricLLMChainDegraded = "llm_chain_degraded_total"
+
 	// MetricOversizeSpill is the base name for the labelled counter
 	// gojob_oversize_spill_total{tool=<name>}.
 	MetricOversizeSpill = "oversize_spill_total"
