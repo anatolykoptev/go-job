@@ -161,6 +161,23 @@ func Init(c Config) {
 		// failure. Internally uses WithEndpoints which disables key rotation
 		// (WithAPIKeyFallbacks becomes a no-op). Chain OR key-rotation, not both.
 		llmOpts = append(llmOpts, engllm.WithModelFallbackChain(chain))
+		// Wire the health-filter observer so absent-model and degraded events
+		// surface as Prometheus counters (gojob_llm_models_dropped_total /
+		// gojob_llm_chain_degraded_total) rather than silent misfires.
+		llmOpts = append(llmOpts, engllm.WithModelFilterObserver(func(ev engllm.ModelFilterEvent) {
+			if ev.Degraded {
+				reg.Incr(MetricLLMChainDegraded + "{reason=" + ev.Reason + "}")
+				slog.Warn("llm: model chain filter degraded", slog.String("reason", ev.Reason))
+				return
+			}
+			if len(ev.Dropped) > 0 {
+				reg.Add(MetricLLMModelsDropped, int64(len(ev.Dropped)))
+				slog.Warn("llm: models absent from /v1/models, dropped from chain",
+					slog.Int("dropped", len(ev.Dropped)),
+					slog.Any("models", ev.Dropped),
+				)
+			}
+		}))
 		slog.Info("llm: model fallback chain enabled", slog.Int("chain_len", len(chain)))
 	} else if len(c.LLMAPIKeyFallbacks) > 0 {
 		llmOpts = append(llmOpts, engllm.WithAPIKeyFallbacks(c.LLMAPIKeyFallbacks))

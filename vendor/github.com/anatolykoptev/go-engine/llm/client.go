@@ -40,6 +40,7 @@ type config struct {
 	model             string
 	modelChain        []string
 	chainObserver     kitllm.EndpointAttemptObserver
+	filterObserver    kitllm.ModelFilterObserver
 	perAttemptTimeout time.Duration
 	temperature       float64
 	maxTokens         int
@@ -107,6 +108,36 @@ func WithModelChainObserver(obs EndpointAttemptObserver) Option {
 	return func(c *config) { c.chainObserver = obs }
 }
 
+// WithModelFilterObserver registers a callback fired once per New() call when
+// a model-chain is configured. It receives a ModelFilterEvent describing which
+// models (if any) were dropped because they were absent from the live
+// /v1/models set, and whether filtering degraded to the full chain.
+//
+// Use to emit a Prometheus counter / structured log on "N models dropped":
+//
+//	c := engllm.New(
+//	    engllm.WithAPIBase(...), engllm.WithAPIKey(...), engllm.WithModel(...),
+//	    engllm.WithModelFallbackChain(chain),
+//	    engllm.WithModelFilterObserver(func(ev engllm.ModelFilterEvent) {
+//	        for _, m := range ev.Dropped {
+//	            IncrModelAbsent(m) // your Prometheus counter
+//	        }
+//	    }),
+//	)
+//
+// nil is safe — filtering runs, observer is skipped.
+// Only meaningful together with WithModelFallbackChain.
+func WithModelFilterObserver(obs ModelFilterObserver) Option {
+	return func(c *config) { c.filterObserver = obs }
+}
+
+// ModelFilterObserver — re-export of go-kit/llm.ModelFilterObserver so
+// consumers can import only the engine package.
+type ModelFilterObserver = kitllm.ModelFilterObserver
+
+// ModelFilterEvent — re-export of go-kit/llm.ModelFilterEvent.
+type ModelFilterEvent = kitllm.ModelFilterEvent
+
 // WithPerAttemptTimeout bounds each model attempt in the fallback chain by its
 // own deadline (derived from the caller's ctx). Only meaningful together with
 // WithModelFallbackChain. d<=0 = no per-attempt bound (default). Delegates to
@@ -146,7 +177,18 @@ func New(opts ...Option) *Client {
 	if len(cfg.modelChain) > 0 {
 		// Model chain takes precedence: kit's WithEndpoints disables
 		// WithFallbackKeys rotation, so the chain wins when both are set.
-		eps := kitllm.BuildModelChainEndpointsFiltered(context.Background(), kitllm.NewModelRegistry(), cfg.apiBase, cfg.apiKey, cfg.model, cfg.modelChain, nil)
+		//
+		// Use the health-aware variant: probes {baseURL}/v1/models once at
+		// construction (5-min TTL cache), drops absent models before building
+		// the chain. Graceful degradation — registry nil / fetch failed / empty /
+		// all-filtered → falls back to the full unfiltered chain (same as the
+		// static builder). Never a new failure mode.
+		reg := kitllm.NewModelRegistry()
+		eps := kitllm.BuildModelChainEndpointsFiltered(
+			context.Background(), reg,
+			cfg.apiBase, cfg.apiKey, cfg.model, cfg.modelChain,
+			cfg.filterObserver,
+		)
 		kitOpts = append(kitOpts, kitllm.WithEndpoints(eps))
 		if cfg.chainObserver != nil {
 			kitOpts = append(kitOpts, kitllm.WithEndpointAttemptObserver(cfg.chainObserver))
