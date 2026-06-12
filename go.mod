@@ -4,11 +4,11 @@ go 1.26
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
-	github.com/anatolykoptev/go-engine v1.17.0
-	github.com/anatolykoptev/go-kit v0.82.0
+	github.com/anatolykoptev/go-engine v1.27.0
+	github.com/anatolykoptev/go-kit v0.83.0
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.14.0
-	github.com/anatolykoptev/go-stealth v1.13.0
+	github.com/anatolykoptev/go-stealth v1.15.0
 	github.com/anatolykoptev/go-twitter v0.5.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/modelcontextprotocol/go-sdk v1.5.0

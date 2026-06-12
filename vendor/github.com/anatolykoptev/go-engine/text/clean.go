@@ -7,11 +7,11 @@ package text
 import (
 	"strings"
 
-	"github.com/anatolykoptev/go-stealth/webtext"
+	"github.com/anatolykoptev/go-engine/webtext"
 )
 
 // CleanHTML strips HTML tags and trims whitespace.
-// Delegates to go-stealth/webtext for the canonical implementation.
+// Delegates to go-engine/webtext for the canonical implementation.
 func CleanHTML(s string) string {
 	return webtext.CleanHTML(s)
 }

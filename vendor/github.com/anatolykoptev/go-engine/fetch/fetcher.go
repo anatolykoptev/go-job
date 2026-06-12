@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"strings"
 	"time"
 
 	stealth "github.com/anatolykoptev/go-stealth"
@@ -221,12 +222,26 @@ func New(opts ...Option) *Fetcher {
 // When a RetryTracker is configured, it checks ShouldRetry before each request
 // and records the outcome (attempt or success) after.
 func (f *Fetcher) FetchBody(ctx context.Context, url string) ([]byte, error) {
+	return f.FetchBodyWithHeaders(ctx, url, nil)
+}
+
+// FetchBodyWithHeaders retrieves the response body bytes from a URL, merging
+// extra HTTP headers over the built-in Chrome browser defaults.
+//
+// Keys in extra are normalised to lowercase before merging so that
+//
+//	extra["Accept"] = "application/json"
+//
+// correctly overrides the built-in "accept" header. Passing nil extra is
+// equivalent to calling [FetchBody] — all tiering, fallback, block-cache,
+// and metrics behaviour is preserved.
+func (f *Fetcher) FetchBodyWithHeaders(ctx context.Context, url string, extra map[string]string) ([]byte, error) {
 	permanent := f.retryTracker != nil && !f.retryTracker.ShouldRetry(url)
 	if permanent && !f.hasFallback() {
 		return nil, ErrPermanentlyFailed
 	}
 
-	body, err := f.fetchPrimary(ctx, url, permanent)
+	body, err := f.fetchPrimaryWithHeaders(ctx, url, permanent, extra)
 	body, err = f.tryFallbacks(ctx, url, body, err)
 
 	if f.retryTracker != nil {
@@ -240,12 +255,24 @@ func (f *Fetcher) FetchBody(ctx context.Context, url string) ([]byte, error) {
 	return body, err
 }
 
+// mergeHeaders returns a copy of ChromeHeaders with extra merged over it.
+// Keys in extra are normalised to lowercase to match the ChromeHeaders convention
+// (all-lowercase keys) so a single "accept" key survives regardless of input case.
+// Passing nil extra returns a plain ChromeHeaders copy.
+func mergeHeaders(extra map[string]string) map[string]string {
+	h := ChromeHeaders()
+	for k, v := range extra {
+		h[strings.ToLower(k)] = v
+	}
+	return h
+}
+
 // hasFallback reports whether any fallback renderer is configured.
 func (f *Fetcher) hasFallback() bool {
 	return f.oxBrowserURL != "" || f.goBrowserURL != "" || f.byparrURL != ""
 }
 
-// fetchPrimary attempts the primary fetch method.
+// fetchPrimaryWithHeaders attempts the primary fetch method with optional extra headers.
 //
 // When directFirst is enabled the order is:
 //  1. Domain hint (proxyFirstDomains) → straight to proxy.
@@ -255,39 +282,42 @@ func (f *Fetcher) hasFallback() bool {
 //  5. No proxy available → return direct result as-is.
 //
 // When directFirst is disabled (default) the legacy proxy-first behaviour is preserved.
-func (f *Fetcher) fetchPrimary(ctx context.Context, url string, permanent bool) ([]byte, error) {
+// extra is forwarded to all HTTP call sites and merged over built-in Chrome defaults.
+func (f *Fetcher) fetchPrimaryWithHeaders(ctx context.Context, url string, permanent bool, extra map[string]string) ([]byte, error) {
 	if permanent {
 		return nil, ErrPermanentlyFailed
 	}
 
 	// Legacy mode: proxy-first (or plain HTTP when no proxy configured).
 	if !f.directFirst {
-		return f.fetchViaProxyOrHTTP(ctx, url)
+		return f.fetchViaProxyOrHTTPWithHeaders(ctx, url, extra)
 	}
 
-	return f.fetchDirectFirst(ctx, url)
+	return f.fetchDirectFirstWithHeaders(ctx, url, extra)
 }
 
-// fetchViaProxyOrHTTP routes through proxy if available, otherwise plain HTTP.
-func (f *Fetcher) fetchViaProxyOrHTTP(ctx context.Context, url string) ([]byte, error) {
+// fetchViaProxyOrHTTPWithHeaders routes through proxy if available, otherwise plain HTTP.
+// extra is merged over built-in Chrome headers on each request.
+func (f *Fetcher) fetchViaProxyOrHTTPWithHeaders(ctx context.Context, url string, extra map[string]string) ([]byte, error) {
 	if f.proxyClient != nil {
-		return f.fetchViaProxy(ctx, url)
+		return f.fetchViaProxy(ctx, url, extra)
 	}
-	return f.fetchViaHTTP(ctx, url)
+	return f.fetchViaHTTP(ctx, url, extra)
 }
 
-// fetchDirectFirst implements the direct-first tiered fallback strategy.
+// fetchDirectFirstWithHeaders implements the direct-first tiered fallback strategy.
+// extra is merged over built-in Chrome headers on every outbound request.
 // Steps:
 //  1. Domain hint (proxyFirstDomains) → straight to proxy.
 //  2. blockCache hit → straight to proxy (repeat-blocked host within TTL).
 //  3. Direct attempt via directClient (Chrome TLS, no proxy).
 //  4. classifyBlock → if blocked signal → mark host, escalate to proxy.
 //  5. No proxy available → return direct result/error.
-func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, error) {
+func (f *Fetcher) fetchDirectFirstWithHeaders(ctx context.Context, url string, extra map[string]string) ([]byte, error) {
 	// 1. Domain hint → skip direct, go straight to proxy.
 	if f.proxyFirstDomains != nil && f.proxyFirstDomains.MatchURL(url) {
 		f.metrics.incEscalation("domain_hint")
-		return f.fetchProxyAndRecord(ctx, url)
+		return f.fetchProxyAndRecordWithHeaders(ctx, url, extra)
 	}
 
 	// 2. blockCache hit → skip direct, go straight to proxy.
@@ -297,11 +327,11 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 	}
 	if f.blockCache != nil && f.blockCache.IsBlocked(host) {
 		f.metrics.incEscalation("cached")
-		return f.fetchProxyAndRecord(ctx, url)
+		return f.fetchProxyAndRecordWithHeaders(ctx, url, extra)
 	}
 
 	// 3. Direct attempt via Chrome-TLS directClient (no proxy).
-	body, hdrs, status, directErr := f.fetchDirectRaw(ctx, url)
+	body, hdrs, status, directErr := f.fetchDirectRaw(ctx, url, extra)
 
 	// 4. Classify block signal.
 	sig := classifyBlock(status, hdrs, body, directErr)
@@ -325,7 +355,7 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 	// 5. Escalate to proxy if available.
 	if f.proxyClient != nil {
 		f.metrics.incEscalation(sig.label())
-		return f.fetchProxyAndRecord(ctx, url)
+		return f.fetchProxyAndRecordWithHeaders(ctx, url, extra)
 	}
 
 	// No proxy budget — handling depends on signal strength:
@@ -343,9 +373,10 @@ func (f *Fetcher) fetchDirectFirst(ctx context.Context, url string) ([]byte, err
 	return nil, &HttpStatusError{StatusCode: status}
 }
 
-// fetchProxyAndRecord routes to proxy tier and records the tier counter.
-func (f *Fetcher) fetchProxyAndRecord(ctx context.Context, url string) ([]byte, error) {
-	body, err := f.fetchViaProxyOrHTTP(ctx, url)
+// fetchProxyAndRecordWithHeaders routes to proxy tier, records the tier counter,
+// and forwards extra headers.
+func (f *Fetcher) fetchProxyAndRecordWithHeaders(ctx context.Context, url string, extra map[string]string) ([]byte, error) {
+	body, err := f.fetchViaProxyOrHTTPWithHeaders(ctx, url, extra)
 	if err != nil {
 		f.metrics.incTier("proxy", "err")
 	} else {
@@ -431,9 +462,14 @@ func (f *Fetcher) DirectClient() *stealth.BrowserClient {
 }
 
 // fetchViaProxy routes through the proxy-tier stealthDoer (BrowserClient with Chrome TLS fingerprint).
-func (f *Fetcher) fetchViaProxy(ctx context.Context, fetchURL string) ([]byte, error) {
+// extra headers are merged over the built-in Chrome defaults; caller-supplied values take
+// precedence (e.g. extra["Accept"]="application/json" overrides the legacy HTML accept).
+func (f *Fetcher) fetchViaProxy(ctx context.Context, fetchURL string, extra map[string]string) ([]byte, error) {
 	headers := ChromeHeaders()
 	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	for k, v := range extra {
+		headers[strings.ToLower(k)] = v
+	}
 
 	return RetryDo(ctx, f.retryConfig, func() ([]byte, error) {
 		data, _, status, err := f.proxyClient.DoCtx(ctx, http.MethodGet, fetchURL, headers, nil)
@@ -448,7 +484,9 @@ func (f *Fetcher) fetchViaProxy(ctx context.Context, fetchURL string) ([]byte, e
 }
 
 // fetchViaHTTP uses the standard HTTP client with retry.
-func (f *Fetcher) fetchViaHTTP(ctx context.Context, fetchURL string) ([]byte, error) {
+// extra headers are merged over the built-in defaults; caller-supplied values
+// take precedence (e.g. extra["Accept"]="application/json" overrides "text/html").
+func (f *Fetcher) fetchViaHTTP(ctx context.Context, fetchURL string, extra map[string]string) ([]byte, error) {
 	resp, err := RetryHTTP(ctx, f.retryConfig, func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 		if err != nil {
@@ -458,6 +496,12 @@ func (f *Fetcher) fetchViaHTTP(ctx context.Context, fetchURL string) ([]byte, er
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		req.Header.Set("Accept-Encoding", "gzip, deflate")
+		// Merge caller-supplied headers over the defaults above.
+		// http.Header.Set canonicalises keys, so extra["Accept"] and extra["accept"]
+		// both target the same canonical slot.
+		for k, v := range extra {
+			req.Header.Set(k, v)
+		}
 		return f.httpClient.Do(req) //nolint:gosec // URL is user-provided by design
 	})
 	if err != nil {
@@ -474,14 +518,19 @@ func (f *Fetcher) fetchViaHTTP(ctx context.Context, fetchURL string) ([]byte, er
 
 // fetchDirectRaw issues a single direct request via directClient (Chrome TLS, no proxy)
 // and returns the raw response components without retry.
+// extra headers are merged over built-in Chrome defaults before sending; caller-supplied
+// values take precedence (e.g. extra["Accept"]="application/json" overrides legacy HTML accept).
 // Returns zero values and an error on connection failure.
-func (f *Fetcher) fetchDirectRaw(ctx context.Context, fetchURL string) (body []byte, hdrs http.Header, status int, err error) {
+func (f *Fetcher) fetchDirectRaw(ctx context.Context, fetchURL string, extra map[string]string) (body []byte, hdrs http.Header, status int, err error) {
 	if f.directClient == nil {
 		return nil, nil, 0, errNoDirectClient
 	}
 
 	headers := ChromeHeaders()
 	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	for k, v := range extra {
+		headers[strings.ToLower(k)] = v
+	}
 
 	data, respHdrs, respStatus, doErr := f.directClient.DoCtx(ctx, http.MethodGet, fetchURL, headers, nil)
 	if doErr != nil {

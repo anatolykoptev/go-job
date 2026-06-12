@@ -8,7 +8,7 @@ func Truncate(s string, n int) string {
 	}
 	// Back up from n to find a valid UTF-8 start byte.
 	for n > 0 && n < len(s) {
-		if s[n]&0xC0 != 0x80 { // not a continuation byte
+		if s[n]&0xC0 != 0x80 { //nolint:mnd // 0x80/0xC0 UTF-8 continuation-byte mask, relocated verbatim
 			break
 		}
 		n--
