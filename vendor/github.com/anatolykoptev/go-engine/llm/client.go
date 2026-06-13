@@ -174,10 +174,10 @@ func WithModelCooldownObserver(fn func(model string, cooling bool, d time.Durati
 // WithModelCooldownDuration overrides the per-model cooldown duration used when
 // the upstream returns no Retry-After header (the no-header case in
 // go-kit/llm.CooldownConfig.Default). Precedence: this option > env
-// LLM_COOLDOWN_SECONDS > built-in default (15m).
+// LLM_COOLDOWN_SECONDS > built-in default (5m).
 //
 // Use this when deploying go-engine consumers that exhaust a daily quota in
-// minutes rather than seconds — 15m keeps the fallback chain healthy for the
+// minutes rather than seconds — 5m keeps the fallback chain healthy for the
 // rest of the day without needing a code change.
 //
 // d <= 0 is a no-op (falls through to env or default).
@@ -187,16 +187,17 @@ func WithModelCooldownDuration(d time.Duration) Option {
 }
 
 // defaultCooldownDuration is the go-engine–level default for the no-header
-// cooldown path. go-kit's own default is 60s; we raise it to 15m because
+// cooldown path. go-kit's own default is 60s; we raise it to 5m because
 // go-engine consumers are typically daily-quota services (cliproxyapi free
 // tier) where a model that returns 429 is exhausted for hours, not seconds.
-const defaultCooldownDuration = 15 * time.Minute
+// Live deployments that want a longer floor set LLM_COOLDOWN_SECONDS.
+const defaultCooldownDuration = 5 * time.Minute
 
 // resolveCooldownDuration returns the effective cooldown duration. Precedence:
 //
 //  1. explicit option (d > 0)
 //  2. env LLM_COOLDOWN_SECONDS (integer > 0)
-//  3. built-in default (15m)
+//  3. built-in default (5m)
 func resolveCooldownDuration(explicit time.Duration) time.Duration {
 	if explicit > 0 {
 		return explicit
@@ -263,11 +264,11 @@ func New(opts ...Option) *Client {
 		kitOpts = append(kitOpts, kitllm.WithEndpoints(eps))
 		// Cooldown default-on: go-engine is our intermediate kit, not a public
 		// library — we set policy. Default duration resolved via
-		// resolveCooldownDuration (option > LLM_COOLDOWN_SECONDS > 15m).
+		// resolveCooldownDuration (option > LLM_COOLDOWN_SECONDS > 5m).
 		// FailThreshold and Max stay at kit defaults (2, 10m).
-		// NOTE: Default=15m > Max=10m is intentional — Max only clamps an upstream
-		// Retry-After header (separate code path); Default governs the no-header
-		// case and is NOT clamped by Max (verified in go-kit cooldown.go).
+		// NOTE: Default=5m < Max=10m — Max only clamps an upstream Retry-After
+		// header (separate code path); Default governs the no-header case and is
+		// NOT clamped by Max (verified in go-kit cooldown.go).
 		// Gated inside the chain branch because cooldown only matters with a
 		// multi-model chain.
 		kitOpts = append(kitOpts, kitllm.WithModelCooldown(kitllm.CooldownConfig{
