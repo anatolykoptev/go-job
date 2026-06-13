@@ -41,6 +41,7 @@ type config struct {
 	modelChain        []string
 	chainObserver     kitllm.EndpointAttemptObserver
 	filterObserver    kitllm.ModelFilterObserver
+	cooldownObserver  func(model string, cooling bool, d time.Duration)
 	perAttemptTimeout time.Duration
 	temperature       float64
 	maxTokens         int
@@ -138,6 +139,35 @@ type ModelFilterObserver = kitllm.ModelFilterObserver
 // ModelFilterEvent — re-export of go-kit/llm.ModelFilterEvent.
 type ModelFilterEvent = kitllm.ModelFilterEvent
 
+// CooldownConfig — re-export of go-kit/llm.CooldownConfig so consumers need
+// only import the engine package.
+type CooldownConfig = kitllm.CooldownConfig
+
+// WithModelCooldownObserver registers an optional callback fired once on
+// cooldown ENTRY (cooling=true, d = the cooldown duration) and once on RECOVERY
+// (cooling=false, d = 0) per model in the fallback chain.
+//
+// Use this to emit a structured log or Prometheus counter when the primary model
+// becomes quota-exhausted and the chain degrades to a fallback:
+//
+//	c := engllm.New(
+//	    engllm.WithAPIBase(...), engllm.WithAPIKey(...), engllm.WithModel(...),
+//	    engllm.WithModelFallbackChain(chain),
+//	    engllm.WithModelCooldownObserver(func(model string, cooling bool, d time.Duration) {
+//	        if cooling {
+//	            slog.Warn("model entering cooldown", "model", model, "for", d)
+//	            IncrModelCooldown(model) // your Prometheus counter
+//	        }
+//	    }),
+//	)
+//
+// The callback must not block or panic (fires inside the request path on a
+// state transition). nil is safe and is a no-op.
+// Only meaningful together with WithModelFallbackChain.
+func WithModelCooldownObserver(fn func(model string, cooling bool, d time.Duration)) Option {
+	return func(c *config) { c.cooldownObserver = fn }
+}
+
 // WithPerAttemptTimeout bounds each model attempt in the fallback chain by its
 // own deadline (derived from the caller's ctx). Only meaningful together with
 // WithModelFallbackChain. d<=0 = no per-attempt bound (default). Delegates to
@@ -190,6 +220,14 @@ func New(opts ...Option) *Client {
 			cfg.filterObserver,
 		)
 		kitOpts = append(kitOpts, kitllm.WithEndpoints(eps))
+		// Cooldown default-on: go-engine is our intermediate kit, not a public
+		// library — we set policy. Zero CooldownConfig fills safe defaults
+		// (FailThreshold=2, Default=60s, Max=10m). Gated inside the chain branch
+		// because cooldown only matters with a multi-model chain.
+		kitOpts = append(kitOpts, kitllm.WithModelCooldown(kitllm.CooldownConfig{}))
+		if cfg.cooldownObserver != nil {
+			kitOpts = append(kitOpts, kitllm.WithModelCooldownObserver(cfg.cooldownObserver))
+		}
 		if cfg.chainObserver != nil {
 			kitOpts = append(kitOpts, kitllm.WithEndpointAttemptObserver(cfg.chainObserver))
 		}
