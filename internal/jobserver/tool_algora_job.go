@@ -26,6 +26,19 @@ type AlgoraJobIngestResult struct {
 	Summary  string   `json:"summary"`
 }
 
+// validateAlgoraJobURL parses rawURL and verifies it belongs to algora.io.
+// Returns the parsed URL or an error.
+func validateAlgoraJobURL(rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Hostname() != "algora.io" {
+		return nil, fmt.Errorf("URL must be on algora.io, got: %s", parsed.Hostname())
+	}
+	return parsed, nil
+}
+
 func registerAlgoraJobIngest(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "algora_job_ingest",
@@ -45,8 +58,8 @@ func registerAlgoraJobIngest(server *mcp.Server) {
 
 		if input.URL != "" {
 			// Validate host and path before passing to FetchAlgoraJob.
-			parsed, urlErr := url.Parse(input.URL)
-			if urlErr != nil || parsed.Host != "algora.io" {
+			parsed, urlErr := validateAlgoraJobURL(input.URL)
+			if urlErr != nil {
 				return nil, nil, fmt.Errorf("algora_job_ingest: URL must be on algora.io: %s", input.URL)
 			}
 			if !strings.Contains(parsed.Path, "/job/") {

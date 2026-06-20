@@ -1,31 +1,28 @@
 package jobserver
 
 import (
-	"net/url"
-	"strings"
 	"testing"
 )
 
-// TestAlgoraJobURL_HostValidation verifies the host+path validation logic
-// used at the tool boundary in tool_algora_job.go.
-func TestAlgoraJobURL_HostValidation(t *testing.T) {
-	tests := []struct {
-		name   string
-		rawURL string
-		wantOK bool
+func TestValidateAlgoraJobURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
 	}{
-		{"valid", "https://algora.io/comfy/job/abc123", true},
-		{"evil host job path", "https://evil.com/job/abc123", false},
-		{"algora no job path", "https://algora.io/comfy/jobs", false},
-		{"localhost", "http://localhost:8080/comfy/job/abc", false},
-		{"ssrf with algora in path", "https://evil.com/algora.io/job/abc", false},
+		{"valid algora url", "https://algora.io/comfy/job/abc123", false},
+		{"wrong host", "https://evil.com/jobs/123", true},
+		{"algora with port", "https://algora.io:443/jobs/123", false},
+		{"not algora subdomain", "https://sub.algora.io/jobs/123", true},
+		{"empty url", "", true},
+		{"ssrf algora in path", "https://evil.com/algora.io/job/abc", true},
+		{"localhost", "http://localhost:8080/comfy/job/abc", true},
 	}
-	for _, tc := range tests {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			parsed, err := url.Parse(tc.rawURL)
-			ok := err == nil && parsed.Host == "algora.io" && strings.Contains(parsed.Path, "/job/")
-			if ok != tc.wantOK {
-				t.Errorf("URL %q: validation=%v want=%v", tc.rawURL, ok, tc.wantOK)
+			_, err := validateAlgoraJobURL(tc.url)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validateAlgoraJobURL(%q) err=%v, wantErr=%v", tc.url, err, tc.wantErr)
 			}
 		})
 	}
