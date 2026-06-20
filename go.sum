@@ -8,10 +8,10 @@ github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc h1:6aA31
 github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc/go.mod h1:PgrPWaMBxL1lyq1k5DEMqC0Y67R3pG1vEsHzxFXeDxc=
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
-github.com/anatolykoptev/go-engine v1.31.0 h1:TxUVfwppPRDia5dbgy+hZnU1U4XBF1KPthr1EAdPreU=
-github.com/anatolykoptev/go-engine v1.31.0/go.mod h1:UegFEAZr+VzIrbneGdaiuhrQJJNmDWADANPYeF3ivxw=
-github.com/anatolykoptev/go-kit v0.83.0 h1:8tFIJ5F1K+GUfIJ5kxVapk1ZLUerjjdp2u4+/uavoms=
-github.com/anatolykoptev/go-kit v0.83.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
+github.com/anatolykoptev/go-engine v1.38.0 h1:DQx4Vqnf+vhzUH1TqkE+EtaCDJGpWJRusPytCC4j/Rs=
+github.com/anatolykoptev/go-engine v1.38.0/go.mod h1:eAy/ydcSakMFixdFHIV+/9q+U4n9V7ylzK0FugtlVyE=
+github.com/anatolykoptev/go-kit v0.85.0 h1:Tk9kYWSZpsNIvxgHa8RZ2QGKAWebukap6minGY3rrfk=
+github.com/anatolykoptev/go-kit v0.85.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.14.0 h1:Sj4fVtPYNNateDoZFG4oYf8BKFeZs5MqIVKARiPXDZQ=
 github.com/anatolykoptev/go-mcpserver v0.14.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.15.0 h1:xdTEijmCrhahwQJAXNyxHeLwWQQessOrNxEyyh4dA2U=

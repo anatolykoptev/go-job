@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/anatolykoptev/go-engine/fetch"
 	"github.com/anatolykoptev/go-engine/sources"
@@ -71,4 +72,24 @@ func runBing(ctx context.Context, cfg DirectConfig, query string) ([]sources.Res
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
 		return SearchBingDirect(ctx, cfg.Browser, query, cfg.Metrics)
 	})
+}
+
+// runWikipedia fetches Wikipedia MediaWiki search results.
+// lang is "ru" for Russian-prefixed language, "en" otherwise.
+func runWikipedia(ctx context.Context, cfg DirectConfig, query, language string) ([]sources.Result, error) {
+	lang := "en"
+	if strings.HasPrefix(language, "ru") {
+		lang = "ru"
+	}
+	return SearchWikipediaDirect(ctx, cfg.Browser, query, lang, cfg.Metrics)
+}
+
+// runMarginalia fetches Marginalia indie-web search results.
+func runMarginalia(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
+	return SearchMarginaliaDirect(ctx, cfg.Browser, query, cfg.Metrics)
+}
+
+// runMojeek fetches Mojeek search results via HTML scraping.
+func runMojeek(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
+	return SearchMojeekDirect(ctx, cfg.Browser, query, cfg.Metrics)
 }
