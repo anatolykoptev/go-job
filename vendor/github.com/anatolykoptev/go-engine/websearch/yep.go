@@ -10,7 +10,7 @@ import (
 	"net/url"
 )
 
-const yepEndpoint = "https://api.yep.com/fs/2/search"
+const yepEndpoint = "https://api.yep.com/search"
 
 // Yep searches Yep.com (Ahrefs) via its public JSON API.
 // No API key required. Own independent index.
@@ -46,10 +46,7 @@ func (y *Yep) Search(ctx context.Context, query string, opts SearchOpts) ([]Resu
 	}
 
 	args := url.Values{
-		"client":     {"web"},
-		"gl":         {"us"},
-		"no_correct": {"false"},
-		"q":          {query},
+		"query":      {query},
 		"safeSearch": {"off"},
 		"type":       {"web"},
 	}
