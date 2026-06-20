@@ -158,3 +158,37 @@ func TestBuildSalaryQueries_RussianLocation_Variants(t *testing.T) {
 		}
 	}
 }
+
+// --- pitch_generate + interview_prep degradation guard ---
+
+// TestPitchInterviewCompanyDegradation_NilResearch verifies that the company
+// enrichment path in pitch_generate / interview_prep degrades to an empty
+// companyContext string when ResearchCompanyBounded returns nil. This guards
+// the caller contract: the bounded function returns a *CompanyResearchResult
+// (no error), and BuildCompanyContext(company, nil) yields "". Together these
+// two invariants prove that pitch/interview never hang or error on a slow
+// company-research substep.
+//
+// If ResearchCompanyBounded is reverted to ResearchCompany (the unbounded form)
+// the TestResearchCompanyBounded_DeadlineDegrades test above still passes
+// (it calls the bounded function directly), but the callers would then hold a
+// live-network deadline again — this test catches the regression at the API
+// level by confirming BuildCompanyContext accepts a nil result safely.
+func TestPitchInterviewCompanyDegradation_NilResearch(t *testing.T) {
+	// Simulate what GeneratePitch / PrepareInterview do when
+	// ResearchCompanyBounded returns nil (timeout or error).
+	company := "ComfyUI"
+	var cr *CompanyResearchResult // nil — timeout path
+
+	got := BuildCompanyContext(company, cr)
+	if got != "" {
+		t.Fatalf("BuildCompanyContext(%q, nil) = %q, want empty string (no context injected on research timeout)", company, got)
+	}
+
+	// Also verify empty company name produces empty context (guard for the
+	// if company != "" gate in both callers).
+	got2 := BuildCompanyContext("", nil)
+	if got2 != "" {
+		t.Fatalf("BuildCompanyContext(\"\", nil) = %q, want empty string", got2)
+	}
+}

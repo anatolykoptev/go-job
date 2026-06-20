@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -59,15 +58,14 @@ Return ONLY the JSON object, no markdown, no explanation.`
 func GeneratePitch(ctx context.Context, resume, targetRole, company string) (*PitchGenerateResult, error) {
 	resumeTrunc := engine.TruncateRunes(resume, 4000, "")
 
-	// Optional company enrichment
+	// Optional company enrichment — bounded so a slow research substep cannot
+	// block the parent pitch_generate tool past its timeout. Returns nil on
+	// timeout/error; BuildCompanyContext yields an empty string and the pitch
+	// assembles without company context.
 	var companyContext string
 	if company != "" {
-		res, err := ResearchCompany(ctx, company)
-		if err != nil {
-			slog.Warn("pitch_generate: company research failed, proceeding without", slog.Any("error", err))
-		} else {
-			companyContext = BuildCompanyContext(company, res)
-		}
+		cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
+		companyContext = BuildCompanyContext(company, cr)
 	}
 
 	prompt := fmt.Sprintf(pitchGeneratePrompt, resumeTrunc, targetRole, companyContext)
