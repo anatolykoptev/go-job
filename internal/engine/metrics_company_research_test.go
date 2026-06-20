@@ -1,6 +1,10 @@
 package engine
 
-import "testing"
+import (
+	"testing"
+
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
+)
 
 // TestMetricCompanyResearch_ConstDefined verifies the metric constant is the
 // expected Prometheus-conventional name.
@@ -30,4 +34,37 @@ func TestIncrCompanyResearch_LabelBounded(t *testing.T) {
 	// (reg.Incr is nil-safe) for any input, recognised or not.
 	IncrCompanyResearch("timeout")
 	IncrCompanyResearch("arbitrary-unbounded-string")
+}
+
+// TestIncrCompanyResearch_RegistryLands swaps the package registry for a fresh
+// in-memory one (no prom bridge → no DefaultRegisterer collision) and asserts
+// that a recognised outcome actually lands under the labelled key, and an
+// unrecognised outcome is dropped (never reaches the registry). This covers the
+// path that the nil-reg test above cannot — the real Incr → Snapshot round-trip.
+func TestIncrCompanyResearch_RegistryLands(t *testing.T) {
+	orig := reg
+	t.Cleanup(func() { reg = orig })
+	reg = kitmetrics.NewRegistry()
+
+	IncrCompanyResearch("timeout")
+	IncrCompanyResearch("timeout")
+	IncrCompanyResearch("ok")
+	IncrCompanyResearch("definitely-not-a-valid-outcome") // must be dropped
+
+	snap := reg.Snapshot()
+
+	wantTimeout := MetricCompanyResearch + "{outcome=timeout}"
+	if snap[wantTimeout] != 2 {
+		t.Errorf("%s = %d, want 2", wantTimeout, snap[wantTimeout])
+	}
+	wantOK := MetricCompanyResearch + "{outcome=ok}"
+	if snap[wantOK] != 1 {
+		t.Errorf("%s = %d, want 1", wantOK, snap[wantOK])
+	}
+	// The dropped outcome must not appear under any key.
+	for k, v := range snap {
+		if k != wantTimeout && k != wantOK && v != 0 {
+			t.Errorf("unexpected metric key %q=%d (label cardinality leak?)", k, v)
+		}
+	}
 }

@@ -290,9 +290,14 @@ func ResearchCompanyBounded(ctx context.Context, companyName string, timeout tim
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			// Distinguish "research itself hit the deadline" from other errors so
-			// the metric reflects the real cause.
-			if errors.Is(r.err, context.DeadlineExceeded) {
+			// Classify by the sub-deadline state, not by r.err: ResearchCompany
+			// swallows a dead context into a plain "no results found" error (its
+			// parallel searches all fail and `continue`), so r.err is usually NOT
+			// errors.Is(DeadlineExceeded) even when the bound is what killed it.
+			// subCtx.Err() is the authoritative "did the bound fire" signal — this
+			// keeps the timeout vs error label deterministic instead of letting a
+			// goroutine race split real timeouts across both labels.
+			if errors.Is(subCtx.Err(), context.DeadlineExceeded) {
 				engine.IncrCompanyResearch("timeout")
 				slog.Warn("company research timed out; proceeding without company context",
 					slog.String("company", companyName), slog.Duration("timeout", timeout))
