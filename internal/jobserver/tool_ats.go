@@ -3,43 +3,53 @@ package jobserver
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerATSURLParse(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ats_url_parse",
-		Description: "Parse a known ATS (Greenhouse, Ashby, Lever) job or board URL into structured platform/org/job_id/api_url fields. Returns platform=\"unknown\" if URL doesn't match a supported ATS.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(_ context.Context, _ *mcp.CallToolRequest, input struct {
-		URL string `json:"url"`
-	}) (*mcp.CallToolResult, *jobs.ATSURLInfo, error) {
-		if input.URL == "" {
-			return nil, nil, errors.New("url is required")
-		}
-		info, err := jobs.ParseATSURL(input.URL)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, info, nil
-	})
+type atsInput struct {
+	Op       string `json:"op"                 jsonschema:"Required. Operation: parse, fetch"`
+	URL      string `json:"url,omitempty"      jsonschema:"ATS board or job URL to parse (required for op=parse)"`
+	Org      string `json:"org,omitempty"      jsonschema:"ATS org slug (required for op=fetch)"`
+	Platform string `json:"platform,omitempty" jsonschema:"ATS platform: greenhouse, ashby, lever (required for op=fetch)"`
+	Query    string `json:"query,omitempty"    jsonschema:"Title filter substring (for op=fetch)"`
+	Limit    int    `json:"limit,omitempty"    jsonschema:"Max results (for op=fetch, default 100)"`
 }
 
-func registerATSBoardFetch(server *mcp.Server) {
+func registerATS(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ats_board_fetch",
-		Description: "Direct fetch of an ATS (Greenhouse, Ashby, Lever) job board by known org slug. Returns normalized job list with title, location, comp, URL. Optional query filter (case-insensitive title substring) and limit (default 100, max 500). Use ats_url_parse first if you have a URL but not the slug.",
+		Name:        "ats",
+		Description: "ATS (Greenhouse, Ashby, Lever) tools. op=parse — parse a URL into platform/org/job_id fields; op=fetch — fetch all jobs from a known org by slug.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobs.FetchATSBoardInput) (*mcp.CallToolResult, *jobs.FetchATSBoardResult, error) {
-		if input.Org == "" || input.Platform == "" {
-			return nil, nil, errors.New("org and platform are required")
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input atsInput) (*mcp.CallToolResult, any, error) {
+		switch input.Op {
+		case "parse":
+			if input.URL == "" {
+				return nil, nil, errors.New("url is required for op=parse")
+			}
+			info, err := jobs.ParseATSURL(input.URL)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, info, nil
+		case "fetch":
+			if input.Org == "" || input.Platform == "" {
+				return nil, nil, errors.New("org and platform are required for op=fetch")
+			}
+			result, err := jobs.FetchATSBoard(ctx, jobs.FetchATSBoardInput{
+				Org:      input.Org,
+				Platform: input.Platform,
+				Query:    input.Query,
+				Limit:    input.Limit,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		default:
+			return nil, nil, fmt.Errorf("unknown op %q: must be one of parse, fetch", input.Op)
 		}
-		result, err := jobs.FetchATSBoard(ctx, input)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
 	})
 }
