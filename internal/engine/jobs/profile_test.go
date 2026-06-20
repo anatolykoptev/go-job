@@ -29,11 +29,13 @@ func TestProfilePath_UnderUploadsRoot(t *testing.T) {
 	}
 }
 
-// TestSaveLoadProfile_RoundTrip proves SaveProfile actually writes to the
-// writable uploads base and LoadProfile reads it back. profileOnce caches the
-// first load, so we assert the persisted bytes directly rather than relying on
-// the cached LoadProfile within the same process.
-func TestSaveLoadProfile_RoundTrip(t *testing.T) {
+// TestSaveProfile_PersistsToUploadsBase proves SaveProfile actually writes to
+// the writable uploads base (not the read-only HOME). We assert the persisted
+// bytes at the resolved path directly rather than via LoadProfile, because
+// profileOnce memoizes the first load within the process and would mask the
+// on-disk write. Path resolution is covered separately by
+// TestProfilePath_UnderUploadsRoot.
+func TestSaveProfile_PersistsToUploadsBase(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("UPLOADS_ROOT", root)
 
