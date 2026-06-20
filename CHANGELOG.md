@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.5.0](https://github.com/anatolykoptev/go-job/compare/v1.4.0...v1.5.0) (2026-06-20)
+
+
+### Features
+
+* **algora-jobs:** add Algora hiring/jobs connector ([#36](https://github.com/anatolykoptev/go-job/issues/36)) ([c661069](https://github.com/anatolykoptev/go-job/commit/c661069c3b6582444c9046d11db673e0e8c62447))
+
 ## [1.4.0](https://github.com/anatolykoptev/go-job/compare/v1.3.2...v1.4.0) (2026-06-20)
 
 
