@@ -80,6 +80,19 @@ const (
 	// without company context — visible now instead of surfacing only as a
 	// tool-level timeout.
 	MetricCompanyResearch = "company_research_total"
+
+	// MetricHuntList is the labelled counter gojob_hunt_list_total{kind}.
+	// Bumped once per hunt_list call that the SERVER actually handled, after
+	// the rows are fetched. kind ∈ {jobs,bounties,freelance,security}.
+	//
+	// Diagnostic value: a client-reported "socket connection closed
+	// unexpectedly" on hunt_list is, per investigation, a client-side idle
+	// keep-alive reuse race — the failing request never reaches the server. If
+	// that recurs, this counter NOT incrementing for the failed attempt (while
+	// the retry does increment it) is the positive proof the close was
+	// client-side, not a server-side mid-response drop. It turns a previously
+	// un-attributable transport error into an answerable question.
+	MetricHuntList = "hunt_list_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -118,6 +131,12 @@ func FormatMetrics() string {
 	// outcomes explicitly so a rising timeout rate is visible here too.
 	for _, oc := range []string{"ok", "timeout", "error"} {
 		keys = append(keys, MetricCompanyResearch+"{outcome="+oc+"}")
+	}
+	// Per-kind server-handled hunt_list counters, surfaced on the flat endpoint
+	// so a "no rows / socket drop" report can be checked against whether the
+	// server actually handled the call.
+	for _, k := range []string{"jobs", "bounties", "freelance", "security"} {
+		keys = append(keys, MetricHuntList+"{kind="+k+"}")
 	}
 	var sb strings.Builder
 	for _, k := range keys {
@@ -169,6 +188,26 @@ func IncrHuntIngest(kind, outcome string) {
 		return
 	}
 	reg.Incr(MetricHuntIngest + "{kind=" + kind + ",outcome=" + outcome + "}")
+}
+
+// validHuntListKinds is the allowlist for the hunt_list_total `kind` label.
+// Note these are the PLURAL list-tool kinds (jobs/bounties/...), distinct from
+// the singular ingest kinds in validHuntKinds (job/bounty/...).
+var validHuntListKinds = map[string]bool{
+	"jobs":      true,
+	"bounties":  true,
+	"freelance": true,
+	"security":  true,
+}
+
+// IncrHuntList bumps gojob_hunt_list_total{kind=<kind>}, once per server-handled
+// hunt_list call. kind ∈ {jobs,bounties,freelance,security} — bounded label.
+// Unrecognised kinds are silently dropped (cardinality guard).
+func IncrHuntList(kind string) {
+	if !validHuntListKinds[kind] {
+		return
+	}
+	reg.Incr(MetricHuntList + "{kind=" + kind + "}")
 }
 
 // IncrOversizeSpill bumps gojob_oversize_spill_total{tool=<toolName>}.
