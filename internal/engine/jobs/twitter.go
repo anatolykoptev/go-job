@@ -26,7 +26,7 @@ const jobSearchTerms = `hiring OR job OR career OR vacancy`
 
 func isJobQuery(q string) bool {
 	lower := strings.ToLower(q)
-	for _, term := range []string{"hiring", "job", "career", "vacancy", "recruit", "looking for"} {
+	for _, term := range []string{"hiring", jobTypeJob, "career", "vacancy", "recruit", "looking for"} {
 		if strings.Contains(lower, term) {
 			return true
 		}

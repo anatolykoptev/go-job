@@ -85,6 +85,8 @@ func SourceFromURL(jobURL string) string {
 		return sourceWeWorkRemotely
 	case strings.Contains(u, "remotive.com"):
 		return "remotive"
+	case strings.Contains(u, "algora.io") && strings.Contains(u, "/job/"):
+		return "algora-jobs"
 	}
 	return ""
 }

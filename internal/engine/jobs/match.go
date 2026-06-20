@@ -11,7 +11,7 @@ var matchStopWords = map[string]bool{
 	"and": true, "the": true, "for": true, "with": true, "you": true,
 	"are": true, "have": true, "will": true, "this": true, "that": true,
 	"from": true, "our": true, "your": true, "their": true, "they": true,
-	"work": true, "team": true, "role": true, "job": true, "join": true,
+	"work": true, "team": true, "role": true, jobTypeJob: true, "join": true,
 	"about": true, "which": true, "what": true, "who": true, "how": true,
 	"can": true, "not": true, "but": true, oppTypeAll: true, "also": true,
 	"more": true, "than": true, "into": true, "has": true, "its": true,
