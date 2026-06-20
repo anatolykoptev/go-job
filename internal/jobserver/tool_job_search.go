@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,7 @@ const (
 	platFreelancer = "freelancer"
 	platRemotive   = "remotive"
 	platRemote     = "remote"
+	platTwitter    = "twitter"
 	platInspira    = "inspira" // UN Secretariat careers.un.org
 	platUNDP       = "undp"    // UNDP Oracle HCM jobs portal
 	platUN         = "un"      // meta-platform fan-out: inspira + undp
@@ -40,11 +42,27 @@ const (
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
 			return nil, engine.JobSearchOutput{}, errors.New("query is required")
+		}
+
+		// raw=true with platform=twitter: bypass fan-out and LLM, return raw tweet objects.
+		if input.Raw && strings.ToLower(strings.TrimSpace(input.Platform)) == platTwitter {
+			rawTweets, err := jobs.SearchTwitterJobsRaw(ctx, input.Query, 30)
+			if err != nil {
+				return nil, engine.JobSearchOutput{}, fmt.Errorf("twitter raw search: %w", err)
+			}
+			encoded, mErr := json.Marshal(rawTweets)
+			if mErr != nil {
+				return nil, engine.JobSearchOutput{}, fmt.Errorf("marshal raw tweets: %w", mErr)
+			}
+			cr := &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			}
+			return cr, engine.JobSearchOutput{}, nil
 		}
 
 		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform, fmt.Sprintf("limit_%d_offset_%d", input.Limit, input.Offset))
@@ -93,7 +111,7 @@ func registerJobSearch(server *mcp.Server) {
 		useHN := platform == platAll || platform == "hn" || platform == platStartup
 		useIndeed := platform == platAll || platform == platIndeed
 		useHabr := platform == platAll || platform == "habr"
-		useTwitter := platform == platAll || platform == "twitter"
+		useTwitter := platform == platAll || platform == platTwitter
 		useCraigslist := platform == platAll || platform == platCraigslist
 		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == platRemote
 		useWWR := platform == platAll || platform == platWWR || platform == platRemote
@@ -138,7 +156,7 @@ func registerJobSearch(server *mcp.Server) {
 			srcs = append(srcs, "habr")
 		}
 		if useTwitter {
-			srcs = append(srcs, "twitter")
+			srcs = append(srcs, platTwitter)
 		}
 		if useCraigslist {
 			srcs = append(srcs, platCraigslist)
@@ -229,7 +247,7 @@ func registerJobSearch(server *mcp.Server) {
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "twitter":
+				case platTwitter:
 					results, err := jobs.SearchTwitterJobs(ctx, input.Query, 30)
 					if err != nil {
 						slog.Warn("job_search: twitter error", slog.Any("error", err))

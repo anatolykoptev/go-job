@@ -3,59 +3,58 @@ package jobserver
 import (
 	"context"
 	"errors"
+	"fmt"
 
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerSalaryResearch(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "salary_research",
-		Description: "Research salary ranges for a role and location. Returns p25/median/p75 percentiles with sources (levels.fyi, Glassdoor, LinkedIn, hh.ru, Хабр). For Russian locations returns RUB, otherwise USD.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.SalaryResearchInput) (*mcp.CallToolResult, *jobs.SalaryResearchResult, error) {
-		if input.Role == "" {
-			return nil, nil, errors.New("role is required")
-		}
-		result, err := jobs.ResearchSalary(ctx, input.Role, input.Location, input.Experience)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
-	})
+type researchInput struct {
+	Subject    string `json:"subject"              jsonschema:"Required. What to research: salary, company, person"`
+	Role       string `json:"role,omitempty"       jsonschema:"Role/job title (required for subject=salary)"`
+	Location   string `json:"location,omitempty"   jsonschema:"Location filter (for subject=salary/person)"`
+	Experience string `json:"experience,omitempty" jsonschema:"Experience level (for subject=salary)"`
+	Company    string `json:"company,omitempty"    jsonschema:"Company name (required for subject=company or helpful for subject=person)"`
+	Name       string `json:"name,omitempty"       jsonschema:"Person name (required for subject=person)"`
+	JobTitle   string `json:"job_title,omitempty"  jsonschema:"Person's job title (for subject=person)"`
 }
 
-func registerCompanyResearch(server *mcp.Server) {
+func registerResearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "company_research",
-		Description: "Research a company for interview preparation or job evaluation. Returns size, funding, tech stack, culture notes, recent news, Glassdoor rating, and an overall summary for job seekers.",
+		Name:        "research",
+		Description: "Research salary, company, or person. subject=salary (role required) returns p25/median/p75 salary data; subject=company (company required) returns funding/tech/culture; subject=person (name required) returns background/interests/interview tips.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.CompanyResearchInput) (*mcp.CallToolResult, *jobs.CompanyResearchResult, error) {
-		if input.Company == "" {
-			return nil, nil, errors.New("company is required")
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input researchInput) (*mcp.CallToolResult, any, error) {
+		switch input.Subject {
+		case "salary":
+			if input.Role == "" {
+				return nil, nil, errors.New("role is required for subject=salary")
+			}
+			result, err := jobs.ResearchSalary(ctx, input.Role, input.Location, input.Experience)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		case "company":
+			if input.Company == "" {
+				return nil, nil, errors.New("company is required for subject=company")
+			}
+			result, err := jobs.ResearchCompany(ctx, input.Company)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		case "person":
+			if input.Name == "" {
+				return nil, nil, errors.New("name is required for subject=person")
+			}
+			result, err := jobs.ResearchPerson(ctx, input.Name, input.Company, input.JobTitle)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		default:
+			return nil, nil, fmt.Errorf("unknown subject %q: must be one of salary, company, person", input.Subject)
 		}
-		result, err := jobs.ResearchCompany(ctx, input.Company)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
-	})
-}
-
-func registerPersonResearch(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "person_research",
-		Description: "Research a person (hiring manager, interviewer, recruiter) from open sources: LinkedIn, GitHub, web, Habr, and Twitter/X via go-hully. Returns background, skills, interests, recent activity, common ground, and specific interview tips. Use before interviews to build rapport and prepare relevant talking points.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.PersonResearchInput) (*mcp.CallToolResult, *jobs.PersonProfile, error) {
-		if input.Name == "" {
-			return nil, nil, errors.New("name is required")
-		}
-		result, err := jobs.ResearchPerson(ctx, input.Name, input.Company, input.JobTitle)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
 	})
 }

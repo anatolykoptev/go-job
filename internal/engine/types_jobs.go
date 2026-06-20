@@ -16,6 +16,7 @@ type JobSearchInput struct {
 	Limit    int    `json:"limit,omitempty" jsonschema:"Max results to return (default 15, max 50)"`
 	Offset   int    `json:"offset,omitempty" jsonschema:"Skip first N results for pagination (default 0)"`
 	Blacklist string `json:"blacklist,omitempty" jsonschema:"Comma-separated company names or keywords to exclude from results (e.g. Google, Meta, staffing)"`
+	Raw      bool   `json:"raw,omitempty"      jsonschema:"Skip LLM processing, return raw tweets — only meaningful for platform=twitter"`
 }
 
 // JobListing is a structured representation of a job listing.
