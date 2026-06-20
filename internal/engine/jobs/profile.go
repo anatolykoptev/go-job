@@ -3,9 +3,19 @@ package jobs
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sync"
+
+	"github.com/anatolykoptev/go-kit/uploads"
 )
+
+// profilePath resolves the user-profile file under the canonical uploads base
+// ($UPLOADS_ROOT/go-job/profile/profile.json). This is the same writable base
+// the job tracker uses, so a read-only container root (HOME=/root, mounted RO)
+// no longer breaks profile persistence — the operator points UPLOADS_ROOT at a
+// mounted writable volume and both the tracker DB and this profile land there.
+func profilePath() (string, error) {
+	return uploads.Path("go-job", "profile", "profile.json")
+}
 
 // UserProfile stores user preferences for job search.
 type UserProfile struct {
@@ -21,16 +31,16 @@ var (
 	profileOnce   sync.Once
 )
 
-// LoadProfile loads user profile from ~/.go_job/profile.json.
-// Returns empty profile if file doesn't exist. Cached after first load.
+// LoadProfile loads the user profile from $UPLOADS_ROOT/go-job/profile/profile.json.
+// Returns an empty profile if the file doesn't exist. Cached after first load.
 func LoadProfile() *UserProfile {
 	profileOnce.Do(func() {
 		cachedProfile = &UserProfile{}
-		home, err := os.UserHomeDir()
+		path, err := profilePath()
 		if err != nil {
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(home, ".go_job", "profile.json"))
+		data, err := os.ReadFile(path) //nolint:gosec // path is service-controlled (uploads base), not user input
 		if err != nil {
 			return
 		}
@@ -39,19 +49,17 @@ func LoadProfile() *UserProfile {
 	return cachedProfile
 }
 
-// SaveProfile writes user profile to ~/.go_job/profile.json.
+// SaveProfile writes the user profile to $UPLOADS_ROOT/go-job/profile/profile.json.
+// uploads.Path creates the parent bucket directory, so no separate MkdirAll is
+// needed; the base must be writable (mounted volume), not the read-only root FS.
 func SaveProfile(p *UserProfile) error {
-	home, err := os.UserHomeDir()
+	path, err := profilePath()
 	if err != nil {
-		return err
-	}
-	dir := filepath.Join(home, ".go_job")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "profile.json"), data, 0o600)
+	return os.WriteFile(path, data, 0o600)
 }
