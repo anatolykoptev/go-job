@@ -87,15 +87,18 @@ func PrepareApplication(ctx context.Context, resume, jobDescription, company, to
 		mu.Unlock()
 	}()
 
-	// 4. Optional company research
+	// 4. Optional company research — bounded so a slow research substep can't
+	// hold wg.Wait() (and thus the whole application_prep tool) past its budget.
+	// ResearchCompanyBounded returns nil on timeout/error and records the
+	// outcome on gojob_company_research_total{outcome}; nil leaves CompanyInfo
+	// unset and the tool proceeds.
 	if company != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cr, err := ResearchCompany(ctx, company)
-			if err != nil {
-				slog.Warn("application_prep: company research failed", slog.Any("error", err))
-				return // non-fatal
+			cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
+			if cr == nil {
+				return // non-fatal: proceed without company info
 			}
 			mu.Lock()
 			result.CompanyInfo = cr
