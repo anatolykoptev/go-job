@@ -104,7 +104,7 @@ func GenerateCoverLetter(ctx context.Context, resumeText, jobDescription, tone s
 	if tone == "" {
 		tone = ToneProfessional
 	}
-	validTones := map[string]bool{ToneProfessional: true, "friendly": true, "concise": true}
+	validTones := map[string]bool{ToneProfessional: true, toneFriendly: true, toneConcise: true}
 	if !validTones[strings.ToLower(tone)] {
 		tone = ToneProfessional
 	}

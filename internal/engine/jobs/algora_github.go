@@ -21,7 +21,7 @@ type githubIssueState struct {
 // githubIssueInfo holds enrichment data from a single GitHub API call.
 type githubIssueInfo struct {
 	Title       string   // issue title
-	State       string   // "open" or "closed"
+	State       string   // statusOpen or "closed"
 	StateReason string   // GitHub state_reason: "completed", "not_planned", "reopened", or ""
 	Labels      []string // label names
 	Language    string   // repo primary language (from fetchRepoLanguages)
@@ -112,7 +112,7 @@ func checkIssueOpen(ctx context.Context, owner, repo string, number int) bool {
 		return true
 	}
 
-	return issue.State == "open"
+	return issue.State == statusOpen
 }
 
 // ParseGitHubIssueURL extracts owner, repo, issue number from a GitHub issue URL.

@@ -102,8 +102,8 @@ func AddResumeMemory(ctx context.Context, content, memType string) (*ResumeMemor
 	}
 
 	info := map[string]any{
-		"type":   memType,
-		"source": "agent",
+		memdbKeyType:   memType,
+		memdbKeySource: memdbSourceAgent,
 	}
 
 	if _, err := mdb.Add(ctx, content, info); err != nil {
@@ -157,8 +157,8 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 
 	// Re-add with same type
 	info := map[string]any{
-		"type":   oldType,
-		"source": "agent",
+		memdbKeyType:   oldType,
+		memdbKeySource: memdbSourceAgent,
 	}
 	addResult, err := mdb.Add(ctx, content, info)
 	if err != nil {

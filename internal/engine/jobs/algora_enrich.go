@@ -108,7 +108,7 @@ func SearchAlgoraEnriched(ctx context.Context, limit int) ([]BountyWithVector, e
 	var enriched []engine.BountyListing
 	for _, b := range bounties {
 		info := infoMap[b.URL]
-		if info.State == "closed" {
+		if info.State == statusClosed {
 			continue
 		}
 		// Fix empty/noisy title from GitHub API.

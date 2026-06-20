@@ -28,7 +28,7 @@ func registerOpportunityClaim(server *mcp.Server) {
 		var result map[string]string
 
 		switch typ {
-		case "bounty":
+		case oppTypeBounty:
 			owner, repo, number, ok := jobs.ParseGitHubIssueURL(input.URL)
 			if !ok {
 				return nil, engine.SmartSearchOutput{}, errors.New("invalid GitHub issue URL; expected https://github.com/org/repo/issues/123")
@@ -40,26 +40,26 @@ func registerOpportunityClaim(server *mcp.Server) {
 			}
 
 			result = map[string]string{
-				"type":        "bounty",
+				"type":        oppTypeBounty,
 				"url":         input.URL,
 				"comment_url": commentURL,
 				"status":      "attempted",
 				"message":     "Posted /attempt on the issue. You are now working on this bounty.",
 			}
 
-		case "security":
+		case oppTypeSecurity:
 			result = map[string]string{
-				"type":    "security",
+				"type":    oppTypeSecurity,
 				"url":     input.URL,
-				"status":  "manual",
+				"status":  verdictManual,
 				"message": "Security bug bounty programs don't have an automated claim step. Visit the program page, read the rules and scope, then use security scanning tools to find vulnerabilities.",
 			}
 
-		case "freelance":
+		case oppTypeFreelance:
 			result = map[string]string{
-				"type":    "freelance",
+				"type":    oppTypeFreelance,
 				"url":     input.URL,
-				"status":  "manual",
+				"status":  verdictManual,
 				"message": "Freelance projects require manual application. Use application_prep tool to prepare your application materials.",
 			}
 		}

@@ -9,7 +9,7 @@ import (
 
 func bountyToOpportunity(b engine.BountyListing) engine.Opportunity {
 	return engine.Opportunity{
-		Type:   "bounty",
+		Type:   oppTypeBounty,
 		Title:  b.Title,
 		URL:    b.URL,
 		Reward: b.Amount,
@@ -36,7 +36,7 @@ func securityToOpportunity(s engine.SecurityProgram) engine.Opportunity {
 	}
 
 	return engine.Opportunity{
-		Type:    "security",
+		Type:    oppTypeSecurity,
 		Title:   s.Name,
 		URL:     s.URL,
 		Reward:  reward,
@@ -60,7 +60,7 @@ func freelanceToOpportunity(f engine.FreelanceJob) engine.Opportunity {
 	}
 
 	return engine.Opportunity{
-		Type:   "freelance",
+		Type:   oppTypeFreelance,
 		Title:  title,
 		URL:    f.URL,
 		Reward: reward,
@@ -73,15 +73,15 @@ func freelanceToOpportunity(f engine.FreelanceJob) engine.Opportunity {
 // skillAliases maps common search terms to their canonical forms and vice versa.
 // When a user searches for "golang", we also match "go"; when they search "js", we match "javascript".
 var skillAliases = map[string][]string{
-	"golang":     {"go"},
-	"go":         {"golang"},
+	langAliasGolang:     {"go"},
+	"go":         {langAliasGolang},
 	"javascript": {"js", "node", "nodejs"},
 	"js":         {"javascript"},
 	"typescript": {"ts"},
 	"ts":         {"typescript"},
 	"python":     {"py"},
 	"py":         {"python"},
-	"rust":       {"rs"},
+	langAliasRust:       {"rs"},
 	"csharp":     {"c#", ".net"},
 	"c#":         {"csharp", ".net"},
 	"cpp":        {"c++"},

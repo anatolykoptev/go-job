@@ -58,9 +58,9 @@ func SearchSherlock(ctx context.Context, limit int) ([]engine.SecurityProgram, e
 		}
 		programs = append(programs, engine.SecurityProgram{
 			Name:     prettifySherlockName(r.Name),
-			Platform: "sherlock",
+			Platform: sourceSherlock,
 			URL:      r.HTMLURL,
-			Type:     "audit_contest",
+			Type:     typeAuditContest,
 			Managed:  true,
 			Archived: r.Archived, // propagated to mapper → hunt.StatusArchived
 		})
