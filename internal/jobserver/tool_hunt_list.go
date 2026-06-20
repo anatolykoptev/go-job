@@ -2,6 +2,7 @@ package jobserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -34,10 +35,29 @@ type huntListInput struct {
 	Offset        int      `json:"offset,omitempty"         jsonschema:"Pagination offset"`
 }
 
+// huntListOutput is the output schema for the hunt_list tool.
+// Entries must be []map[string]any (not any) so the go-sdk reflects it as a
+// proper JSON Schema array-of-object rather than the boolean literal true that
+// the MCP client rejects when it sees it under properties.<field>.
 type huntListOutput struct {
-	Kind    string `json:"kind"`
-	Entries any    `json:"entries"`
-	Count   int    `json:"count"`
+	Kind    string           `json:"kind"`
+	Entries []map[string]any `json:"entries"`
+	Count   int              `json:"count"`
+}
+
+// toGenericSlice marshal/remarshals any typed slice into []map[string]any so
+// the per-kind typed results ([]hunt.Job, []hunt.Bounty, …) can be assigned to
+// huntListOutput.Entries without changing the JSON representation.
+func toGenericSlice(v any) ([]map[string]any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("toGenericSlice marshal: %w", err)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("toGenericSlice unmarshal: %w", err)
+	}
+	return out, nil
 }
 
 func registerHuntList(server *mcp.Server) {
@@ -68,7 +88,11 @@ func registerHuntList(server *mcp.Server) {
 			if entries == nil {
 				entries = []hunt.Job{}
 			}
-			return nil, huntListOutput{Kind: huntKindJobs, Entries: entries, Count: len(entries)}, nil
+			generic, err := toGenericSlice(entries)
+			if err != nil {
+				return nil, huntListOutput{}, fmt.Errorf("hunt_list jobs serialize: %w", err)
+			}
+			return nil, huntListOutput{Kind: huntKindJobs, Entries: generic, Count: len(entries)}, nil
 		case huntKindBounties:
 			f := hunt.BountyFilter{
 				Source:        in.Source,
@@ -85,7 +109,11 @@ func registerHuntList(server *mcp.Server) {
 			if entries == nil {
 				entries = []hunt.Bounty{}
 			}
-			return nil, huntListOutput{Kind: huntKindBounties, Entries: entries, Count: len(entries)}, nil
+			generic, err := toGenericSlice(entries)
+			if err != nil {
+				return nil, huntListOutput{}, fmt.Errorf("hunt_list bounties serialize: %w", err)
+			}
+			return nil, huntListOutput{Kind: huntKindBounties, Entries: generic, Count: len(entries)}, nil
 		case huntKindFreelance:
 			f := hunt.FreelanceFilter{
 				Platform:      in.Platform,
@@ -102,7 +130,11 @@ func registerHuntList(server *mcp.Server) {
 			if entries == nil {
 				entries = []hunt.Freelance{}
 			}
-			return nil, huntListOutput{Kind: huntKindFreelance, Entries: entries, Count: len(entries)}, nil
+			generic, err := toGenericSlice(entries)
+			if err != nil {
+				return nil, huntListOutput{}, fmt.Errorf("hunt_list freelance serialize: %w", err)
+			}
+			return nil, huntListOutput{Kind: huntKindFreelance, Entries: generic, Count: len(entries)}, nil
 		case huntKindSecurity:
 			f := hunt.SecurityFilter{
 				Platform:      in.Platform,
@@ -118,7 +150,11 @@ func registerHuntList(server *mcp.Server) {
 			if entries == nil {
 				entries = []hunt.Security{}
 			}
-			return nil, huntListOutput{Kind: huntKindSecurity, Entries: entries, Count: len(entries)}, nil
+			generic, err := toGenericSlice(entries)
+			if err != nil {
+				return nil, huntListOutput{}, fmt.Errorf("hunt_list security serialize: %w", err)
+			}
+			return nil, huntListOutput{Kind: huntKindSecurity, Entries: generic, Count: len(entries)}, nil
 		default:
 			return nil, huntListOutput{}, fmt.Errorf("unknown kind %q: must be one of jobs, bounties, freelance, security", in.Kind)
 		}
