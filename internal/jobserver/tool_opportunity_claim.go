@@ -40,7 +40,7 @@ func registerOpportunityClaim(server *mcp.Server) {
 			}
 
 			result = map[string]string{
-				"type":        oppTypeBounty,
+				keyType:        oppTypeBounty,
 				"url":         input.URL,
 				"comment_url": commentURL,
 				"status":      "attempted",
@@ -49,7 +49,7 @@ func registerOpportunityClaim(server *mcp.Server) {
 
 		case oppTypeSecurity:
 			result = map[string]string{
-				"type":    oppTypeSecurity,
+				keyType:    oppTypeSecurity,
 				"url":     input.URL,
 				"status":  verdictManual,
 				"message": "Security bug bounty programs don't have an automated claim step. Visit the program page, read the rules and scope, then use security scanning tools to find vulnerabilities.",
@@ -57,7 +57,7 @@ func registerOpportunityClaim(server *mcp.Server) {
 
 		case oppTypeFreelance:
 			result = map[string]string{
-				"type":    oppTypeFreelance,
+				keyType:    oppTypeFreelance,
 				"url":     input.URL,
 				"status":  verdictManual,
 				"message": "Freelance projects require manual application. Use application_prep tool to prepare your application materials.",

@@ -13,7 +13,7 @@ import (
 func registerOpportunitySearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "opportunity_search",
-		Description: "Search for income opportunities across all sources: code bounties (Algora, Opire, BountyHub, Boss, Lightning, Collaborators), security bug bounties (HackerOne, Bugcrowd, Intigriti, YesWeHack, Immunefi), and freelance jobs (RemoteOK, Himalayas). Filter by type and keyword.",
+		Description: "Search for income opportunities: code bounties (type=bounty), security bug bounties (type=security), or freelance projects (type=freelance). Default type=all returns all categories. Replaces the removed bounty_search, security_bounty_search, and freelance_search tools.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.OpportunitySearchInput) (*mcp.CallToolResult, engine.SmartSearchOutput, error) {
 		out, err := jobs.SearchOpportunities(ctx, input)
