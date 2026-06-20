@@ -291,8 +291,12 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 			} else {
 				listing.Skills = append(listing.Skills, "equity")
 			}
-		case algoraRemoteRow, "type":
+		case algoraRemoteRow: // "remote" is canonical winner
 			listing.Remote = val
+		case "type":
+			if listing.Remote == "" {
+				listing.Remote = val
+			}
 		}
 	}
 

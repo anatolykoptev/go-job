@@ -250,3 +250,28 @@ func minLen(a, b int) int {
 	}
 	return b
 }
+
+func TestParseAlgoraJob_RemoteDeterministic(t *testing.T) {
+	const remoteVal = "Remote"
+	const typeVal = "Full-time"
+	htmlBody := "<html><body>" +
+		`<div class="flex justify-between border-b">` +
+		`  <span class="text-muted-foreground">remote</span>` +
+		`  <span>` + remoteVal + `</span>` +
+		"</div>" +
+		`<div class="flex justify-between border-b">` +
+		`  <span class="text-muted-foreground">type</span>` +
+		`  <span>` + typeVal + `</span>` +
+		"</div>" +
+		"</body></html>"
+
+	for i := range 50 {
+		j, err := parseAlgoraJob(htmlBody, "https://algora.io/comfy/job/abc")
+		if err != nil {
+			t.Fatalf("iter %d: unexpected error: %v", i, err)
+		}
+		if j.Remote != remoteVal {
+			t.Errorf("iter %d: Remote=%q want %q (non-deterministic?)", i, j.Remote, remoteVal)
+		}
+	}
+}
