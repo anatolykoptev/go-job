@@ -111,7 +111,7 @@ func parseRemoteOKFreelanceResponse(data []byte) ([]engine.FreelanceJob, error) 
 			Tags:      rj.Tags,
 			SalaryMin: rj.SalaryMin,
 			SalaryMax: rj.SalaryMax,
-			Source:    "remoteok",
+			Source:    sourceRemoteOK,
 			Posted:    rj.Date,
 			Location:  rj.Location,
 		})

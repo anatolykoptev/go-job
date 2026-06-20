@@ -98,7 +98,7 @@ func parseCantinaHTML(html string) []engine.SecurityProgram {
 			Platform:  "cantina",
 			URL:       "https://cantina.xyz/competitions/" + slug,
 			MaxBounty: maxBounty,
-			Type:      "audit_contest",
+			Type:      typeAuditContest,
 			Managed:   true,
 		})
 	}

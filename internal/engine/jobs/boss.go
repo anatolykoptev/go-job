@@ -91,7 +91,7 @@ func parseBossResponse(data []byte) ([]engine.BountyListing, error) {
 
 	bounties := make([]engine.BountyListing, 0, len(issues))
 	for _, issue := range issues {
-		if issue.URL == "" || issue.Status != "open" {
+		if issue.URL == "" || issue.Status != statusOpen {
 			continue
 		}
 
@@ -103,7 +103,7 @@ func parseBossResponse(data []byte) ([]engine.BountyListing, error) {
 			Org:      org,
 			URL:      issue.URL,
 			Amount:   amount,
-			Currency: "USD",
+			Currency: currencyUSD,
 			Source:   "boss",
 			IssueNum: issueNum,
 		})

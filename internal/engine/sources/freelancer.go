@@ -159,7 +159,7 @@ func formatBudget(b freelancerBudget, c freelancerCurrency, projectType string) 
 
 	currency := c.Code
 	if currency == "" {
-		currency = "USD"
+		currency = currencyUSD
 	}
 
 	suffix := ""

@@ -654,7 +654,7 @@ func buildAshbyLocation(j ashbyJob) string {
 	loc := j.Location
 	if j.IsRemote {
 		if loc == "" {
-			loc = "Remote"
+			loc = locationRemote
 		} else {
 			loc += " | Remote"
 		}

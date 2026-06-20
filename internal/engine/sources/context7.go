@@ -222,7 +222,7 @@ func ExtractLibraryName(query string) string {
 		// JavaScript/TypeScript
 		{"next.js", "next.js"}, {"nextjs", "next.js"},
 		{"react native", "react-native"},
-		{"react", "react"}, {"vue.js", "vue"}, {"vuejs", "vue"}, {"vue", "vue"},
+		{"react", "react"}, {"vue.js", frameworkVue}, {"vuejs", frameworkVue}, {"vue", frameworkVue},
 		{"angular", "angular"}, {"svelte", "svelte"}, {"solid.js", "solid"},
 		{"express.js", "express"}, {"express", "express"},
 		{"nestjs", "nestjs"}, {"nuxt", "nuxt"}, {"remix", "remix"},

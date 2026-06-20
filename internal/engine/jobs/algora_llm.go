@@ -54,7 +54,7 @@ func SummarizeBountyResults(ctx context.Context, query, instruction string, cont
 			b.URL = results[i].URL
 		}
 		if b.Source == "" {
-			b.Source = "algora"
+			b.Source = sourceAlgora
 		}
 		enriched[i] = b
 	}

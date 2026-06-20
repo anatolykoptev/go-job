@@ -176,8 +176,8 @@ func parseAlgoraBounties(html string) []engine.BountyListing {
 			Org:      org,
 			URL:      ghURL,
 			Amount:   amount,
-			Currency: "USD",
-			Source:   "algora",
+			Currency: currencyUSD,
+			Source:   sourceAlgora,
 			IssueNum: issueNum,
 		})
 	}

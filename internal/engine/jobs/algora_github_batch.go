@@ -29,7 +29,7 @@ func fetchIssueInfoBatch(ctx context.Context, bounties []engine.BountyListing) m
 	for _, b := range bounties {
 		owner, repo, number, ok := ParseGitHubIssueURL(b.URL)
 		if !ok {
-			ch <- kv{url: b.URL, info: githubIssueInfo{State: "open"}}
+			ch <- kv{url: b.URL, info: githubIssueInfo{State: statusOpen}}
 			continue
 		}
 		wg.Add(1)
@@ -72,7 +72,7 @@ func fetchSingleIssueInfo(ctx context.Context, owner, repo string, number int) g
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d", owner, repo, number)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return githubIssueInfo{State: "open"}
+		return githubIssueInfo{State: statusOpen}
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -80,12 +80,12 @@ func fetchSingleIssueInfo(ctx context.Context, owner, repo string, number int) g
 
 	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec
 	if err != nil {
-		return githubIssueInfo{State: "open"}
+		return githubIssueInfo{State: statusOpen}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return githubIssueInfo{State: "open"}
+		return githubIssueInfo{State: statusOpen}
 	}
 
 	var issue struct {
@@ -97,7 +97,7 @@ func fetchSingleIssueInfo(ctx context.Context, owner, repo string, number int) g
 		} `json:"labels"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&issue); err != nil {
-		return githubIssueInfo{State: "open"}
+		return githubIssueInfo{State: statusOpen}
 	}
 
 	labels := make([]string, len(issue.Labels))

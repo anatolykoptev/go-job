@@ -167,12 +167,12 @@ func parseRemoteOKResponse(body []byte) ([]engine.RemoteJobListing, error) {
 			Title:    j.Position,
 			Company:  j.Company,
 			URL:      jobURL,
-			Source:   "remoteok",
+			Source:   sourceRemoteOK,
 			Salary:   salary,
 			Location: j.Location,
 			Tags:     tags,
 			Posted:   posted,
-			JobType:  "remote",
+			JobType:  jobTypeRemote,
 		})
 	}
 
@@ -282,14 +282,14 @@ func parseWWRResponse(body []byte) ([]engine.RemoteJobListing, error) {
 
 		jobType := item.Type
 		if jobType == "" {
-			jobType = "remote"
+			jobType = jobTypeRemote
 		}
 
 		jobs = append(jobs, engine.RemoteJobListing{
 			Title:    title,
 			Company:  company,
 			URL:      item.Link,
-			Source:   "weworkremotely",
+			Source:   sourceWeWorkRemotely,
 			Salary:   "not specified",
 			Location: location,
 			Tags:     tags,
@@ -357,7 +357,7 @@ func matchesAllKeywords(haystack string, keywords []string) bool {
 // stopWords are common words that make poor RemoteOK API tags.
 var remoteOKStopWords = map[string]bool{
 	"senior": true, "junior": true, "lead": true, "staff": true,
-	"principal": true, "remote": true, "job": true, "jobs": true,
+	"principal": true, jobTypeRemote: true, "job": true, "jobs": true,
 	"developer": true, "engineer": true, "position": true, "role": true,
 	"and": true, "or": true, "the": true, "for": true, "with": true,
 }

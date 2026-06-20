@@ -11,13 +11,13 @@ import (
 )
 
 // mapAlgoraStatus converts Algora-specific status strings to hunt lifecycle constants.
-// "open" / "" → StatusOpen; "claimed" / "completed" → StatusMerged;
-// "closed" / "cancelled" → StatusClosed.
+// "open" / "" → StatusOpen; "claimed" / statusCompleted → StatusMerged;
+// statusClosed / "cancelled" → StatusClosed.
 func mapAlgoraStatus(s string) string {
 	switch strings.ToLower(s) {
-	case "claimed", "completed":
+	case "claimed", statusCompleted:
 		return hunt.StatusMerged
-	case "closed", "cancelled":
+	case statusClosed, "cancelled":
 		return hunt.StatusClosed
 	default:
 		return hunt.StatusOpen
@@ -59,12 +59,12 @@ func SourceFromURL(jobURL string) string {
 	u := strings.ToLower(jobURL)
 	switch {
 	case strings.Contains(u, "careers.un.org"):
-		return "inspira"
+		return sourceInspira
 	case strings.Contains(u, "estm.fa.em2.oraclecloud.com/hcmui/candidateexperience") ||
 		strings.Contains(u, "jobs.undp.org"):
-		return "undp"
+		return sourceUNDP
 	case strings.Contains(u, "linkedin.com/jobs"):
-		return "linkedin"
+		return sourceLinkedIn
 	case strings.Contains(u, "boards.greenhouse.io") || strings.Contains(u, "boards-api.greenhouse.io"):
 		return "greenhouse"
 	case strings.Contains(u, "jobs.lever.co"):
@@ -78,11 +78,11 @@ func SourceFromURL(jobURL string) string {
 	case strings.Contains(u, "indeed.com"):
 		return "indeed"
 	case strings.Contains(u, "career.habr.com") || strings.Contains(u, "habr.com/ru/jobs"):
-		return "habr"
+		return sourceHabr
 	case strings.Contains(u, "remoteok.com"):
-		return "remoteok"
+		return sourceRemoteOK
 	case strings.Contains(u, "weworkremotely.com"):
-		return "weworkremotely"
+		return sourceWeWorkRemotely
 	case strings.Contains(u, "remotive.com"):
 		return "remotive"
 	}
@@ -132,7 +132,7 @@ func JobListingToHunt(j engine.JobListing) hunt.Job {
 }
 
 // RemoteJobListingToHunt converts a RemoteJobListing (from RemoteOK/Remotive/WeWorkRemotely)
-// to a hunt.Job. Source identifies the origin scraper ("remoteok", "remotive", "weworkremotely").
+// to a hunt.Job. Source identifies the origin scraper (sourceRemoteOK, "remotive", "weworkremotely").
 // Platform is set to Source in Phase 1; TODO(phase2): split platform vs source convention.
 // Raw is populated with the serialized source struct for audit trail.
 func RemoteJobListingToHunt(r engine.RemoteJobListing) hunt.Job {
@@ -142,7 +142,7 @@ func RemoteJobListingToHunt(r engine.RemoteJobListing) hunt.Job {
 		Title:     r.Title,
 		Company:   r.Company,
 		URL:       r.URL,
-		Source:    r.Source, // origin scraper: "remoteok", "remotive", "weworkremotely"
+		Source:    r.Source, // origin scraper: sourceRemoteOK, "remotive", "weworkremotely"
 		Location:  r.Location,
 		JobType:   r.JobType,
 		Tags:      r.Tags,
@@ -172,7 +172,7 @@ func FreelanceProjectToHunt(f engine.FreelanceProject) hunt.Freelance {
 }
 
 // FreelanceJobToHunt converts a FreelanceJob (remoteok/himalayas type) to a hunt.Freelance.
-// Source = origin scraper ("remoteok", "himalayas"). Platform = same in Phase 1.
+// Source = origin scraper (sourceRemoteOK, "himalayas"). Platform = same in Phase 1.
 // TODO(phase2): split platform vs source convention once dedicated scrapers have stable IDs.
 // Raw is populated with the serialized source struct for audit trail.
 func FreelanceJobToHunt(f engine.FreelanceJob) hunt.Freelance {

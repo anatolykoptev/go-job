@@ -98,7 +98,7 @@ func SearchGitHubRepos(ctx context.Context, query, sort string) ([]engine.Searxn
 
 	params := url.Values{
 		"q":        {query},
-		"per_page": {"10"},
+		paramPerPage: {"10"},
 	}
 	if sort != "" {
 		params.Set("sort", sort)
@@ -193,7 +193,7 @@ func SearchGitHubIssues(ctx context.Context, query string) ([]engine.IssueItem, 
 
 	apiURL := "https://api.github.com/search/issues?" + url.Values{
 		"q":        {query},
-		"per_page": {"10"},
+		paramPerPage: {"10"},
 	}.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
@@ -288,7 +288,7 @@ func SearchGitHubCode(ctx context.Context, query string, repos []string) ([]engi
 
 	apiURL := "https://api.github.com/search/code?" + url.Values{
 		"q":        {q},
-		"per_page": {"10"},
+		paramPerPage: {"10"},
 	}.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

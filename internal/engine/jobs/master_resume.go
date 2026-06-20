@@ -413,7 +413,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		for _, skillName := range exp.Skills {
 			sid := ensureSkill(ctx, db, personID, skillName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": skillName}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: skillName}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if err := db.UpsertGraphEdge(ctx, "Exp", expID, "USED_SKILL", "Skill", sid); err != nil {
@@ -428,7 +428,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			if err != nil {
 				slog.Warn("insert exp domain failed", slog.String("domain", exp.Domain), slog.Any("error", err))
 			} else {
-				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{"name": exp.Domain}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: exp.Domain}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if err := db.UpsertGraphEdge(ctx, "Exp", expID, "IN_DOMAIN", "Domain", domID); err != nil {
@@ -452,7 +452,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			result.Projects++
 			result.SubProjects++
 
-			if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{"name": sp.Name}); err != nil {
+			if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{graphPropName: sp.Name}); err != nil {
 				slog.Debug("graph node upsert failed", slog.Any("error", err))
 			}
 			if err := db.UpsertGraphEdge(ctx, "Proj", spID, "PART_OF", "Exp", expID); err != nil {
@@ -462,7 +462,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			for _, techName := range sp.Tech {
 				sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 				if sid > 0 {
-					if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": techName}); err != nil {
+					if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
 						slog.Debug("graph node upsert failed", slog.Any("error", err))
 					}
 					if err := db.UpsertGraphEdge(ctx, "Proj", spID, "USED_SKILL", "Skill", sid); err != nil {
@@ -474,7 +474,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			text := formatProjectText(sp.Name, sp.Description, sp.Tech, sp.Highlights)
 			vectorTexts = append(vectorTexts, vectorEntry{
 				content: text,
-				info:    map[string]any{"type": "project", "id": float64(spID)},
+				info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(spID)},
 			})
 		}
 
@@ -482,7 +482,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		text := formatExperienceTextExtended(exp.Title, exp.Company, exp.StartDate, exp.EndDate, exp.Description, exp.Highlights, exp.Domain)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{"type": "experience", "id": float64(expID)},
+			info:    map[string]any{memdbKeyType: "experience", "id": float64(expID)},
 		})
 	}
 
@@ -501,14 +501,14 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 		result.Projects++
 
-		if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{"name": proj.Name}); err != nil {
+		if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{graphPropName: proj.Name}); err != nil {
 			slog.Debug("graph node upsert failed", slog.Any("error", err))
 		}
 
 		for _, techName := range proj.Tech {
 			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": techName}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if err := db.UpsertGraphEdge(ctx, "Proj", projID, "USED_SKILL", "Skill", sid); err != nil {
@@ -520,7 +520,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		text := formatProjectText(proj.Name, proj.Description, proj.Tech, proj.Highlights)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{"type": "project", "id": float64(projID)},
+			info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(projID)},
 		})
 	}
 
@@ -551,7 +551,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: achv.Text,
-			info:    map[string]any{"type": "achievement", "id": float64(achvID)},
+			info:    map[string]any{memdbKeyType: "achievement", "id": float64(achvID)},
 		})
 	}
 
@@ -601,7 +601,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			slog.Warn("insert domain failed", slog.String("name", d), slog.Any("error", err))
 			continue
 		}
-		if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{"name": d}); err != nil {
+		if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: d}); err != nil {
 			slog.Debug("graph node upsert failed", slog.Any("error", err))
 		}
 		result.Domains++
@@ -623,7 +623,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			slog.Warn("insert methodology failed", slog.String("name", name), slog.Any("error", err))
 			continue
 		}
-		if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{"name": name}); err != nil {
+		if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{graphPropName: name}); err != nil {
 			slog.Debug("graph node upsert failed", slog.Any("error", err))
 		}
 		result.Methodologies++
@@ -637,7 +637,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		sid := ensureSkill(ctx, db, personID, is.Name, is.Category, is.Level, true, "inferred", skillIDs, result)
 		if sid > 0 {
 			result.ImplicitSkills++
-			if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": is.Name}); err != nil {
+			if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: is.Name}); err != nil {
 				slog.Debug("graph node upsert failed", slog.Any("error", err))
 			}
 
@@ -668,7 +668,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		result.Projects++
 		result.SubProjects++
 
-		if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{"name": sp.Name}); err != nil {
+		if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{graphPropName: sp.Name}); err != nil {
 			slog.Debug("graph node upsert failed", slog.Any("error", err))
 		}
 		if parentExpID > 0 {
@@ -680,7 +680,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		for _, techName := range sp.Tech {
 			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": techName}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if err := db.UpsertGraphEdge(ctx, "Proj", spID, "USED_SKILL", "Skill", sid); err != nil {
@@ -692,7 +692,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		text := formatProjectText(sp.Name, sp.Description, sp.Tech, sp.Highlights)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{"type": "project", "id": float64(spID)},
+			info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(spID)},
 		})
 	}
 
@@ -704,7 +704,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 		toID := ensureSkill(ctx, db, personID, adj.To, "other", "intermediate", true, "inferred", skillIDs, result)
 		if toID > 0 {
-			if err := db.UpsertGraphNode(ctx, "Skill", toID, map[string]string{"name": adj.To}); err != nil {
+			if err := db.UpsertGraphNode(ctx, "Skill", toID, map[string]string{graphPropName: adj.To}); err != nil {
 				slog.Debug("graph node upsert failed", slog.Any("error", err))
 			}
 			if err := db.UpsertGraphEdge(ctx, "Skill", fromID, "IMPLIES_SKILL", "Skill", toID); err != nil {

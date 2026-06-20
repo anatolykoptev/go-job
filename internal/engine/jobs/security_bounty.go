@@ -22,7 +22,7 @@ var securitySources = []struct {
 }{
 	{
 		url:      "https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data/hackerone_data.json",
-		platform: "hackerone",
+		platform: sourceHackerOne,
 		parser:   parseHackerOneData,
 	},
 	{

@@ -28,13 +28,13 @@ func registerOpportunityAnalyze(server *mcp.Server) {
 		var analysis engine.OpportunityAnalysis
 
 		switch typ {
-		case "bounty":
+		case oppTypeBounty:
 			ba, err := jobs.AnalyzeBounty(ctx, input.URL)
 			if err != nil {
 				return nil, engine.SmartSearchOutput{}, err
 			}
 			analysis = engine.OpportunityAnalysis{
-				Type:    "bounty",
+				Type:    oppTypeBounty,
 				Title:   ba.Title,
 				URL:     input.URL,
 				Reward:  ba.Amount,
@@ -43,22 +43,22 @@ func registerOpportunityAnalyze(server *mcp.Server) {
 				Details: ba,
 			}
 
-		case "security":
+		case oppTypeSecurity:
 			analysis = engine.OpportunityAnalysis{
-				Type:    "security",
+				Type:    oppTypeSecurity,
 				Title:   "Security Program",
 				URL:     input.URL,
 				Summary: "Security programs require manual analysis. Visit the program page for scope, rules, and reward details. Use security_recon tools (ox-browser security_scan, go-code code_health) to scan targets.",
-				Verdict: "manual",
+				Verdict: verdictManual,
 			}
 
-		case "freelance":
+		case oppTypeFreelance:
 			analysis = engine.OpportunityAnalysis{
-				Type:    "freelance",
+				Type:    oppTypeFreelance,
 				Title:   "Freelance Opportunity",
 				URL:     input.URL,
 				Summary: "Freelance opportunities require manual review. Visit the listing page for details. Use application_prep to prepare your application.",
-				Verdict: "manual",
+				Verdict: verdictManual,
 			}
 		}
 

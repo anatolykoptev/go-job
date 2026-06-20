@@ -145,10 +145,10 @@ func parseCode4renaRSC(html string) []engine.SecurityProgram {
 
 		programs = append(programs, engine.SecurityProgram{
 			Name:      title,
-			Platform:  "code4rena",
+			Platform:  sourceCode4rena,
 			URL:       "https://code4rena.com/audits/" + slug,
 			MaxBounty: maxBounty,
-			Type:      "audit_contest",
+			Type:      typeAuditContest,
 			Managed:   true,
 		})
 	}
@@ -172,9 +172,9 @@ func parseCode4renaFallback(html string) []engine.SecurityProgram {
 		seen[slug] = true
 		programs = append(programs, engine.SecurityProgram{
 			Name:     prettifyC4RSlug(slug),
-			Platform: "code4rena",
+			Platform: sourceCode4rena,
 			URL:      "https://code4rena.com/audits/" + slug,
-			Type:     "audit_contest",
+			Type:     typeAuditContest,
 			Managed:  true,
 		})
 	}
