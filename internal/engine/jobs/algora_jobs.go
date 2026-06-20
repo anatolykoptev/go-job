@@ -21,6 +21,15 @@ var algoraJobRe = regexp.MustCompile(`algora\.io/([^/?#]+)/job/([^/?#]+)`)
 // algoraUSDCurrency is the ISO-4217 code used in Base Salary rows that contain a $ prefix.
 const algoraUSDCurrency = "USD"
 
+
+// algoraJobSource is the source label for Algora job postings in hunt_jobs.
+const algoraJobSource = "algora-jobs"
+
+// algoraJobType is the job_type constant for all Algora job records.
+const algoraJobType = "job"
+
+// algoraRemoteRow is the row key for remote/work-type field in Tier-2 row-walk.
+const algoraRemoteRow = "remote"
 // algoraJobsBreaker is a per-source circuit breaker for Algora jobs (mirrors ats.go breakers).
 //
 //nolint:gochecknoglobals // package-level breaker, init-once, never mutated
@@ -219,8 +228,8 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 	if body == "" {
 		return &engine.JobListing{
 			URL:     jobURL,
-			Source:  "algora-jobs",
-			JobType: "job",
+			Source:  algoraJobSource,
+			JobType: algoraJobType,
 		}, nil
 	}
 
@@ -230,8 +239,8 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		slog.Warn("algora-jobs: html.Parse error", slog.Any("error", err))
 		return &engine.JobListing{
 			URL:     jobURL,
-			Source:  "algora-jobs",
-			JobType: "job",
+			Source:  algoraJobSource,
+			JobType: algoraJobType,
 		}, nil
 	}
 
@@ -262,8 +271,8 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		Company: company,
 		URL:     canonical,
 		JobID:   jobID,
-		Source:  "algora-jobs",
-		JobType: "job",
+		Source:  algoraJobSource,
+		JobType: algoraJobType,
 	}
 
 	// Process known rows.
@@ -282,7 +291,7 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 			} else {
 				listing.Skills = append(listing.Skills, "equity")
 			}
-		case "remote", "type":
+		case algoraRemoteRow, "type":
 			listing.Remote = val
 		}
 	}
@@ -320,12 +329,20 @@ func extractAlgoraOGMeta(doc *html.Node) (title, ogURL string) {
 }
 
 // extractAlgoraCompanyName tries to find the org display name from the page.
-// Falls back to title-casing the org slug.
+// Strategy (in order):
+//  1. First <a href="/<orgSlug>"> link text (direct org profile link).
+//  2. First <span> with class "font-semibold" and "text-foreground" in the header
+//     region (the org name heading used by the current Algora LiveView layout).
+//  3. Fallback: title-case the URL slug ("comfy" → "Comfy").
+//
+// Note: the Algora LiveView layout does NOT render an <a href="/comfy"> (bare slug)
+// link — it uses /comfy/jobs for navigation. The header span approach is more
+// robust for the current markup (verified 2026-06-19 against the live Comfy page).
 func extractAlgoraCompanyName(doc *html.Node, orgSlug string) string {
-	// Look for the first <a> whose href matches "/<orgSlug>" exactly (org profile link).
+	// Strategy 1: look for <a href="/<orgSlug>"> (exact, no trailing path).
 	var found string
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	var walkA func(*html.Node)
+	walkA = func(n *html.Node) {
 		if found != "" {
 			return
 		}
@@ -340,14 +357,39 @@ func extractAlgoraCompanyName(doc *html.Node, orgSlug string) string {
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			walkA(c)
 		}
 	}
-	walk(doc)
+	walkA(doc)
 	if found != "" {
 		return found
 	}
-	// Fallback: title-case slug ("comfy-org" → "Comfy Org").
+
+	// Strategy 2: find the first <span> that has both "font-semibold" and
+	// "text-foreground" classes (the org name heading in the Algora header).
+	var walkSpan func(*html.Node)
+	walkSpan = func(n *html.Node) {
+		if found != "" {
+			return
+		}
+		if n.Type == html.ElementNode && n.Data == "span" &&
+			hasClass(n, "font-semibold") && hasClass(n, "text-foreground") {
+			text := strings.TrimSpace(textContent(n))
+			if text != "" {
+				found = text
+				return
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walkSpan(c)
+		}
+	}
+	walkSpan(doc)
+	if found != "" {
+		return found
+	}
+
+	// Strategy 3: title-case slug ("comfy" → "Comfy", "comfy-org" → "Comfy Org").
 	return titleCaseSlug(orgSlug)
 }
 
@@ -458,19 +500,21 @@ func applyAlgoraSalary(j *engine.JobListing, salaryText string) {
 	}
 }
 
-// extractAlgoraDescription finds div.prose.prose-invert and returns cleaned text.
+// extractAlgoraDescription finds all div.prose.prose-invert nodes and returns
+// the text of the LONGEST one (the actual job description).
 // NEVER falls back to og:description (which is the company tagline).
+// Rationale: Algora job pages have two prose-invert blocks — a short company pitch
+// (first) and the full job description (second, longer). Using the longest ensures
+// we get the job requirements, not the org blurb.
 func extractAlgoraDescription(doc *html.Node) string {
-	// Find a div that has BOTH "prose" and "prose-invert" classes.
-	var proseNode *html.Node
+	// Collect all div.prose.prose-invert nodes; pick the longest by raw text length.
+	var candidates []*html.Node
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
-		if proseNode != nil {
-			return
-		}
 		if n.Type == html.ElementNode && n.Data == "div" &&
 			hasClass(n, "prose") && hasClass(n, "prose-invert") {
-			proseNode = n
+			candidates = append(candidates, n)
+			// Do NOT recurse into prose-invert; nested prose blocks are uncommon.
 			return
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -479,11 +523,21 @@ func extractAlgoraDescription(doc *html.Node) string {
 	}
 	walk(doc)
 
-	if proseNode == nil {
+	if len(candidates) == 0 {
 		return ""
 	}
 
-	raw := strings.TrimSpace(textContent(proseNode))
+	// Pick the prose block with the most text content (the job description).
+	best := candidates[0]
+	bestLen := len(textContent(best))
+	for _, n := range candidates[1:] {
+		if l := len(textContent(n)); l > bestLen {
+			bestLen = l
+			best = n
+		}
+	}
+
+	raw := strings.TrimSpace(textContent(best))
 	if raw == "" {
 		return ""
 	}

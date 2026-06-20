@@ -187,13 +187,15 @@ func TestAlgoraJobIngestInput_Validation(t *testing.T) {
 func TestParseAlgoraJob_ComfyFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/algora_job_comfy.html")
 	if err != nil {
-		t.Skip("fixture not yet downloaded: " + err.Error())
+		t.Fatalf("fixture missing — regenerate with: curl -sL -A chrome https://algora.io/comfy/job/cz9bpQrBC38UDigM > testdata/algora_job_comfy.html: %v", err)
 	}
 	const jobURL = "https://algora.io/comfy/job/cz9bpQrBC38UDigM"
 	j, err := parseAlgoraJob(string(data), jobURL)
 	if err != nil {
 		t.Fatalf("parseAlgoraJob error: %v", err)
 	}
+
+	// Source + type invariants.
 	if j.Source != "algora-jobs" {
 		t.Errorf("Source=%q want algora-jobs", j.Source)
 	}
@@ -203,11 +205,48 @@ func TestParseAlgoraJob_ComfyFixture(t *testing.T) {
 	if j.JobID != "cz9bpQrBC38UDigM" {
 		t.Errorf("JobID=%q want cz9bpQrBC38UDigM", j.JobID)
 	}
-	const tagline = "node-based application for generative AI"
-	if strings.Contains(j.Description, tagline) {
-		t.Errorf("Description contains company tagline — og:description leaked: %q", j.Description)
+
+	// Company: the live Algora page renders "ComfyUI" in the org header span
+	// (class "font-semibold text-foreground"). The spec Open Decision 1 assumed
+	// "Comfy Org" but the real markup has "ComfyUI". Asserted against live fixture.
+	if j.Company != "ComfyUI" {
+		t.Errorf("Company=%q want ComfyUI (as rendered in org header span)", j.Company)
+	}
+
+	// Salary (Tier-2 row-walk): $150k - $300k -> 150000 / 300000 USD/year.
+	if j.SalaryMin == nil || *j.SalaryMin != 150000 {
+		t.Errorf("SalaryMin=%v want 150000", j.SalaryMin)
+	}
+	if j.SalaryMax == nil || *j.SalaryMax != 300000 {
+		t.Errorf("SalaryMax=%v want 300000", j.SalaryMax)
+	}
+	if j.SalaryCurrency != "USD" {
+		t.Errorf("SalaryCurrency=%q want USD", j.SalaryCurrency)
+	}
+
+	// Location (Tier-2).
+	if j.Location != "San Francisco" {
+		t.Errorf("Location=%q want San Francisco", j.Location)
+	}
+
+	// Description must come from the LONGEST prose-invert block (the job description),
+	// NOT og:description (company tagline) and NOT the short org pitch block.
+	const ogTagline = "node-based application for generative AI"
+	if strings.Contains(j.Description, ogTagline) {
+		t.Errorf("Description contains og:description tagline (regression): %q", j.Description)
+	}
+	if !strings.Contains(j.Description, "The Role") && !strings.Contains(j.Description, "backend") {
+		t.Errorf("Description does not come from job requirements block; got: %q",
+			j.Description[:minLen(200, len(j.Description))])
 	}
 	if j.Description == "" {
-		t.Errorf("Description is empty — prose body not extracted")
+		t.Errorf("Description is empty")
 	}
+}
+
+func minLen(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
