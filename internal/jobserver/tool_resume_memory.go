@@ -3,59 +3,59 @@ package jobserver
 import (
 	"context"
 	"errors"
+	"fmt"
 
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerResumeMemorySearch(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "resume_memory_search",
-		Description: "Semantically search the user's resume vectors in MemDB. Find relevant experiences, projects, skills, and agent-added notes by meaning, not just keywords. Use this to explore what the resume contains before generating content.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeMemorySearchInput) (*mcp.CallToolResult, *jobs.ResumeMemorySearchResult, error) {
-		if input.Query == "" {
-			return nil, nil, errors.New("query is required")
-		}
-		result, err := jobs.SearchResumeMemory(ctx, input.Query, input.TopK)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
-	})
+type resumeMemoryInput struct {
+	Op       string `json:"op"                  jsonschema:"Required. Operation: search, add, update"`
+	Query    string `json:"query,omitempty"     jsonschema:"Search query (required for op=search)"`
+	TopK     int    `json:"top_k,omitempty"     jsonschema:"Max results (for op=search, default 5)"`
+	Content  string `json:"content,omitempty"   jsonschema:"Memory content (required for op=add/update)"`
+	Type     string `json:"type,omitempty"      jsonschema:"Memory type: experience, skill, goal, preference, other (for op=add)"`
+	MemoryID string `json:"memory_id,omitempty" jsonschema:"Memory ID from search results (required for op=update)"`
 }
 
-func registerResumeMemoryAdd(server *mcp.Server) {
+func registerResumeMemory(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "resume_memory_add",
-		Description: "Add a note, career goal, preference, or other context to the user's resume memory in MemDB. These are stored as vectors and will be found by resume_memory_search. Use this to store insights discovered during conversation.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeMemoryAddInput) (*mcp.CallToolResult, *jobs.ResumeMemoryAddResult, error) {
-		if input.Content == "" {
-			return nil, nil, errors.New("content is required")
+		Name:        "resume_memory",
+		Description: "Manage resume memory in MemDB. op=search finds relevant experiences/projects/skills by query; op=add stores a new note/goal/preference; op=update replaces an existing memory by memory_id.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input resumeMemoryInput) (*mcp.CallToolResult, any, error) {
+		switch input.Op {
+		case "search":
+			if input.Query == "" {
+				return nil, nil, errors.New("query is required for op=search")
+			}
+			result, err := jobs.SearchResumeMemory(ctx, input.Query, input.TopK)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		case "add":
+			if input.Content == "" {
+				return nil, nil, errors.New("content is required for op=add")
+			}
+			result, err := jobs.AddResumeMemory(ctx, input.Content, input.Type)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		case "update":
+			if input.MemoryID == "" {
+				return nil, nil, errors.New("memory_id is required for op=update")
+			}
+			if input.Content == "" {
+				return nil, nil, errors.New("content is required for op=update")
+			}
+			result, err := jobs.UpdateResumeMemory(ctx, input.MemoryID, input.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, result, nil
+		default:
+			return nil, nil, fmt.Errorf("unknown op %q: must be one of search, add, update", input.Op)
 		}
-		result, err := jobs.AddResumeMemory(ctx, input.Content, input.Type)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
-	})
-}
-
-func registerResumeMemoryUpdate(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "resume_memory_update",
-		Description: "Update an existing memory in MemDB by its ID (from resume_memory_search results). Replaces the old content while preserving the memory type. Use this to correct facts or update goals.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeMemoryUpdateInput) (*mcp.CallToolResult, *jobs.ResumeMemoryUpdateResult, error) {
-		if input.MemoryID == "" {
-			return nil, nil, errors.New("memory_id is required")
-		}
-		if input.Content == "" {
-			return nil, nil, errors.New("content is required")
-		}
-		result, err := jobs.UpdateResumeMemory(ctx, input.MemoryID, input.Content)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, result, nil
 	})
 }
