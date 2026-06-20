@@ -214,7 +214,7 @@ func indeedGQLJobToResult(job indeedGQLJob) engine.SearxngResult {
 		}
 		curr := comp.CurrencyCode
 		if curr == "" {
-			curr = algoraUSDCurrency
+			curr = currencyUSD
 		}
 		salary = fmt.Sprintf("%.0f–%.0f %s/%s", salaryRange.Min, salaryRange.Max, curr, unit)
 	}

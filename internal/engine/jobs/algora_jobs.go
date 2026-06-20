@@ -19,15 +19,9 @@ import (
 // algoraJobRe matches single-job URLs: algora.io/<org>/job/<id>.
 var algoraJobRe = regexp.MustCompile(`algora\.io/([^/?#]+)/job/([^/?#]+)`)
 
-// algoraUSDCurrency is the ISO-4217 code used in Base Salary rows that contain a $ prefix.
-const algoraUSDCurrency = "USD"
-
-
 // algoraJobSource is the source label for Algora job postings in hunt_jobs.
 const algoraJobSource = "algora-jobs"
 
-// algoraJobType is the job_type constant for all Algora job records.
-const algoraJobType = "job"
 
 // algoraRemoteRow is the row key for remote/work-type field in Tier-2 row-walk.
 const algoraRemoteRow = "remote"
@@ -249,7 +243,7 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		return &engine.JobListing{
 			URL:     jobURL,
 			Source:  algoraJobSource,
-			JobType: algoraJobType,
+			JobType: jobTypeJob,
 		}, nil
 	}
 
@@ -260,7 +254,7 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		return &engine.JobListing{
 			URL:     jobURL,
 			Source:  algoraJobSource,
-			JobType: algoraJobType,
+			JobType: jobTypeJob,
 		}, nil
 	}
 
@@ -292,7 +286,7 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		URL:     canonical,
 		JobID:   jobID,
 		Source:  algoraJobSource,
-		JobType: algoraJobType,
+		JobType: jobTypeJob,
 	}
 
 	// Process known rows.
@@ -493,7 +487,7 @@ func applyAlgoraSalary(j *engine.JobListing, salaryText string) {
 	// Determine currency from $ prefix.
 	currency := ""
 	if strings.Contains(salaryText, "$") {
-		currency = algoraUSDCurrency
+		currency = currencyUSD
 	}
 
 	// Split on " - " or "–" (en-dash) to get min and max.
