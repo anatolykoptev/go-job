@@ -116,7 +116,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		defer wg.Done()
 		results, err := engine.SearchSearXNG(ctx, subject+" site:linkedin.com/in", "all", "", engine.DefaultSearchEngine)
 		if err != nil {
-			ch <- sourceData{name: "linkedin"}
+			ch <- sourceData{name: sourceLinkedIn}
 			return
 		}
 		var snippets []string
@@ -128,7 +128,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 				break
 			}
 		}
-		ch <- sourceData{name: "linkedin", text: strings.Join(snippets, "\n\n")}
+		ch <- sourceData{name: sourceLinkedIn, text: strings.Join(snippets, "\n\n")}
 	}()
 
 	// Source 2: GitHub
@@ -181,7 +181,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		defer wg.Done()
 		results, err := engine.SearchSearXNG(ctx, name+" site:habr.com", "ru", "", engine.DefaultSearchEngine)
 		if err != nil {
-			ch <- sourceData{name: "habr"}
+			ch <- sourceData{name: sourceHabr}
 			return
 		}
 		var snippets []string
@@ -191,7 +191,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 			}
 			snippets = append(snippets, fmt.Sprintf("[Habr] %s\n%s\n%s", r.Title, r.URL, engine.TruncateRunes(r.Content, 300, "...")))
 		}
-		ch <- sourceData{name: "habr", text: strings.Join(snippets, "\n\n")}
+		ch <- sourceData{name: sourceHabr, text: strings.Join(snippets, "\n\n")}
 	}()
 
 	// Source 5: Twitter via go-hully
@@ -211,7 +211,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 			ch <- sourceData{name: "twitter"}
 			return
 		}
-		text, err := callGoHully(ctx, "analyze_account", map[string]any{"username": handle})
+		text, err := callGoHully(ctx, "analyze_account", map[string]any{contactKeyUsername: handle})
 		if err != nil {
 			// go-hully optional — just record the handle
 			ch <- sourceData{name: "twitter", text: fmt.Sprintf("[Twitter] handle: @%s (analysis failed)", handle)}

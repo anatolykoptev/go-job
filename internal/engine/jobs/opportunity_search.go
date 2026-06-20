@@ -16,7 +16,7 @@ import (
 func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInput) (engine.OpportunitySearchOutput, error) {
 	typ := strings.ToLower(input.Type)
 	if typ == "" {
-		typ = "all"
+		typ = oppTypeAll
 	}
 
 	query := strings.ToLower(input.Query)
@@ -28,7 +28,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 
 	var wg sync.WaitGroup
 
-	if typ == "all" || typ == "bounty" {
+	if typ == oppTypeAll || typ == oppTypeBounty {
 		wg.Add(1)
 
 		go func() {
@@ -49,7 +49,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 		}()
 	}
 
-	if typ == "all" || typ == "security" {
+	if typ == oppTypeAll || typ == oppTypeSecurity {
 		wg.Add(1)
 
 		go func() {
@@ -70,7 +70,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 		}()
 	}
 
-	if typ == "all" || typ == "freelance" {
+	if typ == oppTypeAll || typ == oppTypeFreelance {
 		wg.Add(1)
 
 		go func() {
@@ -209,14 +209,14 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 
 	const perSourceLimit = 30
 
-	rok, err := SearchRemoteOKFreelance(ctx, "golang", perSourceLimit)
+	rok, err := SearchRemoteOKFreelance(ctx, langAliasGolang, perSourceLimit)
 	if err != nil {
 		slog.Warn("opportunity_search: remoteok error", slog.Any("error", err))
 	} else {
 		all = append(all, rok...)
 	}
 
-	him, err := SearchHimalayas(ctx, "golang", perSourceLimit)
+	him, err := SearchHimalayas(ctx, langAliasGolang, perSourceLimit)
 	if err != nil {
 		slog.Warn("opportunity_search: himalayas error", slog.Any("error", err))
 	} else {

@@ -217,7 +217,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				Source:     "enrichment",
 			})
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{"name": u.Name}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				applied++
@@ -272,7 +272,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				Highlights:  u.Highlights,
 			})
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{"name": u.Name}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if parentPtr != nil {
@@ -283,7 +283,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				// Add to MemDB
 				if mdb != nil {
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
-					if _, err := mdb.Add(ctx, text, map[string]any{"type": "project", "id": float64(projID)}); err != nil {
+					if _, err := mdb.Add(ctx, text, map[string]any{memdbKeyType: graphTypeProject, "id": float64(projID)}); err != nil {
 						slog.Debug("memdb add project failed", slog.Any("error", err))
 					}
 				}
@@ -300,7 +300,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			}
 			methID, err := db.InsertMethodology(ctx, personID, u.Name, u.Description)
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{"name": u.Name}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				applied++
@@ -315,7 +315,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			}
 			domID, err := db.InsertDomain(ctx, personID, u.Name)
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{"name": u.Name}); err != nil {
+				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("upsert domain graph node failed", slog.Any("error", err))
 				}
 				applied++

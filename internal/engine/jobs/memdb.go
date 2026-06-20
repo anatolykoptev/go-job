@@ -36,8 +36,8 @@ type AddResult struct {
 // Add sends a memory to MemDB for enrichment and returns the new memory ID.
 func (c *MemDBClient) Add(ctx context.Context, content string, info map[string]any) (*AddResult, error) {
 	body := map[string]any{
-		"user_id":           "gojob",
-		"writable_cube_ids": []string{"gojob"},
+		memdbKeyUserID:           memdbUserID,
+		"writable_cube_ids": []string{memdbUserID},
 		"memory_content":    content,
 		"mode":              "fine",
 		"async_mode":        "sync",
@@ -84,8 +84,8 @@ type MemDBSearchResult struct {
 // Search queries MemDB for relevant memories.
 func (c *MemDBClient) Search(ctx context.Context, query string, topK int, relativity float64) ([]MemDBSearchResult, error) {
 	body := map[string]any{
-		"user_id":           "gojob",
-		"readable_cube_ids": []string{"gojob"},
+		memdbKeyUserID:           memdbUserID,
+		"readable_cube_ids": []string{memdbUserID},
 		"query":             query,
 		"top_k":             topK,
 		"relativity":        relativity,
@@ -148,7 +148,7 @@ func (c *MemDBClient) deleteByUserWithCount(ctx context.Context, memoryIDs []str
 		return 0, nil
 	}
 	body := map[string]any{
-		"user_id":    "gojob",
+		memdbKeyUserID:    memdbUserID,
 		"memory_ids": memoryIDs,
 	}
 
@@ -187,7 +187,7 @@ func (c *MemDBClient) deleteByUserWithCount(ctx context.Context, memoryIDs []str
 // Use this instead of ClearAllBySearch for full-cube rebuilds.
 func (c *MemDBClient) ClearAll(ctx context.Context) error {
 	body := map[string]any{
-		"user_id": "gojob",
+		memdbKeyUserID: memdbUserID,
 	}
 	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
 		return c.post(ctx, "/product/delete_all_memories", body)

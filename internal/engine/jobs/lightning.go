@@ -113,7 +113,7 @@ func parseLightningResponse(data []byte) ([]engine.BountyListing, error) {
 			Org:      issue.RepositoryData.FullName,
 			URL:      issue.HTMLURL,
 			Amount:   amount,
-			Currency: "USD",
+			Currency: currencyUSD,
 			Source:   "lightning",
 			IssueNum: issueNum,
 		})
