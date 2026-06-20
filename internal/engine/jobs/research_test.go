@@ -1,9 +1,51 @@
 package jobs
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
+
+// --- ResearchCompanyBounded (optional-enrichment degradation) ---
+
+// TestResearchCompanyBounded_EmptyCompany verifies the bound short-circuits an
+// empty company name with no network call and a nil result.
+func TestResearchCompanyBounded_EmptyCompany(t *testing.T) {
+	got := ResearchCompanyBounded(context.Background(), "", DefaultCompanyResearchTimeout)
+	if got != nil {
+		t.Fatalf("ResearchCompanyBounded(\"\") = %+v, want nil", got)
+	}
+}
+
+// TestResearchCompanyBounded_DeadlineDegrades is the regression guard for the
+// resume_generate / application_prep timeout class: a company-research substep
+// that cannot finish within its bound MUST degrade to nil (proceed without
+// company context) rather than block the parent tool. We force the bound to
+// fire by passing an already-cancelled parent context, so the worker's
+// ResearchCompany call sees a dead context and the select resolves on
+// subCtx.Done() — deterministic, no live network dependency.
+//
+// This exercises the REAL ResearchCompanyBounded function (the shipped code),
+// not a copy.
+func TestResearchCompanyBounded_DeadlineDegrades(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already-dead parent context
+
+	done := make(chan *CompanyResearchResult, 1)
+	go func() {
+		done <- ResearchCompanyBounded(ctx, "ComfyUI", 1*time.Millisecond)
+	}()
+
+	select {
+	case got := <-done:
+		if got != nil {
+			t.Fatalf("ResearchCompanyBounded with dead ctx = %+v, want nil (graceful degrade)", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResearchCompanyBounded did not return within 5s — bound did not fire, tool would hang")
+	}
+}
 
 // --- isRussianLocation ---
 

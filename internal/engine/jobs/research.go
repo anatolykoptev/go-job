@@ -3,11 +3,24 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
+
+// DefaultCompanyResearchTimeout bounds the OPTIONAL company-research substep on
+// enrichment paths (resume_generate, application_prep). The substep fans out 3
+// SearXNG web searches plus an LLM synthesis call; when SearXNG is slow it can
+// dominate the parent tool's runtime and previously pushed resume_generate past
+// the 90s ToolTimeout (observed: a 1m30s timeout vs a 35s success on the same
+// input). Because the company context only *enriches* the prompt — it is never
+// required to produce a resume — the substep is bounded here so a slow research
+// degrades to "no company context" instead of failing the whole tool.
+const DefaultCompanyResearchTimeout = 25 * time.Second
 
 // --- Salary Research ---
 
@@ -239,6 +252,70 @@ func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchR
 		return nil, fmt.Errorf("company_research parse: %w (raw: %s)", err, engine.TruncateRunes(raw, 200, "..."))
 	}
 	return &result, nil
+}
+
+// ResearchCompanyBounded runs ResearchCompany under a hard sub-deadline so a
+// slow/hung company-research substep can never block a parent tool past its
+// budget. It is the single authority for the optional-enrichment degradation
+// policy — every optional caller (resume_generate, application_prep) goes
+// through here rather than calling ResearchCompany directly with the raw
+// request context.
+//
+// On timeout or any error it returns (nil, nil): callers treat a nil result as
+// "no company context" and proceed. The outcome is recorded on
+// gojob_company_research_total{outcome} so the previously-silent slow path is
+// observable. A timeout==0 disables the bound (falls back to the parent ctx).
+func ResearchCompanyBounded(ctx context.Context, companyName string, timeout time.Duration) *CompanyResearchResult {
+	if companyName == "" {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = DefaultCompanyResearchTimeout
+	}
+
+	subCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type res struct {
+		cr  *CompanyResearchResult
+		err error
+	}
+	// Buffered so the worker never blocks on send if we returned on timeout.
+	ch := make(chan res, 1)
+	go func() {
+		cr, err := ResearchCompany(subCtx, companyName)
+		ch <- res{cr, err}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			// Classify by the sub-deadline state, not by r.err: ResearchCompany
+			// swallows a dead context into a plain "no results found" error (its
+			// parallel searches all fail and `continue`), so r.err is usually NOT
+			// errors.Is(DeadlineExceeded) even when the bound is what killed it.
+			// subCtx.Err() is the authoritative "did the bound fire" signal — this
+			// keeps the timeout vs error label deterministic instead of letting a
+			// goroutine race split real timeouts across both labels.
+			if errors.Is(subCtx.Err(), context.DeadlineExceeded) {
+				engine.IncrCompanyResearch("timeout")
+				slog.Warn("company research timed out; proceeding without company context",
+					slog.String("company", companyName), slog.Duration("timeout", timeout))
+			} else {
+				engine.IncrCompanyResearch("error")
+				slog.Warn("company research failed; proceeding without company context",
+					slog.String("company", companyName), slog.Any("error", r.err))
+			}
+			return nil
+		}
+		engine.IncrCompanyResearch("ok")
+		return r.cr
+	case <-subCtx.Done():
+		engine.IncrCompanyResearch("timeout")
+		slog.Warn("company research exceeded sub-deadline; proceeding without company context",
+			slog.String("company", companyName), slog.Duration("timeout", timeout))
+		return nil
+	}
 }
 
 // BuildCompanyContext formats CompanyResearchResult into a prompt-ready context block.

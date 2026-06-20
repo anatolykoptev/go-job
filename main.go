@@ -76,12 +76,66 @@ func main() {
 		// override needed (it defaults to 30s, the correct header-read deadline).
 		WriteTimeout:           600 * time.Second,
 		SessionTimeout:         10 * time.Minute,
+		// ToolTimeout is the per-tool execution deadline enforced by
+		// ToolTimeoutMiddleware. The 90s default is fine for cheap DB/parse tools
+		// but too tight for tools that fan out web research and/or chain multiple
+		// LLM calls — those legitimately run minutes. heavyToolTimeouts raises the
+		// budget for that class; everything else keeps the 90s default.
+		ToolTimeouts:           heavyToolTimeouts(),
 		MCPLogger:              slog.Default(),
 		Metrics:                engine.FormatMetrics,
 		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware(), mcpmw.Middleware(engine.Reg(), "tool")},
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
+}
+
+// heavyToolTimeouts returns per-tool execution-timeout overrides for tools that
+// fan out web research and/or chain multiple LLM calls and therefore legitimately
+// run well past the 90s ToolTimeout default. Two tiers:
+//
+//   - web-research tools (multiple SearXNG fetches + LLM synthesis): 8m
+//   - multi-LLM-call tools (2+ sequential LLM calls, no live web fetch): 5m
+//
+// The two budgets are env-overridable (HEAVY_TOOL_TIMEOUT / MULTI_LLM_TIMEOUT)
+// so ops can tune without a rebuild. Tools NOT listed here keep the 90s default.
+//
+// This is the server-side companion to the request-path bound on the optional
+// company-research substep (jobs.ResearchCompanyBounded): the substep bound stops
+// one slow dependency from dominating a tool, while these budgets give the tool
+// as a whole enough headroom for its inherent LLM/IO cost.
+func heavyToolTimeouts() map[string]time.Duration {
+	web := env.Duration("HEAVY_TOOL_TIMEOUT", 8*time.Minute)
+	multiLLM := env.Duration("MULTI_LLM_TIMEOUT", 5*time.Minute)
+
+	out := make(map[string]time.Duration)
+	// Web-research tools: live SearXNG fetches + LLM synthesis.
+	for _, t := range []string{
+		"research",          // 3 parallel searches + 2 LLM calls
+		"application_prep",  // analysis + cover letter + interview prep + company research, in parallel
+		"interview_prep",    // company/person research + LLM
+		"pitch_generate",    // research + LLM
+		"resume_generate",   // JD extract + optional company research + assemble (up to 3 LLM + 3 fetch)
+		"opportunity_analyze",
+	} {
+		out[t] = web
+	}
+	// Multi-LLM tools: 2+ sequential LLM calls, no live web fetch.
+	for _, t := range []string{
+		"master_resume_build", // 2 LLM calls over a large corpus
+		"resume_enrich",       // 2 LLM calls
+		"resume_tailor",       // LLM assemble
+		"cover_letter_generate",
+		"resume_analyze",
+		"negotiation_prep",
+		"offer_compare",
+		"project_showcase",
+		"skill_gap",
+		"job_match_score",
+	} {
+		out[t] = multiLLM
+	}
+	return out
 }
 
 // startPrometheusScrape runs an HTTP server exposing /metrics on PROM_PORT
