@@ -311,3 +311,32 @@ func TestFetchAlgoraJobRaw_200(t *testing.T) {
 		t.Errorf("body mismatch: got %q", body)
 	}
 }
+
+func TestFetchAlgoraJob_RejectsNonAlgoraHost(t *testing.T) {
+	ctx := t.Context()
+	// algora.io.<evil>.com: algora.io appears as a subdomain label - not a real SSRF
+	// but verifies host-strict check.
+	// The real SSRF: http://169.254.169.254/algora.io/comfy/job/abc123 MATCHES the regex
+	// (org="comfy", jobID="abc123") and without host validation would send a live request
+	// to the link-local metadata address.
+	ssrfVectors := []string{
+		"http://169.254.169.254/algora.io/comfy/job/abc123",
+		"http://[::1]/algora.io/comfy/job/abc123",
+	}
+	for _, rawURL := range ssrfVectors {
+		_, jobID, ok := parseAlgoraJobURL(rawURL)
+		if !ok || jobID == "" {
+			// If the regex already rejects it, skip — the SSRF can only happen if the
+			// regex passes but the host is wrong.
+			continue
+		}
+		_, err := FetchAlgoraJob(ctx, rawURL)
+		if err == nil {
+			t.Fatalf("URL %q: expected error for non-algora host (SSRF vector), got nil", rawURL)
+		}
+		// Must be rejected with a host-validation error, not after making an HTTP request.
+		if !strings.Contains(err.Error(), "host must be algora.io") {
+			t.Errorf("URL %q: error should mention host validation, got: %v", rawURL, err)
+		}
+	}
+}

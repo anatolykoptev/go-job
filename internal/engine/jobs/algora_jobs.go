@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -59,6 +60,10 @@ func FetchAlgoraJob(ctx context.Context, jobURL string) (*engine.JobListing, err
 	_, jobID, ok := parseAlgoraJobURL(jobURL)
 	if !ok {
 		return nil, fmt.Errorf("algora-jobs: not a single-job URL: %s", jobURL)
+	}
+	// Defense-in-depth: assert host is algora.io regardless of what the regex matched.
+	if parsed, parseErr := url.Parse(jobURL); parseErr != nil || parsed.Hostname() != "algora.io" {
+		return nil, fmt.Errorf("algora-jobs: URL host must be algora.io: %s", jobURL)
 	}
 
 	cacheKey := "algora_job_" + jobID

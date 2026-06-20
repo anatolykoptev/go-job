@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -43,8 +44,12 @@ func registerAlgoraJobIngest(server *mcp.Server) {
 		var listings []engine.JobListing
 
 		if input.URL != "" {
-			// Validate it's a single-job URL.
-			if !strings.Contains(input.URL, "/job/") {
+			// Validate host and path before passing to FetchAlgoraJob.
+			parsed, urlErr := url.Parse(input.URL)
+			if urlErr != nil || parsed.Host != "algora.io" {
+				return nil, nil, fmt.Errorf("algora_job_ingest: URL must be on algora.io: %s", input.URL)
+			}
+			if !strings.Contains(parsed.Path, "/job/") {
 				return nil, nil, fmt.Errorf("algora_job_ingest: not a single-job URL: %s", input.URL)
 			}
 			listing, err := jobs.FetchAlgoraJob(ctx, input.URL)
