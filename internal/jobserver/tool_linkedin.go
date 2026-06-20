@@ -28,7 +28,7 @@ func registerLinkedIn(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInInput) (*mcp.CallToolResult, any, error) {
 		switch input.Op {
-		case "profile":
+		case linkedInOpProfile:
 			if input.Handle == "" {
 				return nil, nil, errors.New("handle is required for op=profile")
 			}
@@ -40,7 +40,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return cr, nil, nil
 			}
 			return nil, profile, nil
-		case "company":
+		case linkedInOpCompany:
 			if input.Company == "" {
 				return nil, nil, errors.New("company is required for op=company")
 			}
@@ -74,7 +74,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return cr, nil, nil
 			}
 			return nil, out, nil
-		case "search":
+		case linkedInOpSearch:
 			if input.Query == "" {
 				return nil, nil, errors.New("query is required for op=search")
 			}
@@ -101,7 +101,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return cr, nil, nil
 			}
 			return nil, out, nil
-		case "posts":
+		case linkedInOpPosts:
 			if input.Handle == "" {
 				return nil, nil, errors.New("handle is required for op=posts")
 			}
@@ -114,7 +114,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return nil, nil, err
 			}
 			return nil, map[string]any{"handle": input.Handle, "count": len(posts), "posts": posts}, nil
-		case "rating":
+		case linkedInOpRating:
 			if input.Handle == "" {
 				return nil, nil, errors.New("handle is required for op=rating")
 			}

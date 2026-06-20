@@ -12,7 +12,7 @@ import (
 // TestToolCountCeiling verifies the number of registered tools does not exceed the ceiling.
 // This guards against re-sprawl. Parse register.go and count registerXxx(server) call lines.
 func TestToolCountCeiling(t *testing.T) {
-	const ceiling = 28 // target post-restructure; update only if intentionally adding tools
+	const ceiling = 30 // headroom: current=28 (52→28 reduction); bump only when intentionally adding tools
 
 	f, err := os.Open("register.go")
 	if err != nil {

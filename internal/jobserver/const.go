@@ -2,8 +2,8 @@ package jobserver
 
 // Opportunity type strings (mirror jobs package unexported constants).
 const (
-	oppTypeBounty   = "bounty"
-	oppTypeSecurity = "security"
+	oppTypeBounty    = "bounty"
+	oppTypeSecurity  = "security"
 	oppTypeFreelance = "freelance"
 )
 
@@ -20,7 +20,12 @@ const (
 
 // LinkedIn op strings for linkedin tool.
 const (
-	linkedInOpJobs = "jobs"
+	linkedInOpProfile = "profile"
+	linkedInOpCompany = "company"
+	linkedInOpPosts   = "posts"
+	linkedInOpRating  = "rating"
+	linkedInOpSearch  = "search"
+	linkedInOpJobs    = "jobs"
 )
 
 // Map key strings used in inline map literals.
