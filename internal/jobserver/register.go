@@ -23,6 +23,9 @@ func RegisterTools(server *mcp.Server) {
 	// ATS direct tools
 	registerATSURLParse(server)
 	registerATSBoardFetch(server)
+
+	// Algora jobs
+	registerAlgoraJobIngest(server)
 	// Person research
 	registerPersonResearch(server)
 	// Interview & Career Prep
