@@ -22,6 +22,7 @@ const (
 const (
 	oppTypeAll       = "all"
 	typeAuditContest = "audit_contest"
+	jobTypeJob       = "job"
 	jobTypeRemote    = "remote"
 	locationRemote   = "Remote"
 )

@@ -357,7 +357,7 @@ func matchesAllKeywords(haystack string, keywords []string) bool {
 // stopWords are common words that make poor RemoteOK API tags.
 var remoteOKStopWords = map[string]bool{
 	"senior": true, "junior": true, "lead": true, "staff": true,
-	"principal": true, jobTypeRemote: true, "job": true, "jobs": true,
+	"principal": true, jobTypeRemote: true, jobTypeJob: true, "jobs": true,
 	"developer": true, "engineer": true, "position": true, "role": true,
 	"and": true, "or": true, "the": true, "for": true, "with": true,
 }
