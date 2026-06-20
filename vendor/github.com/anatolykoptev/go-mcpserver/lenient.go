@@ -137,14 +137,14 @@ func coerceValue(val any, prop *jsonschema.Schema) any {
 // unrecognised values so jsonschema validation can report the real error.
 func coerceScalarString(s, typ string) any {
 	switch typ {
-	case "boolean":
+	case jsonTypeBoolean:
 		switch strings.ToLower(s) {
 		case strTrue, "1":
 			return true
 		case strFalse, "0":
 			return false
 		}
-	case "integer":
+	case jsonTypeInteger:
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return n
 		}
@@ -163,7 +163,7 @@ func propType(s *jsonschema.Schema) string {
 		return s.Type
 	}
 	for _, t := range s.Types {
-		if t != "null" {
+		if t != jsonTypeNull {
 			return t
 		}
 	}
@@ -174,7 +174,7 @@ func propType(s *jsonschema.Schema) string {
 // Used as fallback when the typed schema cannot be inferred from struct tags.
 func registerOpenSchema[In any](s *mcp.Server, t *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, error)) {
 	tt := *t
-	tt.InputSchema = &jsonschema.Schema{Type: "object"}
+	tt.InputSchema = &jsonschema.Schema{Type: jsonTypeObject}
 
 	s.AddTool(&tt, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.Params.Arguments

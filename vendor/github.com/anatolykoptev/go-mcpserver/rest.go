@@ -346,7 +346,7 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 		spec["components"] = map[string]any{
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]string{
-					"type":   "http",
+					jsonKeyType:   "http",
 					"scheme": "bearer",
 				},
 			},
@@ -361,25 +361,25 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 
 // toolResponseSchema is the OpenAPI schema for tool call responses.
 var toolResponseSchema = map[string]any{
-	"type": "object",
+	jsonKeyType: jsonTypeObject,
 	"properties": map[string]any{
-		"content":    map[string]any{"type": "array", "items": map[string]string{"type": "object"}},
-		"structured": map[string]string{"type": "object"},
-		"is_error":   map[string]string{"type": "boolean"},
+		jsonKeyContent:    map[string]any{jsonKeyType: jsonTypeArray, "items": map[string]string{jsonKeyType: jsonTypeObject}},
+		"structured": map[string]string{jsonKeyType: jsonTypeObject},
+		"is_error":   map[string]string{jsonKeyType: jsonTypeBoolean},
 	},
 }
 
 // toolResponses defines the standard OpenAPI response set for tool endpoints.
 var toolResponses = map[string]any{
 	"200": map[string]any{
-		"description": "Successful tool call",
-		"content": map[string]any{
+		jsonKeyDescription: "Successful tool call",
+		jsonKeyContent: map[string]any{
 			contentTypeJSON: map[string]any{"schema": toolResponseSchema},
 		},
 	},
-	"400": map[string]any{"description": "Invalid request"},
-	"422": map[string]any{"description": "Tool returned an error"},
-	"500": map[string]any{"description": "Internal server error"},
+	"400": map[string]any{jsonKeyDescription: "Invalid request"},
+	"422": map[string]any{jsonKeyDescription: "Tool returned an error"},
+	"500": map[string]any{jsonKeyDescription: "Internal server error"},
 }
 
 // buildToolPath creates the OpenAPI path item for a single tool.
@@ -400,7 +400,7 @@ func buildToolPath(t *mcp.Tool) map[string]any {
 // buildRequestBody creates an OpenAPI request body from a tool input schema.
 func buildRequestBody(schema any) map[string]any {
 	return map[string]any{
-		"content": map[string]any{
+		jsonKeyContent: map[string]any{
 			contentTypeJSON: map[string]any{
 				"schema": normalizeSchema(schema),
 			},

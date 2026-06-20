@@ -44,7 +44,7 @@ github.com/anatolykoptev/go-kit/uploads
 # github.com/anatolykoptev/go-linkedin v0.4.2 => /home/user/src/go-linkedin
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
-# github.com/anatolykoptev/go-mcpserver v0.14.0
+# github.com/anatolykoptev/go-mcpserver v0.15.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 github.com/anatolykoptev/go-mcpserver/mcpclient

@@ -15,6 +15,7 @@ const (
 	defaultPort            = "8080"
 	defaultReadTimeout     = 30 * time.Second
 	defaultWriteTimeout    = 0 // disabled for SSE — tools manage own timeout via context
+	defaultIdleTimeout     = 5 * time.Minute // generous for pauses between tool calls
 	defaultShutdownTimeout = 10 * time.Second
 	defaultToolTimeout     = 90 * time.Second
 	portEnvVar             = "MCP_PORT"
@@ -27,6 +28,7 @@ type Config struct {
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
 	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
+	IdleTimeout     time.Duration // default 5m; Go net/http uses ReadTimeout as keep-alive idle if IdleTimeout==0
 	ReadTimeout     time.Duration // default 30s
 	ShutdownTimeout time.Duration // default 10s
 
@@ -96,6 +98,9 @@ func withDefaults(cfg Config) Config {
 	}
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = defaultWriteTimeout
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = defaultShutdownTimeout

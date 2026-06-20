@@ -13,3 +13,4 @@ repos:
     rev: v2.1.6
     hooks:
       - id: golangci-lint
+        entry: env GOWORK=off golangci-lint run --new-from-rev HEAD --fix
