@@ -1,9 +1,14 @@
 package jobs
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAlgoraJobURL(t *testing.T) {
@@ -273,5 +278,36 @@ func TestParseAlgoraJob_RemoteDeterministic(t *testing.T) {
 		if j.Remote != remoteVal {
 			t.Errorf("iter %d: Remote=%q want %q (non-deterministic?)", i, j.Remote, remoteVal)
 		}
+	}
+}
+
+func TestFetchAlgoraJobRaw_Redirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/some-org", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := fetchAlgoraJobRaw(t.Context(), client, srv.URL+"/path")
+	if !errors.Is(err, errAlgoraJobGone) {
+		t.Errorf("expected errAlgoraJobGone, got %v", err)
+	}
+}
+
+func TestFetchAlgoraJobRaw_200(t *testing.T) {
+	const wantBody = "<html><head><meta property=\"og:title\" content=\"Test Job\"/></head><body></body></html>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, wantBody)
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	body, err := fetchAlgoraJobRaw(t.Context(), client, srv.URL+"/path")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body != wantBody {
+		t.Errorf("body mismatch: got %q", body)
 	}
 }

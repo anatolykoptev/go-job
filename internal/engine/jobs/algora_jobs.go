@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,10 @@ var algoraJobsBreaker = breaker.New(breaker.Options{
 	FailThreshold: 3,
 	OpenDuration:  30 * time.Second,
 })
+
+// errAlgoraJobGone is returned when an Algora job URL redirects (job deleted/closed)
+// or returns a non-200 status. It signals the job is no longer active.
+var errAlgoraJobGone = errors.New("algora: job gone or redirected")
 
 // parseAlgoraJobURL extracts (org, jobID) from a single-job URL.
 // Returns ("","",false) for non-job URLs (boards, bounties, etc.).
@@ -77,34 +82,12 @@ func FetchAlgoraJob(ctx context.Context, jobURL string) (*engine.JobListing, err
 		return nil, fmt.Errorf("algora-jobs: breaker open: %w", breaker.ErrOpen)
 	}
 
-	var body string
-	fetchErr := func() error {
-		req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, jobURL, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("User-Agent", engine.UserAgentChrome)
-		req.Header.Set("Accept", "text/html,application/xhtml+xml")
-
-		resp, err := engine.RetryHTTP(fetchCtx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-			return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-		})
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("algora-jobs: status %d for %s", resp.StatusCode, jobURL)
-		}
-
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-		if err != nil {
-			return err
-		}
-		body = string(raw)
-		return nil
-	}()
+	body, fetchErr := fetchAlgoraJobRaw(fetchCtx, engine.Cfg.HTTPClient, jobURL)
+	// For gone/redirect: server was reachable (not a transport failure) → record as success to avoid tripping breaker.
+	if errors.Is(fetchErr, errAlgoraJobGone) {
+		algoraJobsBreaker.Record(true)
+		return nil, errAlgoraJobGone
+	}
 	algoraJobsBreaker.Record(fetchErr == nil)
 	if fetchErr != nil {
 		return nil, fmt.Errorf("algora-jobs: fetch %s: %w", jobURL, fetchErr)
@@ -117,6 +100,39 @@ func FetchAlgoraJob(ctx context.Context, jobURL string) (*engine.JobListing, err
 
 	engine.CacheStoreJSON(ctx, cacheKey, "", *listing)
 	return listing, nil
+}
+
+// fetchAlgoraJobRaw performs a single no-redirect HTTP GET and returns the response body.
+// On 3xx → returns ("", errAlgoraJobGone).
+// On non-200 → returns ("", errAlgoraJobGone).
+// On 200 → returns (body, nil).
+func fetchAlgoraJobRaw(ctx context.Context, client *http.Client, jobURL string) (string, error) {
+	noRedirectClient := &http.Client{
+		Transport: client.Transport,
+		Timeout:   client.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", engine.UserAgentChrome)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp, err := noRedirectClient.Do(req) //nolint:gosec // intentional outbound HTTP
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", errAlgoraJobGone
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // DiscoverAlgoraOrgJobs scrapes algora.io/<org>/jobs for ACTIVE job links and
@@ -191,7 +207,11 @@ func DiscoverAlgoraOrgJobs(ctx context.Context, org string) ([]engine.JobListing
 	var listings []engine.JobListing
 	for _, r := range results {
 		if r.err != nil {
-			slog.Warn("algora-jobs: fan-out fetch error", slog.Any("error", r.err))
+			if errors.Is(r.err, errAlgoraJobGone) {
+				slog.Debug("algora-jobs: job gone or redirected", slog.Any("error", r.err))
+			} else {
+				slog.Warn("algora-jobs: fan-out fetch error", slog.Any("error", r.err))
+			}
 			continue
 		}
 		if r.listing != nil {
