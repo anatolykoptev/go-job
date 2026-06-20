@@ -24,6 +24,13 @@ type ClientConfig struct {
 	// BanCooldown is the soft-deactivation duration for banned/locked accounts.
 	BanCooldown time.Duration
 
+	// NonResponsiveCooldown is the BASE backoff for accounts that trip the
+	// consecutive-failure threshold against a transiently-broken endpoint. The
+	// effective cooldown grows per trip (x2, capped at 30m, +/-30% jitter) so a
+	// flapping upstream self-heals once it recovers instead of latching the pool
+	// permanently. Default: 5m.
+	NonResponsiveCooldown time.Duration
+
 	// CaptchaSolver is the optional CAPTCHA solver for locked accounts.
 	CaptchaSolver captcha.Solver
 
@@ -50,6 +57,13 @@ type ClientConfig struct {
 	// PoolAlertHook is called when the pool emits alerts (account deactivation, proxy failures, etc.).
 	// topic is the alert type (e.g. "pool.deactivated"), payload contains details.
 	PoolAlertHook func(topic string, payload any)
+
+	// DisableGuestFallback disables the guest-token fallback path entirely.
+	// When true, endpoints that would normally fall back to guest mode after
+	// pool exhaustion will return an error instead. Recommended in production
+	// where guest tokens from datacenter IPs return persistent 403 errors.
+	// Default: false (guest fallback enabled for backward compatibility).
+	DisableGuestFallback bool
 }
 
 // defaults fills in zero-value config fields with sensible defaults.
@@ -62,6 +76,9 @@ func (cfg *ClientConfig) defaults() {
 	}
 	if cfg.BanCooldown == 0 {
 		cfg.BanCooldown = 6 * time.Hour
+	}
+	if cfg.NonResponsiveCooldown == 0 {
+		cfg.NonResponsiveCooldown = 5 * time.Minute
 	}
 	if cfg.RateLimit.RequestsPerWindow == 0 {
 		cfg.RateLimit = ratelimit.DefaultConfig

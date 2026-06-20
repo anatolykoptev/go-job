@@ -24,6 +24,9 @@ type HealthTracker struct {
 	minRequests         int     // minimum requests before health check kicks in
 	failThreshold       float64 // failure rate threshold for unhealthy
 	maxConsecFailures   int     // auto-disable after N consecutive failures
+	tripCount           int     // deactivation generations: bumped once per rising-edge trip
+	tripped             bool    // latched while in a trip; cleared by a success/reset so the
+	                            // next clean->trip transition counts as a new generation
 }
 
 // NewHealthTracker creates a HealthTracker with the given thresholds.
@@ -45,6 +48,7 @@ func (h *HealthTracker) RecordSuccess() {
 	h.mu.Lock()
 	h.totalRequests++
 	h.consecutiveFailures = 0
+	h.tripped = false
 	h.mu.Unlock()
 }
 
@@ -57,14 +61,19 @@ func (h *HealthTracker) RecordFailure() bool {
 	h.failedRequests++
 	h.consecutiveFailures++
 
-	if h.consecutiveFailures >= h.maxConsecFailures {
-		return true
-	}
-	if h.totalRequests >= h.minRequests {
+	trip := h.consecutiveFailures >= h.maxConsecFailures
+	if !trip && h.totalRequests >= h.minRequests {
 		rate := float64(h.failedRequests) / float64(h.totalRequests)
-		return rate >= h.failThreshold
+		trip = rate >= h.failThreshold
 	}
-	return false
+	if trip && !h.tripped {
+		// Rising edge: count this as a new deactivation generation so the
+		// consumer backoff grows once per trip, not once per failing call
+		// while the rolling failure rate stays above threshold.
+		h.tripCount++
+		h.tripped = true
+	}
+	return trip
 }
 
 // Stats returns health counters.
@@ -74,6 +83,18 @@ func (h *HealthTracker) Stats() (total, failed, consecFails int) {
 	return h.totalRequests, h.failedRequests, h.consecutiveFailures
 }
 
+// TripCount returns how many distinct times this item has tripped the
+// deactivation threshold (consecutive-failure or failure-rate). It counts
+// rising-edge transitions only -- a run of failures while the rolling rate
+// stays above threshold is one trip, not many -- and a RecordSuccess re-arms
+// the next transition. Pass it to BackoffConfig.Duration so repeated outages
+// against a flapping upstream grow the cooldown one step per real trip.
+func (h *HealthTracker) TripCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.tripCount
+}
+
 // Reset clears all failure counters.
 func (h *HealthTracker) Reset() {
 	h.mu.Lock()
@@ -81,4 +102,6 @@ func (h *HealthTracker) Reset() {
 	h.consecutiveFailures = 0
 	h.failedRequests = 0
 	h.totalRequests = 0
+	h.tripCount = 0
+	h.tripped = false
 }

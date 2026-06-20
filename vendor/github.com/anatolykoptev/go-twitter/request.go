@@ -64,9 +64,8 @@ func (c *Client) doPoolRequest(ctx context.Context, method, endpoint, url string
 
 		// Proactive ct0 rotation
 		if acc.CT0Age() > ct0MaxAge {
-			_, oldCT0, _ := acc.Credentials()
 			acc.RotateCT0()
-			slog.Info("ct0 rotated (proactive)", slog.String("user", acc.Username), slog.String("old_prefix", oldCT0[:min(8, len(oldCT0))]))
+			slog.Info("ct0 rotated (proactive)", slog.String("user", acc.Username))
 			authTok2, ct02, _ := acc.Credentials()
 			_ = saveSession(c.cfg.SessionDir, acc.Username, authTok2, ct02)
 		}
@@ -167,12 +166,17 @@ func (c *Client) doPoolRequest(ctx context.Context, method, endpoint, url string
 			slog.Warn("doGET non-200", slog.String("endpoint", endpoint), slog.Int("status", status), slog.String("body", truncateBytes(body, 500)))
 			if shouldDeactivate := acc.RecordFailure(); shouldDeactivate {
 				total, failed, consec := acc.Stats()
-				slog.Warn("account unhealthy, deactivating",
+				trip := acc.TripCount()
+				slog.Warn("account unhealthy, soft-deactivating with backoff",
 					slog.String("user", acc.Username),
 					slog.Int("total", total),
 					slog.Int("failed", failed),
-					slog.Int("consec", consec))
-				c.pool.DeactivateItem(acc)
+					slog.Int("consec", consec),
+					slog.Int("trip", trip))
+				// Transient endpoint failures must NOT latch the account permanently:
+				// use a growing-but-capped backoff so the pool self-heals once the
+				// upstream recovers. Permanent removal is reserved for errSuspended.
+				c.pool.SoftDeactivateBackoff(acc, c.nonResponsiveBackoff, trip)
 			}
 			return nil, nil, fmt.Errorf("%s HTTP %d: %s", endpoint, status, truncateBytes(body, 200))
 		}
@@ -312,6 +316,16 @@ func (c *Client) doPoolRequest(ctx context.Context, method, endpoint, url string
 			return nil, nil, fmt.Errorf("pool exhausted for %s (requires auth): %w", endpoint, lastErr)
 		}
 		return nil, nil, fmt.Errorf("%s requires authenticated account", endpoint)
+	}
+
+	// Global guest fallback kill-switch. In production, guest tokens from
+	// datacenter IPs are unreliable (persistent 403 Bad guest token). Enabling
+	// this flag forces all endpoints to require an authenticated account.
+	if c.cfg.DisableGuestFallback {
+		if lastErr != nil {
+			return nil, nil, fmt.Errorf("pool exhausted for %s (guest fallback disabled): %w", endpoint, lastErr)
+		}
+		return nil, nil, fmt.Errorf("%s: no authenticated account and guest fallback disabled", endpoint)
 	}
 
 	gt, ok := c.getGuestTokenCached()
@@ -499,9 +513,22 @@ func (c *Client) doPOST(ctx context.Context, acc *Account, endpoint, url string,
 }
 
 // requiresAuth returns true for endpoints that need a real authenticated account.
+// UserByScreenName/UserTweets were added to prevent silent guest-token fallback,
+// which is unreliable in production and hides authentication errors.
 func requiresAuth(endpoint string) bool {
 	switch endpoint {
-	case "TweetDetail", "SearchTimeline", "Following", "Followers", "Retweeters", "CreateTweet":
+	case "TweetDetail", "SearchTimeline", "Following", "Followers", "Retweeters",
+		"CreateTweet", "UserByScreenName", "UserTweets",
+		// T5 read cluster: all require a real account — no guest fallback
+		// (the Mar-2026 lesson, plan §T5 / doc §8).
+		"Bookmarks", "HomeTimeline", "HomeLatestTimeline",
+		"ListLatestTweetsTimeline", "CommunityTweetsTimeline", "BlueVerifiedFollowers",
+		// T5.5 engagement mutations: writes always need a real account, never a
+		// guest token. (ReplyTweet routes through the CreateTweet op, already above.)
+		"FavoriteTweet", "UnfavoriteTweet", "CreateRetweet", "DeleteRetweet",
+		// T5.6 DM cluster: inbox is per-account state and sending is a write —
+		// both ALWAYS need a real authenticated account, no guest fallback.
+		"DMInbox", "SendDM":
 		return true
 	}
 	return false
