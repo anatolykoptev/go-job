@@ -27,7 +27,7 @@ func IsStdio() bool {
 
 func isStdio() bool {
 	for _, arg := range os.Args[1:] {
-		if arg == "--stdio" {
+		if arg == flagStdio {
 			return true
 		}
 	}
@@ -37,6 +37,7 @@ func isStdio() bool {
 // Run starts the MCP server and blocks until a signal is received.
 // In stdio mode (--stdio flag), it runs via stdin/stdout.
 // Otherwise, it starts an HTTP server with middleware, /mcp, /health, and optional /metrics.
+//nolint:cyclop // server bootstrap fans out over transport modes (stdio/http/sse); complexity is inherent and stable
 func Run(server *mcp.Server, cfg Config) error {
 	if err := validate(cfg); err != nil {
 		return err
@@ -89,6 +90,7 @@ func Run(server *mcp.Server, cfg Config) error {
 		Handler:      h,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
 	listenErr := make(chan error, 1)
