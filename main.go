@@ -70,12 +70,10 @@ func main() {
 		Name:                   "go_job",
 		Version:                version,
 		Port:                   mcpPort,
-		// go-mcpserver does not plumb http.Server.IdleTimeout, so net/http uses
-		// ReadTimeout as the keep-alive idle timeout. The lib defaults it to 30s,
-		// which closes idle pooled connections and drops the first MCP call after
-		// a pause (retry on a fresh conn works). Raise it above any client/NAT idle
-		// window. (Durable fix = add IdleTimeout in go-mcpserver — tracked separately.)
-		ReadTimeout:            5 * time.Minute,
+		// go-mcpserver v0.15.0+ plumbs http.Server.IdleTimeout (default 5m), which
+		// keeps idle pooled connections alive across pauses between tool calls — so
+		// the first MCP call after an idle window no longer drops. No ReadTimeout
+		// override needed (it defaults to 30s, the correct header-read deadline).
 		WriteTimeout:           600 * time.Second,
 		SessionTimeout:         10 * time.Minute,
 		MCPLogger:              slog.Default(),
