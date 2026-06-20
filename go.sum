@@ -14,6 +14,8 @@ github.com/anatolykoptev/go-kit v0.85.0 h1:Tk9kYWSZpsNIvxgHa8RZ2QGKAWebukap6minG
 github.com/anatolykoptev/go-kit v0.85.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.14.0 h1:Sj4fVtPYNNateDoZFG4oYf8BKFeZs5MqIVKARiPXDZQ=
 github.com/anatolykoptev/go-mcpserver v0.14.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
+github.com/anatolykoptev/go-mcpserver v0.15.0 h1:pRZ4QIwDy7WW+Lbl5En8uP3beHW4ZTa4Vq3T384V3AQ=
+github.com/anatolykoptev/go-mcpserver v0.15.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-stealth v1.15.0 h1:xdTEijmCrhahwQJAXNyxHeLwWQQessOrNxEyyh4dA2U=
 github.com/anatolykoptev/go-stealth v1.15.0/go.mod h1:1Fevj8WfJDJ9h/t4Bl8MtHbuQ92ZPjIm8SR6/vnwJsQ=
 github.com/anatolykoptev/go-twitter v0.5.2 h1:z2Gq9Q7cIqCTNzXDt+P+i497CNo84/j77b6ikf4PWdU=
