@@ -10,6 +10,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const huntListDescSnippetLen = 300
+
 func clampHuntLimit(v int) int {
 	if v <= 0 {
 		return 50
@@ -60,10 +62,31 @@ func toGenericSlice(v any) ([]map[string]any, error) {
 	return out, nil
 }
 
+// truncateEntryDescriptions truncates the "description" field of each entry to
+// huntListDescSnippetLen runes. Truncated entries have "description_truncated"
+// set to true; short descriptions are left intact with no extra key added.
+func truncateEntryDescriptions(entries []map[string]any) {
+	for _, entry := range entries {
+		raw, ok := entry["description"]
+		if !ok {
+			continue
+		}
+		desc, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		runes := []rune(desc)
+		if len(runes) > huntListDescSnippetLen {
+			entry["description"] = string(runes[:huntListDescSnippetLen]) + "…"
+			entry["description_truncated"] = true
+		}
+	}
+}
+
 func registerHuntList(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "hunt_list",
-		Description: "List entries from the hunt DB. kind=jobs|bounties|freelance|security. Each call triggers lazy enrichment for open rows.",
+		Description: "List entries from the hunt DB. kind=jobs|bounties|freelance|security. Each call triggers lazy enrichment for open rows. description is a snippet (~300 chars); full text at the entry's url.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in huntListInput) (*mcp.CallToolResult, huntListOutput, error) {
 		store := engine.GetHuntStore()
@@ -71,6 +94,8 @@ func registerHuntList(server *mcp.Server) {
 			return toolErrorResult("hunt store not configured (DATABASE_URL not set)"), huntListOutput{}, nil
 		}
 		limit := clampHuntLimit(in.Limit)
+
+		var out huntListOutput
 		switch in.Kind {
 		case huntKindJobs:
 			f := hunt.JobFilter{
@@ -92,7 +117,8 @@ func registerHuntList(server *mcp.Server) {
 			if err != nil {
 				return nil, huntListOutput{}, fmt.Errorf("hunt_list jobs serialize: %w", err)
 			}
-			return nil, huntListOutput{Kind: huntKindJobs, Entries: generic, Count: len(entries)}, nil
+			truncateEntryDescriptions(generic)
+			out = huntListOutput{Kind: huntKindJobs, Entries: generic, Count: len(entries)}
 		case huntKindBounties:
 			f := hunt.BountyFilter{
 				Source:        in.Source,
@@ -113,7 +139,8 @@ func registerHuntList(server *mcp.Server) {
 			if err != nil {
 				return nil, huntListOutput{}, fmt.Errorf("hunt_list bounties serialize: %w", err)
 			}
-			return nil, huntListOutput{Kind: huntKindBounties, Entries: generic, Count: len(entries)}, nil
+			truncateEntryDescriptions(generic)
+			out = huntListOutput{Kind: huntKindBounties, Entries: generic, Count: len(entries)}
 		case huntKindFreelance:
 			f := hunt.FreelanceFilter{
 				Platform:      in.Platform,
@@ -134,7 +161,8 @@ func registerHuntList(server *mcp.Server) {
 			if err != nil {
 				return nil, huntListOutput{}, fmt.Errorf("hunt_list freelance serialize: %w", err)
 			}
-			return nil, huntListOutput{Kind: huntKindFreelance, Entries: generic, Count: len(entries)}, nil
+			truncateEntryDescriptions(generic)
+			out = huntListOutput{Kind: huntKindFreelance, Entries: generic, Count: len(entries)}
 		case huntKindSecurity:
 			f := hunt.SecurityFilter{
 				Platform:      in.Platform,
@@ -154,9 +182,15 @@ func registerHuntList(server *mcp.Server) {
 			if err != nil {
 				return nil, huntListOutput{}, fmt.Errorf("hunt_list security serialize: %w", err)
 			}
-			return nil, huntListOutput{Kind: huntKindSecurity, Entries: generic, Count: len(entries)}, nil
+			truncateEntryDescriptions(generic)
+			out = huntListOutput{Kind: huntKindSecurity, Entries: generic, Count: len(entries)}
 		default:
 			return nil, huntListOutput{}, fmt.Errorf("unknown kind %q: must be one of jobs, bounties, freelance, security", in.Kind)
 		}
+
+		if cr, spilled := handleSpill(ctx, "hunt_list", out); spilled {
+			return cr, huntListOutput{}, nil
+		}
+		return nil, out, nil
 	})
 }
