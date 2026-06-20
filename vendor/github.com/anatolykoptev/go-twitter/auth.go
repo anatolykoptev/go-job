@@ -80,6 +80,13 @@ func loadSession(dir, username string, ttl time.Duration) (authToken, ct0 string
 
 // relogin clears auth credentials and performs a fresh login.
 func (c *Client) relogin(acc *Account) error {
+	if c.reloginGate != nil {
+		if ok, reason := c.reloginGate.Allowed(context.Background(), acc.Username); !ok {
+			slog.Warn("twitter: auto-relogin blocked by gate",
+				slog.String("user", acc.Username), slog.String("reason", reason))
+			return fmt.Errorf("relogin blocked: %s", reason)
+		}
+	}
 	slog.Info("attempting relogin", slog.String("user", acc.Username))
 
 	bc := c.clientForAccount(acc)
@@ -106,7 +113,7 @@ func (c *Client) loadOrLogin(acc *Account, client *stealth.BrowserClient) error 
 		acc.AuthToken = authToken
 		acc.CT0 = ct0
 		acc.ct0RefreshedAt = time.Now()
-		slog.Info("loaded session from disk", slog.String("user", acc.Username))
+		slog.Info("loaded session from disk", slog.String("user", acc.Username), slog.String("sample_key", "session_load"))
 		return nil
 	}
 
@@ -343,7 +350,15 @@ func (c *Client) getGuestToken(client *stealth.BrowserClient) (string, error) {
 	return resp.GuestToken, nil
 }
 
+// guestCircuitBreakerThreshold is the number of consecutive failures before blocking guest tokens.
+const guestCircuitBreakerThreshold = 5
+
+// guestCircuitBreakerWindow is how long the circuit breaker stays open.
+const guestCircuitBreakerWindow = 30 * time.Minute
+
 // acquireGuestToken fetches a fresh guest token with exponential backoff.
+// On success, resets the consecutive failure counter. On exhaustion, increments
+// the counter and trips the circuit breaker when the threshold is reached.
 func (c *Client) acquireGuestToken(ctx context.Context, client *stealth.BrowserClient) (string, error) {
 	backoff := stealth.BackoffConfig{
 		InitialWait: 2 * time.Second,
@@ -363,11 +378,27 @@ func (c *Client) acquireGuestToken(ctx context.Context, client *stealth.BrowserC
 		}
 		token, err := c.getGuestToken(client)
 		if err == nil {
+			c.mu.Lock()
+			c.guestConsecFails = 0
+			c.mu.Unlock()
 			return token, nil
 		}
 		lastErr = err
 		slog.Warn("guest token acquisition failed", slog.Int("attempt", attempt+1), slog.Any("error", err))
 	}
+
+	c.mu.Lock()
+	c.guestConsecFails++
+	fails := c.guestConsecFails
+	if fails >= guestCircuitBreakerThreshold {
+		c.guestBlockedUntil = time.Now().Add(guestCircuitBreakerWindow)
+		c.guestConsecFails = 0
+		slog.Warn("guest token circuit breaker tripped",
+			slog.Int("consec_fails", fails),
+			slog.Duration("blocked_for", guestCircuitBreakerWindow))
+	}
+	c.mu.Unlock()
+
 	return "", fmt.Errorf("acquire guest token after 3 attempts: %w", lastErr)
 }
 
@@ -408,7 +439,7 @@ func (c *Client) initLoginFlowFull(client *stealth.BrowserClient, guestToken str
 		return nil, err
 	}
 	if status != 200 {
-		return nil, fmt.Errorf("init flow: HTTP %d: %s", status, string(body))
+		return nil, fmt.Errorf("init flow: HTTP %d: %s", status, string(body[:min(300, len(body))]))
 	}
 	return parseFlowResponse(body)
 }

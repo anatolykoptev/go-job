@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -118,6 +116,17 @@ func (p *Pool[T]) SoftDeactivate(item T, cooldown time.Duration) {
 	}
 }
 
+// SoftDeactivateBackoff temporarily disables an item using an exponential,
+// capped, jittered cooldown derived from the supplied backoff config and the
+// items trip count. It is a thin convenience over SoftDeactivate: a flapping
+// upstream produces a growing-but-bounded cooldown (so the pool self-heals once
+// the upstream recovers) instead of a permanent latch. trip is 1-indexed; pass
+// the items current trip count. Use this for transient (NonResponsive) failure
+// classes; reserve DeactivateItem for legitimately permanent removal.
+func (p *Pool[T]) SoftDeactivateBackoff(item T, cfg BackoffConfig, trip int) {
+	p.SoftDeactivate(item, cfg.Duration(trip))
+}
+
 // Add appends an item to the pool.
 func (p *Pool[T]) Add(item T) {
 	p.mu.Lock()
@@ -184,14 +193,4 @@ func (p *Pool[T]) AvailableIn() time.Duration {
 		return 0
 	}
 	return wait
-}
-
-// backoffDuration computes exponential backoff duration for the given attempt.
-func backoffDuration(cfg BackoffConfig, attempt int) time.Duration {
-	base := float64(cfg.InitialWait) * math.Pow(cfg.Multiplier, float64(attempt))
-	if base > float64(cfg.MaxWait) {
-		base = float64(cfg.MaxWait)
-	}
-	jitter := base * cfg.JitterPct * (2*rand.Float64() - 1)
-	return max(time.Duration(base+jitter), 0)
 }
