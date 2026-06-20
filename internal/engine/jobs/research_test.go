@@ -158,3 +158,25 @@ func TestBuildSalaryQueries_RussianLocation_Variants(t *testing.T) {
 		}
 	}
 }
+
+// --- pitch_generate + interview_prep degradation guard ---
+
+// TestBuildCompanyContext_NilResearchYieldsEmpty verifies that BuildCompanyContext
+// returns an empty string when the CompanyResearchResult is nil. This is the
+// nil-degrade contract that pitch_generate (GeneratePitch) and interview_prep
+// (PrepareInterview) rely on: ResearchCompanyBounded returns nil on timeout or
+// error, and an empty companyContext propagates harmlessly into the prompt.
+//
+// The test goes RED (panic) if the nil guard in BuildCompanyContext is removed.
+func TestBuildCompanyContext_NilResearchYieldsEmpty(t *testing.T) {
+	got := BuildCompanyContext("ComfyUI", nil)
+	if got != "" {
+		t.Fatalf("BuildCompanyContext(%q, nil) = %q, want empty string", "ComfyUI", got)
+	}
+
+	// Also guard the empty-company-name path.
+	got2 := BuildCompanyContext("", nil)
+	if got2 != "" {
+		t.Fatalf("BuildCompanyContext(\"\", nil) = %q, want empty string", got2)
+	}
+}

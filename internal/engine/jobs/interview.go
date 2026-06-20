@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -87,15 +86,14 @@ func PrepareInterview(ctx context.Context, resume, jobDescription, company, focu
 		focus = "all" //nolint:goconst
 	}
 
-	// Optional company enrichment
+	// Optional company enrichment — bounded so a slow research substep cannot
+	// block the parent interview_prep tool past its timeout. Returns nil on
+	// timeout/error; BuildCompanyContext yields an empty string and the prep
+	// assembles without company context.
 	var companyContext string
 	if company != "" {
-		res, err := ResearchCompany(ctx, company)
-		if err != nil {
-			slog.Warn("interview_prep: company research failed, proceeding without", slog.Any("error", err))
-		} else {
-			companyContext = BuildCompanyContext(company, res)
-		}
+		cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
+		companyContext = BuildCompanyContext(company, cr)
 	}
 
 	prompt := fmt.Sprintf(interviewPrepPrompt, resumeTrunc, jdTrunc, companyContext, focus)
