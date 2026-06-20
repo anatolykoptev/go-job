@@ -13,8 +13,8 @@ var skillPatterns = []struct {
 }{
 	// Languages
 	{"Go", regexp.MustCompile(`\b(?:Go|Golang|golang)\b`)},
-	{"Rust", regexp.MustCompile(`\bRust\b`)},
-	{"Python", regexp.MustCompile(`\bPython\b`)},
+	{skillRust, regexp.MustCompile(`\bRust\b`)},
+	{skillPython, regexp.MustCompile(`\bPython\b`)},
 	{"TypeScript", regexp.MustCompile(`\bTypeScript\b`)},
 	{"JavaScript", regexp.MustCompile(`\bJavaScript\b`)},
 	{"Scala", regexp.MustCompile(`\bScala\b`)},

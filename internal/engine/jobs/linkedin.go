@@ -37,7 +37,7 @@ var linkedinLimiter = ratelimit.NewConcurrencyLimiter(2)
 //
 //nolint:gochecknoglobals // package-level breaker, init-once, never mutated
 var linkedinBreaker = breaker.New(breaker.Options{
-	Name:              "linkedin",
+	Name:              sourceLinkedIn,
 	FailThreshold:     3,
 	OpenDuration:      60 * time.Second,
 	BackoffMultiplier: 2.0,
@@ -68,7 +68,7 @@ var jobTypeMap = map[string]string{
 var remoteMap = map[string]string{
 	"onsite": "1",
 	"hybrid": "2",
-	"remote": "3",
+	jobTypeRemote: "3",
 }
 
 // timeRangeMap maps human-readable time ranges to LinkedIn seconds-based codes.
@@ -156,7 +156,7 @@ var linkedInGeoIDs = map[string]string{
 	"sydney":         "104769905",
 	"bangalore":      "105214831",
 	"tel aviv":       "101822562",
-	"remote":         "91000001",
+	jobTypeRemote:         "91000001",
 }
 
 // SearchLinkedInJobs queries the LinkedIn Guest API and returns parsed job cards.

@@ -115,7 +115,7 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 			Amount:   item.RewardFormatted,
 			Currency: item.Reward.Currency,
 			Skills:   item.Tech,
-			Source:   "algora",
+			Source:   sourceAlgora,
 			IssueNum: "#" + strconv.Itoa(item.Task.Number),
 			Posted:   item.CreatedAt,
 			Status:   item.Status, // "open", "claimed", "completed", "closed", etc.

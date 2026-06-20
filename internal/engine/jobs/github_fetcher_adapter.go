@@ -44,7 +44,7 @@ func (a *GithubFetcherAdapter) FetchIssueInfoBatch(ctx context.Context, urls []s
 	for u, info := range raw {
 		// state_reason="completed" means the issue was closed as done (PR merged / bounty claimed).
 		// state_reason="not_planned" means declined/won't-fix — not a successful claim.
-		merged := info.State == "closed" && info.StateReason == "completed"
+		merged := info.State == statusClosed && info.StateReason == "completed"
 		out[u] = enrich.GithubIssueInfo{
 			Title:  info.Title,
 			State:  info.State,

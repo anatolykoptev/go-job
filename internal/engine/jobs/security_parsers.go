@@ -53,7 +53,7 @@ func parseHackerOneData(data []byte) ([]engine.SecurityProgram, error) {
 
 		programs = append(programs, engine.SecurityProgram{
 			Name:     r.Name,
-			Platform: "hackerone",
+			Platform: sourceHackerOne,
 			URL:      r.URL,
 			Targets:  targets,
 			Type:     progType,

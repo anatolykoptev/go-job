@@ -185,7 +185,7 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 				switch itemType {
 				case "experience":
 					expIDSet[id] = true
-				case "project":
+				case graphTypeProject:
 					projIDSet[id] = true
 				case "achievement":
 					achvIDSet[id] = true

@@ -156,7 +156,7 @@ func parseOpireResponse(body string) ([]engine.BountyListing, error) {
 			Org:      r.Organization.Name,
 			URL:      r.URL,
 			Amount:   amount,
-			Currency: "USD",
+			Currency: currencyUSD,
 			Skills:   r.ProgrammingLanguages,
 			Source:   "opire",
 			IssueNum: issueNum,

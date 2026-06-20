@@ -50,9 +50,9 @@ type craigslistRSSItem struct {
 
 // craigslistRegions maps common location keywords to Craigslist subdomains.
 var craigslistRegions = map[string]string{
-	"san francisco": "sfbay", "sf": "sfbay", "bay area": "sfbay",
-	"oakland": "sfbay", "san jose": "sfbay", "silicon valley": "sfbay",
-	"new york": "newyork", "nyc": "newyork", "manhattan": "newyork", "brooklyn": "newyork",
+	"san francisco": craigslistCitySFBay, "sf": craigslistCitySFBay, "bay area": craigslistCitySFBay,
+	"oakland": craigslistCitySFBay, "san jose": craigslistCitySFBay, "silicon valley": craigslistCitySFBay,
+	"new york": craigslistCityNewYork, "nyc": craigslistCityNewYork, "manhattan": craigslistCityNewYork, "brooklyn": craigslistCityNewYork,
 	"los angeles": "losangeles", "la": "losangeles",
 	"chicago": "chicago",
 	"seattle": "seattle", "tacoma": "seattle",

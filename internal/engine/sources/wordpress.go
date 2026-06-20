@@ -69,7 +69,7 @@ func fetchWPPostType(ctx context.Context, query, postType, label string) ([]engi
 
 	apiURL := fmt.Sprintf("https://developer.wordpress.org/wp-json/wp/v2/%s?%s",
 		postType,
-		url.Values{"search": {query}, "per_page": {"3"}}.Encode(),
+		url.Values{"search": {query}, paramPerPage: {"3"}}.Encode(),
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

@@ -119,7 +119,7 @@ func parseBountyHubResponse(data []byte) ([]engine.BountyListing, bool, error) {
 			Org:      item.RepositoryFullName,
 			URL:      item.HtmlURL,
 			Amount:   amount,
-			Currency: "USD",
+			Currency: currencyUSD,
 			Skills:   skills,
 			Source:   "bountyhub",
 			IssueNum: "#" + strconv.Itoa(item.IssueNumber),
