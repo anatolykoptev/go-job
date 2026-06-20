@@ -6,9 +6,11 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/go-engine/extract"
 	"github.com/anatolykoptev/go-engine/llm"
+	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/text"
 )
@@ -16,19 +18,30 @@ import (
 const (
 	defaultMaxConcurrency = 10
 	defaultMaxTokens      = 4096
+
+	// defaultPipelinePerSourceTimeout caps each source goroutine in the
+	// pipeline fan-out when PerSourceTimeout is zero.
+	defaultPipelinePerSourceTimeout = 6 * time.Second
+
+	// defaultPipelineEarlyReturnAt triggers early cancellation of in-flight
+	// sources once this many results are collected.
+	defaultPipelineEarlyReturnAt = 10
 )
 
 // Pipeline orchestrates: sources → fetch → extract → chunk → filter → llm.
 type Pipeline struct {
-	sources       []sources.Source
-	fetchFn       func(ctx context.Context, url string) ([]byte, error)
-	extractor     extract.Strategy
-	chunker       text.Chunker
-	filter        text.Filter
-	llm           *llm.Client
-	maxConc       int
-	maxTokens     int
-	charsPerToken float64
+	sources          []sources.Source
+	fetchFn          func(ctx context.Context, url string) ([]byte, error)
+	extractor        extract.Strategy
+	chunker          text.Chunker
+	filter           text.Filter
+	llm              *llm.Client
+	metrics          *metrics.Registry
+	maxConc          int
+	maxTokens        int
+	charsPerToken    float64
+	perSourceTimeout time.Duration
+	earlyReturnAt    int
 }
 
 // Option configures a Pipeline.
@@ -77,6 +90,24 @@ func WithMaxTokenBudget(n int) Option {
 // WithCharsPerToken sets the characters-per-token ratio for token estimation.
 func WithCharsPerToken(f float64) Option {
 	return func(p *Pipeline) { p.charsPerToken = f }
+}
+
+// WithMetrics sets the metrics registry for pipeline telemetry.
+func WithMetrics(m *metrics.Registry) Option {
+	return func(p *Pipeline) { p.metrics = m }
+}
+
+// WithPerSourceTimeout caps each source goroutine in the fan-out.
+// Default is 6s when zero.
+func WithPerSourceTimeout(d time.Duration) Option {
+	return func(p *Pipeline) { p.perSourceTimeout = d }
+}
+
+// WithEarlyReturnAt sets the soft cap: cancels in-flight sources once N results
+// are collected; already-delivered results are kept, so the final count may
+// exceed N. Default is 10 when zero.
+func WithEarlyReturnAt(n int) Option {
+	return func(p *Pipeline) { p.earlyReturnAt = n }
 }
 
 // NewPipeline creates a Pipeline with the given options.

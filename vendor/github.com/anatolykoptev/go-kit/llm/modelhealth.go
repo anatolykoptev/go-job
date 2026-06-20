@@ -176,7 +176,7 @@ type modelsResponse struct {
 // is cached for the registry TTL. The fetch happens under the registry lock to
 // collapse a herd of concurrent cold callers into a single GET per baseURL per
 // TTL window.
-func (r *ModelRegistry) available(ctx context.Context, baseURL string) (ids map[string]struct{}, fetched bool) {
+func (r *ModelRegistry) available(ctx context.Context, baseURL string, apiKey string) (ids map[string]struct{}, fetched bool) {
 	if r == nil {
 		return nil, false
 	}
@@ -189,7 +189,7 @@ func (r *ModelRegistry) available(ctx context.Context, baseURL string) (ids map[
 		return e.ids, true
 	}
 
-	got, ok := r.fetch(ctx, key)
+	got, ok := r.fetch(ctx, key, apiKey)
 	if !ok {
 		return nil, false // transport/non-200/unparseable — unknown set.
 	}
@@ -202,7 +202,7 @@ func (r *ModelRegistry) available(ctx context.Context, baseURL string) (ids map[
 
 // fetch GETs {baseURL}/v1/models and parses the id set. Returns ok=false on any
 // transport error, non-200 status, or unparseable body. Caller holds r.mu.
-func (r *ModelRegistry) fetch(ctx context.Context, baseURL string) (map[string]struct{}, bool) {
+func (r *ModelRegistry) fetch(ctx context.Context, baseURL string, apiKey string) (map[string]struct{}, bool) {
 	// Bound the fetch even if the injected client has no timeout, and even if
 	// the caller's ctx has none — construction must not hang on a dead proxy.
 	fctx, cancel := context.WithTimeout(ctx, defaultModelsFetchTimeout)
@@ -212,6 +212,9 @@ func (r *ModelRegistry) fetch(ctx context.Context, baseURL string) (map[string]s
 	req, err := http.NewRequestWithContext(fctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -286,7 +289,9 @@ func BuildModelChainEndpointsFiltered(
 		return full
 	}
 
-	ids, ok := registry.available(ctx, baseURL)
+	// Cache key is baseURL only: cliproxyapi returns identical model sets for all valid keys.
+	// If a future proxy returns key-scoped model sets, include a key hash here.
+	ids, ok := registry.available(ctx, baseURL, apiKey)
 	if !ok {
 		// Could not obtain a usable live set — degrade to the full chain.
 		emit(ModelFilterEvent{
