@@ -67,6 +67,19 @@ const (
 	// Incremented by the Telegram notifier after each send attempt.
 	// outcome ∈ {"sent", "failed"}.
 	MetricHuntNotify = "hunt_notify_total"
+
+	// MetricCompanyResearch is the labelled counter
+	// gojob_company_research_total{outcome}. Bumped once per bounded
+	// company-research attempt on an optional enrichment path (resume_generate,
+	// application_prep). outcome ∈ {"ok","timeout","error"}.
+	//
+	// outcome=timeout is the signal that previously went SILENT: a slow SearXNG
+	// + LLM company-research substep would push the whole tool past the 90s
+	// ToolTimeout with no dedicated metric. A rising timeout rate means the
+	// research substep is degrading and the resume/application is shipping
+	// without company context — visible now instead of surfacing only as a
+	// tool-level timeout.
+	MetricCompanyResearch = "company_research_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -99,6 +112,12 @@ func FormatMetrics() string {
 		MetricSherlockRequests, MetricCantinaRequests, MetricCode4renaRequests,
 		MetricToolCalls,
 		"cache_hits_total", "cache_misses_total",
+	}
+	// Labelled counters (company_research_total{outcome}) are emitted by the
+	// go-kit prom bridge directly; the flat text endpoint surfaces the bounded
+	// outcomes explicitly so a rising timeout rate is visible here too.
+	for _, oc := range []string{"ok", "timeout", "error"} {
+		keys = append(keys, MetricCompanyResearch+"{outcome="+oc+"}")
 	}
 	var sb strings.Builder
 	for _, k := range keys {
@@ -171,4 +190,20 @@ func ObserveOversizeBytes(n int) {
 // Called by the Telegram notifier after each send attempt.
 func IncrHuntNotify(outcome string) {
 	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
+}
+
+// validCompanyResearchOutcomes bounds the outcome label to prevent cardinality
+// blowup from arbitrary error strings.
+var validCompanyResearchOutcomes = map[string]bool{
+	"ok": true, "timeout": true, "error": true,
+}
+
+// IncrCompanyResearch bumps gojob_company_research_total{outcome=<outcome>}.
+// outcome ∈ {"ok","timeout","error"} — bounded label. Unrecognised values are
+// silently dropped. Called once per bounded company-research attempt.
+func IncrCompanyResearch(outcome string) {
+	if !validCompanyResearchOutcomes[outcome] {
+		return
+	}
+	reg.Incr(MetricCompanyResearch + "{outcome=" + outcome + "}")
 }

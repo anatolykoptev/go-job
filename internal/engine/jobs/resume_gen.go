@@ -224,24 +224,15 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	// 5. Format candidate data for LLM
 	candidateData := formatCandidateData(experiences, projects, achievements, educations, skills, certifications, domains, methodologies)
 
-	// 6. Optional company enrichment
+	// 6. Optional company enrichment — bounded so a slow SearXNG/LLM research
+	// substep degrades to "no company context" instead of blocking the whole
+	// tool past its timeout. Returns nil on timeout/error; BuildCompanyContext
+	// then yields an empty string and the resume assembles without it.
 	companyContext := ""
 	if company != "" {
-		cr, err := ResearchCompany(ctx, company)
-		if err == nil && cr != nil {
-			var parts []string
-			if len(cr.TechStack) > 0 {
-				parts = append(parts, "Tech stack: "+strings.Join(cr.TechStack, ", "))
-			}
-			if cr.CultureNotes != "" {
-				parts = append(parts, "Culture: "+cr.CultureNotes)
-			}
-			if cr.Industry != "" {
-				parts = append(parts, "Industry: "+cr.Industry)
-			}
-			if len(parts) > 0 {
-				companyContext = fmt.Sprintf("COMPANY CONTEXT (%s):\n%s\n\n", company, strings.Join(parts, "\n"))
-			}
+		cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
+		if block := BuildCompanyContext(company, cr); block != "" {
+			companyContext = strings.TrimPrefix(block, "\n") + "\n"
 		}
 	}
 
