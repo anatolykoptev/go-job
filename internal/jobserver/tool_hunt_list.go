@@ -86,7 +86,7 @@ func truncateEntryDescriptions(entries []map[string]any) {
 func registerHuntList(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "hunt_list",
-		Description: "List entries from the hunt DB. kind=jobs|bounties|freelance|security. Each call triggers lazy enrichment for open rows. description is a snippet (~300 chars); full text at the entry's url.",
+		Description: "List entries from the hunt DB. kind=jobs|bounties|freelance|security. For kind=bounties, open rows may trigger a background (non-blocking, off-request-path) GitHub status refresh; jobs/freelance/security are a plain DB read. description is a snippet (~300 chars); full text at the entry's url.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in huntListInput) (*mcp.CallToolResult, huntListOutput, error) {
 		store := engine.GetHuntStore()
@@ -187,6 +187,12 @@ func registerHuntList(server *mcp.Server) {
 		default:
 			return nil, huntListOutput{}, fmt.Errorf("unknown kind %q: must be one of jobs, bounties, freelance, security", in.Kind)
 		}
+
+		// Server-handled marker: bumped only when the request actually reached
+		// the server and rows were fetched. A client-side transport drop (idle
+		// keep-alive reuse race) never reaches here, so a missing increment for
+		// a reported failure is positive evidence the close was client-side.
+		engine.IncrHuntList(in.Kind)
 
 		if cr, spilled := handleSpill(ctx, "hunt_list", out); spilled {
 			return cr, huntListOutput{}, nil
