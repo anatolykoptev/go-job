@@ -43,6 +43,10 @@ type Config struct {
 	DirectStartpage           bool                // enable Startpage direct scraper
 	DirectBrave               bool                // enable Brave direct scraper
 	DirectReddit              bool                // enable Reddit direct scraper
+	DirectWikipedia           bool                // enable Wikipedia direct scraper (DIRECT_WIKIPEDIA)
+	DirectMarginalia          bool                // enable Marginalia direct scraper (DIRECT_MARGINALIA)
+	SearchEarlyReturnAt       int                 // SEARCH_EARLY_RETURN_AT: soft result cap; 0 = go-engine default (10)
+	SearchPerSourceTimeout    time.Duration       // SEARCH_PER_SOURCE_TIMEOUT: per-source cap; 0 = go-engine default (6s)
 	// FetchDirectFirst enables go-engine v1.12+ direct-first tiered fallback.
 	// When true, the fetcher tries Chrome-TLS direct first and escalates to proxy
 	// only on anti-bot signals (HTTP 401/403/429/503, Cloudflare/PerimeterX/DataDome
@@ -197,6 +201,8 @@ func Init(c Config) {
 		slog.Bool("startpage", c.DirectStartpage),
 		slog.Bool("brave", c.DirectBrave),
 		slog.Bool("reddit", c.DirectReddit),
+		slog.Bool("wikipedia", c.DirectWikipedia),
+		slog.Bool("marginalia", c.DirectMarginalia),
 	)
 }
 
