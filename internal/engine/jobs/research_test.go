@@ -180,3 +180,30 @@ func TestBuildCompanyContext_NilResearchYieldsEmpty(t *testing.T) {
 		t.Fatalf("BuildCompanyContext(\"\", nil) = %q, want empty string", got2)
 	}
 }
+
+// --- ResearchCompany uses SearchDirect (not SearchSearXNG) ---
+
+// TestResearchCompany_NoResultsWhenSearchUnconfigured verifies that ResearchCompany
+// returns an error when no search backend is configured and both SearchDirect and
+// SearchSearXNG return empty. This guards the primary-path change: the function
+// must NOT succeed vacuously — it must error when there are no snippets.
+//
+// This test goes RED if the "no results found" guard is removed from ResearchCompany.
+//
+// The engine package is initialized with no config here, so:
+// - SearchDirect returns empty (no scrapers enabled)
+// - SearchSearXNG returns nil, nil (no SEARXNG_URL)
+// Both paths: allSnippets stays empty → error returned.
+func TestResearchCompany_NoResultsWhenSearchUnconfigured(t *testing.T) {
+	// engine.Init is NOT called here — package-level vars stay zero/nil.
+	// SearchDirect returns empty, SearchSearXNG returns nil, nil.
+	// ResearchCompany must return a non-nil error in this state.
+	ctx := context.Background()
+	res, err := ResearchCompany(ctx, "SomeCompanyThatNeverExists12345XYZ")
+	if err == nil {
+		t.Fatalf("ResearchCompany with no search backend configured: got result=%+v, want error (no snippets)", res)
+	}
+	if res != nil {
+		t.Fatalf("ResearchCompany with no search backend: got non-nil result=%+v alongside error, want nil", res)
+	}
+}
