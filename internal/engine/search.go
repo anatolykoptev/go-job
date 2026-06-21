@@ -31,21 +31,29 @@ func DedupByDomain(results []SearxngResult, maxPerDomain int) []SearxngResult {
 
 // SearchDirect queries enabled direct scrapers in parallel.
 // Returns merged results from all direct sources. Failures are non-fatal.
+// Returns nil when the engine is not initialized (fetcherProxy == nil).
 func SearchDirect(ctx context.Context, query, language string) []SearxngResult {
+	if fetcherProxy == nil {
+		return nil
+	}
 	return search.SearchDirect(ctx, directSearchConfig(), query, language)
 }
 
 // directSearchConfig builds a search.DirectConfig from engine state.
 func directSearchConfig() search.DirectConfig {
 	return search.DirectConfig{
-		Browser:       fetcherProxy.BrowserClient(),
-		DDG:           cfg.DirectDDG,
-		Startpage:     cfg.DirectStartpage,
-		Brave:         cfg.DirectBrave,
-		Reddit:        cfg.DirectReddit,
-		BraveLimiter:  rate.NewLimiter(1, 2),
-		RedditLimiter: rate.NewLimiter(1, 2),
-		Retry:         DefaultRetryConfig,
-		Metrics:       reg,
+		Browser:          fetcherProxy.BrowserClient(),
+		DDG:              cfg.DirectDDG,
+		Startpage:        cfg.DirectStartpage,
+		Brave:            cfg.DirectBrave,
+		Reddit:           cfg.DirectReddit,
+		Wikipedia:        cfg.DirectWikipedia,
+		Marginalia:       cfg.DirectMarginalia,
+		BraveLimiter:     rate.NewLimiter(1, 2),
+		RedditLimiter:    rate.NewLimiter(1, 2),
+		Retry:            DefaultRetryConfig,
+		Metrics:          reg,
+		EarlyReturnAt:    cfg.SearchEarlyReturnAt,
+		PerSourceTimeout: cfg.SearchPerSourceTimeout,
 	}
 }

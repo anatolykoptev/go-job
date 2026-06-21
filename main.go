@@ -198,8 +198,12 @@ func initEngine() {
 		DirectDDG:             env.Bool("DIRECT_DDG", false),
 		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
-		DirectReddit:          env.Bool("DIRECT_REDDIT", false),
-		FetchDirectFirst:      directFirst,
+		DirectReddit:             env.Bool("DIRECT_REDDIT", false),
+		DirectWikipedia:          env.Bool("DIRECT_WIKIPEDIA", false),
+		DirectMarginalia:         env.Bool("DIRECT_MARGINALIA", false),
+		SearchEarlyReturnAt:      env.Int("SEARCH_EARLY_RETURN_AT", 0),
+		SearchPerSourceTimeout:   env.Duration("SEARCH_PER_SOURCE_TIMEOUT", 0),
+		FetchDirectFirst:         directFirst,
 	}
 
 	// Initialize proxy pool from Webshare API (optional).

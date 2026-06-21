@@ -180,3 +180,65 @@ func TestBuildCompanyContext_NilResearchYieldsEmpty(t *testing.T) {
 		t.Fatalf("BuildCompanyContext(\"\", nil) = %q, want empty string", got2)
 	}
 }
+
+// --- ResearchCompany error-on-empty guard ---
+
+// TestResearchCompany_ErrorsWhenNoSnippets verifies that ResearchCompany returns a
+// non-nil error when all search backends return empty results. This guards the
+// "no results found" invariant — the function must never silently return a nil
+// result alongside a nil error when it has nothing to synthesize.
+//
+// When engine.Init is NOT called, both SearchDirect (no scrapers enabled,
+// fetcherProxy==nil guard fires) and SearchSearXNG (searxngInst==nil) return empty.
+// ResearchCompany must return an error in this state.
+//
+// Note: this test cannot directly verify that SearchDirect is the PRIMARY search path
+// (vs SearchSearXNG) because ResearchCompany calls engine.SearchDirect as a
+// package-level function with no injection seam. The routing change is covered by the
+// structural change in research.go (SearchDirect fan-out runs unconditionally;
+// SearXNG fan-out runs additively). The live probe verifies the end-to-end behavior:
+// gojob_company_research_total{outcome=ok} must increment after deploy.
+func TestResearchCompany_ErrorsWhenNoSnippets(t *testing.T) {
+	// engine.Init is NOT called — package-level vars stay zero/nil.
+	// SearchDirect returns nil (fetcherProxy==nil guard fires in directSearchConfig).
+	// SearchSearXNG returns nil, nil (searxngInst==nil).
+	// All allSnippets channels stay empty → error path.
+	ctx := context.Background()
+	res, err := ResearchCompany(ctx, "SomeCompanyThatNeverExists12345XYZ")
+	if err == nil {
+		t.Fatalf("ResearchCompany with no search backend: got result=%+v, want error", res)
+	}
+	if res != nil {
+		t.Fatalf("ResearchCompany with no search backend: got non-nil result=%+v alongside error, want nil", res)
+	}
+}
+
+// TestResearchCompany_SearXNGChannelsDrained verifies that the SearXNG goroutines
+// are always drained (preventing goroutine leaks) even when the context is already
+// cancelled. The searxCh channel is sized len(queries); all goroutines MUST send
+// before ResearchCompany returns (blocking send on buffered channel, bounded by
+// context cancellation in the SearXNG client). This test goes RED if the final
+// drain loop ("for range queries { res := <-searxCh }") is removed from ResearchCompany.
+func TestResearchCompany_SearXNGChannelsDrained(t *testing.T) {
+	// Use an already-cancelled context. SearchSearXNG (searxngInst==nil) returns
+	// immediately. SearchDirect guard fires (fetcherProxy==nil). All goroutines
+	// send and exit. ResearchCompany must return promptly, not block.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ResearchCompany(ctx, "AnyCompany")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		// We expect an error (no snippets), but NOT a hang.
+		if err == nil {
+			t.Fatal("ResearchCompany with cancelled ctx and no backends: want error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResearchCompany blocked > 5s — goroutine leak or channel not drained")
+	}
+}

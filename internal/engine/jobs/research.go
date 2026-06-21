@@ -195,7 +195,10 @@ Return a JSON object with this exact structure:
 
 Return ONLY the JSON object, no markdown, no explanation.`
 
-// ResearchCompany fetches company overview from multiple sources via SearXNG + LLM.
+// ResearchCompany fetches company overview from multiple sources via go-engine DIRECT
+// (DDG, Wikipedia, Marginalia, etc.) with SearXNG as an optional additive source
+// when SEARXNG_URL is configured. Primary path uses SearchDirect which is non-fatal
+// on per-source failures and always returns usable results when any scraper responds.
 func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchResult, error) {
 	queries := []string{
 		companyName + " company overview employees funding tech stack",
@@ -203,21 +206,46 @@ func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchR
 		companyName + " news 2024 2025 site:techcrunch.com OR site:crunchbase.com OR site:linkedin.com",
 	}
 
-	type searchRes struct {
+	// Fan out all queries in parallel via go-engine DIRECT (DDG + Wikipedia +
+	// Marginalia + any enabled scraper). SearchDirect is non-fatal: per-source
+	// failures are logged and skipped; the call always returns whatever results
+	// are available. SearXNG, when configured, is additive.
+	type directRes struct {
+		results []engine.SearxngResult
+	}
+	type searxRes struct {
 		results []engine.SearxngResult
 		err     error
 	}
-	ch := make(chan searchRes, len(queries))
+
+	directCh := make(chan directRes, len(queries))
+	for _, q := range queries {
+		go func(query string) {
+			r := engine.SearchDirect(ctx, query, "all")
+			directCh <- directRes{r}
+		}(q)
+	}
+
+	// SearXNG fan-out (additive, only when configured).
+	searxCh := make(chan searxRes, len(queries))
 	for _, q := range queries {
 		go func(query string) {
 			r, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
-			ch <- searchRes{r, err}
+			searxCh <- searxRes{r, err}
 		}(q)
 	}
 
 	var allSnippets []string
 	for range queries {
-		res := <-ch
+		res := <-directCh
+		for _, r := range res.results {
+			if r.Content != "" {
+				allSnippets = append(allSnippets, fmt.Sprintf("**%s**\n%s\n%s", r.Title, r.URL, engine.TruncateRunes(r.Content, 400, "...")))
+			}
+		}
+	}
+	for range queries {
+		res := <-searxCh
 		if res.err != nil {
 			continue
 		}
