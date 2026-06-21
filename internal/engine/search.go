@@ -39,10 +39,21 @@ func SearchDirect(ctx context.Context, query, language string) []SearxngResult {
 	return search.SearchDirect(ctx, directSearchConfig(), query, language)
 }
 
+// directBrowser returns the best available BrowserDoer for direct scrapers.
+// Prefers DirectClient (no-proxy Chrome-TLS, built when FETCH_DIRECT_FIRST is set)
+// and falls back to BrowserClient (proxy-backed). Returns nil when neither is
+// available, which causes SearchDirect to log "browser nil" and return empty.
+func directBrowser() search.BrowserDoer {
+	if dc := fetcherProxy.DirectClient(); dc != nil {
+		return dc
+	}
+	return fetcherProxy.BrowserClient()
+}
+
 // directSearchConfig builds a search.DirectConfig from engine state.
 func directSearchConfig() search.DirectConfig {
 	return search.DirectConfig{
-		Browser:          fetcherProxy.BrowserClient(),
+		Browser:          directBrowser(),
 		DDG:              cfg.DirectDDG,
 		Startpage:        cfg.DirectStartpage,
 		Brave:            cfg.DirectBrave,
