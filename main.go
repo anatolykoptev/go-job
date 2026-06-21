@@ -70,6 +70,16 @@ func main() {
 		Name:                   "go_job",
 		Version:                version,
 		Port:                   mcpPort,
+		// Return tool results as a single application/json body instead of the
+		// go-sdk default text/event-stream framing. The SSE path puts the entire
+		// JSON result on ONE `data:` line; large results (e.g. resume_profile's
+		// ~17KB) exceed the SSE single-line buffer limit on the WAN MCP client and
+		// the connection is severed after the 54-byte event prefix → "transport
+		// dropped; response lost". go-job's tools are all unary request/response
+		// (no mid-call progress notifications), so SSE buys nothing here. A plain
+		// JSON body has no per-line limit and is delivered intact. Clients send
+		// `Accept: application/json, text/event-stream`, so this is fully negotiated.
+		JSONResponse:           true,
 		// go-mcpserver v0.15.0+ plumbs http.Server.IdleTimeout (default 5m), which
 		// keeps idle pooled connections alive across pauses between tool calls — so
 		// the first MCP call after an idle window no longer drops. No ReadTimeout
