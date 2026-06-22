@@ -64,7 +64,8 @@ func TestSelectSources_PlatformRouting(t *testing.T) {
 // TestSelectSources_AdvertisedPlatformsAllRoute is the contract test: every
 // platform value the tool schema advertises must produce at least one connector.
 // A platform that routes to nothing is a silently-dead advertisement — the exact
-// regression that left greenhouse/lever/yc/google returning null.
+// class that left greenhouse/lever/yc/google empty (root cause: bare SearXNG
+// discovery returning nil,nil when SEARXNG_URL is unset, not a routing gap).
 func TestSelectSources_AdvertisedPlatformsAllRoute(t *testing.T) {
 	advertised := []string{
 		"linkedin", "greenhouse", "lever", "ashby", "ats", "yc", "hn",

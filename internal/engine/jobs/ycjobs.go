@@ -64,7 +64,6 @@ func SearchYCJobs(ctx context.Context, query, location string, limit int) ([]eng
 	}
 
 	slog.Debug("yc: search complete", slog.Int("results", len(ycResults)))
-	engine.IncrPlatformResults("yc", engine.PlatformOutcome(len(ycResults), nil))
 	return ycResults, nil
 }
 

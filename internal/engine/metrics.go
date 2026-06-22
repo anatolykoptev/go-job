@@ -92,9 +92,10 @@ const (
 	MetricCompanyResearch = "company_research_total"
 
 	// MetricPlatformResults is the labelled counter
-	// gojob_platform_results_total{platform,outcome}. Bumped once per job_search
-	// per-platform connector invocation, AFTER the connector returns.
-	// outcome ∈ {"results","empty","error"} — bounded label.
+	// gojob_platform_results_total{platform,outcome}. Bumped ONCE per job_search
+	// call in the collector fan-in loop (tool_job_search.go), covering all 18
+	// platforms uniformly after each connector goroutine returns.
+	// platform ∈ validPlatforms, outcome ∈ {"results","empty","error"} — bounded.
 	//
 	// This is the signal that was MISSING when every direct-scraper platform went
 	// silently dead: the per-platform *_requests_total counters bump at connector
@@ -162,6 +163,19 @@ func FormatMetrics() string {
 	// server actually handled the call.
 	for _, k := range []string{kindJobs, kindBounties, kindFreelance, kindSecurity} {
 		keys = append(keys, MetricHuntList+"{kind="+k+"}")
+	}
+	// Per-platform outcome counters pre-touched here so rate()-floor alerts see
+	// 0 (not no-data) before the first job_search call. Labels are bounded enums
+	// (≤18 platforms × 3 outcomes = ≤54 series) — cardinality is safe.
+	// Mirrors the company_research / hunt_list treatment above.
+	for _, p := range []string{
+		"linkedin", "greenhouse", "lever", "ashby", "yc", "hn", "indeed",
+		"habr", "twitter", "craigslist", "remoteok", "weworkremotely",
+		"remotive", "freelancer", "google", "inspira", "undp", "searxng",
+	} {
+		for _, oc := range []string{"results", "empty", outcomeError} {
+			keys = append(keys, MetricPlatformResults+"{platform="+p+",outcome="+oc+"}")
+		}
 	}
 	var sb strings.Builder
 	for _, k := range keys {
@@ -274,9 +288,10 @@ var validPlatformOutcomes = map[string]bool{
 
 // IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.
 // platform ∈ validPlatforms, outcome ∈ {"results","empty","error"} — both bounded.
-// Called once per per-platform connector invocation in job_search, AFTER the
-// connector returns, classifying the result so a silently-dead connector
-// (reached but producing nothing) is observable as outcome=empty.
+// Called ONCE per connector return in the job_search collector fan-in loop,
+// covering all 18 platforms uniformly. Per-connector call sites were removed to
+// avoid double-counting. A silently-dead connector is now observable as
+// outcome=empty rising while outcome=results stays flat.
 func IncrPlatformResults(platform, outcome string) {
 	if !validPlatforms[platform] || !validPlatformOutcomes[outcome] {
 		return

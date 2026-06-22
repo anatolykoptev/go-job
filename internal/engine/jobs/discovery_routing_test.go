@@ -33,7 +33,7 @@ func stripDiscoverJobURLs(src string) string {
 // through discoverJobURLs. It goes RED if a future edit reintroduces the bare
 // dead-SearXNG dependency.
 func TestATSDiscoveryDoesNotDependOnBareSearXNG(t *testing.T) {
-	files := []string{"ats.go", "ycjobs.go", "indeed.go"}
+	files := []string{"ats.go", "ycjobs.go", "indeed.go", "craigslist.go"}
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {

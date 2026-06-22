@@ -304,14 +304,11 @@ func SearchIndeedJobsFiltered(ctx context.Context, query, location, jobType, tim
 	if err != nil {
 		slog.Warn("indeed: GraphQL API failed, falling back to discovery", slog.Any("error", err))
 	} else if len(results) > 0 {
-		engine.IncrPlatformResults("indeed", "results")
 		return results, nil
 	}
 
 	// Fallback: discovery (go-engine DIRECT primary + SearXNG additive).
-	fb, fbErr := searchIndeedViaSearxng(ctx, query, location, limit)
-	engine.IncrPlatformResults("indeed", engine.PlatformOutcome(len(fb), fbErr))
-	return fb, fbErr
+	return searchIndeedViaSearxng(ctx, query, location, limit)
 }
 
 // searchIndeedViaSearxng is the discovery-based Indeed fallback (used when the

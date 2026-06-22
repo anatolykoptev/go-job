@@ -131,7 +131,6 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 	slugs := extractGreenhouseSlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
 		slog.Debug("greenhouse: no slugs found in discovery results")
-		engine.IncrPlatformResults("greenhouse", "empty")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
@@ -195,7 +194,6 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 	}
 
 	slog.Debug("greenhouse: search complete", slog.Int("results", len(allResults)))
-	engine.IncrPlatformResults("greenhouse", engine.PlatformOutcome(len(allResults), nil))
 	return allResults, nil
 }
 
@@ -317,7 +315,6 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	slugs := extractLeverSlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
 		slog.Debug("lever: no slugs found in discovery results")
-		engine.IncrPlatformResults("lever", "empty")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
@@ -395,7 +392,6 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slog.Debug("lever: search complete", slog.Int("results", len(allResults)))
-	engine.IncrPlatformResults("lever", engine.PlatformOutcome(len(allResults), nil))
 	return allResults, nil
 }
 
@@ -519,7 +515,6 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	slugs := extractAshbySlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
 		slog.Debug("ashby: no slugs found in discovery results")
-		engine.IncrPlatformResults("ashby", "empty")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
@@ -589,7 +584,6 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slog.Debug("ashby: search complete", slog.Int("results", len(allResults)))
-	engine.IncrPlatformResults("ashby", engine.PlatformOutcome(len(allResults), nil))
 	return allResults, nil
 }
 

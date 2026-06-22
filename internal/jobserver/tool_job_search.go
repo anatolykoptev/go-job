@@ -230,7 +230,8 @@ func registerJobSearch(server *mcp.Server) {
 						slog.Warn("job_search: google searxng error (additive)", slog.Any("error", err))
 					}
 					results = append(results, searx...)
-					engine.IncrPlatformResults(platGoogle, engine.PlatformOutcome(len(results), nil))
+					// DIRECT is authoritative; additive SearXNG err is intentionally not
+					// propagated — the result set reflects what DIRECT returned regardless.
 					ch <- sourceResult{name: name, results: results, err: nil}
 
 				case platInspira:
@@ -259,7 +260,8 @@ func registerJobSearch(server *mcp.Server) {
 				slog.Warn("job_search: searxng error (additive)", slog.Any("error", err))
 			}
 			results = append(results, searx...)
-			engine.IncrPlatformResults("searxng", engine.PlatformOutcome(len(results), nil))
+			// DIRECT is authoritative; additive SearXNG err is intentionally not
+			// propagated — the result set reflects what DIRECT returned regardless.
 			ch <- sourceResult{name: "searxng", results: results, err: nil}
 		}()
 
@@ -268,6 +270,10 @@ func registerJobSearch(server *mcp.Server) {
 		var linkedInJobs []jobs.LinkedInJob
 		for i := 0; i < totalGoroutines; i++ {
 			r := <-ch
+			// Unified per-platform counter: bumped once per connector return, covering
+			// all 18 platforms uniformly. Per-connector bumps were removed to avoid
+			// double-counting; this is the single authority for platform_results_total.
+			engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
 			merged = append(merged, r.results...)
 			if r.name == platLinkedIn && len(r.liJobs) > 0 {
 				linkedInJobs = r.liJobs
