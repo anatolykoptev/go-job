@@ -22,6 +22,9 @@ const (
 	platGreenhouse = "greenhouse"
 	platLever      = "lever"
 	platAshby      = "ashby"
+	platYC         = "yc"
+	platHN         = "hn"
+	platHabr       = "habr"
 	platIndeed     = "indeed"
 	platATS        = "ats"
 	platStartup    = "startup"
@@ -103,26 +106,6 @@ func registerJobSearch(server *mcp.Server) {
 			limit = 50
 		}
 
-		useLinkedIn := platform == platAll || platform == platLinkedIn
-		useGreenhouse := platform == platAll || platform == platGreenhouse || platform == platATS || platform == platStartup
-		useLever := platform == platAll || platform == platLever || platform == platATS || platform == platStartup
-		useAshby := platform == platAll || platform == platAshby || platform == platATS || platform == platStartup
-		useYC := platform == platAll || platform == "yc" || platform == platStartup
-		useHN := platform == platAll || platform == "hn" || platform == platStartup
-		useIndeed := platform == platAll || platform == platIndeed
-		useHabr := platform == platAll || platform == "habr"
-		useTwitter := platform == platAll || platform == platTwitter
-		useCraigslist := platform == platAll || platform == platCraigslist
-		useRemoteOK := platform == platAll || platform == platRemoteOK || platform == platRemote
-		useWWR := platform == platAll || platform == platWWR || platform == platRemote
-		useRemotive := platform == platAll || platform == platRemotive || platform == platRemote
-		useFreelancer := platform == platAll || platform == platFreelancer
-		useGoogle := platform == platAll || platform == platGoogle
-		// UN scrapers stay opt-in (NOT triggered by platform=all) — niche international-org
-		// consultancies would otherwise crowd out generic commercial searches.
-		useInspira := platform == platInspira || platform == platUN
-		useUNDP := platform == platUNDP || platform == platUN
-
 		type sourceResult struct {
 			name    string
 			results []engine.SearxngResult
@@ -130,58 +113,7 @@ func registerJobSearch(server *mcp.Server) {
 			err     error
 		}
 
-		var srcs []string
-		if useLinkedIn {
-			srcs = append(srcs, platLinkedIn)
-		}
-		if useGreenhouse {
-			srcs = append(srcs, "greenhouse")
-		}
-		if useLever {
-			srcs = append(srcs, "lever")
-		}
-		if useAshby {
-			srcs = append(srcs, platAshby)
-		}
-		if useYC {
-			srcs = append(srcs, "yc")
-		}
-		if useHN {
-			srcs = append(srcs, "hn")
-		}
-		if useIndeed {
-			srcs = append(srcs, "indeed")
-		}
-		if useHabr {
-			srcs = append(srcs, "habr")
-		}
-		if useTwitter {
-			srcs = append(srcs, platTwitter)
-		}
-		if useCraigslist {
-			srcs = append(srcs, platCraigslist)
-		}
-		if useRemoteOK {
-			srcs = append(srcs, platRemoteOK)
-		}
-		if useWWR {
-			srcs = append(srcs, platWWR)
-		}
-		if useRemotive {
-			srcs = append(srcs, platRemotive)
-		}
-		if useFreelancer {
-			srcs = append(srcs, platFreelancer)
-		}
-		if useGoogle {
-			srcs = append(srcs, platGoogle)
-		}
-		if useInspira {
-			srcs = append(srcs, platInspira)
-		}
-		if useUNDP {
-			srcs = append(srcs, platUNDP)
-		}
+		srcs := selectSources(platform)
 
 		ch := make(chan sourceResult, len(srcs)+1)
 
@@ -198,14 +130,14 @@ func registerJobSearch(server *mcp.Server) {
 					slog.Info("job_search: linkedin returned jobs", slog.Int("count", len(liJobs)))
 					ch <- sourceResult{name: name, results: jobs.LinkedInJobsToSearxngResults(ctx, liJobs, 8), liJobs: liJobs}
 
-				case "greenhouse":
+				case platGreenhouse:
 					results, err := jobs.SearchGreenhouseJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: greenhouse error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "lever":
+				case platLever:
 					results, err := jobs.SearchLeverJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: lever error", slog.Any("error", err))
@@ -219,28 +151,28 @@ func registerJobSearch(server *mcp.Server) {
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "yc":
+				case platYC:
 					results, err := jobs.SearchYCJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: yc error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "hn":
+				case platHN:
 					results, err := jobs.SearchHNJobs(ctx, input.Query, 20)
 					if err != nil {
 						slog.Warn("job_search: hn error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "indeed":
+				case platIndeed:
 					results, err := jobs.SearchIndeedJobsFiltered(ctx, input.Query, input.Location, input.JobType, input.TimeRange, 15)
 					if err != nil {
 						slog.Warn("job_search: indeed error", slog.Any("error", err))
 					}
 					ch <- sourceResult{name: name, results: results, err: err}
 
-				case "habr":
+				case platHabr:
 					results, err := jobs.SearchHabrJobs(ctx, input.Query, input.Location, 10)
 					if err != nil {
 						slog.Warn("job_search: habr error", slog.Any("error", err))
@@ -291,11 +223,16 @@ func registerJobSearch(server *mcp.Server) {
 
 				case platGoogle:
 					searxQuery := input.Query + " " + input.Location + " site:careers.google.com OR site:jobs.google.com"
-					results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
+					// go-engine DIRECT (primary, always-on) + SearXNG (additive when configured).
+					results := engine.SearchDirect(ctx, searxQuery, lang)
+					searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
 					if err != nil {
-						slog.Warn("job_search: google error", slog.Any("error", err))
+						slog.Warn("job_search: google searxng error (additive)", slog.Any("error", err))
 					}
-					ch <- sourceResult{name: name, results: results, err: err}
+					results = append(results, searx...)
+					// DIRECT is authoritative; additive SearXNG err is intentionally not
+					// propagated — the result set reflects what DIRECT returned regardless.
+					ch <- sourceResult{name: name, results: results, err: nil}
 
 				case platInspira:
 					results, err := jobs.SearchInspiraJobs(ctx, input.Query, input.Location, limit)
@@ -316,11 +253,16 @@ func registerJobSearch(server *mcp.Server) {
 
 		go func() {
 			searxQuery := buildJobSearxQuery(input.Query, input.Location, platform)
-			results, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
+			// go-engine DIRECT (primary, always-on via DIRECT_* env) + SearXNG (additive).
+			results := engine.SearchDirect(ctx, searxQuery, lang)
+			searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
 			if err != nil {
-				slog.Warn("job_search: searxng error", slog.Any("error", err))
+				slog.Warn("job_search: searxng error (additive)", slog.Any("error", err))
 			}
-			ch <- sourceResult{name: "searxng", results: results, err: err}
+			results = append(results, searx...)
+			// DIRECT is authoritative; additive SearXNG err is intentionally not
+			// propagated — the result set reflects what DIRECT returned regardless.
+			ch <- sourceResult{name: "searxng", results: results, err: nil}
 		}()
 
 		totalGoroutines := len(srcs) + 1
@@ -328,6 +270,10 @@ func registerJobSearch(server *mcp.Server) {
 		var linkedInJobs []jobs.LinkedInJob
 		for i := 0; i < totalGoroutines; i++ {
 			r := <-ch
+			// Unified per-platform counter: bumped once per connector return, covering
+			// all 18 platforms uniformly. Per-connector bumps were removed to avoid
+			// double-counting; this is the single authority for platform_results_total.
+			engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
 			merged = append(merged, r.results...)
 			if r.name == platLinkedIn && len(r.liJobs) > 0 {
 				linkedInJobs = r.liJobs
@@ -447,6 +393,52 @@ func registerJobSearch(server *mcp.Server) {
 	})
 }
 
+// selectSources maps a normalized platform filter to the ordered list of
+// connector source names that job_search fans out to. platform=all selects every
+// commercial connector; meta-platforms (ats/startup/remote/un) expand to their
+// members; UN scrapers (inspira/undp) stay opt-in and are NOT included by
+// platform=all. The returned names are exactly the case labels in the per-source
+// dispatch switch — the regression test asserts every advertised platform routes
+// to a non-empty, correctly-named source set.
+func selectSources(platform string) []string {
+	use := map[string]bool{
+		platLinkedIn:   platform == platAll || platform == platLinkedIn,
+		platGreenhouse: platform == platAll || platform == platGreenhouse || platform == platATS || platform == platStartup,
+		platLever:      platform == platAll || platform == platLever || platform == platATS || platform == platStartup,
+		platAshby:      platform == platAll || platform == platAshby || platform == platATS || platform == platStartup,
+		platYC:         platform == platAll || platform == platYC || platform == platStartup,
+		platHN:         platform == platAll || platform == platHN || platform == platStartup,
+		platIndeed:     platform == platAll || platform == platIndeed,
+		platHabr:       platform == platAll || platform == platHabr,
+		platTwitter:    platform == platAll || platform == platTwitter,
+		platCraigslist: platform == platAll || platform == platCraigslist,
+		platRemoteOK:   platform == platAll || platform == platRemoteOK || platform == platRemote,
+		platWWR:        platform == platAll || platform == platWWR || platform == platRemote,
+		platRemotive:   platform == platAll || platform == platRemotive || platform == platRemote,
+		platFreelancer: platform == platAll || platform == platFreelancer,
+		platGoogle:     platform == platAll || platform == platGoogle,
+		// UN scrapers stay opt-in (NOT triggered by platform=all) — niche
+		// international-org consultancies would otherwise crowd out generic
+		// commercial searches.
+		platInspira: platform == platInspira || platform == platUN,
+		platUNDP:    platform == platUNDP || platform == platUN,
+	}
+
+	// Fixed order so output is deterministic (test stability + stable fan-out).
+	order := []string{
+		platLinkedIn, platGreenhouse, platLever, platAshby, platYC, platHN, platIndeed,
+		platHabr, platTwitter, platCraigslist, platRemoteOK, platWWR, platRemotive,
+		platFreelancer, platGoogle, platInspira, platUNDP,
+	}
+	srcs := make([]string, 0, len(order))
+	for _, name := range order {
+		if use[name] {
+			srcs = append(srcs, name)
+		}
+	}
+	return srcs
+}
+
 func buildJobSearxQuery(query, location, platform string) string {
 	var sitePart string
 	switch platform {
@@ -454,13 +446,13 @@ func buildJobSearxQuery(query, location, platform string) string {
 		sitePart = "site:linkedin.com/jobs"
 	case platGreenhouse:
 		sitePart = "site:boards.greenhouse.io"
-	case "lever":
+	case platLever:
 		sitePart = "site:jobs.lever.co"
 	case platAshby:
 		sitePart = "site:jobs.ashbyhq.com"
-	case "yc":
+	case platYC:
 		sitePart = "site:workatastartup.com"
-	case "hn":
+	case platHN:
 		sitePart = "site:news.ycombinator.com \"who is hiring\""
 	case platCraigslist:
 		sitePart = "site:craigslist.org"
