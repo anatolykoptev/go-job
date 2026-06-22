@@ -59,6 +59,35 @@ var (
 	})
 )
 
+// discoverJobURLs runs the site-scoped discovery query through go-engine DIRECT
+// (DDG/Brave/Marginalia/Wikipedia, enabled via DIRECT_* env) as the PRIMARY path,
+// with SearXNG as an additive source when SEARXNG_URL is configured.
+//
+// This mirrors the company-research routing fixed in #53: SEARXNG_URL is unset in
+// prod, so SearchSearXNG alone returns nil and every ATS / YC / Google connector
+// that relied on it for slug/URL discovery went silently empty. SearchDirect is
+// non-fatal (per-source failures are logged and skipped) and returns whatever any
+// enabled scraper produced. Results are merged and deduped by URL.
+func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
+	direct := engine.SearchDirect(ctx, query, "all")
+	// SearXNG is additive: when unconfigured it returns nil,nil — harmless.
+	searx, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
+	if err != nil {
+		slog.Debug("discover: SearXNG error (additive source)", slog.Any("error", err))
+	}
+
+	seen := make(map[string]bool, len(direct)+len(searx))
+	merged := make([]engine.SearxngResult, 0, len(direct)+len(searx))
+	for _, r := range append(direct, searx...) {
+		if r.URL == "" || seen[r.URL] {
+			continue
+		}
+		seen[r.URL] = true
+		merged = append(merged, r)
+	}
+	return merged
+}
+
 // --- Greenhouse ---
 
 const greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards/%s/jobs"
@@ -98,15 +127,10 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 		searxQuery = query + " " + location + " " + greenhouseSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-	if err != nil {
-		return nil, fmt.Errorf("greenhouse SearXNG: %w", err)
-	}
-
-	// Extract unique company slugs from result URLs.
-	slugs := extractGreenhouseSlugs(searxResults)
+	// Extract unique company slugs from discovery URLs (DIRECT primary + SearXNG additive).
+	slugs := extractGreenhouseSlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
-		slog.Debug("greenhouse: no slugs found in SearXNG results")
+		slog.Debug("greenhouse: no slugs found in discovery results")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
@@ -288,14 +312,9 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 		searxQuery = query + " " + location + " " + leverSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-	if err != nil {
-		return nil, fmt.Errorf("lever SearXNG: %w", err)
-	}
-
-	slugs := extractLeverSlugs(searxResults)
+	slugs := extractLeverSlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
-		slog.Debug("lever: no slugs found in SearXNG results")
+		slog.Debug("lever: no slugs found in discovery results")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
@@ -493,14 +512,9 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 		searxQuery = query + " " + location + " " + ashbySiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-	if err != nil {
-		return nil, fmt.Errorf("ashby SearXNG: %w", err)
-	}
-
-	slugs := extractAshbySlugs(searxResults)
+	slugs := extractAshbySlugs(discoverJobURLs(ctx, searxQuery))
 	if len(slugs) == 0 {
-		slog.Debug("ashby: no slugs found in SearXNG results")
+		slog.Debug("ashby: no slugs found in discovery results")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {

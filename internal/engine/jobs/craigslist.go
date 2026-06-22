@@ -162,14 +162,17 @@ func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) 
 
 // SearchCraigslistJobs searches Craigslist job listings.
 // Primary: RSS feed via BrowserClient (structured data, more results).
-// Fallback: SearXNG site: search when BrowserClient is unavailable or RSS fails.
+// Fallback: discoverJobURLs (go-engine DIRECT primary + SearXNG additive) when
+// BrowserClient is unavailable or RSS fails. SEARXNG_URL is unset in prod, so
+// a bare SearchSearXNG-only fallback would return nil,nil silently — same class
+// fixed in #53 for ATS/YC/Indeed.
 func SearchCraigslistJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrCraigslistRequests()
 
 	if engine.Cfg.BrowserClient != nil {
 		results, err := fetchCraigslistRSS(ctx, query, location, limit)
 		if err != nil {
-			slog.Warn("craigslist: RSS fetch failed, falling back to SearXNG",
+			slog.Warn("craigslist: RSS fetch failed, falling back to discovery",
 				slog.Any("error", err))
 		} else if len(results) > 0 {
 			slog.Debug("craigslist: RSS search complete", slog.Int("results", len(results)))
@@ -177,19 +180,18 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		}
 	}
 
-	// Fallback: SearXNG site: search.
+	// Fallback: go-engine DIRECT (primary, always-on) + SearXNG (additive).
+	// discoverJobURLs fans out to both sources and dedupes by URL — mirroring
+	// the ATS/YC/Indeed routing fix in #53.
 	searxQuery := query + " jobs " + craigslistSiteSearch
 	if location != "" {
 		searxQuery = query + " " + location + " jobs " + craigslistSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "en", "", engine.DefaultSearchEngine)
-	if err != nil {
-		slog.Warn("craigslist: SearXNG error", slog.Any("error", err))
-	}
+	discovered := discoverJobURLs(ctx, searxQuery)
 
 	var results []engine.SearxngResult
-	for _, r := range searxResults {
+	for _, r := range discovered {
 		if !craigslistListingRe.MatchString(r.URL) {
 			continue
 		}
@@ -205,8 +207,8 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		results = results[:limit]
 	}
 
-	slog.Debug("craigslist: SearXNG fallback complete",
-		slog.Int("raw", len(searxResults)),
+	slog.Debug("craigslist: discovery fallback complete",
+		slog.Int("raw", len(discovered)),
 		slog.Int("listings", len(results)))
 	return results, nil
 }

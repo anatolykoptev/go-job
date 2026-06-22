@@ -173,22 +173,22 @@ func extractSource(jobURL string) string {
 	}
 	host := u.Hostname()
 	switch {
-	case strings.Contains(host, "linkedin"):
-		return "linkedin"
-	case strings.Contains(host, "indeed"):
-		return "indeed"
+	case strings.Contains(host, platLinkedIn):
+		return platLinkedIn
+	case strings.Contains(host, platIndeed):
+		return platIndeed
 	case strings.Contains(host, "workatastartup"):
-		return "yc"
+		return platYC
 	case strings.Contains(host, "ycombinator"):
-		return "hn"
-	case strings.Contains(host, "greenhouse"):
-		return "greenhouse"
-	case strings.Contains(host, "lever"):
-		return "lever"
-	case strings.Contains(host, "remoteok"):
-		return "remoteok"
-	case strings.Contains(host, "remotive"):
-		return "remotive"
+		return platHN
+	case strings.Contains(host, platGreenhouse):
+		return platGreenhouse
+	case strings.Contains(host, platLever):
+		return platLever
+	case strings.Contains(host, platRemoteOK):
+		return platRemoteOK
+	case strings.Contains(host, platRemotive):
+		return platRemotive
 	default:
 		return host
 	}

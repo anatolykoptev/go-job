@@ -23,7 +23,7 @@ type linkedInInput struct {
 
 func registerLinkedIn(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "linkedin",
+		Name:        platLinkedIn,
 		Description: "LinkedIn data via Voyager API. op=profile (handle required) — full profile; op=company (company slug required) — company page; op=jobs (query required) — job listings; op=search (query required) — people/companies search; op=posts (handle required) — profile posts; op=rating (handle required) — profile influence score.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input linkedInInput) (*mcp.CallToolResult, any, error) {
@@ -36,7 +36,7 @@ func registerLinkedIn(server *mcp.Server) {
 			if err != nil {
 				return nil, nil, err
 			}
-			if cr, spilled := handleSpill(ctx, "linkedin", profile); spilled {
+			if cr, spilled := handleSpill(ctx, platLinkedIn, profile); spilled {
 				return cr, nil, nil
 			}
 			return nil, profile, nil
@@ -70,7 +70,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return nil, nil, err
 			}
 			out := map[string]any{"query": input.Query, "count": len(result), "jobs": result}
-			if cr, spilled := handleSpill(ctx, "linkedin", out); spilled {
+			if cr, spilled := handleSpill(ctx, platLinkedIn, out); spilled {
 				return cr, nil, nil
 			}
 			return nil, out, nil
@@ -97,7 +97,7 @@ func registerLinkedIn(server *mcp.Server) {
 				return nil, nil, err
 			}
 			out := map[string]any{"query": input.Query, keyType: searchType, "count": len(results), "results": results}
-			if cr, spilled := handleSpill(ctx, "linkedin", out); spilled {
+			if cr, spilled := handleSpill(ctx, platLinkedIn, out); spilled {
 				return cr, nil, nil
 			}
 			return nil, out, nil
