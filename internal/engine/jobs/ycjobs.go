@@ -26,14 +26,12 @@ func SearchYCJobs(ctx context.Context, query, location string, limit int) ([]eng
 		searxQuery = query + " " + location + " " + ycSiteSearch
 	}
 
-	searxResults, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-	if err != nil {
-		slog.Warn("yc: SearXNG error", slog.Any("error", err))
-	}
+	// Discover job URLs via go-engine DIRECT (primary) + SearXNG (additive).
+	discovered := discoverJobURLs(ctx, searxQuery)
 
 	// Filter to only workatastartup.com URLs.
 	var ycResults []engine.SearxngResult
-	for _, r := range searxResults {
+	for _, r := range discovered {
 		if strings.Contains(r.URL, "workatastartup.com") {
 			r.Content = "**Source:** YC workatastartup.com\n\n" + r.Content
 			r.Score = 0.85
