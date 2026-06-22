@@ -39,6 +39,16 @@ const (
 	MetricCode4renaRequests       = "code4rena_requests_total"
 	MetricToolCalls               = "tool_calls_total"
 
+	// Shared bounded-label values reused across metric incrementors and the flat
+	// text endpoint (extracted to satisfy goconst min-occurrences=4).
+	outcomeOK      = "ok"
+	outcomeTimeout = "timeout"
+	outcomeError   = "error"
+	kindJobs       = "jobs"
+	kindBounties   = "bounties"
+	kindFreelance  = "freelance"
+	kindSecurity   = "security"
+
 	// MetricLLMModelsDropped counts model ids absent from /v1/models at chain
 	// construction time (gojob_llm_models_dropped_total).
 	// Bumped once per dropped model id; a non-zero value means the env chain has
@@ -80,6 +90,21 @@ const (
 	// without company context — visible now instead of surfacing only as a
 	// tool-level timeout.
 	MetricCompanyResearch = "company_research_total"
+
+	// MetricPlatformResults is the labelled counter
+	// gojob_platform_results_total{platform,outcome}. Bumped once per job_search
+	// per-platform connector invocation, AFTER the connector returns.
+	// outcome ∈ {"results","empty","error"} — bounded label.
+	//
+	// This is the signal that was MISSING when every direct-scraper platform went
+	// silently dead: the per-platform *_requests_total counters bump at connector
+	// ENTRY, so they kept incrementing while results stayed zero — "reached but
+	// produced nothing" was indistinguishable from "reached and produced jobs".
+	// A platform whose discovery dependency dies now shows outcome=empty rising
+	// while outcome=results stays flat, instead of surfacing only weeks later as
+	// "search returns null". Alert target: ratio of empty/(results+empty) per
+	// platform trending to 1.0.
+	MetricPlatformResults = "platform_results_total"
 
 	// MetricHuntList is the labelled counter gojob_hunt_list_total{kind}.
 	// Bumped once per hunt_list call that the SERVER actually handled, after
@@ -129,13 +154,13 @@ func FormatMetrics() string {
 	// Labelled counters (company_research_total{outcome}) are emitted by the
 	// go-kit prom bridge directly; the flat text endpoint surfaces the bounded
 	// outcomes explicitly so a rising timeout rate is visible here too.
-	for _, oc := range []string{"ok", "timeout", "error"} {
+	for _, oc := range []string{outcomeOK, outcomeTimeout, outcomeError} {
 		keys = append(keys, MetricCompanyResearch+"{outcome="+oc+"}")
 	}
 	// Per-kind server-handled hunt_list counters, surfaced on the flat endpoint
 	// so a "no rows / socket drop" report can be checked against whether the
 	// server actually handled the call.
-	for _, k := range []string{"jobs", "bounties", "freelance", "security"} {
+	for _, k := range []string{kindJobs, kindBounties, kindFreelance, kindSecurity} {
 		keys = append(keys, MetricHuntList+"{kind="+k+"}")
 	}
 	var sb strings.Builder
@@ -173,8 +198,8 @@ func IncrToolCall() { reg.Incr(MetricToolCalls) }
 var validHuntKinds = map[string]bool{
 	"bounty":        true,
 	"job":           true,
-	"freelance":     true,
-	"security":      true,
+	kindFreelance:   true,
+	kindSecurity:    true,
 	"audit_contest": true,
 }
 
@@ -194,10 +219,10 @@ func IncrHuntIngest(kind, outcome string) {
 // Note these are the PLURAL list-tool kinds (jobs/bounties/...), distinct from
 // the singular ingest kinds in validHuntKinds (job/bounty/...).
 var validHuntListKinds = map[string]bool{
-	"jobs":      true,
-	"bounties":  true,
-	"freelance": true,
-	"security":  true,
+	kindJobs:      true,
+	kindBounties:  true,
+	kindFreelance: true,
+	kindSecurity:  true,
 }
 
 // IncrHuntList bumps gojob_hunt_list_total{kind=<kind>}, once per server-handled
@@ -231,10 +256,51 @@ func IncrHuntNotify(outcome string) {
 	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
 }
 
+// validPlatforms is the allowlist for the platform_results_total `platform`
+// label. Mirrors the advertised job_search platform enum; unknown values are
+// dropped to bound cardinality.
+var validPlatforms = map[string]bool{
+	"linkedin": true, "greenhouse": true, "lever": true, "ashby": true,
+	"yc": true, "hn": true, "indeed": true, "habr": true, "twitter": true,
+	"craigslist": true, "remoteok": true, "weworkremotely": true,
+	"remotive": true, "freelancer": true, "google": true,
+	"inspira": true, "undp": true, "searxng": true,
+}
+
+// validPlatformOutcomes bounds the outcome label for platform_results_total.
+var validPlatformOutcomes = map[string]bool{
+	"results": true, "empty": true, outcomeError: true,
+}
+
+// IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.
+// platform ∈ validPlatforms, outcome ∈ {"results","empty","error"} — both bounded.
+// Called once per per-platform connector invocation in job_search, AFTER the
+// connector returns, classifying the result so a silently-dead connector
+// (reached but producing nothing) is observable as outcome=empty.
+func IncrPlatformResults(platform, outcome string) {
+	if !validPlatforms[platform] || !validPlatformOutcomes[outcome] {
+		return
+	}
+	reg.Incr(MetricPlatformResults + "{platform=" + platform + ",outcome=" + outcome + "}")
+}
+
+// PlatformOutcome classifies a connector return (results, err) into the bounded
+// outcome label for IncrPlatformResults. err takes precedence over emptiness.
+func PlatformOutcome(n int, err error) string {
+	switch {
+	case err != nil:
+		return outcomeError
+	case n > 0:
+		return "results"
+	default:
+		return "empty"
+	}
+}
+
 // validCompanyResearchOutcomes bounds the outcome label to prevent cardinality
 // blowup from arbitrary error strings.
 var validCompanyResearchOutcomes = map[string]bool{
-	"ok": true, "timeout": true, "error": true,
+	outcomeOK: true, outcomeTimeout: true, outcomeError: true,
 }
 
 // IncrCompanyResearch bumps gojob_company_research_total{outcome=<outcome>}.

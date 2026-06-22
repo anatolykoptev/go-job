@@ -2,11 +2,82 @@ package jobserver
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
+
+// TestSelectSources_PlatformRouting asserts every advertised platform routes to
+// its own connector (and meta-platforms fan out to their members). This is the
+// regression guard for the platform-routing-loss class: if a future refactor
+// drops a platform from the dispatch, the case for that platform goes RED here.
+func TestSelectSources_PlatformRouting(t *testing.T) {
+	tests := []struct {
+		platform string
+		want     []string // sources that MUST be present
+		absent   []string // sources that MUST NOT be present
+	}{
+		{platform: "linkedin", want: []string{"linkedin"}, absent: []string{"greenhouse", "indeed"}},
+		{platform: "greenhouse", want: []string{"greenhouse"}, absent: []string{"lever", "linkedin"}},
+		{platform: "lever", want: []string{"lever"}, absent: []string{"greenhouse"}},
+		{platform: "ashby", want: []string{"ashby"}, absent: []string{"greenhouse"}},
+		{platform: "yc", want: []string{"yc"}, absent: []string{"hn"}},
+		{platform: "hn", want: []string{"hn"}, absent: []string{"yc"}},
+		{platform: "indeed", want: []string{"indeed"}, absent: []string{"linkedin"}},
+		{platform: "habr", want: []string{"habr"}, absent: []string{"linkedin"}},
+		{platform: "twitter", want: []string{"twitter"}, absent: []string{"linkedin"}},
+		{platform: "craigslist", want: []string{"craigslist"}, absent: []string{"linkedin"}},
+		{platform: "google", want: []string{"google"}, absent: []string{"linkedin"}},
+		{platform: "freelancer", want: []string{"freelancer"}, absent: []string{"linkedin"}},
+		// Meta-platforms fan out.
+		{platform: "ats", want: []string{"greenhouse", "lever", "ashby"}, absent: []string{"linkedin", "yc"}},
+		{platform: "startup", want: []string{"yc", "hn", "greenhouse", "lever", "ashby"}, absent: []string{"indeed"}},
+		{platform: "remote", want: []string{"remoteok", "weworkremotely", "remotive"}, absent: []string{"linkedin"}},
+		{platform: "un", want: []string{"inspira", "undp"}, absent: []string{"linkedin", "greenhouse"}},
+		// UN scrapers are opt-in: platform=all MUST NOT include them.
+		{platform: "all", want: []string{
+			"linkedin", "greenhouse", "lever", "ashby", "yc", "hn", "indeed",
+			"habr", "twitter", "craigslist", "remoteok", "weworkremotely",
+			"remotive", "freelancer", "google",
+		}, absent: []string{"inspira", "undp"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.platform, func(t *testing.T) {
+			got := selectSources(tt.platform)
+			for _, w := range tt.want {
+				if !slices.Contains(got, w) {
+					t.Errorf("platform=%q: source %q missing from routing (got %v)", tt.platform, w, got)
+				}
+			}
+			for _, a := range tt.absent {
+				if slices.Contains(got, a) {
+					t.Errorf("platform=%q: source %q must NOT be routed (got %v)", tt.platform, a, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSelectSources_AdvertisedPlatformsAllRoute is the contract test: every
+// platform value the tool schema advertises must produce at least one connector.
+// A platform that routes to nothing is a silently-dead advertisement — the exact
+// regression that left greenhouse/lever/yc/google returning null.
+func TestSelectSources_AdvertisedPlatformsAllRoute(t *testing.T) {
+	advertised := []string{
+		"linkedin", "greenhouse", "lever", "ashby", "ats", "yc", "hn",
+		"indeed", "habr", "twitter", "google", "startup", "craigslist",
+		"remoteok", "weworkremotely", "remotive", "remote", "freelancer",
+		"inspira", "undp", "un", "all",
+	}
+	for _, p := range advertised {
+		if got := selectSources(p); len(got) == 0 {
+			t.Errorf("advertised platform %q routes to NO connector — silently dead", p)
+		}
+	}
+}
 
 // TestTwitterRawRouting verifies that platform=twitter raw=true routes to
 // SearchTwitterJobsRaw (not SearchTwitterJobs) and that platform=twitter

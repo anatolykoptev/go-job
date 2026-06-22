@@ -302,53 +302,31 @@ func SearchIndeedJobsFiltered(ctx context.Context, query, location, jobType, tim
 	// Try GraphQL API first (direct, no SearXNG dependency)
 	results, err := searchIndeedGraphQL(ctx, query, location, timeRange, limit)
 	if err != nil {
-		slog.Warn("indeed: GraphQL API failed, falling back to SearXNG", slog.Any("error", err))
+		slog.Warn("indeed: GraphQL API failed, falling back to discovery", slog.Any("error", err))
 	} else if len(results) > 0 {
+		engine.IncrPlatformResults("indeed", "results")
 		return results, nil
 	}
 
-	// Fallback: SearXNG site: search (original approach)
-	return searchIndeedViaSearxng(ctx, query, location, limit)
+	// Fallback: discovery (go-engine DIRECT primary + SearXNG additive).
+	fb, fbErr := searchIndeedViaSearxng(ctx, query, location, limit)
+	engine.IncrPlatformResults("indeed", engine.PlatformOutcome(len(fb), fbErr))
+	return fb, fbErr
 }
 
-// searchIndeedViaSearxng is the original SearXNG-based Indeed search (fallback).
+// searchIndeedViaSearxng is the discovery-based Indeed fallback (used when the
+// GraphQL API yields nothing). Discovers indeed.com/viewjob URLs via go-engine
+// DIRECT (primary) + SearXNG (additive when SEARXNG_URL is set).
 func searchIndeedViaSearxng(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	searxQuery := query + " " + indeedSiteSearch
 	if location != "" {
 		searxQuery = query + " " + location + " " + indeedSiteSearch
 	}
 
-	// Search via both Google and Bing for better coverage.
-	type searchRes struct {
-		results []engine.SearxngResult
-		err     error
-	}
-	gCh := make(chan searchRes, 1)
-	bCh := make(chan searchRes, 1)
-
-	go func() {
-		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-		gCh <- searchRes{r, err}
-	}()
-	go func() {
-		r, err := engine.SearchSearXNG(ctx, searxQuery, "all", "", engine.DefaultSearchEngine)
-		bCh <- searchRes{r, err}
-	}()
-
-	gr := <-gCh
-	br := <-bCh
-
-	if gr.err != nil {
-		slog.Warn("indeed: google SearXNG error", slog.Any("error", gr.err))
-	}
-	if br.err != nil {
-		slog.Warn("indeed: bing SearXNG error", slog.Any("error", br.err))
-	}
-
-	// Merge and dedup by URL.
+	// Dedup by URL, keep only viewjob pages.
 	seen := make(map[string]bool)
 	var merged []engine.SearxngResult
-	for _, r := range append(gr.results, br.results...) {
+	for _, r := range discoverJobURLs(ctx, searxQuery) {
 		if !seen[r.URL] && strings.Contains(r.URL, "indeed.com/viewjob") {
 			seen[r.URL] = true
 			merged = append(merged, r)
