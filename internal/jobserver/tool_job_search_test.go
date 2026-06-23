@@ -80,6 +80,55 @@ func TestSelectSources_AdvertisedPlatformsAllRoute(t *testing.T) {
 	}
 }
 
+// TestKnownPlatform is the regression guard for the unknown-platform silent
+// "No results found" (reviewer MINOR): a typo'd platform routes to no connector
+// AND suppresses the generic searxng goroutine. knownPlatform must accept every
+// advertised platform (so it is not falsely rerouted to all) and reject typos
+// (so they fall back to a broad search instead of silence).
+func TestKnownPlatform(t *testing.T) {
+	advertised := []string{
+		"all", "linkedin", "greenhouse", "lever", "ashby", "ats", "yc", "hn",
+		"indeed", "habr", "twitter", "google", "startup", "craigslist",
+		"remoteok", "weworkremotely", "remotive", "remote", "freelancer",
+		"inspira", "undp", "un",
+	}
+	for _, p := range advertised {
+		if !knownPlatform(p) {
+			t.Errorf("advertised platform %q must be recognized by knownPlatform", p)
+		}
+	}
+	for _, typo := range []string{"greehouse", "leverr", "", "linkdin", "garbage"} {
+		if knownPlatform(typo) {
+			t.Errorf("typo/unknown platform %q must NOT be recognized", typo)
+		}
+	}
+}
+
+// TestShouldRunGenericSearxng is the regression guard for the stale-junk
+// masquerade (discovery-collapse H3, 2026-06-23): the always-on generic
+// web-search goroutine (go-engine DIRECT + SearXNG) surfaces 2017-2021
+// Wikipedia/Marginalia hits that masquerade as ATS results. It must run ONLY
+// for platform=all; any SPECIFIC connector (and the meta-platforms) must
+// suppress it so the merged output reflects only structured connector results.
+func TestShouldRunGenericSearxng(t *testing.T) {
+	if !shouldRunGenericSearxng("all") {
+		t.Error("platform=all must run the generic searxng discovery goroutine")
+	}
+	// Specific connectors + meta-platforms must NOT trigger the generic web search.
+	suppressed := []string{
+		"greenhouse", "lever", "ashby", "yc", "hn", "indeed", "habr",
+		"linkedin", "twitter", "craigslist", "google", "freelancer",
+		"ats", "startup", "remote", "remoteok", "weworkremotely", "remotive",
+		"inspira", "undp", "un",
+	}
+	for _, p := range suppressed {
+		if shouldRunGenericSearxng(p) {
+			t.Errorf("platform=%q must suppress the generic searxng goroutine "+
+				"(stale Wikipedia/Marginalia hits masquerade as %s results)", p, p)
+		}
+	}
+}
+
 // TestTwitterRawRouting verifies that platform=twitter raw=true routes to
 // SearchTwitterJobsRaw (not SearchTwitterJobs) and that platform=twitter
 // raw=false keeps the default LLM path.
