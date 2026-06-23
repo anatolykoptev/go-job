@@ -2,12 +2,18 @@ package jobserver
 
 import (
 	"context"
+	"os"
 	"slices"
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
+
+func TestMain(m *testing.M) {
+	initJobRegistry()
+	os.Exit(m.Run())
+}
 
 // TestSelectSources_PlatformRouting asserts every advertised platform routes to
 // its own connector (and meta-platforms fan out to their members). This is the
@@ -46,7 +52,10 @@ func TestSelectSources_PlatformRouting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.platform, func(t *testing.T) {
-			got := selectSources(tt.platform)
+			got := make([]string, 0)
+			for _, s := range jobRegistry.Select(tt.platform) {
+				got = append(got, s.Name())
+			}
 			for _, w := range tt.want {
 				if !slices.Contains(got, w) {
 					t.Errorf("platform=%q: source %q missing from routing (got %v)", tt.platform, w, got)
@@ -74,7 +83,7 @@ func TestSelectSources_AdvertisedPlatformsAllRoute(t *testing.T) {
 		"inspira", "undp", "un", "all",
 	}
 	for _, p := range advertised {
-		if got := selectSources(p); len(got) == 0 {
+		if got := jobRegistry.Select(p); len(got) == 0 {
 			t.Errorf("advertised platform %q routes to NO connector — silently dead", p)
 		}
 	}
@@ -93,12 +102,12 @@ func TestKnownPlatform(t *testing.T) {
 		"inspira", "undp", "un",
 	}
 	for _, p := range advertised {
-		if !knownPlatform(p) {
+		if !jobRegistry.Known(p) {
 			t.Errorf("advertised platform %q must be recognized by knownPlatform", p)
 		}
 	}
 	for _, typo := range []string{"greehouse", "leverr", "", "linkdin", "garbage"} {
-		if knownPlatform(typo) {
+		if jobRegistry.Known(typo) {
 			t.Errorf("typo/unknown platform %q must NOT be recognized", typo)
 		}
 	}
