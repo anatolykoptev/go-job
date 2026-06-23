@@ -56,6 +56,18 @@ func getATSMaxConcurrent() int {
 	return 3
 }
 
+// getDiscoveryQueryVariants returns the number of query variants to fan out
+// per platform in unionDiscoverSlugs. Configurable via DISCOVERY_QUERY_VARIANTS
+// (range 1–5, default 3).
+func getDiscoveryQueryVariants() int {
+	if v := os.Getenv("DISCOVERY_QUERY_VARIANTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
+			return n
+		}
+	}
+	return 3
+}
+
 // Per-provider circuit breakers. After FailThreshold consecutive failures the
 // breaker opens for OpenDuration, blocking further attempts. After cooldown it
 // half-opens for one probe; if that succeeds the breaker resets to closed.
@@ -144,6 +156,141 @@ func deduplicateByURL(in []engine.SearxngResult) []engine.SearxngResult {
 	return merged
 }
 
+// discoveryVariants returns up to getDiscoveryQueryVariants() distinct query
+// strings for the given platform, base role query, and optional location.
+// Each variant orders the query tokens differently to exploit different search
+// engine ranking surfaces. Returns nil for unknown platforms.
+func discoveryVariants(platform, base, location string) []string {
+	n := getDiscoveryQueryVariants()
+
+	var scope string
+	switch platform {
+	case engine.DiscoveryPlatformGreenhouse:
+		scope = greenhouseSiteSearch
+	case engine.DiscoveryPlatformLever:
+		scope = leverSiteSearch
+	case engine.DiscoveryPlatformAshby:
+		scope = ashbySiteSearch
+	default:
+		return nil
+	}
+
+	base = strings.TrimSpace(base)
+	loc := strings.TrimSpace(location)
+
+	templates := []string{
+		buildDiscoveryV1(base, loc, scope),
+		buildDiscoveryV2(base, loc, scope),
+		buildDiscoveryV3(base, loc, scope),
+	}
+
+	if n < len(templates) {
+		templates = templates[:n]
+	}
+	return templates
+}
+
+func buildDiscoveryV1(base, loc, scope string) string {
+	if loc != "" {
+		return base + " " + loc + " " + scope
+	}
+	return base + " " + scope
+}
+
+func buildDiscoveryV2(base, loc, scope string) string {
+	if loc != "" {
+		return scope + " " + base + " " + loc
+	}
+	return scope + " " + base
+}
+
+func buildDiscoveryV3(base, loc, scope string) string {
+	if loc != "" {
+		return "senior " + base + " " + scope + " " + loc
+	}
+	return "senior " + base + " " + scope
+}
+
+// unionDiscoverSlugs fans out DISCOVERY_QUERY_VARIANTS queries for the given
+// platform in parallel, extracts slugs from each, unions fresh results with
+// the runtime slug cache, and returns the deduplicated union (capped at
+// maxATSSlugsPerSearch).
+//
+// extractFn is the platform-specific slug extractor (e.g. extractLeverSlugs).
+// Called by SearchGreenhouseJobs, SearchLeverJobs, SearchAshbyJobs.
+func unionDiscoverSlugs(
+	ctx context.Context,
+	platform, base, location string,
+	extractFn func([]engine.SearxngResult) []string,
+) []string {
+	variants := discoveryVariants(platform, base, location)
+
+	sc := GetSlugCache()
+	var cached []string
+	if sc != nil {
+		cached = sc.Get(platform)
+	}
+
+	if len(variants) == 0 {
+		return cached
+	}
+
+	type varResult struct {
+		slugs []string
+		hit   bool
+	}
+	ch := make(chan varResult, len(variants))
+	for _, v := range variants {
+		v := v
+		go func() {
+			urls := discoverJobURLs(ctx, v)
+			slugs := extractFn(urls)
+			ch <- varResult{slugs: slugs, hit: len(slugs) > 0}
+		}()
+	}
+
+	freshSeen := make(map[string]bool)
+	var fresh []string
+	for range variants {
+		r := <-ch
+		result := "miss"
+		if r.hit {
+			result = "hit"
+		}
+		engine.IncrHuntDiscoveryVariant(platform, result)
+		for _, s := range r.slugs {
+			if !freshSeen[s] {
+				freshSeen[s] = true
+				fresh = append(fresh, s)
+			}
+		}
+	}
+
+	cachedSeen := make(map[string]bool, len(cached))
+	union := make([]string, 0, len(cached)+len(fresh))
+	for _, s := range cached {
+		if !cachedSeen[s] {
+			cachedSeen[s] = true
+			union = append(union, s)
+		}
+	}
+	for _, s := range fresh {
+		if !cachedSeen[s] {
+			cachedSeen[s] = true
+			union = append(union, s)
+		}
+	}
+
+	if sc != nil && len(fresh) > 0 {
+		sc.Merge(ctx, platform, fresh)
+	}
+
+	if len(union) > maxATSSlugsPerSearch {
+		union = union[:maxATSSlugsPerSearch]
+	}
+	return union
+}
+
 // atsBoardMaxBytes caps the board response body read for all three ATS fetchers
 // (greenhouse, lever, ashby). 16 MB is generous for even the largest known boards
 // (insiderone lever board ≈ 3.75 MB; Notion/OpenAI ashby ≈ 2 MB); the old 2 MB
@@ -187,24 +334,16 @@ type greenhouseResponse struct {
 	Jobs []greenhouseJob `json:"jobs"`
 }
 
-// SearchGreenhouseJobs discovers company slugs via SearXNG then hits the public JSON API.
+// SearchGreenhouseJobs discovers company slugs via multi-query union (P1) +
+// runtime slug cache (P2), then hits the public JSON API for each slug.
 func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrGreenhouseRequests()
 
-	searxQuery := query + " " + greenhouseSiteSearch
-	if location != "" {
-		searxQuery = query + " " + location + " " + greenhouseSiteSearch
-	}
-
-	// Extract unique company slugs from discovery URLs (DIRECT primary + SearXNG additive).
-	slugs := extractGreenhouseSlugs(discoverJobURLs(ctx, searxQuery))
+	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformGreenhouse, query, location, extractGreenhouseSlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformGreenhouse, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("greenhouse: no slugs found in discovery results")
 		return nil, nil
-	}
-	if len(slugs) > maxATSSlugsPerSearch {
-		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	// Fetch jobs from each company's public API in parallel.
@@ -304,6 +443,9 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 
 	if resp.StatusCode == http.StatusNotFound {
 		greenhouseBreaker.Record(true) // 404 = valid response, not a failure
+		if sc := GetSlugCache(); sc != nil {
+			sc.Evict(engine.DiscoveryPlatformGreenhouse, slug, "board_404")
+		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -386,43 +528,18 @@ type leverPosting struct {
 	Country          string `json:"country"`
 }
 
-// SearchLeverJobs discovers company slugs via SearXNG then hits the public JSON API.
+// SearchLeverJobs discovers company slugs via multi-query union (P1) +
+// runtime slug cache (P2), then hits the public JSON API for each slug.
+// The former lever-only N=2 secondary block is replaced by the uniform
+// unionDiscoverSlugs fan-out that covers the same query orderings.
 func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrLeverRequests()
 
-	searxQuery := query + " " + leverSiteSearch
-	if location != "" {
-		searxQuery = query + " " + location + " " + leverSiteSearch
-	}
-
-	slugs := extractLeverSlugs(discoverJobURLs(ctx, searxQuery))
-
-	// Secondary discovery: put the site scope first so search engines apply
-	// "site:jobs.lever.co" filtering at the front of the query — some engines
-	// yield more on-domain results with the site: operator leading rather than
-	// trailing. Only tried when the primary pass returned nothing, to avoid
-	// duplicate fetches on the fast path.
-	if len(slugs) == 0 {
-		var altQuery string
-		if location != "" {
-			altQuery = leverSiteSearch + " " + query + " " + location
-		} else {
-			altQuery = leverSiteSearch + " " + query
-		}
-		slugs = extractLeverSlugs(discoverJobURLs(ctx, altQuery))
-		if len(slugs) > 0 {
-			slog.Debug("lever: primary discovery empty; secondary (site-scope-first) yielded slugs",
-				slog.Int("slugs", len(slugs)))
-		}
-	}
-
+	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformLever, query, location, extractLeverSlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformLever, len(slugs))
 	if len(slugs) == 0 {
-		slog.Debug("lever: no slugs found in discovery results (both queries)")
+		slog.Debug("lever: no slugs found in discovery results")
 		return nil, nil
-	}
-	if len(slugs) > maxATSSlugsPerSearch {
-		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	type fetchResult struct {
@@ -534,6 +651,9 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 
 	if resp.StatusCode == http.StatusNotFound {
 		leverBreaker.Record(true) // 404 = valid response, not a failure
+		if sc := GetSlugCache(); sc != nil {
+			sc.Evict(engine.DiscoveryPlatformLever, slug, "board_404")
+		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -616,24 +736,16 @@ type ashbyResponse struct {
 	Jobs []ashbyJob `json:"jobs"`
 }
 
-// SearchAshbyJobs discovers company slugs via SearXNG then hits the public JSON API.
-// Mirrors SearchGreenhouseJobs structure for consistency.
+// SearchAshbyJobs discovers company slugs via multi-query union (P1) +
+// runtime slug cache (P2), then hits the public JSON API for each slug.
 func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrAshbyRequests()
 
-	searxQuery := query + " " + ashbySiteSearch
-	if location != "" {
-		searxQuery = query + " " + location + " " + ashbySiteSearch
-	}
-
-	slugs := extractAshbySlugs(discoverJobURLs(ctx, searxQuery))
+	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformAshby, query, location, extractAshbySlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformAshby, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("ashby: no slugs found in discovery results")
 		return nil, nil
-	}
-	if len(slugs) > maxATSSlugsPerSearch {
-		slugs = slugs[:maxATSSlugsPerSearch]
 	}
 
 	type fetchResult struct {
@@ -739,6 +851,9 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		ashbyBreaker.Record(true) // 404 = valid response, not a failure
+		if sc := GetSlugCache(); sc != nil {
+			sc.Evict(engine.DiscoveryPlatformAshby, slug, "board_404")
+		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
