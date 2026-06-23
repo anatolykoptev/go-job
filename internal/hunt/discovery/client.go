@@ -8,6 +8,13 @@
 // Reproducing those legs in go-job would duplicate a paid-API budget and a
 // headless pool; delegating keeps them single-metered.
 //
+// Transport: go-search exposes its tools via a REST bridge at /api/tools/{name}
+// (mcpserver.Config{RESTBridge:true}, defaultRESTPrefix="/api").  The REST
+// bridge uses an in-process InMemoryTransport to the mcp.Server — it bypasses
+// the StreamableHTTPHandler entirely and requires no Accept negotiation.
+// Response is plain JSON: {"content":[{"type":"text","text":"<json>"}],
+// "structured":{...sources[]},"is_error":false}.
+//
 // The client returns []engine.SearxngResult so existing slug-regex callers in
 // ats.go are unchanged.  GO_SEARCH_URL empty → the client is nil → discovery
 // falls back to the existing local SearchDirect path (non-degrading).
@@ -17,6 +24,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,6 +39,10 @@ import (
 // several substeps in SearchGreenhouseJobs/Lever/Ashby.
 const defaultDiscoveryTimeout = 20 * time.Second
 
+// restAPIPath is the REST bridge path for calling the research tool.
+// go-mcpserver defaults RESTPrefix to "/api"; go-search does not override it.
+const restAPIPath = "/api/tools/research"
+
 // Discoverer is the interface the ATS discovery seam depends on.
 // The go-search-backed client and the nil-fallback both satisfy it.
 type Discoverer interface {
@@ -40,52 +52,47 @@ type Discoverer interface {
 	DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error)
 }
 
-// goSearchSource is the JSON shape returned by go-search's research tool.
-// Only Sources is used; the LLM answer is ignored (we want raw URLs, not prose).
-type goSearchSource struct {
+// restSource is the JSON shape of one source entry returned by go-search's
+// REST bridge for the research tool.
+type restSource struct {
 	Index   int    `json:"index"`
 	Title   string `json:"title"`
 	URL     string `json:"url"`
 	Snippet string `json:"snippet"`
 }
 
-type goSearchOutput struct {
-	Sources []goSearchSource `json:"sources"`
+// restOutput is the "structured" field of the REST bridge response.
+type restOutput struct {
+	Sources []restSource `json:"sources"`
 }
 
-// goSearchRequest mirrors go-search's SmartSearchInput for the fields we need.
-type goSearchRequest struct {
+// restResponse is the envelope returned by POST /api/tools/research.
+// go-mcpserver REST bridge always returns:
+//
+//	{"content":[{"type":"text","text":"<inner-json>"}],
+//	 "structured":{<restOutput>},"is_error":false}
+type restResponse struct {
+	// Structured carries the parsed research output including sources.
+	Structured restOutput `json:"structured"`
+	// Content carries the text blob for fallback parsing when Structured.Sources is empty.
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"is_error"`
+}
+
+// restRequest is the body sent to POST /api/tools/research.
+type restRequest struct {
 	Query string `json:"query"`
-	// depth=fast: snippets-only, no page fetch, no LLM synthesis.
-	// go-search routes this through buildRawOutputFast → Sources populated,
-	// LLM chain never called.  Confirmed by live probe 2026-06-23.
+	// Depth=fast: snippets-only path in go-search, no page fetch, no LLM
+	// synthesis.  Sources[] populated immediately from search result snippets.
+	// Confirmed by live probe 2026-06-23.
 	Depth string `json:"depth"`
 }
 
-// mcpCallRequest wraps a tool call in the MCP JSONRPC envelope.
-type mcpCallRequest struct {
-	JSONRPC string         `json:"jsonrpc"`
-	ID      int            `json:"id"`
-	Method  string         `json:"method"`
-	Params  mcpCallParams  `json:"params"`
-}
-
-type mcpCallParams struct {
-	Name      string          `json:"name"`
-	Arguments goSearchRequest `json:"arguments"`
-}
-
-// mcpCallResponse is the minimal response shape we decode.
-type mcpCallResponse struct {
-	Result struct {
-		StructuredContent goSearchOutput `json:"structuredContent"`
-		Content           []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"result"`
-}
-
-// Client calls go-search's research tool over HTTP MCP.
+// Client calls go-search's research tool over the REST bridge (plain HTTP+JSON,
+// no MCP envelope, no SSE, no Accept negotiation).
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -102,8 +109,8 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// DiscoverBoardURLs implements Discoverer by calling go-search research with
-// depth=fast (no LLM, returns Sources[] immediately from snippet data).
+// DiscoverBoardURLs implements Discoverer by calling go-search's REST bridge
+// at POST /api/tools/research with depth=fast (snippets-only, no LLM).
 // Returns (nil, err) on any transport or decode failure — callers fall back.
 func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error) {
 	// Per-call budget on top of the parent ctx so we never block longer than
@@ -111,28 +118,22 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	body, err := json.Marshal(mcpCallRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params: mcpCallParams{
-			Name: "research",
-			Arguments: goSearchRequest{
-				Query: query,
-				Depth: "fast",
-			},
-		},
+	body, err := json.Marshal(restRequest{
+		Query: query,
+		Depth: "fast",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("discovery: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.baseURL+"/mcp", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.baseURL+restAPIPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("discovery: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// REST bridge uses an in-process InMemoryTransport — no StreamableHTTP
+	// Accept negotiation required (unlike POST /mcp which requires both
+	// "application/json" and "text/event-stream" per go-sdk streamable.go:284).
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -144,25 +145,26 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, fmt.Errorf("discovery: go-search returned %d", resp.StatusCode)
 	}
 
-	// go-search may respond as SSE (text/event-stream) or plain JSON depending
-	// on client Accept negotiation.  Strip the "data: " SSE prefix when present.
 	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if err != nil {
 		return nil, fmt.Errorf("discovery: read body: %w", err)
 	}
-	rawBody = stripSSEPrefix(rawBody)
 
-	var out mcpCallResponse
+	var out restResponse
 	if err := json.Unmarshal(rawBody, &out); err != nil {
 		return nil, fmt.Errorf("discovery: decode response: %w", err)
 	}
 
-	// Prefer structuredContent (richer, already parsed); fall back to
-	// re-parsing the text content blob if structuredContent is empty.
-	sources := out.Result.StructuredContent.Sources
-	if len(sources) == 0 && len(out.Result.Content) > 0 {
-		var fallback goSearchOutput
-		if json.Unmarshal([]byte(out.Result.Content[0].Text), &fallback) == nil {
+	if out.IsError {
+		return nil, errors.New("discovery: go-search reported is_error=true")
+	}
+
+	// Prefer structured.sources (already parsed); fall back to re-parsing
+	// content[0].text as a restOutput JSON blob.
+	sources := out.Structured.Sources
+	if len(sources) == 0 && len(out.Content) > 0 {
+		var fallback restOutput
+		if json.Unmarshal([]byte(out.Content[0].Text), &fallback) == nil {
 			sources = fallback.Sources
 		}
 	}
@@ -186,25 +188,4 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 
 	slog.Debug("discovery: go-search sources", slog.String("query", query), slog.Int("count", len(results)))
 	return results, nil
-}
-
-// stripSSEPrefix extracts the JSON payload from an SSE-framed body.
-// SSE format: zero or more "field: value\n" lines followed by "\n".
-// We scan line by line, skip non-data lines (event:, id:, retry:, comment :),
-// and return the first "data: " line's value.  If no data: line is found the
-// body is returned as-is (already plain JSON).
-func stripSSEPrefix(b []byte) []byte {
-	const dataPrefix = "data: "
-	lines := bytes.Split(b, []byte("\n"))
-	for _, line := range lines {
-		line = bytes.TrimRight(line, "\r")
-		if bytes.HasPrefix(line, []byte(dataPrefix)) {
-			return bytes.TrimSpace(line[len(dataPrefix):])
-		}
-		// Skip SSE meta-lines (event:, id:, retry:, comment :).
-		// An empty line terminates the SSE event — if we haven't found data: yet,
-		// keep scanning in case of multi-event streams.
-	}
-	// No data: line found; return original trimmed bytes (already plain JSON).
-	return bytes.TrimSpace(b)
 }

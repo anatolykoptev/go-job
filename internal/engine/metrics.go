@@ -145,6 +145,13 @@ const (
 // Registered via reg.RegisterHistogram in engine.Init() before first Observe.
 var OversizeBytesBuckets = []float64{1024, 4096, 16384, 65536, 262144, 1048576, 4194304}
 
+// HuntCycleDurationBuckets covers one ATS ingest worker cycle (seconds).
+// A cycle spans N queries × 3 platforms, each capped at 45s:
+//   worst-case = 3 queries × 3 platforms × 45s = 405s ≈ 7m.
+// Buckets: 1s, 5s, 15s, 30s, 1m, 2m, 5m, 10m — covers the full range.
+// Registered via reg.RegisterHistogram in engine.Init() before first Observe.
+var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
+
 // GetMetrics returns a snapshot of all metrics including cache stats.
 func GetMetrics() map[string]int64 {
 	m := reg.Snapshot()
@@ -196,6 +203,17 @@ func FormatMetrics() string {
 			keys = append(keys, MetricPlatformResults+"{platform="+p+",outcome="+oc+"}")
 		}
 	}
+	// Discovery source counters pre-touched so rate()-floor alerts see 0 when
+	// HUNT_INGEST_ENABLED is off (or go-search is healthy but idle) — same class
+	// as per-platform outcome above.  Both validDiscoverySources and
+	// validDiscoveryPlatforms are bounded enums (2 × 3 = 6 series).
+	for _, src := range []string{"go-search", "local-fallback"} {
+		keys = append(keys, MetricHuntDiscoverySource+"{source="+src+"}")
+	}
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		keys = append(keys, MetricHuntDiscoveryURLs+"{platform="+p+"}")
+	}
+
 	var sb strings.Builder
 	for _, k := range keys {
 		fmt.Fprintf(&sb, "%s %d\n", k, m[k])
@@ -347,9 +365,20 @@ func IncrCompanyResearch(outcome string) {
 	reg.Incr(MetricCompanyResearch + "{outcome=" + outcome + "}")
 }
 
+// ATS platform label constants for the hunt_discovery_* metrics.
+// Defined here (not in engine/jobs) so metrics.go can use them in FormatMetrics
+// pre-touch loops without creating a cross-package import cycle.
+const (
+	DiscoveryPlatformGreenhouse = "greenhouse"
+	DiscoveryPlatformLever      = "lever"
+	DiscoveryPlatformAshby      = "ashby"
+)
+
 // validDiscoveryPlatforms bounds the platform label for hunt_discovery_urls_total.
 var validDiscoveryPlatforms = map[string]bool{
-	"greenhouse": true, "lever": true, "ashby": true,
+	DiscoveryPlatformGreenhouse: true,
+	DiscoveryPlatformLever:      true,
+	DiscoveryPlatformAshby:      true,
 }
 
 // validDiscoverySources bounds the source label for hunt_discovery_source_total.

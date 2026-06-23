@@ -109,9 +109,9 @@ func (w *Worker) runCycle(ctx context.Context) {
 		name   string
 		search func(ctx context.Context, query, loc string, limit int) ([]engine.SearxngResult, error)
 	}{
-		{"greenhouse", jobs.SearchGreenhouseJobs},
-		{"lever", jobs.SearchLeverJobs},
-		{"ashby", jobs.SearchAshbyJobs},
+		{engine.DiscoveryPlatformGreenhouse, jobs.SearchGreenhouseJobs},
+		{engine.DiscoveryPlatformLever, jobs.SearchLeverJobs},
+		{engine.DiscoveryPlatformAshby, jobs.SearchAshbyJobs},
 	}
 
 	var totalCreated, totalMerged, totalError int
