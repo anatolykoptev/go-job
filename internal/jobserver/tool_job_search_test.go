@@ -80,6 +80,30 @@ func TestSelectSources_AdvertisedPlatformsAllRoute(t *testing.T) {
 	}
 }
 
+// TestKnownPlatform is the regression guard for the unknown-platform silent
+// "No results found" (reviewer MINOR): a typo'd platform routes to no connector
+// AND suppresses the generic searxng goroutine. knownPlatform must accept every
+// advertised platform (so it is not falsely rerouted to all) and reject typos
+// (so they fall back to a broad search instead of silence).
+func TestKnownPlatform(t *testing.T) {
+	advertised := []string{
+		"all", "linkedin", "greenhouse", "lever", "ashby", "ats", "yc", "hn",
+		"indeed", "habr", "twitter", "google", "startup", "craigslist",
+		"remoteok", "weworkremotely", "remotive", "remote", "freelancer",
+		"inspira", "undp", "un",
+	}
+	for _, p := range advertised {
+		if !knownPlatform(p) {
+			t.Errorf("advertised platform %q must be recognized by knownPlatform", p)
+		}
+	}
+	for _, typo := range []string{"greehouse", "leverr", "", "linkdin", "garbage"} {
+		if knownPlatform(typo) {
+			t.Errorf("typo/unknown platform %q must NOT be recognized", typo)
+		}
+	}
+}
+
 // TestShouldRunGenericSearxng is the regression guard for the stale-junk
 // masquerade (discovery-collapse H3, 2026-06-23): the always-on generic
 // web-search goroutine (go-engine DIRECT + SearXNG) surfaces 2017-2021

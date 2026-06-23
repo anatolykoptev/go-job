@@ -97,6 +97,15 @@ func registerJobSearch(server *mcp.Server) {
 		if platform == "" {
 			platform = platAll
 		}
+		// Unknown/typo'd platform (e.g. "greehouse") would otherwise route to NO
+		// connector AND suppress the generic searxng goroutine → a guaranteed
+		// "No results found." Fall back to platAll (broad search) and warn, so a
+		// typo degrades to results rather than silence (reviewer MINOR).
+		if !knownPlatform(platform) {
+			slog.Warn("job_search: unknown platform, falling back to all",
+				slog.String("platform", platform))
+			platform = platAll
+		}
 
 		limit := input.Limit
 		if limit <= 0 {
@@ -413,6 +422,20 @@ func registerJobSearch(server *mcp.Server) {
 // platform=all. The returned names are exactly the case labels in the per-source
 // dispatch switch — the regression test asserts every advertised platform routes
 // to a non-empty, correctly-named source set.
+// knownPlatforms is the set of platform values job_search routes — the
+// connector names plus the meta-platforms (ats/startup/remote/un) and platAll.
+// Kept in sync with selectSources' switch + the meta-platform fan-out.
+var knownPlatforms = map[string]bool{
+	platAll: true, platLinkedIn: true, platGreenhouse: true, platLever: true,
+	platAshby: true, platYC: true, platHN: true, platHabr: true, platIndeed: true,
+	platATS: true, platStartup: true, platGoogle: true, platCraigslist: true,
+	platRemoteOK: true, platWWR: true, platFreelancer: true, platRemotive: true,
+	platRemote: true, platTwitter: true, platInspira: true, platUNDP: true, platUN: true,
+}
+
+// knownPlatform reports whether platform is a recognized job_search platform.
+func knownPlatform(platform string) bool { return knownPlatforms[platform] }
+
 // shouldRunGenericSearxng decides whether the always-on generic web-search
 // discovery goroutine (go-engine DIRECT + SearXNG) runs alongside the selected
 // connectors. It runs ONLY for platform=all. For a specific connector the

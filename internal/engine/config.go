@@ -222,6 +222,15 @@ func Init(c Config) {
 		slog.Bool("wikipedia", c.DirectWikipedia),
 		slog.Bool("marginalia", c.DirectMarginalia),
 	)
+
+	// Surface the 202-risk: DDG discovery from a datacenter IP with NO anti-bot
+	// escalation tier (ox-browser unwired) is exactly the configuration that
+	// collapsed discovery on 2026-06-22. Make it visible at startup rather than
+	// letting the operator discover it via an empty hunt table.
+	if c.DirectDDG && c.OxBrowserURL == "" {
+		slog.Warn("engine: DDG discovery enabled WITHOUT an ox-browser anti-bot tier — " +
+			"a datacenter-IP 202 wall will silently zero discovery; set OX_BROWSER_URL")
+	}
 }
 
 // Reg returns the package-level metrics registry for wiring middleware

@@ -34,7 +34,15 @@ const hnWhoIsHiringCacheTTL = 6 * time.Hour
 // fetched with retry/backoff — without this cap the collector can block well
 // past the 90s MCP deadline when Firebase is slow. 45s leaves ample headroom
 // for thread-find + Algolia + LLM post-processing within the deadline.
-const hnFanoutBudget = 45 * time.Second
+//
+// A var (not const) so tests can shrink it to exercise the budget-escape path
+// with a non-cancellable parent ctx in milliseconds; prod never reassigns it.
+var hnFanoutBudget = 45 * time.Second
+
+// hnFanoutBudgetMax is the hard ceiling the runtime budget must stay under so
+// the whole HN search path fits within the 90s MCP deadline. Asserted in tests;
+// guards against a future edit pushing the budget past the deadline.
+const hnFanoutBudgetMax = 90 * time.Second
 
 // hnItemResponse is the Firebase HN API item shape (story or comment).
 type hnItemResponse struct {
@@ -154,8 +162,9 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 	// Bound the whole fan-out. A "Who is Hiring" thread can carry 400+ kids;
 	// each fetchHNItem retries with backoff, so an unbounded collector can run
 	// far past the MCP deadline if Firebase is slow/throttling. hnFanoutBudget
-	// caps total wall-time — cancelled per-item fetches return empty and the
-	// collector returns whatever arrived in time rather than blocking forever.
+	// caps total wall-time — once spent, fanoutCtx is cancelled, every in-flight
+	// fetchHNItem aborts at its next ctx checkpoint, and we return whatever
+	// arrived rather than blocking forever.
 	fanoutCtx, cancel := context.WithTimeout(ctx, hnFanoutBudget)
 	defer cancel()
 
@@ -166,8 +175,22 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 	ch := make(chan result, fetch)
 	sem := make(chan struct{}, 10) // max 10 concurrent requests
 
+	// wg tracks every spawned worker so we can JOIN them before returning. This
+	// is the deliberate fix for the goroutine-lifetime root (reviewer BLOCKER 2):
+	// without the join, workers blocked in stalled I/O outlive the return and
+	// keep reading process-global engine.Cfg.HTTPClient (hnjobs.go:118) — a leak
+	// of up to hnFanoutBudget per orphan, and a data race against any caller that
+	// swaps engine.Cfg after we return (reviewer BLOCKER 1, e.g. a test's
+	// t.Cleanup). Joining costs a little latency on the SLOW path only: on the
+	// fast path all workers have already sent and exited; on the slow path the
+	// collector first hands the caller its partial results at budget, THEN we
+	// cancel + Wait, and cancellation makes the drain near-instant.
+	var wg sync.WaitGroup
+	wg.Add(fetch)
+
 	for i := 0; i < fetch; i++ {
 		go func(i int, id int64) {
+			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -195,9 +218,9 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 		}(i, thread.Kids[i])
 	}
 
-	// Collect in order. Stop waiting once the fan-out budget is spent: the
-	// remaining goroutines are cancelled via fanoutCtx and will exit, but we
-	// must not block on them — return what we have. Slots never filled stay "".
+	// Collect in order. Stop waiting once the fan-out budget is spent: the ch is
+	// buffered to fetch, so workers never block on send and Wait() below cannot
+	// deadlock even after we stop draining. Slots never filled stay "".
 	raw := make([]string, fetch)
 	for i := 0; i < fetch; i++ {
 		select {
@@ -211,6 +234,13 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 			i = fetch // break the collector loop
 		}
 	}
+
+	// Join: no worker outlives this call. cancel() (deferred above) has not yet
+	// fired, so cancel explicitly here to abort any still-running fetchHNItem,
+	// then Wait for every goroutine to finish reading engine.Cfg and exit. After
+	// this point nothing in this fan-out touches shared state.
+	cancel()
+	wg.Wait()
 
 	var comments []string
 	for _, t := range raw {

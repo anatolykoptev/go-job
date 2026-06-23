@@ -3,16 +3,22 @@ package jobs
 // hnjobs_bound_test.go is the regression guard for the HN fan-out hang
 // (2026-06-23 discovery-collapse arc, H2). FetchHNJobComments fanned out 80+
 // Firebase fetches with retry/backoff and a collector loop that blocked on the
-// result channel with NO overall deadline and NO ctx.Done() escape — a slow or
-// throttling Firebase could hang the call ~10 minutes, far past the 90s MCP
-// deadline. The fix bounds the fan-out with hnFanoutBudget and makes the
-// collector return partial results on context cancellation.
+// result channel with NO overall deadline and NO escape — a slow/throttling
+// Firebase could hang the call ~10 minutes, far past the 90s MCP deadline.
 //
-// This test installs a RoundTripper that blocks every request until its
-// context is cancelled, then proves FetchHNJobComments returns PROMPTLY when
-// the parent context is cancelled — rather than blocking on every stalled
-// goroutine. It deliberately uses a short parent timeout (cancellation
-// inherits into fanoutCtx) so the assertion runs in milliseconds, not 45s.
+// The real bug is the no-parent-deadline path: a caller passing a bare context
+// (no timeout) had NOTHING bounding the fan-out. The fix bounds it with
+// hnFanoutBudget and joins all workers before returning so none outlive the
+// call (no goroutine leak, no data race on shared engine.Cfg).
+//
+// Two cases:
+//   1. TestFetchHNJobComments_BudgetEscape_NoParentDeadline — the load-bearing
+//      one: parent ctx has NO deadline, only hnFanoutBudget bounds it. Asserts
+//      the call returns at ~budget. This is RED against the original (no
+//      overall-budget) code and would NOT be caught by a cancellable-parent
+//      test (the pre-fix code already honored parent cancellation).
+//   2. TestFetchHNJobComments_ReturnsOnParentCancel — parent cancellation also
+//      unblocks promptly (covers the inherited-cancel path).
 
 import (
 	"context"
@@ -20,26 +26,30 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-// threadID used by the bound test; the thread fetch returns a populated kids
-// list so the fan-out collector path (the actual fix site) is exercised.
+// hnBoundTestThreadID is the thread the stub answers with a populated kids list
+// so FetchHNJobComments reaches the fan-out collector (the actual fix site).
 const hnBoundTestThreadID = 12345678
 
-// fanoutStallRoundTripper returns a valid thread item (with many kids) for the
-// thread request so FetchHNJobComments reaches the fan-out, then blocks every
-// kid request until its context is cancelled — simulating a Firebase that
-// answers the thread but stalls on the per-comment fetches.
-type fanoutStallRoundTripper struct{}
+// fanoutStallRoundTripper answers the thread request immediately (so the fan-out
+// starts) and stalls every kid request until its context is cancelled —
+// simulating a Firebase that responds to the thread but hangs on per-comment
+// fetches. It counts in-flight kid stalls so a test can assert the join drained
+// them (no orphaned goroutines outliving the call).
+type fanoutStallRoundTripper struct {
+	inflight atomic.Int64
+}
 
-func (fanoutStallRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (rt *fanoutStallRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	threadPath := fmt.Sprintf("/item/%d.json", hnBoundTestThreadID)
 	if strings.HasSuffix(req.URL.Path, threadPath) {
-		// Synthesize a thread with 200 kids — enough to drive the fan-out.
 		var sb strings.Builder
 		sb.WriteString(`{"id":12345678,"type":"story","kids":[`)
 		for i := 0; i < 200; i++ {
@@ -55,55 +65,157 @@ func (fanoutStallRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 			Header:     make(http.Header),
 		}, nil
 	}
-	// Every kid request stalls until cancelled.
+	// Kid request: stall until cancelled (budget expiry or join cancel).
+	rt.inflight.Add(1)
+	defer rt.inflight.Add(-1)
 	<-req.Context().Done()
 	return nil, req.Context().Err()
 }
 
-func TestFetchHNJobComments_ReturnsOnContextCancel(t *testing.T) {
-	// Save and restore the shared engine config touched by this test.
+// withStallingHN swaps engine.Cfg.HTTPClient/FetchTimeout for the duration of
+// fn and restores them after. Safe under -race because FetchHNJobComments joins
+// all workers before returning, so no goroutine reads engine.Cfg after fn ends.
+func withStallingHN(t *testing.T, fn func(rt *fanoutStallRoundTripper)) {
+	t.Helper()
 	prevClient := engine.Cfg.HTTPClient
 	prevTimeout := engine.Cfg.FetchTimeout
-	t.Cleanup(func() {
+	defer func() {
 		engine.Cfg.HTTPClient = prevClient
 		engine.Cfg.FetchTimeout = prevTimeout
-	})
-
-	engine.Cfg.HTTPClient = &http.Client{Transport: fanoutStallRoundTripper{}}
-	engine.Cfg.FetchTimeout = 50 * time.Millisecond
-
-	// Parent ctx cancels well before hnFanoutBudget (45s). Because fanoutCtx is
-	// derived from this ctx, cancellation propagates and the collector must
-	// return promptly instead of blocking on every stalled goroutine.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		// The thread fetch succeeds (kids populated) so the fan-out collector
-		// path runs; every kid stalls. We assert ONLY that the call returns and
-		// does not hang — the collector must honor fanoutCtx cancellation.
-		_, _ = FetchHNJobComments(ctx, hnBoundTestThreadID, 20)
-		close(done)
 	}()
 
-	select {
-	case <-done:
-		// Returned within the parent budget — bound holds.
-	case <-time.After(10 * time.Second):
-		t.Fatal("FetchHNJobComments did not return within 10s under a stalling " +
-			"Firebase — the fan-out hang regressed (no overall budget / no " +
-			"ctx.Done() escape in the collector)")
-	}
+	rt := &fanoutStallRoundTripper{}
+	engine.Cfg.HTTPClient = &http.Client{Transport: rt}
+	// Short per-call timeout so the thread fetch's retries (if any) are quick;
+	// kid fetches stall regardless and are bounded by the fan-out budget.
+	engine.Cfg.FetchTimeout = 50 * time.Millisecond
+	fn(rt)
 }
 
-// TestHNFanoutBudgetWithinDeadline locks the budget constant below the 90s MCP
-// deadline with headroom for thread-find + Algolia + LLM post-processing. If a
-// future edit bumps it past the deadline, the hang class can recur silently.
+// TestFetchHNJobComments_BudgetEscape_NoParentDeadline is the load-bearing
+// regression test: with a parent ctx that has NO deadline, only hnFanoutBudget
+// bounds the fan-out. The call MUST return at ~budget — not hang. This is the
+// real 10-minute prod-hang path, and it is RED on the pre-fix code (which had
+// no overall budget and would block on every stalled kid).
+func TestFetchHNJobComments_BudgetEscape_NoParentDeadline(t *testing.T) {
+	// Shrink the budget so the escape happens in ms, not 45s. Restore after.
+	prevBudget := hnFanoutBudget
+	hnFanoutBudget = 300 * time.Millisecond
+	defer func() { hnFanoutBudget = prevBudget }()
+
+	withStallingHN(t, func(rt *fanoutStallRoundTripper) {
+		// Bare parent context — NO deadline. Only hnFanoutBudget can bound this.
+		ctx := context.Background()
+
+		var elapsed time.Duration
+		done := make(chan struct{})
+		start := time.Now()
+		go func() {
+			_, _ = FetchHNJobComments(ctx, hnBoundTestThreadID, 20)
+			elapsed = time.Since(start)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Must have returned at roughly the budget, not instantly (instant
+			// would mean the fan-out never ran) and not hung.
+			if elapsed < 200*time.Millisecond {
+				t.Fatalf("returned too fast (%s) — fan-out did not actually run "+
+					"to the budget escape", elapsed)
+			}
+			if elapsed > 5*time.Second {
+				t.Fatalf("returned after %s — far past the %s budget; the "+
+					"budget escape is not bounding the no-parent-deadline path",
+					elapsed, hnFanoutBudget)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("FetchHNJobComments did NOT return under a bare (no-deadline) " +
+				"parent ctx within 10s — the no-overall-budget hang regressed " +
+				"(this is the real ~10-min prod hang)")
+		}
+
+		// After return, the join must have drained every stalled kid worker —
+		// no goroutine outlives the call. Allow a brief settle for atomic decrement.
+		deadline := time.Now().Add(2 * time.Second)
+		for rt.inflight.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if n := rt.inflight.Load(); n != 0 {
+			t.Fatalf("%d kid fetches still in flight after FetchHNJobComments "+
+				"returned — workers leaked past the join (BLOCKER 2)", n)
+		}
+	})
+}
+
+// TestFetchHNJobComments_ReturnsOnParentCancel covers the inherited-cancel path:
+// a parent ctx that is cancelled before the budget must also unblock promptly.
+func TestFetchHNJobComments_ReturnsOnParentCancel(t *testing.T) {
+	withStallingHN(t, func(_ *fanoutStallRoundTripper) {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			_, _ = FetchHNJobComments(ctx, hnBoundTestThreadID, 20)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("FetchHNJobComments did not return after parent cancellation")
+		}
+	})
+}
+
+// TestConcurrentFetchHNDoesNotLeak runs several FetchHNJobComments calls
+// concurrently against the stalling stub with a short budget and asserts they
+// all return and leave zero in-flight workers — the join must prevent the
+// "fetch × concurrent-calls orphaned goroutines" accumulation the reviewer flagged.
+func TestConcurrentFetchHNDoesNotLeak(t *testing.T) {
+	prevBudget := hnFanoutBudget
+	hnFanoutBudget = 200 * time.Millisecond
+	defer func() { hnFanoutBudget = prevBudget }()
+
+	withStallingHN(t, func(rt *fanoutStallRoundTripper) {
+		const callers = 4
+		var wg sync.WaitGroup
+		wg.Add(callers)
+		for i := 0; i < callers; i++ {
+			go func() {
+				defer wg.Done()
+				_, _ = FetchHNJobComments(context.Background(), hnBoundTestThreadID, 20)
+			}()
+		}
+
+		joined := make(chan struct{})
+		go func() { wg.Wait(); close(joined) }()
+		select {
+		case <-joined:
+		case <-time.After(15 * time.Second):
+			t.Fatal("concurrent FetchHNJobComments calls did not all return — " +
+				"fan-out join regressed under concurrency")
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for rt.inflight.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if n := rt.inflight.Load(); n != 0 {
+			t.Fatalf("%d kid fetches still in flight after %d concurrent callers "+
+				"returned — orphaned goroutines accumulated", n, callers)
+		}
+	})
+}
+
+// TestHNFanoutBudgetWithinDeadline locks the budget below the 90s MCP deadline
+// with headroom for thread-find + Algolia + LLM post-processing. If a future
+// edit bumps it past the deadline, the hang class can recur silently.
 func TestHNFanoutBudgetWithinDeadline(t *testing.T) {
-	const mcpDeadline = 90 * time.Second
-	if hnFanoutBudget >= mcpDeadline {
-		t.Fatalf("hnFanoutBudget (%s) must stay below the MCP deadline (%s) "+
-			"with headroom for the rest of the HN search path", hnFanoutBudget, mcpDeadline)
+	if hnFanoutBudget >= hnFanoutBudgetMax {
+		t.Fatalf("hnFanoutBudget (%s) must stay below the MCP deadline ceiling "+
+			"(%s) with headroom for the rest of the HN search path",
+			hnFanoutBudget, hnFanoutBudgetMax)
 	}
 }
