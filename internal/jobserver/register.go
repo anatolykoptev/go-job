@@ -4,6 +4,8 @@ import "github.com/modelcontextprotocol/go-sdk/mcp"
 
 // RegisterTools registers all work-related search tools on the given MCP server.
 func RegisterTools(server *mcp.Server) {
+	// Initialize the source registry before registering job_search.
+	initJobRegistry()
 	// Search
 	registerJobSearch(server)
 	registerJobMatchScore(server)
