@@ -11,11 +11,11 @@ type Capability uint32
 
 const (
 	// NeedsAPIKey indicates the source requires an API key to operate.
+	// runSource checks this via HasRequiredAPIKey(src): when the key is absent the
+	// source is skipped and outcome=no_key is emitted without calling Fetch.
 	NeedsAPIKey Capability = 1 << iota
 	// OptIn indicates the source is excluded from platform=all (e.g. UN scrapers).
 	OptIn
-	// SupportsPagination indicates the source supports offset-based pagination.
-	SupportsPagination
 )
 
 // Source is the single interface a new job connector must implement.
