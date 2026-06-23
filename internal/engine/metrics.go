@@ -161,6 +161,22 @@ const (
 	// level, and 0 results propagated silently. This counter makes "discovered slug but
 	// board-fetch failed" visible on the flat metrics endpoint and in Prometheus.
 	MetricATSFetchErrors = "ats_fetch_errors_total"
+
+	// MetricHuntDiscoveryVariants is the labelled counter
+	// gojob_hunt_discovery_variants_total{platform,result}.
+	// Bumped once per variant query in unionDiscoverSlugs.
+	// platform ∈ {greenhouse,lever,ashby}, result ∈ {hit,miss}.
+	// A sustained miss rate signals query templates need tuning.
+	MetricHuntDiscoveryVariants = "hunt_discovery_variants_total"
+
+	// MetricSlugCacheSize is not exposed as a counter (it is a gauge).
+	// Logged via slog; increment/decrement not tracked here.
+
+	// MetricSlugCacheEvictions is the labelled counter
+	// gojob_hunt_slug_cache_evictions_total{platform,reason}.
+	// platform ∈ {greenhouse,lever,ashby}, reason ∈ {lru,board_404,ttl}.
+	// lru=size-pressure; board_404=HTTP 404 from board-fetch; ttl=reserved.
+	MetricSlugCacheEvictions = "hunt_slug_cache_evictions_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -263,6 +279,20 @@ func FormatMetrics() string {
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
 		for _, r := range []string{"parse", "truncated", "status", "transport"} {
 			keys = append(keys, MetricATSFetchErrors+"{platform="+p+",reason="+r+"}")
+		}
+	}
+	// Discovery variant counters (P1 multi-query union).
+	// 3 platforms × 2 results = 6 series.
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		for _, res := range []string{"hit", "miss"} {
+			keys = append(keys, MetricHuntDiscoveryVariants+"{platform="+p+",result="+res+"}")
+		}
+	}
+	// Slug cache eviction counters (P2 runtime slug cache).
+	// 3 platforms × 3 reasons = 9 series (lru=size-pressure, board_404=404-evict, ttl=reserved).
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		for _, r := range []string{"lru", "board_404", "ttl"} {
+			keys = append(keys, MetricSlugCacheEvictions+"{platform="+p+",reason="+r+"}")
 		}
 	}
 
@@ -537,6 +567,36 @@ func IncrATSFetchErrors(platform, reason string) {
 // gojob_hunt_cycle_duration_seconds.
 func ObserveHuntCycleDuration(d float64) {
 	reg.Observe(MetricHuntCycleDuration, d)
+}
+
+// validDiscoveryVariantResults bounds the result label for hunt_discovery_variants_total.
+var validDiscoveryVariantResults = map[string]bool{"hit": true, "miss": true}
+
+// validSlugCacheEvictionReasons bounds the reason label for hunt_slug_cache_evictions_total.
+// lru   — LRU size-pressure eviction (maxSize exceeded in Merge)
+// board_404 — HTTP 404/410 from board-fetch; slug confirmed gone
+// ttl   — reserved for future periodic sweep; not emitted by current lazy-eviction impl
+var validSlugCacheEvictionReasons = map[string]bool{"lru": true, "board_404": true, "ttl": true}
+
+// IncrHuntDiscoveryVariant bumps gojob_hunt_discovery_variants_total{platform,result}.
+// platform ∈ {greenhouse,lever,ashby}, result ∈ {hit,miss}.
+// Unrecognised label values are silently dropped (cardinality guard).
+func IncrHuntDiscoveryVariant(platform, result string) {
+	if !validDiscoveryPlatforms[platform] || !validDiscoveryVariantResults[result] {
+		return
+	}
+	reg.Incr(MetricHuntDiscoveryVariants + "{platform=" + platform + ",result=" + result + "}")
+}
+
+// IncrSlugCacheEviction bumps gojob_hunt_slug_cache_evictions_total{platform,reason}.
+// platform ∈ {greenhouse,lever,ashby}, reason ∈ {lru,board_404,ttl}.
+// lru=size-pressure, board_404=HTTP 404 from board-fetch, ttl=reserved.
+// Unrecognised label values are silently dropped (cardinality guard).
+func IncrSlugCacheEviction(platform, reason string) {
+	if !validDiscoveryPlatforms[platform] || !validSlugCacheEvictionReasons[reason] {
+		return
+	}
+	reg.Incr(MetricSlugCacheEvictions + "{platform=" + platform + ",reason=" + reason + "}")
 }
 
 // ObserveSourceDuration records a connector's Fetch wall time into
