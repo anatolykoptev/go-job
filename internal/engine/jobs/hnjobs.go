@@ -32,16 +32,29 @@ const hnWhoIsHiringCacheTTL = 6 * time.Hour
 // hnFanoutBudget caps the total wall-time of the Firebase comment fan-out in
 // FetchHNJobComments. A "Who is Hiring" thread can carry 400+ comments, each
 // fetched with retry/backoff — without this cap the collector can block well
-// past the 90s MCP deadline when Firebase is slow. 45s leaves ample headroom
-// for thread-find + Algolia + LLM post-processing within the deadline.
+// past the MCP tool deadline when Firebase is slow.
+//
+// Budget accounting (job_search tool timeout = 3m, see heavyToolTimeouts):
+//   - FindWhoIsHiringThread (Algolia, with FetchTimeout 10s + retry): ~15s worst case
+//   - searchHNThreadComments (Algolia, with FetchTimeout 10s): ~15s worst case
+//   - hnFanoutBudget (Firebase fan-out): 30s
+//   - LLM post-processing: ~15s
+//   Total worst case: 75s << 3m server-side deadline.
+//
+// Previously 45s (P0 fix). Reduced to 30s so the full HN path stays well under
+// even a conservative 90s client-side per-request deadline (some MCP clients
+// set their own timeout shorter than the server ToolTimeout).
 //
 // A var (not const) so tests can shrink it to exercise the budget-escape path
 // with a non-cancellable parent ctx in milliseconds; prod never reassigns it.
-var hnFanoutBudget = 45 * time.Second
+var hnFanoutBudget = 30 * time.Second
 
 // hnFanoutBudgetMax is the hard ceiling the runtime budget must stay under so
-// the whole HN search path fits within the 90s MCP deadline. Asserted in tests;
-// guards against a future edit pushing the budget past the deadline.
+// the whole HN search path fits within the job_search ToolTimeout. Asserted in
+// tests; guards against a future edit pushing the budget past the deadline.
+// 90s is the ToolTimeout default; job_search is in heavyToolTimeouts at 3m,
+// so there is headroom — but 90s remains the conservative ceiling for test-time
+// assertions so hnFanoutBudget is constrained to leave room for pre/post I/O.
 const hnFanoutBudgetMax = 90 * time.Second
 
 // hnItemResponse is the Firebase HN API item shape (story or comment).
@@ -227,9 +240,10 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 		case r := <-ch:
 			raw[r.idx] = r.text
 		case <-fanoutCtx.Done():
-			slog.Debug("hnjobs: fan-out budget exhausted, returning partial",
+			slog.Info("hnjobs: fan-out budget exhausted, returning partial",
 				slog.Int("collected", i),
 				slog.Int("requested", fetch),
+				slog.Duration("budget", hnFanoutBudget),
 			)
 			i = fetch // break the collector loop
 		}
@@ -248,6 +262,11 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 			comments = append(comments, t)
 		}
 	}
+	slog.Info("hnjobs: fan-out complete",
+		slog.Int64("thread", threadID),
+		slog.Int("fetched", fetch),
+		slog.Int("non_empty", len(comments)),
+	)
 	return comments, nil
 }
 
