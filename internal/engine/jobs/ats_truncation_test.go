@@ -104,8 +104,9 @@ func largeGreenhouseFixture() []byte {
 	return b
 }
 
-// resetMetrics is a test helper that snapshots relevant counters BEFORE an
-// operation so tests can compute deltas rather than depending on global state.
+// atsErrorCounterDelta computes the delta for a labelled ATS fetch-error counter
+// between two metric snapshots (before/after), so tests are independent of global
+// counter state from prior test runs.
 func atsErrorCounterDelta(platform, reason string, before, after map[string]int64) int64 {
 	key := engine.MetricATSFetchErrors + "{platform=" + platform + ",reason=" + reason + "}"
 	return after[key] - before[key]
@@ -390,13 +391,3 @@ func TestAtsBoardMaxBytes_NamedConst(t *testing.T) {
 		t.Errorf("atsBoardMaxBytes (%d) must exceed known largest board (%d)", atsBoardMaxBytes, knownLargestBoardBytes)
 	}
 }
-
-// --- leverAPIBase patch helper (mirrors ashbyBoardAPI pattern) ---
-
-// leverAPIBase is the format string for the Lever public API.
-// The const in ats.go is package-level but not var — we redefine it as var
-// in ats.go now so we can patch it in tests (mirrors ashbyBoardAPI pattern).
-// NOTE: This comment is intentionally left here to note that leverAPIBase must
-// be a var (not const) in ats.go for this test to compile. If ats.go declares
-// it as const, this test will fail to compile — serving as a build-time guard
-// that the patchability contract was broken.
