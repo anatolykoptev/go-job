@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -319,10 +320,45 @@ func shouldRunGenericSearxng(platform string) bool {
 	return platform == platAll
 }
 
+// perSourceTimeout caps the wall-time of a single connector Fetch call.
+// Set to JOB_SEARCH_TIMEOUT/2 (≈ 90s default) so even the slowest source
+// (hn fan-out, inspira, etc.) cannot consume the whole MCP deadline; the
+// remaining half is left for the other fan-out legs and LLM post-processing.
+//
+// Configurable via PER_SOURCE_TIMEOUT env (e.g. "60s"). A var (not const)
+// so tests can shrink it to milliseconds; prod never reassigns it.
+//
+//nolint:gochecknoglobals // package-level config, init-once from env
+var perSourceTimeout = getPerSourceTimeout()
+
+func getPerSourceTimeout() time.Duration {
+	if v := os.Getenv("PER_SOURCE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 90 * time.Second
+}
+
 // runSource executes a single Source in a goroutine, recovering from panics so
 // one broken connector cannot crash the entire fan-out. Records per-source
 // duration into gojob_source_duration_seconds{platform} (ADR-J3, P3).
+//
+// Each source runs under a per-source deadline (perSourceTimeout, default 90s)
+// derived independently from the parent context. This bounds slow sources
+// (hn Algolia+Firebase fan-out, inspira careers.un.org) without relying on
+// them implementing their own internal budgets (P4: hn/inspira timeout fix).
+// Note: the cap is effective only when the source's HTTP calls propagate
+// srcCtx to their requests. Sources that ignore context will run to completion
+// regardless; the goroutine exits via context deadline only if it selects on
+// ctx.Done() or uses a context-aware HTTP client.
 func runSource(ctx context.Context, src connectors.Source, q connectors.Query, ch chan<- sourceResult) {
+	// Per-source deadline: independent of parent so a slow source does not
+	// consume the whole MCP budget. If the parent ctx expires first, the
+	// source still gets cancelled (WithTimeout inherits parent cancellation).
+	srcCtx, srcCancel := context.WithTimeout(ctx, perSourceTimeout)
+	defer srcCancel()
+
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
@@ -334,7 +370,7 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 		}
 	}()
 	if liFetcher, ok := src.(connectors.RawLinkedInFetcher); ok {
-		results, liJobs, err := liFetcher.FetchRaw(ctx, q)
+		results, liJobs, err := liFetcher.FetchRaw(srcCtx, q)
 		engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
 		if err != nil {
 			slog.Warn("job_search: linkedin error", slog.Any("error", err))
@@ -344,7 +380,7 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 		ch <- sourceResult{name: src.Name(), results: results, liJobs: liJobs, err: err}
 		return
 	}
-	results, err := src.Fetch(ctx, q)
+	results, err := src.Fetch(srcCtx, q)
 	engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
 	if err != nil {
 		slog.Warn("job_search: source error",
@@ -353,6 +389,7 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 	}
 	ch <- sourceResult{name: src.Name(), results: results, err: err}
 }
+
 
 func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.SearxngResult {
 	if blacklist == "" {

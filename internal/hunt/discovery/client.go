@@ -186,6 +186,14 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		})
 	}
 
+	// If go-search returned sources but every source has an empty URL, treat it
+	// as a malformed response rather than a genuine "nothing found" answer.
+	// Returning an error lets the caller fall back to local scrapers, which is
+	// safer than short-circuiting on a response that may just be schema drift.
+	if len(results) == 0 && len(sources) > 0 {
+		return nil, fmt.Errorf("discovery: go-search returned %d source(s) but all had empty URL (malformed response)", len(sources))
+	}
+
 	slog.Debug("discovery: go-search sources", slog.String("query", query), slog.Int("count", len(results)))
 	return results, nil
 }
