@@ -21,3 +21,11 @@ var ErrNoAPIKey = errors.New("source: API key not configured")
 // expected schema. Currently wraps habr.go's "habr career parse" error class.
 // Maps to outcome=parse_fail in the metric classifier.
 var ErrParse = errors.New("source: response parse failure")
+
+// ErrBodyTruncated is returned when the ATS board response body was silently
+// truncated by io.LimitReader: len(body) == atsBoardMaxBytes means the cap was
+// hit and the body is almost certainly incomplete. Feeding truncated JSON to
+// json.Unmarshal would produce an "unterminated string" parse error and silently
+// return 0 results — returning this sentinel instead makes the failure visible
+// as reason=truncated in gojob_ats_fetch_errors_total.
+var ErrBodyTruncated = errors.New("source: ATS board body truncated at read cap")
