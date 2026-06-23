@@ -27,7 +27,8 @@ var atsLimiter = ratelimit.NewConcurrencyLimiter(getATSMaxConcurrent())
 
 // ATSDiscoverer is the optional cross-service URL-discovery backend.
 // When non-nil, discoverJobURLs tries it first (go-search fused multi-source
-// path) and falls back to the local SearchDirect path on error/empty result.
+// path); a clean (no-error) empty answer is trusted and local scrapers are
+// NOT consulted — local fallback fires only on transport/decode error.
 // When nil, local SearchDirect is the only path (preserves current behaviour).
 // Set via SetATSDiscoverer; read by discoverJobURLs.
 //
