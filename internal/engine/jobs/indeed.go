@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -129,7 +128,10 @@ func buildIndeedGraphQLQuery(what, where, timeRange string, limit int, cursor st
 func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLResponse, error) {
 	apiKey := engine.Cfg.IndeedAPIKey
 	if apiKey == "" {
-		return nil, errors.New("indeed: no API key configured")
+		// Wrap with ErrNoAPIKey so PlatformOutcome classifies this as outcome=no_key
+		// rather than outcome=error, making the config gap visible in metrics.
+		// P4(c) will add the NeedsAPIKey capability flag to skip Fetch entirely.
+		return nil, fmt.Errorf("indeed: no API key configured: %w", ErrNoAPIKey)
 	}
 
 	bodyBytes, err := json.Marshal(indeedGraphQLRequest{Query: gqlQuery})

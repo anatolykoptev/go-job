@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -241,10 +244,96 @@ func TestFF2_PanicIsolation(t *testing.T) {
 // testPanicSource is a test double that always panics in Fetch.
 type testPanicSource struct{}
 
-func (testPanicSource) Name() string                    { return "test-panic" }
+func (testPanicSource) Name() string                        { return "test-panic" }
 func (testPanicSource) Capabilities() connectors.Capability { return 0 }
-func (testPanicSource) Groups() []string                { return []string{"all"} }
-func (testPanicSource) SiteScope() string               { return "" }
+func (testPanicSource) Groups() []string                    { return []string{"all"} }
+func (testPanicSource) SiteScope() string                   { return "" }
 func (testPanicSource) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
 	panic("test panic")
+}
+
+// testSlowSource sleeps until its context is cancelled.
+type testSlowSource struct{ sleep time.Duration }
+
+func (testSlowSource) Name() string                        { return "test-slow" }
+func (testSlowSource) Capabilities() connectors.Capability { return 0 }
+func (testSlowSource) Groups() []string                    { return []string{"all"} }
+func (testSlowSource) SiteScope() string                   { return "" }
+func (s testSlowSource) Fetch(ctx context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	select {
+	case <-time.After(s.sleep):
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestFF3_PerSourceDeadlineBound asserts that a slow source is bounded by its
+// context deadline and classified as outcome=timeout. The fan-out completes
+// within a reasonable wall-time budget.
+//
+// Revert-red: removing the per-source context propagation (i.e. passing a
+// non-cancellable context) would cause this test to time out or the outcome
+// would never be "timeout".
+func TestFF3_PerSourceDeadlineBound(t *testing.T) {
+	ch := make(chan sourceResult, 1)
+
+	// Context that expires quickly — the slow source will hit it.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	slow := testSlowSource{sleep: 10 * time.Second}
+	go runSource(ctx, slow, connectors.Query{Query: "test"}, ch)
+
+	select {
+	case r := <-ch:
+		if r.err == nil {
+			t.Fatal("FF-3: slow source should have returned a context error")
+		}
+		outcome := engine.PlatformOutcome(len(r.results), r.err)
+		if outcome != "timeout" {
+			t.Errorf("FF-3: slow source outcome = %q, want %q (err: %v)", outcome, "timeout", r.err)
+		}
+		t.Logf("FF-3 PASS: slow source bounded, outcome=%s, err=%v", outcome, r.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("FF-3: fan-out did not complete within 2s — per-source deadline not enforced")
+	}
+}
+
+// TestFF4_SentinelErrors_ClassifiedViaHooks verifies that after initJobRegistry
+// wires the hooks, errors.Is(err, jobs.ErrNoAPIKey) → outcome=no_key and
+// errors.Is(err, jobs.ErrParse) → outcome=parse_fail.
+//
+// Revert-red: removing the RegisterPlatformOutcomeHooks call from initJobRegistry
+// causes no_key/parse_fail to fall through to "error".
+func TestFF4_SentinelErrors_ClassifiedViaHooks(t *testing.T) {
+	// initJobRegistry is called by TestMain so hooks are already wired.
+	noKeyWrapped := wrapErr("indeed: no api key", jobs.ErrNoAPIKey)
+	parseWrapped := errors.Join(jobs.ErrParse, errors.New("json decode"))
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ErrNoAPIKey direct", jobs.ErrNoAPIKey, "no_key"},
+		{"ErrNoAPIKey wrapped", noKeyWrapped, "no_key"},
+		{"ErrParse direct", jobs.ErrParse, "parse_fail"},
+		{"ErrParse wrapped", parseWrapped, "parse_fail"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := engine.PlatformOutcome(0, tc.err)
+			if got != tc.want {
+				t.Errorf("PlatformOutcome(0, %v) = %q, want %q — hooks not wired correctly?", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// wrapErr creates a wrapped error for test use without importing "fmt" and
+// risking a shadow of the stdlib package name.
+func wrapErr(msg string, cause error) error {
+	return errors.Join(errors.New(msg), cause)
 }

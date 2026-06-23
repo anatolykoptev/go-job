@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -319,10 +320,13 @@ func shouldRunGenericSearxng(platform string) bool {
 }
 
 // runSource executes a single Source in a goroutine, recovering from panics so
-// one broken connector cannot crash the entire fan-out.
+// one broken connector cannot crash the entire fan-out. Records per-source
+// duration into gojob_source_duration_seconds{platform} (ADR-J3, P3).
 func runSource(ctx context.Context, src connectors.Source, q connectors.Query, ch chan<- sourceResult) {
+	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
+			engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
 			slog.Error("job_search: source panicked",
 				slog.String("source", src.Name()),
 				slog.Any("recover", r))
@@ -331,6 +335,7 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 	}()
 	if liFetcher, ok := src.(connectors.RawLinkedInFetcher); ok {
 		results, liJobs, err := liFetcher.FetchRaw(ctx, q)
+		engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
 		if err != nil {
 			slog.Warn("job_search: linkedin error", slog.Any("error", err))
 		} else {
@@ -340,6 +345,7 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 		return
 	}
 	results, err := src.Fetch(ctx, q)
+	engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
 	if err != nil {
 		slog.Warn("job_search: source error",
 			slog.String("source", src.Name()),
