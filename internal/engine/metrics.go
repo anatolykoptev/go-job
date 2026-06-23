@@ -170,13 +170,19 @@ var SourceDurationBuckets = []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120}
 var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
+// Returns an empty map if the registry has not been initialised (e.g. in
+// package-external unit tests that do not call engine.Init).
 func GetMetrics() map[string]int64 {
+	if reg == nil {
+		return map[string]int64{}
+	}
 	m := reg.Snapshot()
 	hits, misses := CacheStats()
 	m["cache_hits_total"] = hits
 	m["cache_misses_total"] = misses
 	return m
 }
+
 
 // FormatMetrics returns metrics as a simple text format for HTTP endpoint.
 func FormatMetrics() string {

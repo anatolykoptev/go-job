@@ -63,27 +63,48 @@ func TestDiscoverJobURLs_GoSearchError_FallsBackToLocal(t *testing.T) {
 	_ = got // may be nil; the point is no panic / propagation
 }
 
-// TestDiscoverJobURLs_GoSearchEmpty_ReturnsTrustedEmpty verifies that an empty
-// (no-error) go-search response is treated as a definitive "nothing found" answer
-// and returned directly WITHOUT triggering local scraper fallback.
+// TestDiscoverJobURLs_GoSearchEmpty_ReturnsTrustedEmpty verifies that a clean
+// (no-error) empty go-search response short-circuits local scraper fallback.
 //
-// Rationale: callers that chain multiple discovery queries (e.g. lever dual-query)
-// depend on reliable empty-on-miss semantics; if local scrapers ran on every empty
-// go-search response they would inject unrelated URLs and suppress the secondary
-// query fallback. Local fallback is reserved for transport errors only.
+// DISTINGUISHING MECHANISM (prevents vacuous pass):
+// The test reads gojob_hunt_discovery_source_total counters before and after the
+// call.  Under the NEW behaviour (trusted-empty, no fallback):
+//   - "go-search" counter increments by exactly 1.
+//   - "local-fallback" counter does NOT increment.
+// Under the OLD behaviour (empty → fall through to local):
+//   - "local-fallback" counter increments (SearchDirect + SearXNG fire even if
+//     they return nothing in this env) and "go-search" does NOT increment.
+// So the test goes RED on a revert of the `else { return deduplicateByURL }` branch
+// regardless of whether local scrapers happen to return results in this env.
 //
-// RED if the `else { return deduplicateByURL(results) }` branch is removed and
-// the old `default: fall through` behaviour is restored — this test would then
-// succeed vacuously (no assert on results) but the lever secondary-discovery test
-// (TestLever_SecondaryDiscovery) would fail.
+// Proof of RED-on-revert: reverting the else-branch restores the `default:` fall-
+// through path, which calls IncrHuntDiscoverySource("local-fallback") instead of
+// IncrHuntDiscoverySource("go-search") → the counter assertions below invert.
 func TestDiscoverJobURLs_GoSearchEmpty_ReturnsTrustedEmpty(t *testing.T) {
 	resetATSDiscoverer(t)
 	ATSDiscoverer = &fakeDiscoverer{results: nil, err: nil}
 
-	results := discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
-	// go-search said "nothing" — local scrapers must NOT run, empty slice expected.
-	assert.Empty(t, results,
-		"expected empty slice when ATSDiscoverer returns nil,nil (trusted empty; no local fallback)")
+	before := engine.GetMetrics()
+	_ = discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
+	after := engine.GetMetrics()
+
+	goSearchKey := engine.MetricHuntDiscoverySource + "{source=go-search}"
+	localFallbackKey := engine.MetricHuntDiscoverySource + "{source=local-fallback}"
+
+	goSearchDelta := after[goSearchKey] - before[goSearchKey]
+	localFallbackDelta := after[localFallbackKey] - before[localFallbackKey]
+
+	// go-search authoritative path must be credited exactly once.
+	assert.Equal(t, int64(1), goSearchDelta,
+		"expected go-search counter +1 (trusted-empty short-circuit); got %d — "+
+			"reverting the else-branch to default:fallthrough would cause this failure",
+		goSearchDelta)
+
+	// Local scrapers must NOT have run (local-fallback counter unchanged).
+	assert.Equal(t, int64(0), localFallbackDelta,
+		"expected local-fallback counter unchanged (no fallback on clean empty); got +%d — "+
+			"reverting the else-branch to default:fallthrough would cause this failure",
+		localFallbackDelta)
 }
 
 // TestDiscoverJobURLs_NoDiscoverer_UsesLocalOnly verifies the nil-discoverer path

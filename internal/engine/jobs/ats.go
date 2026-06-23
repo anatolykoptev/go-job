@@ -87,13 +87,17 @@ var (
 // RRF-fused) as the PRIMARY path — the only DC-reliable sources that index
 // boards.greenhouse.io, jobs.lever.co, and jobs.ashbyhq.com (ADR-002, 2026-06-23).
 //
-// On go-search error/empty/timeout, or when ATSDiscoverer is nil, it falls back
-// to go-engine DIRECT + additive SearXNG (the path that existed before this PR).
-// This is a PERMANENT degraded floor — go-job is NEVER worse than before.
+// go-search is treated as AUTHORITATIVE when reachable:
+//   - clean (no-error) empty answer → trusted empty, local scrapers NOT consulted.
+//     Callers that chain multiple discovery queries (e.g. lever dual-query) depend
+//     on reliable empty-on-miss semantics to know when to try a secondary query.
+//   - transport / decode error → fall through to local scrapers (the degraded floor).
 //
-// Discovery source is tracked via gojob_hunt_discovery_source_total so ops can
-// see "running on local-fallback DDG floor" without waiting for the hunt table to
-// go stale.
+// When ATSDiscoverer is nil, or after a go-search transport error, the local path
+// (go-engine DIRECT + additive SearXNG) runs as the degraded floor.  A degraded
+// run is observable via gojob_hunt_discovery_source_total{source="local-fallback"}
+// rising; outcome=empty on ATS sources is the expected downstream signal rather
+// than a permanent-floor guarantee.
 func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
 	if ATSDiscoverer != nil {
 		results, err := ATSDiscoverer.DiscoverBoardURLs(ctx, query)

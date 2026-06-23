@@ -348,6 +348,10 @@ func getPerSourceTimeout() time.Duration {
 // derived independently from the parent context. This bounds slow sources
 // (hn Algolia+Firebase fan-out, inspira careers.un.org) without relying on
 // them implementing their own internal budgets (P4: hn/inspira timeout fix).
+// Note: the cap is effective only when the source's HTTP calls propagate
+// srcCtx to their requests. Sources that ignore context will run to completion
+// regardless; the goroutine exits via context deadline only if it selects on
+// ctx.Done() or uses a context-aware HTTP client.
 func runSource(ctx context.Context, src connectors.Source, q connectors.Query, ch chan<- sourceResult) {
 	// Per-source deadline: independent of parent so a slow source does not
 	// consume the whole MCP budget. If the parent ctx expires first, the
