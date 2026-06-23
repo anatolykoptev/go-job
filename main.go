@@ -360,6 +360,15 @@ func initEngine() {
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
 	engine.InitCache(env.Str("REDIS_URL", ""), cacheTTL, c.CacheMaxEntries, c.CacheCleanupInterval)
 
+	if env.Bool("SLUG_CACHE_ENABLED", true) {
+		redisURL := env.Str("REDIS_URL", "")
+		sc := jobs.NewSlugCache(redisURL)
+		jobs.SetSlugCache(sc)
+		slog.Info("slug cache initialized",
+			slog.Bool("redis_l2", redisURL != ""),
+		)
+	}
+
 	// Background monitors replaced by lazy on-read enrichment (Phase 3).
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.

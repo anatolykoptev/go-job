@@ -69,9 +69,10 @@ func (linkedInSource) FetchRaw(ctx context.Context, q Query) ([]engine.SearxngRe
 // shared atsLimiter live in jobs/ats.go and are preserved verbatim; only the
 // dispatch is unified here.
 //
-// Lever-specific: dual-query secondary discovery (site-scope-first fallback)
-// fires only for provider=="lever" — preserved exactly as in the original
-// SearchLeverJobs implementation.
+// Multi-query union (P1): N query variants per platform are defined in
+// jobs/ats.go (discoveryVariants map) and run in parallel there.
+// This adapter delegates to the provider's Search* function which handles
+// the union internally.
 
 // atsProvider holds the static descriptor for one ATS provider.
 type atsProvider struct {
