@@ -115,6 +115,60 @@ func TestSearchInspiraJobs_Fixture(t *testing.T) {
 	}
 }
 
+// TestSearchInspiraJobs_ContextCancel verifies that SearchInspiraJobs respects
+// context cancellation — a stalling careers.un.org does not block past the
+// deadline. This guards the inspira timeout fix (P4): the per-source timeout
+// added to runSource propagates via context, so SearchInspiraJobs must honour
+// its ctx.
+//
+// Revert-red: removing context cancellation from the net/http request (e.g.
+// using context.Background() instead of ctx in the HTTP request) would cause
+// this test to fail: SearchInspiraJobs would block well past the 200ms deadline.
+func TestSearchInspiraJobs_ContextCancel(t *testing.T) {
+	// done is closed by t.Cleanup so the handler goroutine can exit cleanly.
+	done := make(chan struct{})
+	// Stalling server: blocks until we signal it to stop (via done), simulating
+	// a slow careers.un.org endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Wait for the test to finish (or for the server to be closed).
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second): // safety valve
+		}
+		http.Error(w, "server done", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(func() {
+		close(done)
+		srv.CloseClientConnections()
+		srv.Close()
+	})
+
+	origClient := engine.Cfg.HTTPClient
+	engine.Cfg.HTTPClient = &http.Client{
+		// No timeout on the HTTP client itself — context cancellation is what
+		// should stop the call (the fix we're testing).
+		Transport: &redirectTransport{target: srv.URL},
+	}
+	t.Cleanup(func() { engine.Cfg.HTTPClient = origClient })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := SearchInspiraJobs(ctx, "engineer", "", 5)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("SearchInspiraJobs: expected error on context cancel, got nil")
+	}
+	// Must return promptly after the context deadline — not hang for seconds.
+	if elapsed > 3*time.Second {
+		t.Errorf("SearchInspiraJobs took %s after context cancel — did not respect deadline "+
+			"(hint: the HTTP request must use the passed ctx)", elapsed)
+	}
+	t.Logf("SearchInspiraJobs returned after %s with err=%v (expected)", elapsed, err)
+}
+
 // redirectTransport rewrites any outbound request to point at the test server.
 type redirectTransport struct {
 	target string

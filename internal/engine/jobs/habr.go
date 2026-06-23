@@ -27,6 +27,35 @@ type habrVacanciesResponse struct {
 	} `json:"meta"`
 }
 
+// habrEmployment accepts both a plain string and an object {"title":"..."}.
+// Habr Career switched from object to plain-string format (schema drift 2026):
+// the legacy shape was {"employment":{"title":"Full-time"}} and the current
+// shape is {"employment":"Full-time"}. A plain json.Unmarshal into a struct
+// fails on the string form → the whole vacancy is rejected → 0 jobs (P4(b)).
+type habrEmployment struct {
+	Title string
+}
+
+// UnmarshalJSON makes habrEmployment tolerant: it tries the current string
+// format first, then falls back to the legacy object format.
+func (e *habrEmployment) UnmarshalJSON(b []byte) error {
+	// Current Habr format: "Full-time" (plain string)
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		e.Title = s
+		return nil
+	}
+	// Legacy format: {"title":"Full-time"}
+	var obj struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return fmt.Errorf("habrEmployment: expected string or {\"title\":...}: %w", err)
+	}
+	e.Title = obj.Title
+	return nil
+}
+
 // habrVacancy is a single vacancy from the Habr Career API.
 type habrVacancy struct {
 	ID    int    `json:"id"`
@@ -47,11 +76,9 @@ type habrVacancy struct {
 	Locations []struct {
 		Title string `json:"title"`
 	} `json:"locations"`
-	RemoteWork bool   `json:"remoteWork"`
-	PublishedAt string `json:"publishedAt"`
-	Employment struct {
-		Title string `json:"title"`
-	} `json:"employment"`
+	RemoteWork  bool           `json:"remoteWork"`
+	PublishedAt string         `json:"publishedAt"`
+	Employment  habrEmployment `json:"employment"`
 }
 
 // SearchHabrJobs searches Habr Career for IT job listings.
@@ -103,8 +130,10 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 
 	var apiResp habrVacanciesResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		// Wrap with ErrParse so PlatformOutcome classifies schema-drift failures
-		// as outcome=parse_fail rather than outcome=error (P4(b) will fix the schema).
+		// Wrap with ErrParse so PlatformOutcome classifies unexpected schema failures
+		// as outcome=parse_fail (visible in metrics without reading logs).
+		// Employment schema drift (string vs object) is now handled by habrEmployment
+		// UnmarshalJSON — this path covers any other future schema changes.
 		return nil, fmt.Errorf("habr career parse: %w: %w", ErrParse, err)
 	}
 

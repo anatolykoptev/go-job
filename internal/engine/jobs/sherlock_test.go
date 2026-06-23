@@ -15,9 +15,13 @@ import (
 
 // TestMain initializes engine.Cfg.HTTPClient so unit tests can exercise fetchSherlockRepos
 // without calling engine.Init (which requires a full config including proxy pool etc.).
+// Also initialises the package-level metrics registry (via engine.InitTestRegistry) so
+// tests in this package that read metric deltas via engine.GetMetrics() don't panic on a
+// nil registry.
 func TestMain(m *testing.M) {
 	engine.Cfg.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	engine.Cfg.FetchTimeout = 10 * time.Second
+	engine.InitTestRegistry()
 	os.Exit(m.Run())
 }
 
