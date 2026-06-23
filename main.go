@@ -197,6 +197,7 @@ func initEngine() {
 		MemDBURL:              env.Str("MEMDB_URL", ""),
 		MemDBServiceSecret:    env.Str("INTERNAL_SERVICE_SECRET", ""),
 		EmbedURL:              env.Str("EMBED_URL", ""),
+		OxBrowserURL:          env.Str("OX_BROWSER_URL", ""),
 		BountyHighConfidence:  float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
 		BountyHighConfGap:     float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
 		BountyHighConfMax:     env.Int("BOUNTY_HIGH_CONF_MAX", 10),

@@ -61,6 +61,15 @@ type Config struct {
 	MemDBServiceSecret string           // INTERNAL_SERVICE_SECRET for MemDB auth
 	EmbedURL           string           // EMBED_URL for direct embedding server
 
+	// OxBrowserURL is the base URL of the self-hosted ox-browser solver
+	// (e.g. "http://ox-browser:8901"). When non-empty, the proxy fetcher gains
+	// an ox-browser /fetch-smart fallback tier: on any primary-fetch error
+	// (notably DDG's 202 anti-bot wall from a datacenter IP), the fetch
+	// escalates to a real headless browser. Empty = disabled (graceful).
+	// Authoritative source is OX_BROWSER_URL env — do NOT hard-code the
+	// location, so a future move to the pillow mesh is a one-line env change.
+	OxBrowserURL string // OX_BROWSER_URL
+
 	// Bounty search tuning.
 	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
 	BountyHighConfGap    float32 // max gap from best in high-confidence tier (default 0.04)
@@ -130,6 +139,14 @@ func Init(c Config) {
 	if c.ProxyPool != nil {
 		fetcherOpts = append(fetcherOpts, fetch.WithProxyPool(c.ProxyPool))
 	}
+	// ox-browser anti-bot fallback tier. The go-engine fetcher's tryFallbacks
+	// makes ox-browser the FIRST fallback on any primary-fetch error — this is
+	// what defeats DDG's 202 wall on the slug-discovery path (datacenter IP →
+	// real headless browser). Gated on OX_BROWSER_URL being set; empty = the
+	// fetcher's oxBrowserURL stays "" and the tier is a no-op (graceful degrade).
+	if c.OxBrowserURL != "" {
+		fetcherOpts = append(fetcherOpts, fetch.WithOxBrowser(c.OxBrowserURL))
+	}
 	// go-engine v1.13.0 tier router metrics — counts direct/proxy fetches,
 	// block signals, escalations, sticky cache size. Exposed via existing
 	// /metrics endpoint (prometheus.DefaultRegisterer).
@@ -197,6 +214,7 @@ func Init(c Config) {
 
 	slog.Info("engine: initialized",
 		slog.Bool("proxy", c.ProxyPool != nil),
+		slog.Bool("oxbrowser", c.OxBrowserURL != ""),
 		slog.Bool("ddg", c.DirectDDG),
 		slog.Bool("startpage", c.DirectStartpage),
 		slog.Bool("brave", c.DirectBrave),

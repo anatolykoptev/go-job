@@ -29,6 +29,13 @@ var hnWhoIsHiringCache struct {
 // hnWhoIsHiringCacheTTL — thread is posted monthly, cache for 6h.
 const hnWhoIsHiringCacheTTL = 6 * time.Hour
 
+// hnFanoutBudget caps the total wall-time of the Firebase comment fan-out in
+// FetchHNJobComments. A "Who is Hiring" thread can carry 400+ comments, each
+// fetched with retry/backoff — without this cap the collector can block well
+// past the 90s MCP deadline when Firebase is slow. 45s leaves ample headroom
+// for thread-find + Algolia + LLM post-processing within the deadline.
+const hnFanoutBudget = 45 * time.Second
+
 // hnItemResponse is the Firebase HN API item shape (story or comment).
 type hnItemResponse struct {
 	ID    int64   `json:"id"`
@@ -144,6 +151,14 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 		fetch = len(thread.Kids)
 	}
 
+	// Bound the whole fan-out. A "Who is Hiring" thread can carry 400+ kids;
+	// each fetchHNItem retries with backoff, so an unbounded collector can run
+	// far past the MCP deadline if Firebase is slow/throttling. hnFanoutBudget
+	// caps total wall-time — cancelled per-item fetches return empty and the
+	// collector returns whatever arrived in time rather than blocking forever.
+	fanoutCtx, cancel := context.WithTimeout(ctx, hnFanoutBudget)
+	defer cancel()
+
 	type result struct {
 		idx  int
 		text string
@@ -161,13 +176,13 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 			if delay > 0 {
 				select {
 				case <-time.After(delay):
-				case <-ctx.Done():
+				case <-fanoutCtx.Done():
 					ch <- result{i, ""}
 					return
 				}
 			}
 
-			item, err := fetchHNItem(ctx, id)
+			item, err := fetchHNItem(fanoutCtx, id)
 			if err != nil || item == nil || item.Dead || item.Deleted || item.Text == "" {
 				ch <- result{i, ""}
 				return
@@ -180,11 +195,21 @@ func FetchHNJobComments(ctx context.Context, threadID int64, limit int) ([]strin
 		}(i, thread.Kids[i])
 	}
 
-	// Collect in order.
+	// Collect in order. Stop waiting once the fan-out budget is spent: the
+	// remaining goroutines are cancelled via fanoutCtx and will exit, but we
+	// must not block on them — return what we have. Slots never filled stay "".
 	raw := make([]string, fetch)
 	for i := 0; i < fetch; i++ {
-		r := <-ch
-		raw[r.idx] = r.text
+		select {
+		case r := <-ch:
+			raw[r.idx] = r.text
+		case <-fanoutCtx.Done():
+			slog.Debug("hnjobs: fan-out budget exhausted, returning partial",
+				slog.Int("collected", i),
+				slog.Int("requested", fetch),
+			)
+			i = fetch // break the collector loop
+		}
 	}
 
 	var comments []string
@@ -288,13 +313,21 @@ func searchHNThreadComments(ctx context.Context, threadID int64, query string, l
 	q.Set("hitsPerPage", strconv.Itoa(limit))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	// Per-call timeout + retry so a stalled Algolia endpoint cannot hang the
+	// whole HN search past the MCP deadline (matches fetchHNItem above and the
+	// engine.RetryHTTP+FetchTimeout idiom used across the jobs package).
+	reqCtx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
-	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
+	resp, err := engine.RetryHTTP(reqCtx, engine.DefaultRetryConfig, func() (*http.Response, error) {
+		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
+	})
 	if err != nil {
 		return nil, err
 	}

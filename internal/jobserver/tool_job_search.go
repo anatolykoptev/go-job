@@ -251,21 +251,34 @@ func registerJobSearch(server *mcp.Server) {
 			}(src)
 		}
 
-		go func() {
-			searxQuery := buildJobSearxQuery(input.Query, input.Location, platform)
-			// go-engine DIRECT (primary, always-on via DIRECT_* env) + SearXNG (additive).
-			results := engine.SearchDirect(ctx, searxQuery, lang)
-			searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
-			if err != nil {
-				slog.Warn("job_search: searxng error (additive)", slog.Any("error", err))
-			}
-			results = append(results, searx...)
-			// DIRECT is authoritative; additive SearXNG err is intentionally not
-			// propagated — the result set reflects what DIRECT returned regardless.
-			ch <- sourceResult{name: "searxng", results: results, err: nil}
-		}()
+		// Generic web-search discovery (go-engine DIRECT + SearXNG) is broad and
+		// only appropriate for platform=all. When the caller asks for a SPECIFIC
+		// connector (greenhouse/lever/ashby/yc/indeed/…), this goroutine's
+		// engine-wide web search surfaces stale Wikipedia/Marginalia hits (2017-
+		// 2021) that masquerade as ATS results — exactly the discovery-collapse
+		// symptom (2026-06-23, H3). Gate it off for specific platforms so the
+		// merged output reflects only the chosen connector's structured results.
+		runGenericSearxng := shouldRunGenericSearxng(platform)
+		if runGenericSearxng {
+			go func() {
+				searxQuery := buildJobSearxQuery(input.Query, input.Location, platform)
+				// go-engine DIRECT (primary, always-on via DIRECT_* env) + SearXNG (additive).
+				results := engine.SearchDirect(ctx, searxQuery, lang)
+				searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
+				if err != nil {
+					slog.Warn("job_search: searxng error (additive)", slog.Any("error", err))
+				}
+				results = append(results, searx...)
+				// DIRECT is authoritative; additive SearXNG err is intentionally not
+				// propagated — the result set reflects what DIRECT returned regardless.
+				ch <- sourceResult{name: "searxng", results: results, err: nil}
+			}()
+		}
 
-		totalGoroutines := len(srcs) + 1
+		totalGoroutines := len(srcs)
+		if runGenericSearxng {
+			totalGoroutines++
+		}
 		var merged []engine.SearxngResult
 		var linkedInJobs []jobs.LinkedInJob
 		for i := 0; i < totalGoroutines; i++ {
@@ -400,6 +413,16 @@ func registerJobSearch(server *mcp.Server) {
 // platform=all. The returned names are exactly the case labels in the per-source
 // dispatch switch — the regression test asserts every advertised platform routes
 // to a non-empty, correctly-named source set.
+// shouldRunGenericSearxng decides whether the always-on generic web-search
+// discovery goroutine (go-engine DIRECT + SearXNG) runs alongside the selected
+// connectors. It runs ONLY for platform=all. For a specific connector the
+// generic web search surfaces stale Wikipedia/Marginalia hits that masquerade
+// as ATS results (discovery-collapse H3, 2026-06-23) — so it is suppressed and
+// the merged output reflects only the chosen connector's structured results.
+func shouldRunGenericSearxng(platform string) bool {
+	return platform == platAll
+}
+
 func selectSources(platform string) []string {
 	use := map[string]bool{
 		platLinkedIn:   platform == platAll || platform == platLinkedIn,
