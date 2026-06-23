@@ -129,6 +129,9 @@ func Init(c Config) {
 	// Default ExponentialBuckets top out at ~32.8s — below a full 45s-per-platform
 	// cycle ceiling, putting all slow runs in +Inf.  Explicit buckets fix this.
 	reg.RegisterHistogram(MetricHuntCycleDuration, kitmetrics.WithBuckets(HuntCycleDurationBuckets))
+	// Per-source duration histogram (ADR-J3, P3): range 0.1s–120s covers fast JSON
+	// APIs through slow UN portal fan-outs. Registered before first Observe.
+	reg.RegisterHistogram(MetricSourceDuration, kitmetrics.WithBuckets(SourceDurationBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}
