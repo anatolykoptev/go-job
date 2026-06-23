@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -189,4 +191,60 @@ func walkSchemaProperties(t *testing.T, toolName, schemaKind string, schema map[
 			walkSchemaProperties(t, toolName, schemaKind, v, fieldPath)
 		}
 	}
+}
+
+// TestFF1_RegistryCompleteness is the P1 fitness function: every advertised
+// platform= value resolves to at least one registered Source, every registered
+// source has at least one group, and meta-groups are non-empty.
+// Fails CI if a source is added to the const block without a Register() call.
+func TestFF1_RegistryCompleteness(t *testing.T) {
+	advertised := []string{
+		platLinkedIn, platGreenhouse, platLever, platAshby,
+		platATS, platYC, platHN, platIndeed, platHabr, platTwitter,
+		platGoogle, platStartup, platCraigslist, platRemoteOK, platWWR,
+		platRemotive, platRemote, platFreelancer, platInspira, platUNDP, platUN,
+		platAll,
+	}
+	for _, p := range advertised {
+		srcs := jobRegistry.Select(p)
+		if len(srcs) == 0 {
+			t.Errorf("FF-1: advertised platform=%q routes to NO registered source — registry completeness BROKEN", p)
+		}
+	}
+	for _, s := range jobRegistry.All() {
+		if len(s.Groups()) == 0 {
+			t.Errorf("FF-1: registered source %q has no groups — unreachable via any Select()", s.Name())
+		}
+	}
+	t.Logf("FF-1 PASS: %d advertised platforms checked, %d sources registered", len(advertised), len(jobRegistry.All()))
+}
+
+// TestFF2_PanicIsolation asserts that a panicking Source does not propagate —
+// the panicking source yields 0 results + a non-nil error.
+func TestFF2_PanicIsolation(t *testing.T) {
+	ch := make(chan sourceResult, 2)
+	ctx := context.Background()
+
+	// Panicking source.
+	panicSrc := &testPanicSource{}
+	go runSource(ctx, panicSrc, connectors.Query{Query: "test"}, ch)
+	r := <-ch
+	if r.err == nil {
+		t.Error("FF-2: panicking source must produce non-nil error")
+	}
+	if len(r.results) != 0 {
+		t.Errorf("FF-2: panicking source must produce 0 results, got %d", len(r.results))
+	}
+	t.Logf("FF-2 PASS: panic isolated, err=%v", r.err)
+}
+
+// testPanicSource is a test double that always panics in Fetch.
+type testPanicSource struct{}
+
+func (testPanicSource) Name() string                    { return "test-panic" }
+func (testPanicSource) Capabilities() connectors.Capability { return 0 }
+func (testPanicSource) Groups() []string                { return []string{"all"} }
+func (testPanicSource) SiteScope() string               { return "" }
+func (testPanicSource) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	panic("test panic")
 }

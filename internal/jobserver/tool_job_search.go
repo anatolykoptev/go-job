@@ -11,7 +11,7 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
-	"github.com/anatolykoptev/go_job/internal/engine/sources"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -40,6 +40,14 @@ const (
 	platUNDP       = "undp"    // UNDP Oracle HCM jobs portal
 	platUN         = "un"      // meta-platform fan-out: inspira + undp
 )
+
+// sourceResult carries the output of a single connector goroutine.
+type sourceResult struct {
+	name    string
+	results []engine.SearxngResult
+	liJobs  []jobs.LinkedInJob
+	err     error
+}
 
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
@@ -115,149 +123,25 @@ func registerJobSearch(server *mcp.Server) {
 			limit = 50
 		}
 
-		type sourceResult struct {
-			name    string
-			results []engine.SearxngResult
-			liJobs  []jobs.LinkedInJob
-			err     error
+		srcs := jobRegistry.Select(platform)
+		q := connectors.Query{
+			Query:      input.Query,
+			Location:   input.Location,
+			Experience: input.Experience,
+			JobType:    input.JobType,
+			Remote:     input.Remote,
+			TimeRange:  input.TimeRange,
+			Salary:     input.Salary,
+			Limit:      limit,
+			Offset:     input.Offset,
+			EasyApply:  input.EasyApply,
+			Language:   lang,
 		}
-
-		srcs := selectSources(platform)
 
 		ch := make(chan sourceResult, len(srcs)+1)
 
 		for _, src := range srcs {
-			go func(name string) {
-				switch name {
-				case platLinkedIn:
-					liJobs, err := jobs.SearchLinkedInJobs(ctx, input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Salary, 50, input.EasyApply)
-					if err != nil {
-						slog.Warn("job_search: linkedin error", slog.Any("error", err))
-						ch <- sourceResult{name: name, err: err}
-						return
-					}
-					slog.Info("job_search: linkedin returned jobs", slog.Int("count", len(liJobs)))
-					ch <- sourceResult{name: name, results: jobs.LinkedInJobsToSearxngResults(ctx, liJobs, 8), liJobs: liJobs}
-
-				case platGreenhouse:
-					results, err := jobs.SearchGreenhouseJobs(ctx, input.Query, input.Location, 10)
-					if err != nil {
-						slog.Warn("job_search: greenhouse error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platLever:
-					results, err := jobs.SearchLeverJobs(ctx, input.Query, input.Location, 10)
-					if err != nil {
-						slog.Warn("job_search: lever error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platAshby:
-					results, err := jobs.SearchAshbyJobs(ctx, input.Query, input.Location, 10)
-					if err != nil {
-						slog.Warn("job_search: ashby error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platYC:
-					results, err := jobs.SearchYCJobs(ctx, input.Query, input.Location, 10)
-					if err != nil {
-						slog.Warn("job_search: yc error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platHN:
-					results, err := jobs.SearchHNJobs(ctx, input.Query, 20)
-					if err != nil {
-						slog.Warn("job_search: hn error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platIndeed:
-					results, err := jobs.SearchIndeedJobsFiltered(ctx, input.Query, input.Location, input.JobType, input.TimeRange, 15)
-					if err != nil {
-						slog.Warn("job_search: indeed error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platHabr:
-					results, err := jobs.SearchHabrJobs(ctx, input.Query, input.Location, 10)
-					if err != nil {
-						slog.Warn("job_search: habr error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platTwitter:
-					results, err := jobs.SearchTwitterJobs(ctx, input.Query, 30)
-					if err != nil {
-						slog.Warn("job_search: twitter error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platCraigslist:
-					results, err := jobs.SearchCraigslistJobs(ctx, input.Query, input.Location, 15)
-					if err != nil {
-						slog.Warn("job_search: craigslist error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platRemoteOK:
-					rjobs, err := jobs.SearchRemoteOK(ctx, input.Query, 15)
-					if err != nil {
-						slog.Warn("job_search: remoteok error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
-
-				case platWWR:
-					rjobs, err := jobs.SearchWeWorkRemotely(ctx, input.Query, 15)
-					if err != nil {
-						slog.Warn("job_search: weworkremotely error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
-
-				case platRemotive:
-					rjobs, err := jobs.SearchRemotive(ctx, input.Query, 15)
-					if err != nil {
-						slog.Warn("job_search: remotive error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: jobs.RemoteJobsToSearxngResults(rjobs), err: err}
-
-				case platFreelancer:
-					projects, err := sources.SearchFreelancerAPI(ctx, input.Query, 10)
-					if err != nil {
-						slog.Warn("job_search: freelancer error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: sources.FreelancerProjectsToSearxngResults(projects), err: err}
-
-				case platGoogle:
-					searxQuery := input.Query + " " + input.Location + " site:careers.google.com OR site:jobs.google.com"
-					// go-engine DIRECT (primary, always-on) + SearXNG (additive when configured).
-					results := engine.SearchDirect(ctx, searxQuery, lang)
-					searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
-					if err != nil {
-						slog.Warn("job_search: google searxng error (additive)", slog.Any("error", err))
-					}
-					results = append(results, searx...)
-					// DIRECT is authoritative; additive SearXNG err is intentionally not
-					// propagated — the result set reflects what DIRECT returned regardless.
-					ch <- sourceResult{name: name, results: results, err: nil}
-
-				case platInspira:
-					results, err := jobs.SearchInspiraJobs(ctx, input.Query, input.Location, limit)
-					if err != nil {
-						slog.Warn("job_search: inspira error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-
-				case platUNDP:
-					results, err := jobs.SearchUNDPJobs(ctx, input.Query, input.Location, limit)
-					if err != nil {
-						slog.Warn("job_search: undp error", slog.Any("error", err))
-					}
-					ch <- sourceResult{name: name, results: results, err: err}
-				}
-			}(src)
+			go runSource(ctx, src, q, ch)
 		}
 
 		// Generic web-search discovery (go-engine DIRECT + SearXNG) is broad and
@@ -270,7 +154,12 @@ func registerJobSearch(server *mcp.Server) {
 		runGenericSearxng := shouldRunGenericSearxng(platform)
 		if runGenericSearxng {
 			go func() {
-				searxQuery := buildJobSearxQuery(input.Query, input.Location, platform)
+				var searxQuery string
+				if input.Location != "" {
+					searxQuery = input.Query + " " + input.Location + " jobs"
+				} else {
+					searxQuery = input.Query + " jobs"
+				}
 				// go-engine DIRECT (primary, always-on via DIRECT_* env) + SearXNG (additive).
 				results := engine.SearchDirect(ctx, searxQuery, lang)
 				searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
@@ -415,26 +304,9 @@ func registerJobSearch(server *mcp.Server) {
 	})
 }
 
-// selectSources maps a normalized platform filter to the ordered list of
-// connector source names that job_search fans out to. platform=all selects every
-// commercial connector; meta-platforms (ats/startup/remote/un) expand to their
-// members; UN scrapers (inspira/undp) stay opt-in and are NOT included by
-// platform=all. The returned names are exactly the case labels in the per-source
-// dispatch switch — the regression test asserts every advertised platform routes
-// to a non-empty, correctly-named source set.
-// knownPlatforms is the set of platform values job_search routes — the
-// connector names plus the meta-platforms (ats/startup/remote/un) and platAll.
-// Kept in sync with selectSources' switch + the meta-platform fan-out.
-var knownPlatforms = map[string]bool{
-	platAll: true, platLinkedIn: true, platGreenhouse: true, platLever: true,
-	platAshby: true, platYC: true, platHN: true, platHabr: true, platIndeed: true,
-	platATS: true, platStartup: true, platGoogle: true, platCraigslist: true,
-	platRemoteOK: true, platWWR: true, platFreelancer: true, platRemotive: true,
-	platRemote: true, platTwitter: true, platInspira: true, platUNDP: true, platUN: true,
-}
-
 // knownPlatform reports whether platform is a recognized job_search platform.
-func knownPlatform(platform string) bool { return knownPlatforms[platform] }
+// Delegates to the registry which encodes known connector names + group names.
+func knownPlatform(platform string) bool { return jobRegistry.Known(platform) }
 
 // shouldRunGenericSearxng decides whether the always-on generic web-search
 // discovery goroutine (go-engine DIRECT + SearXNG) runs alongside the selected
@@ -446,87 +318,34 @@ func shouldRunGenericSearxng(platform string) bool {
 	return platform == platAll
 }
 
-func selectSources(platform string) []string {
-	use := map[string]bool{
-		platLinkedIn:   platform == platAll || platform == platLinkedIn,
-		platGreenhouse: platform == platAll || platform == platGreenhouse || platform == platATS || platform == platStartup,
-		platLever:      platform == platAll || platform == platLever || platform == platATS || platform == platStartup,
-		platAshby:      platform == platAll || platform == platAshby || platform == platATS || platform == platStartup,
-		platYC:         platform == platAll || platform == platYC || platform == platStartup,
-		platHN:         platform == platAll || platform == platHN || platform == platStartup,
-		platIndeed:     platform == platAll || platform == platIndeed,
-		platHabr:       platform == platAll || platform == platHabr,
-		platTwitter:    platform == platAll || platform == platTwitter,
-		platCraigslist: platform == platAll || platform == platCraigslist,
-		platRemoteOK:   platform == platAll || platform == platRemoteOK || platform == platRemote,
-		platWWR:        platform == platAll || platform == platWWR || platform == platRemote,
-		platRemotive:   platform == platAll || platform == platRemotive || platform == platRemote,
-		platFreelancer: platform == platAll || platform == platFreelancer,
-		platGoogle:     platform == platAll || platform == platGoogle,
-		// UN scrapers stay opt-in (NOT triggered by platform=all) — niche
-		// international-org consultancies would otherwise crowd out generic
-		// commercial searches.
-		platInspira: platform == platInspira || platform == platUN,
-		platUNDP:    platform == platUNDP || platform == platUN,
-	}
-
-	// Fixed order so output is deterministic (test stability + stable fan-out).
-	order := []string{
-		platLinkedIn, platGreenhouse, platLever, platAshby, platYC, platHN, platIndeed,
-		platHabr, platTwitter, platCraigslist, platRemoteOK, platWWR, platRemotive,
-		platFreelancer, platGoogle, platInspira, platUNDP,
-	}
-	srcs := make([]string, 0, len(order))
-	for _, name := range order {
-		if use[name] {
-			srcs = append(srcs, name)
+// runSource executes a single Source in a goroutine, recovering from panics so
+// one broken connector cannot crash the entire fan-out.
+func runSource(ctx context.Context, src connectors.Source, q connectors.Query, ch chan<- sourceResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("job_search: source panicked",
+				slog.String("source", src.Name()),
+				slog.Any("recover", r))
+			ch <- sourceResult{name: src.Name(), err: fmt.Errorf("panic: %v", r)}
 		}
+	}()
+	if liFetcher, ok := src.(connectors.RawLinkedInFetcher); ok {
+		results, liJobs, err := liFetcher.FetchRaw(ctx, q)
+		if err != nil {
+			slog.Warn("job_search: linkedin error", slog.Any("error", err))
+		} else {
+			slog.Info("job_search: linkedin returned jobs", slog.Int("count", len(liJobs)))
+		}
+		ch <- sourceResult{name: src.Name(), results: results, liJobs: liJobs, err: err}
+		return
 	}
-	return srcs
-}
-
-func buildJobSearxQuery(query, location, platform string) string {
-	var sitePart string
-	switch platform {
-	case platLinkedIn:
-		sitePart = "site:linkedin.com/jobs"
-	case platGreenhouse:
-		sitePart = "site:boards.greenhouse.io"
-	case platLever:
-		sitePart = "site:jobs.lever.co"
-	case platAshby:
-		sitePart = "site:jobs.ashbyhq.com"
-	case platYC:
-		sitePart = "site:workatastartup.com"
-	case platHN:
-		sitePart = "site:news.ycombinator.com \"who is hiring\""
-	case platCraigslist:
-		sitePart = "site:craigslist.org"
-	case platRemoteOK:
-		sitePart = "site:remoteok.com"
-	case platWWR:
-		sitePart = "site:weworkremotely.com"
-	case platRemotive:
-		sitePart = "site:remotive.com"
-	case platRemote:
-		sitePart = "site:remoteok.com OR site:weworkremotely.com OR site:remotive.com"
-	case platFreelancer:
-		sitePart = "site:freelancer.com/projects"
-	case platGoogle:
-		sitePart = "site:careers.google.com OR site:jobs.google.com"
-	case platInspira:
-		sitePart = "site:careers.un.org"
-	case platUNDP:
-		sitePart = "site:jobs.undp.org OR site:estm.fa.em2.oraclecloud.com"
-	case platUN:
-		sitePart = "site:careers.un.org OR site:jobs.undp.org"
-	default:
-		sitePart = "jobs"
+	results, err := src.Fetch(ctx, q)
+	if err != nil {
+		slog.Warn("job_search: source error",
+			slog.String("source", src.Name()),
+			slog.Any("error", err))
 	}
-	if location != "" {
-		return query + " " + location + " " + sitePart
-	}
-	return query + " " + sitePart
+	ch <- sourceResult{name: src.Name(), results: results, err: err}
 }
 
 func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.SearxngResult {
