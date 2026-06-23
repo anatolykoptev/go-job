@@ -353,6 +353,17 @@ func getPerSourceTimeout() time.Duration {
 // regardless; the goroutine exits via context deadline only if it selects on
 // ctx.Done() or uses a context-aware HTTP client.
 func runSource(ctx context.Context, src connectors.Source, q connectors.Query, ch chan<- sourceResult) {
+	// NeedsAPIKey gate: skip Fetch entirely when the required API key is absent.
+	// Emits outcome=no_key directly, avoiding a doomed API round-trip.
+	// The key check is cheap (config field read) so it runs before the per-source
+	// deadline setup.
+	if !connectors.HasRequiredAPIKey(src) {
+		slog.Info("job_search: source skipped — API key not configured",
+			slog.String("source", src.Name()))
+		ch <- sourceResult{name: src.Name(), err: fmt.Errorf("%w: %s key not configured", jobs.ErrNoAPIKey, src.Name())}
+		return
+	}
+
 	// Per-source deadline: independent of parent so a slow source does not
 	// consume the whole MCP budget. If the parent ctx expires first, the
 	// source still gets cancelled (WithTimeout inherits parent cancellation).
