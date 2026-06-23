@@ -103,7 +103,9 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 
 	var apiResp habrVacanciesResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, fmt.Errorf("habr career parse: %w", err)
+		// Wrap with ErrParse so PlatformOutcome classifies schema-drift failures
+		// as outcome=parse_fail rather than outcome=error (P4(b) will fix the schema).
+		return nil, fmt.Errorf("habr career parse: %w: %w", ErrParse, err)
 	}
 
 	results := make([]engine.SearxngResult, 0, len(apiResp.List))
