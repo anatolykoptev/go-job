@@ -134,11 +134,6 @@ func (w *Worker) runCycle(ctx context.Context) {
 
 				results, err := p.search(platCtx, q, "", 10)
 
-				// Count discovered URLs for this platform (the ATS functions
-				// already called discoverJobURLs internally; here we track how
-				// many job-level results came back per cycle).
-				engine.IncrHuntDiscoveryURLs(p.name, len(results))
-
 				if err != nil {
 					slog.Warn("hunt worker: platform error",
 						slog.String("platform", p.name),
