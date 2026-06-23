@@ -174,7 +174,8 @@ const (
 
 	// MetricSlugCacheEvictions is the labelled counter
 	// gojob_hunt_slug_cache_evictions_total{platform,reason}.
-	// platform ∈ {greenhouse,lever,ashby}, reason ∈ {ttl,board_404}.
+	// platform ∈ {greenhouse,lever,ashby}, reason ∈ {lru,board_404,ttl}.
+	// lru=size-pressure; board_404=HTTP 404 from board-fetch; ttl=reserved.
 	MetricSlugCacheEvictions = "hunt_slug_cache_evictions_total"
 )
 
@@ -288,9 +289,9 @@ func FormatMetrics() string {
 		}
 	}
 	// Slug cache eviction counters (P2 runtime slug cache).
-	// 3 platforms × 2 reasons = 6 series.
+	// 3 platforms × 3 reasons = 9 series (lru=size-pressure, board_404=404-evict, ttl=reserved).
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
-		for _, r := range []string{"ttl", "board_404"} {
+		for _, r := range []string{"lru", "board_404", "ttl"} {
 			keys = append(keys, MetricSlugCacheEvictions+"{platform="+p+",reason="+r+"}")
 		}
 	}
@@ -572,7 +573,10 @@ func ObserveHuntCycleDuration(d float64) {
 var validDiscoveryVariantResults = map[string]bool{"hit": true, "miss": true}
 
 // validSlugCacheEvictionReasons bounds the reason label for hunt_slug_cache_evictions_total.
-var validSlugCacheEvictionReasons = map[string]bool{"ttl": true, "board_404": true}
+// lru   — LRU size-pressure eviction (maxSize exceeded in Merge)
+// board_404 — HTTP 404/410 from board-fetch; slug confirmed gone
+// ttl   — reserved for future periodic sweep; not emitted by current lazy-eviction impl
+var validSlugCacheEvictionReasons = map[string]bool{"lru": true, "board_404": true, "ttl": true}
 
 // IncrHuntDiscoveryVariant bumps gojob_hunt_discovery_variants_total{platform,result}.
 // platform ∈ {greenhouse,lever,ashby}, result ∈ {hit,miss}.
@@ -585,7 +589,8 @@ func IncrHuntDiscoveryVariant(platform, result string) {
 }
 
 // IncrSlugCacheEviction bumps gojob_hunt_slug_cache_evictions_total{platform,reason}.
-// platform ∈ {greenhouse,lever,ashby}, reason ∈ {ttl,board_404}.
+// platform ∈ {greenhouse,lever,ashby}, reason ∈ {lru,board_404,ttl}.
+// lru=size-pressure, board_404=HTTP 404 from board-fetch, ttl=reserved.
 // Unrecognised label values are silently dropped (cardinality guard).
 func IncrSlugCacheEviction(platform, reason string) {
 	if !validDiscoveryPlatforms[platform] || !validSlugCacheEvictionReasons[reason] {

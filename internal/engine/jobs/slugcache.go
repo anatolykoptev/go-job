@@ -21,12 +21,13 @@ const (
 
 // SlugCache caches discovered ATS company slugs per platform.
 // Runtime-populated only — NEVER seeded from checked-in data (PUBLIC repo).
-// 24h TTL + 404-eviction prevent stale slugs from poisoning discovery.
+// TTL expiry is enforced lazily on Get (filter-on-read) + trimmed at LRU-eviction
+// time inside Merge. No background Sweep goroutine — maxSize bounds memory.
+// 404-eviction via Evict ensures stale boards are removed immediately.
 type SlugCache interface {
 	Get(platform string) []string
 	Merge(ctx context.Context, platform string, slugs []string)
 	Evict(platform, slug, reason string)
-	Sweep()
 }
 
 type slugEntry struct {
@@ -95,7 +96,9 @@ func (c *inProcessSlugCache) Get(platform string) []string {
 }
 
 // Merge adds slugs to the platform set, refreshing lastSeen. Trims to maxSize LRU.
-func (c *inProcessSlugCache) Merge(ctx context.Context, platform string, slugs []string) {
+// ctx is accepted for interface compatibility; L2 writes use context.Background()
+// so cache persistence survives request cancellation.
+func (c *inProcessSlugCache) Merge(_ context.Context, platform string, slugs []string) {
 	if len(slugs) == 0 {
 		return
 	}
@@ -115,13 +118,15 @@ func (c *inProcessSlugCache) Merge(ctx context.Context, platform string, slugs [
 		}
 	}
 
-	// Trim LRU: sort newest-first, evict tail.
+	// Trim LRU: sort newest-first, evict tail. Reason="lru" (size-pressure),
+	// distinct from reason="ttl" (age-based expiry filtered on Get) and
+	// reason="board_404" (HTTP 404 from board-fetch).
 	if len(c.entries[platform]) > c.maxSize {
 		sort.Slice(c.entries[platform], func(i, j int) bool {
 			return c.entries[platform][i].LastSeen.After(c.entries[platform][j].LastSeen)
 		})
 		for k := c.maxSize; k < len(c.entries[platform]); k++ {
-			engine.IncrSlugCacheEviction(platform, "ttl")
+			engine.IncrSlugCacheEviction(platform, "lru")
 			slog.Debug("slugcache: LRU evict",
 				slog.String("platform", platform),
 				slog.String("slug", c.entries[platform][k].Slug))
@@ -137,19 +142,22 @@ func (c *inProcessSlugCache) Merge(ctx context.Context, platform string, slugs [
 	slog.Debug("slugcache: merged", slog.String("platform", platform), slog.Int("size", size))
 
 	if c.l2 != nil {
-		go func() {
+		// Use context.Background() — cache persistence must survive request cancellation
+		// (consistent with Evict which also uses Background). Discovery ctx has a 20s
+		// budget; a cancelled ctx would silently drop the L2 write.
+		go func() { //nolint:gosec // G118: intentional — L2 cache write must outlive request ctx
 			data, err := json.Marshal(snapshot)
 			if err != nil {
 				return
 			}
-			if err := c.l2.Set(ctx, platform, data, c.ttl); err != nil {
+			if err := c.l2.Set(context.Background(), platform, data, c.ttl); err != nil {
 				slog.Debug("slugcache: L2 persist failed", slog.String("platform", platform), slog.Any("error", err))
 			}
 		}()
 	}
 }
 
-// Evict removes a slug from the cache. reason ∈ {ttl, board_404}.
+// Evict removes a slug from the cache. reason ∈ {board_404}.
 func (c *inProcessSlugCache) Evict(platform, slug, reason string) {
 	c.mu.Lock()
 	entries := c.entries[platform]
@@ -176,24 +184,6 @@ func (c *inProcessSlugCache) Evict(platform, slug, reason string) {
 				slog.Debug("slugcache: L2 update after evict failed", slog.Any("error", err))
 			}
 		}()
-	}
-}
-
-// Sweep removes expired entries from all platforms.
-func (c *inProcessSlugCache) Sweep() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now()
-	for platform, entries := range c.entries {
-		kept := entries[:0]
-		for _, e := range entries {
-			if now.Sub(e.LastSeen) < c.ttl {
-				kept = append(kept, e)
-			} else {
-				engine.IncrSlugCacheEviction(platform, "ttl")
-			}
-		}
-		c.entries[platform] = kept
 	}
 }
 

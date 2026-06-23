@@ -75,23 +75,6 @@ func TestSlugCache_Race(t *testing.T) {
 	<-done
 }
 
-func TestSlugCache_Sweep(t *testing.T) {
-	sc := NewSlugCache("")
-	sc.ttl = 10 * time.Millisecond
-
-	sc.Merge(context.Background(), "lever", []string{"fresh"})
-	sc.Merge(context.Background(), "greenhouse", []string{"old"})
-
-	// Let "old" and "fresh" both expire
-	time.Sleep(25 * time.Millisecond)
-
-	sc.Sweep()
-
-	// Both expired entries should be gone
-	assert.Empty(t, sc.Get("lever"), "expired lever slugs must be swept")
-	assert.Empty(t, sc.Get("greenhouse"), "expired greenhouse slugs must be swept")
-}
-
 func TestSlugCache_MaxSize_LRU(t *testing.T) {
 	sc := NewSlugCache("")
 	sc.maxSize = 3
@@ -102,4 +85,20 @@ func TestSlugCache_MaxSize_LRU(t *testing.T) {
 
 	got := sc.Get("lever")
 	assert.LessOrEqual(t, len(got), 3, "cache must not exceed maxSize")
+}
+
+func TestSlugCache_MaxSize_LRU_EmitsLRUReason(t *testing.T) {
+	// Verify LRU-eviction uses reason="lru" not "ttl"
+	// (prevents future conflation on dashboards).
+	sc := NewSlugCache("")
+	sc.maxSize = 2
+
+	before := engine.GetMetrics()
+	sc.Merge(context.Background(), "lever", []string{"x", "y", "z"})
+	after := engine.GetMetrics()
+
+	lruKey := engine.MetricSlugCacheEvictions + "{platform=lever,reason=lru}"
+	ttlKey := engine.MetricSlugCacheEvictions + "{platform=lever,reason=ttl}"
+	assert.Greater(t, after[lruKey]-before[lruKey], int64(0), "LRU eviction must emit reason=lru")
+	assert.Equal(t, after[ttlKey]-before[ttlKey], int64(0), "LRU eviction must NOT emit reason=ttl")
 }

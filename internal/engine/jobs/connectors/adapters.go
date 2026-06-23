@@ -3,8 +3,6 @@ package connectors
 import (
 	"context"
 	"log/slog"
-	"os"
-	"strconv"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -71,9 +69,10 @@ func (linkedInSource) FetchRaw(ctx context.Context, q Query) ([]engine.SearxngRe
 // shared atsLimiter live in jobs/ats.go and are preserved verbatim; only the
 // dispatch is unified here.
 //
-// Lever-specific: dual-query secondary discovery (site-scope-first fallback)
-// fires only for provider=="lever" — preserved exactly as in the original
-// SearchLeverJobs implementation.
+// Multi-query union (P1): N query variants per platform are defined in
+// jobs/ats.go (discoveryVariants map) and run in parallel there.
+// This adapter delegates to the provider's Search* function which handles
+// the union internally.
 
 // atsProvider holds the static descriptor for one ATS provider.
 type atsProvider struct {
@@ -82,20 +81,6 @@ type atsProvider struct {
 	siteScope string   // e.g. "site:boards.greenhouse.io"
 	// fetch delegates to the provider-specific Search* function in jobs/ats.go.
 	fetch func(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error)
-	// queryVariants generates N distinct query strings for discovery fan-out.
-	// Each entry is a func(base, location string) string.
-	queryVariants []func(base, location string) string
-}
-
-// getConnectorQueryVariants returns the number of query variants to use.
-// Reads DISCOVERY_QUERY_VARIANTS (range 1–5, default 3); mirrors ats.go logic.
-func getConnectorQueryVariants() int {
-	if v := os.Getenv("DISCOVERY_QUERY_VARIANTS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
-			return n
-		}
-	}
-	return 3
 }
 
 // atsProviders is the static table of all three ATS connectors.
@@ -107,78 +92,18 @@ var atsProviders = map[string]atsProvider{
 		groups:    []string{groupAll, groupATS, groupStartup},
 		siteScope: "site:boards.greenhouse.io",
 		fetch:     jobs.SearchGreenhouseJobs,
-		queryVariants: []func(base, location string) string{
-			func(base, loc string) string {
-				if loc != "" {
-					return base + " " + loc + " site:boards.greenhouse.io"
-				}
-				return base + " site:boards.greenhouse.io"
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "site:boards.greenhouse.io " + base + " " + loc
-				}
-				return "site:boards.greenhouse.io " + base
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "senior " + base + " site:boards.greenhouse.io " + loc
-				}
-				return "senior " + base + " site:boards.greenhouse.io"
-			},
-		},
 	},
 	"lever": {
 		name:      "lever",
 		groups:    []string{groupAll, groupATS, groupStartup},
 		siteScope: "site:jobs.lever.co",
 		fetch:     jobs.SearchLeverJobs,
-		queryVariants: []func(base, location string) string{
-			func(base, loc string) string {
-				if loc != "" {
-					return base + " " + loc + " site:jobs.lever.co"
-				}
-				return base + " site:jobs.lever.co"
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "site:jobs.lever.co " + base + " " + loc
-				}
-				return "site:jobs.lever.co " + base
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "senior " + base + " site:jobs.lever.co " + loc
-				}
-				return "senior " + base + " site:jobs.lever.co"
-			},
-		},
 	},
 	"ashby": {
 		name:      "ashby",
 		groups:    []string{groupAll, groupATS, groupStartup},
 		siteScope: "site:jobs.ashbyhq.com",
 		fetch:     jobs.SearchAshbyJobs,
-		queryVariants: []func(base, location string) string{
-			func(base, loc string) string {
-				if loc != "" {
-					return base + " " + loc + " site:jobs.ashbyhq.com"
-				}
-				return base + " site:jobs.ashbyhq.com"
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "site:jobs.ashbyhq.com " + base + " " + loc
-				}
-				return "site:jobs.ashbyhq.com " + base
-			},
-			func(base, loc string) string {
-				if loc != "" {
-					return "senior " + base + " site:jobs.ashbyhq.com " + loc
-				}
-				return "senior " + base + " site:jobs.ashbyhq.com"
-			},
-		},
 	},
 }
 
@@ -204,26 +129,6 @@ func (s atsSource) SiteScope() string        { return s.p.siteScope }
 
 func (s atsSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, error) {
 	return s.p.fetch(ctx, q.Query, q.Location, defaultATSLimit)
-}
-
-// QueryVariants returns up to getConnectorQueryVariants() distinct query strings
-// for the given base query and optional location. Used by consumers that want to
-// fan out multiple queries for better slug-discovery yield (P1).
-// Returns nil for providers with no variants configured (non-ATS sources).
-func (s atsSource) QueryVariants(base, location string) []string {
-	n := getConnectorQueryVariants()
-	variants := s.p.queryVariants
-	if len(variants) == 0 {
-		return nil
-	}
-	if n < len(variants) {
-		variants = variants[:n]
-	}
-	result := make([]string, 0, len(variants))
-	for _, fn := range variants {
-		result = append(result, fn(base, location))
-	}
-	return result
 }
 
 // ----- YC -----
