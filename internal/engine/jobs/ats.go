@@ -144,9 +144,22 @@ func deduplicateByURL(in []engine.SearxngResult) []engine.SearxngResult {
 	return merged
 }
 
+// atsBoardMaxBytes caps the board response body read for all three ATS fetchers
+// (greenhouse, lever, ashby). 16 MB is generous for even the largest known boards
+// (insiderone lever board ≈ 3.75 MB; Notion/OpenAI ashby ≈ 2 MB); the old 2 MB
+// cap silently truncated large boards, causing json.Unmarshal to fail with
+// "Unterminated string" and return 0 results with no visible error (P5 incident).
+//
+// io.LimitReader truncates SILENTLY — after ReadAll, callers MUST check
+// len(body) == atsBoardMaxBytes and return ErrBodyTruncated rather than feeding
+// guaranteed-broken JSON to json.Unmarshal. This converts the silent class into a
+// visible gojob_ats_fetch_errors_total{reason=truncated} counter.
+const atsBoardMaxBytes = 16 * 1024 * 1024 // 16 MiB
+
 // --- Greenhouse ---
 
-const greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards/%s/jobs"
+//nolint:gochecknoglobals // var (not const) to allow test substitution
+var greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards/%s/jobs"
 const greenhouseSiteSearch = "site:boards.greenhouse.io"
 
 // maxATSSlugsPerSearch caps how many company slugs we fan-out to per ATS source per query.
@@ -185,6 +198,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 
 	// Extract unique company slugs from discovery URLs (DIRECT primary + SearXNG additive).
 	slugs := extractGreenhouseSlugs(discoverJobURLs(ctx, searxQuery))
+	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformGreenhouse, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("greenhouse: no slugs found in discovery results")
 		return nil, nil
@@ -283,6 +297,7 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 	})
 	if err != nil {
 		greenhouseBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -293,18 +308,29 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		greenhouseBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "status")
 		return nil, fmt.Errorf("greenhouse API status %d for %s", resp.StatusCode, slug)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
 	if err != nil {
 		greenhouseBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "transport")
 		return nil, err
+	}
+	// io.LimitReader truncates silently: if body is exactly the cap the JSON is
+	// incomplete and Unmarshal will fail. Detect and return an explicit error so
+	// the outcome shows as reason=truncated, not a confusing parse_fail.
+	if len(body) == atsBoardMaxBytes {
+		greenhouseBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "truncated")
+		return nil, fmt.Errorf("greenhouse %s: %w", slug, ErrBodyTruncated)
 	}
 
 	var gr greenhouseResponse
 	if err := json.Unmarshal(body, &gr); err != nil {
 		greenhouseBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "parse")
 		return nil, fmt.Errorf("greenhouse parse: %w", err)
 	}
 	greenhouseBreaker.Record(true)
@@ -329,7 +355,8 @@ func extractGreenhouseSlugs(results []engine.SearxngResult) []string {
 
 // --- Lever ---
 
-const leverAPIBase = "https://api.lever.co/v0/postings/%s?mode=json"
+//nolint:gochecknoglobals // var (not const) to allow test substitution
+var leverAPIBase = "https://api.lever.co/v0/postings/%s?mode=json"
 const leverSiteSearch = "site:jobs.lever.co"
 
 // leverSlugRe extracts company slug from jobs.lever.co URLs.
@@ -389,6 +416,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 		}
 	}
 
+	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformLever, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("lever: no slugs found in discovery results (both queries)")
 		return nil, nil
@@ -499,6 +527,7 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 	})
 	if err != nil {
 		leverBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -509,18 +538,27 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 	}
 	if resp.StatusCode != http.StatusOK {
 		leverBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "status")
 		return nil, fmt.Errorf("lever API status %d for %s", resp.StatusCode, slug)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
 	if err != nil {
 		leverBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "transport")
 		return nil, err
+	}
+	// io.LimitReader truncates silently — detect and surface via counter.
+	if len(body) == atsBoardMaxBytes {
+		leverBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "truncated")
+		return nil, fmt.Errorf("lever %s: %w", slug, ErrBodyTruncated)
 	}
 
 	var postings []leverPosting
 	if err := json.Unmarshal(body, &postings); err != nil {
 		leverBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "parse")
 		return nil, fmt.Errorf("lever parse: %w", err)
 	}
 	leverBreaker.Record(true)
@@ -589,6 +627,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slugs := extractAshbySlugs(discoverJobURLs(ctx, searxQuery))
+	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformAshby, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("ashby: no slugs found in discovery results")
 		return nil, nil
@@ -693,6 +732,7 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 	})
 	if err != nil {
 		ashbyBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -703,19 +743,28 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		ashbyBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "status")
 		return nil, fmt.Errorf("ashby API status %d for %s", resp.StatusCode, slug)
 	}
 
-	// Use 5MB limit: large boards (Notion, OpenAI) can approach 2MB.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	// Raised from 5MB to atsBoardMaxBytes (16MB) for parity with lever/greenhouse.
+	// Same truncation guard: cap hit = incomplete JSON, surface via counter.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
 	if err != nil {
 		ashbyBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "transport")
 		return nil, err
+	}
+	if len(body) == atsBoardMaxBytes {
+		ashbyBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "truncated")
+		return nil, fmt.Errorf("ashby %s: %w", slug, ErrBodyTruncated)
 	}
 
 	var ar ashbyResponse
 	if err := json.Unmarshal(body, &ar); err != nil {
 		ashbyBreaker.Record(false)
+		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "parse")
 		return nil, fmt.Errorf("ashby parse: %w", err)
 	}
 	ashbyBreaker.Record(true)
