@@ -63,16 +63,27 @@ func TestDiscoverJobURLs_GoSearchError_FallsBackToLocal(t *testing.T) {
 	_ = got // may be nil; the point is no panic / propagation
 }
 
-// TestDiscoverJobURLs_GoSearchEmpty_FallsBackToLocal verifies that an empty go-search
-// result triggers local fallback. RED if the empty-result branch is removed.
-func TestDiscoverJobURLs_GoSearchEmpty_FallsBackToLocal(t *testing.T) {
+// TestDiscoverJobURLs_GoSearchEmpty_ReturnsTrustedEmpty verifies that an empty
+// (no-error) go-search response is treated as a definitive "nothing found" answer
+// and returned directly WITHOUT triggering local scraper fallback.
+//
+// Rationale: callers that chain multiple discovery queries (e.g. lever dual-query)
+// depend on reliable empty-on-miss semantics; if local scrapers ran on every empty
+// go-search response they would inject unrelated URLs and suppress the secondary
+// query fallback. Local fallback is reserved for transport errors only.
+//
+// RED if the `else { return deduplicateByURL(results) }` branch is removed and
+// the old `default: fall through` behaviour is restored — this test would then
+// succeed vacuously (no assert on results) but the lever secondary-discovery test
+// (TestLever_SecondaryDiscovery) would fail.
+func TestDiscoverJobURLs_GoSearchEmpty_ReturnsTrustedEmpty(t *testing.T) {
 	resetATSDiscoverer(t)
 	ATSDiscoverer = &fakeDiscoverer{results: nil, err: nil}
 
-	// Must not panic; local path runs; function returns without error.
-	assert.NotPanics(t, func() {
-		_ = discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
-	})
+	results := discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
+	// go-search said "nothing" — local scrapers must NOT run, empty slice expected.
+	assert.Empty(t, results,
+		"expected empty slice when ATSDiscoverer returns nil,nil (trusted empty; no local fallback)")
 }
 
 // TestDiscoverJobURLs_NoDiscoverer_UsesLocalOnly verifies the nil-discoverer path
