@@ -186,3 +186,37 @@ func TestClient_DiscoverBoardURLs_EmptySources_ReturnsNilNil(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Nil(t, results)
 }
+
+// TestClient_DiscoverBoardURLs_AllURLsEmpty_ReturnsError verifies that when
+// go-search returns N sources but every source has an empty URL field, the
+// client returns an error rather than nil,nil.
+//
+// Rationale: nil,nil is interpreted by discoverJobURLs as a AUTHORITATIVE
+// "nothing found" answer that short-circuits local fallback (P4 trusted-empty
+// semantics).  A response with sources-but-no-URLs is a malformed payload
+// (schema drift / partial parse), NOT a genuine empty: treating it as trusted
+// empty would silently swallow results the local path might have found.
+// Returning an error causes discoverJobURLs to fall through to local scrapers.
+//
+// RED if the `len(results) == 0 && len(sources) > 0 → return error` guard in
+// client.go is removed — the call would then return nil,nil and this test fails.
+func TestClient_DiscoverBoardURLs_AllURLsEmpty_ReturnsError(t *testing.T) {
+	// Three sources, all with empty URL — simulates schema drift where the URL
+	// field was renamed or absent in the go-search response.
+	malformedSources := []restSource{
+		{Index: 1, Title: "Acme Jobs", URL: ""},
+		{Index: 2, Title: "Beta Jobs", URL: ""},
+		{Index: 3, Title: "Gamma Jobs", URL: ""},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(cannedResponse(malformedSources))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
+	assert.Nil(t, results, "malformed all-URL-empty response must not return results")
+	assert.Error(t, err, "malformed all-URL-empty response must return error (triggers local fallback)")
+	assert.Contains(t, err.Error(), "malformed", "error message should identify it as malformed")
+}

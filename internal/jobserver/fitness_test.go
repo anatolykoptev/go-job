@@ -300,6 +300,43 @@ func TestFF3_PerSourceDeadlineBound(t *testing.T) {
 	}
 }
 
+// TestFF3b_PerSourceTimeout_IndependentFromParent — the load-bearing test for
+// the per-source timeout added in P4. This test proves the per-source cap fires
+// even when the PARENT context has a LONG deadline. The existing FF-3 test
+// (TestFF3_PerSourceDeadlineBound) only covers parent cancellation; it passes
+// even WITHOUT a per-source timeout in runSource (the parent ctx at 50ms would
+// cancel the source regardless). This test requires an independent cap.
+//
+// Revert-red: removing context.WithTimeout(ctx, perSourceTimeout) from runSource
+// causes this test to timeout waiting 2s — the slow source is NOT cancelled by
+// the parent (10s deadline >> test window), only the per-source cap would cancel it.
+func TestFF3b_PerSourceTimeout_IndependentFromParent(t *testing.T) {
+	prevTimeout := perSourceTimeout
+	perSourceTimeout = 50 * time.Millisecond
+	defer func() { perSourceTimeout = prevTimeout }()
+
+	ch := make(chan sourceResult, 1)
+
+	// Parent has a LONG (10s) deadline — it must NOT be the one that bounds the slow source.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	slow := testSlowSource{sleep: 30 * time.Second}
+	go runSource(ctx, slow, connectors.Query{Query: "test"}, ch)
+
+	select {
+	case r := <-ch:
+		outcome := engine.PlatformOutcome(len(r.results), r.err)
+		if outcome != "timeout" {
+			t.Errorf("FF-3b: expected outcome=timeout from per-source cap, got %q (err: %v)", outcome, r.err)
+		}
+		t.Logf("FF-3b PASS: per-source timeout fired independently, outcome=%s", outcome)
+	case <-time.After(2 * time.Second):
+		t.Fatal("FF-3b: per-source timeout did not fire within 2s — " +
+			"perSourceTimeout not applied in runSource (revert the WithTimeout call)")
+	}
+}
+
 // TestFF4_SentinelErrors_ClassifiedViaHooks verifies that after initJobRegistry
 // wires the hooks, errors.Is(err, jobs.ErrNoAPIKey) → outcome=no_key and
 // errors.Is(err, jobs.ErrParse) → outcome=parse_fail.

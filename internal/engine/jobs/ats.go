@@ -27,7 +27,8 @@ var atsLimiter = ratelimit.NewConcurrencyLimiter(getATSMaxConcurrent())
 
 // ATSDiscoverer is the optional cross-service URL-discovery backend.
 // When non-nil, discoverJobURLs tries it first (go-search fused multi-source
-// path) and falls back to the local SearchDirect path on error/empty result.
+// path); a clean (no-error) empty answer is trusted and local scrapers are
+// NOT consulted — local fallback fires only on transport/decode error.
 // When nil, local SearchDirect is the only path (preserves current behaviour).
 // Set via SetATSDiscoverer; read by discoverJobURLs.
 //
@@ -87,36 +88,39 @@ var (
 // RRF-fused) as the PRIMARY path — the only DC-reliable sources that index
 // boards.greenhouse.io, jobs.lever.co, and jobs.ashbyhq.com (ADR-002, 2026-06-23).
 //
-// On go-search error/empty/timeout, or when ATSDiscoverer is nil, it falls back
-// to go-engine DIRECT + additive SearXNG (the path that existed before this PR).
-// This is a PERMANENT degraded floor — go-job is NEVER worse than before.
+// go-search is treated as AUTHORITATIVE when reachable:
+//   - clean (no-error) empty answer → trusted empty, local scrapers NOT consulted.
+//     Callers that chain multiple discovery queries (e.g. lever dual-query) depend
+//     on reliable empty-on-miss semantics to know when to try a secondary query.
+//   - transport / decode error → fall through to local scrapers (the degraded floor).
 //
-// Discovery source is tracked via gojob_hunt_discovery_source_total so ops can
-// see "running on local-fallback DDG floor" without waiting for the hunt table to
-// go stale.
+// When ATSDiscoverer is nil, or after a go-search transport error, the local path
+// (go-engine DIRECT + additive SearXNG) runs as the degraded floor.  A degraded
+// run is observable via gojob_hunt_discovery_source_total{source="local-fallback"}
+// rising; outcome=empty on ATS sources is the expected downstream signal rather
+// than a permanent-floor guarantee.
 func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
 	if ATSDiscoverer != nil {
 		results, err := ATSDiscoverer.DiscoverBoardURLs(ctx, query)
-		switch {
-		case err != nil:
+		if err != nil {
+			// go-search unavailable — fall through to local scrapers.
 			slog.Warn("discover: go-search unavailable, falling back to local",
 				slog.String("query", query),
 				slog.Any("error", err),
 			)
 			engine.IncrHuntDiscoverySource("local-fallback")
-		case len(results) > 0:
+		} else {
+			// go-search returned a definitive answer (empty or not): trust it and
+			// skip local scrapers.  Local fallback runs only on transport errors so
+			// callers that chain multiple queries (e.g. lever dual-query) get correct
+			// empty-on-miss semantics instead of stale local results.
 			engine.IncrHuntDiscoverySource("go-search")
 			return deduplicateByURL(results)
-		default:
-			slog.Debug("discover: go-search returned empty, falling back to local",
-				slog.String("query", query),
-			)
-			engine.IncrHuntDiscoverySource("local-fallback")
 		}
-		// Fall through to local path.
+		// Fall through to local path only on error.
 	}
 
-	// Local fallback (also the only path when ATSDiscoverer is nil).
+	// Local path: used when ATSDiscoverer is nil or returned a transport error.
 	direct := engine.SearchDirect(ctx, query, "all")
 	// SearXNG is additive: when unconfigured it returns nil,nil — harmless.
 	searx, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
@@ -365,8 +369,28 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slugs := extractLeverSlugs(discoverJobURLs(ctx, searxQuery))
+
+	// Secondary discovery: put the site scope first so search engines apply
+	// "site:jobs.lever.co" filtering at the front of the query — some engines
+	// yield more on-domain results with the site: operator leading rather than
+	// trailing. Only tried when the primary pass returned nothing, to avoid
+	// duplicate fetches on the fast path.
 	if len(slugs) == 0 {
-		slog.Debug("lever: no slugs found in discovery results")
+		var altQuery string
+		if location != "" {
+			altQuery = leverSiteSearch + " " + query + " " + location
+		} else {
+			altQuery = leverSiteSearch + " " + query
+		}
+		slugs = extractLeverSlugs(discoverJobURLs(ctx, altQuery))
+		if len(slugs) > 0 {
+			slog.Debug("lever: primary discovery empty; secondary (site-scope-first) yielded slugs",
+				slog.Int("slugs", len(slugs)))
+		}
+	}
+
+	if len(slugs) == 0 {
+		slog.Debug("lever: no slugs found in discovery results (both queries)")
 		return nil, nil
 	}
 	if len(slugs) > maxATSSlugsPerSearch {
