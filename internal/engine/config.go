@@ -125,6 +125,10 @@ func Init(c Config) {
 	// first Observe. The seconds-shaped default (ExponentialBuckets(0.001,2,16))
 	// is useless for bytes; OversizeBytesBuckets covers 1KB–4MB log-scale.
 	reg.RegisterHistogram(MetricOversizeBytes, kitmetrics.WithBuckets(OversizeBytesBuckets))
+	// Cycle-duration histogram: range 1s–10m, registered before first Observe.
+	// Default ExponentialBuckets top out at ~32.8s — below a full 45s-per-platform
+	// cycle ceiling, putting all slow runs in +Inf.  Explicit buckets fix this.
+	reg.RegisterHistogram(MetricHuntCycleDuration, kitmetrics.WithBuckets(HuntCycleDurationBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}

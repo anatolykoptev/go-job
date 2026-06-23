@@ -24,8 +24,10 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/hunt/discovery"
 	"github.com/anatolykoptev/go_job/internal/hunt/enrich"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
+	"github.com/anatolykoptev/go_job/internal/huntworker"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,6 +48,10 @@ func main() {
 
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED is false or
+	// the hunt store is unavailable).  Must run after initEngine wired the store.
+	huntworker.StartWorker(sigCtx, engine.GetHuntStore())
 
 	startPrometheusScrape(sigCtx, slog.Default())
 
@@ -145,6 +151,14 @@ func heavyToolTimeouts() map[string]time.Duration {
 	} {
 		out[t] = multiLLM
 	}
+	// job_search fans out to up to 17 parallel connectors, each with its own
+	// network I/O and optional LLM post-processing. The 90s default ToolTimeout
+	// is too tight: the HN connector alone can spend up to 30s on Firebase fan-out
+	// (hnFanoutBudget) after thread-find + Algolia, and when platform=all all
+	// connectors run concurrently with platform-level retry. 3m gives ample
+	// headroom for the worst-case parallel fan-out without the tool being
+	// classified as a "heavy LLM" tool.
+	out["job_search"] = env.Duration("JOB_SEARCH_TIMEOUT", 3*time.Minute)
 	return out
 }
 
@@ -317,6 +331,18 @@ func initEngine() {
 				slog.Info("hunt store ready")
 			}
 		}
+	}
+
+	// Wire ATS discovery client (delegates URL discovery to go-search's fused
+	// multi-source pipeline — Brave-API + ox-browser-search + DDG, ADR-002).
+	// GO_SEARCH_URL empty → ATSDiscoverer stays nil → local SearchDirect fallback.
+	if goSearchURL := env.Str("GO_SEARCH_URL", ""); goSearchURL != "" {
+		jobs.SetATSDiscoverer(discovery.NewClient(goSearchURL))
+		slog.Info("ATS discovery client wired",
+			slog.String("go_search_url", goSearchURL),
+		)
+	} else {
+		slog.Info("ATS discovery: GO_SEARCH_URL unset — using local SearchDirect fallback")
 	}
 
 	// MemDB vector client

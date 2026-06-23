@@ -286,3 +286,20 @@ func parseTimestamp(s string) *time.Time {
 	}
 	return nil
 }
+
+// SearxngResultToHuntJob converts a raw SearxngResult (from the ATS discovery
+// + fetch pipeline) to a hunt.Job for the scheduled ingest worker.
+// platform should be one of "greenhouse", "lever", "ashby".
+// Title / company are best-effort from the snippet; the URL is the authoritative
+// dedup key.
+func SearxngResultToHuntJob(r engine.SearxngResult, platform string) hunt.Job {
+	rawJSON, _ := json.Marshal(r)
+	return hunt.Job{
+		DedupHash:   hunt.DedupHash(r.URL),
+		Title:       r.Title,
+		URL:         r.URL,
+		Source:      platform,
+		Description: r.Content,
+		Raw:         rawJSON,
+	}
+}

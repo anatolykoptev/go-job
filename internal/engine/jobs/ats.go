@@ -25,6 +25,27 @@ import (
 //nolint:gochecknoglobals // package-level limiter, mirrors atsBreakers pattern below
 var atsLimiter = ratelimit.NewConcurrencyLimiter(getATSMaxConcurrent())
 
+// ATSDiscoverer is the optional cross-service URL-discovery backend.
+// When non-nil, discoverJobURLs tries it first (go-search fused multi-source
+// path) and falls back to the local SearchDirect path on error/empty result.
+// When nil, local SearchDirect is the only path (preserves current behaviour).
+// Set via SetATSDiscoverer; read by discoverJobURLs.
+//
+//nolint:gochecknoglobals // package-level singleton, set once at startup, read-only after
+var ATSDiscoverer discoverer
+
+// discoverer is the local interface that ats.go depends on.
+// Mirrors discovery.Discoverer — defined here to avoid a package-level import
+// cycle (discovery imports engine; jobs imports engine too; jobs must not
+// import discovery which in turn imports engine again).
+type discoverer interface {
+	DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error)
+}
+
+// SetATSDiscoverer wires the cross-service discovery client at startup.
+// Idempotent; calling with nil reverts to local-only mode.
+func SetATSDiscoverer(d discoverer) { ATSDiscoverer = d }
+
 func getATSMaxConcurrent() int {
 	if v := os.Getenv("GO_JOB_ATS_MAX_CONCURRENT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -59,26 +80,57 @@ var (
 	})
 )
 
-// discoverJobURLs runs the site-scoped discovery query through go-engine DIRECT
-// (DDG/Brave/Marginalia/Wikipedia, enabled via DIRECT_* env) as the PRIMARY path,
-// with SearXNG as an additive source when SEARXNG_URL is configured.
+// discoverJobURLs returns URL/title pairs for ATS slug extraction.
 //
-// This mirrors the company-research routing fixed in #53: SEARXNG_URL is unset in
-// prod, so SearchSearXNG alone returns nil and every ATS / YC / Google connector
-// that relied on it for slug/URL discovery went silently empty. SearchDirect is
-// non-fatal (per-source failures are logged and skipped) and returns whatever any
-// enabled scraper produced. Results are merged and deduped by URL.
+// When ATSDiscoverer is set (GO_SEARCH_URL configured at startup), it calls the
+// go-search fused multi-source pipeline (Brave-API + ox-browser-search + DDG,
+// RRF-fused) as the PRIMARY path — the only DC-reliable sources that index
+// boards.greenhouse.io, jobs.lever.co, and jobs.ashbyhq.com (ADR-002, 2026-06-23).
+//
+// On go-search error/empty/timeout, or when ATSDiscoverer is nil, it falls back
+// to go-engine DIRECT + additive SearXNG (the path that existed before this PR).
+// This is a PERMANENT degraded floor — go-job is NEVER worse than before.
+//
+// Discovery source is tracked via gojob_hunt_discovery_source_total so ops can
+// see "running on local-fallback DDG floor" without waiting for the hunt table to
+// go stale.
 func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
+	if ATSDiscoverer != nil {
+		results, err := ATSDiscoverer.DiscoverBoardURLs(ctx, query)
+		switch {
+		case err != nil:
+			slog.Warn("discover: go-search unavailable, falling back to local",
+				slog.String("query", query),
+				slog.Any("error", err),
+			)
+			engine.IncrHuntDiscoverySource("local-fallback")
+		case len(results) > 0:
+			engine.IncrHuntDiscoverySource("go-search")
+			return deduplicateByURL(results)
+		default:
+			slog.Debug("discover: go-search returned empty, falling back to local",
+				slog.String("query", query),
+			)
+			engine.IncrHuntDiscoverySource("local-fallback")
+		}
+		// Fall through to local path.
+	}
+
+	// Local fallback (also the only path when ATSDiscoverer is nil).
 	direct := engine.SearchDirect(ctx, query, "all")
 	// SearXNG is additive: when unconfigured it returns nil,nil — harmless.
 	searx, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
 	if err != nil {
 		slog.Debug("discover: SearXNG error (additive source)", slog.Any("error", err))
 	}
+	return deduplicateByURL(append(direct, searx...))
+}
 
-	seen := make(map[string]bool, len(direct)+len(searx))
-	merged := make([]engine.SearxngResult, 0, len(direct)+len(searx))
-	for _, r := range append(direct, searx...) {
+// deduplicateByURL deduplicates SearxngResult by URL, preserving order.
+func deduplicateByURL(in []engine.SearxngResult) []engine.SearxngResult {
+	seen := make(map[string]bool, len(in))
+	merged := make([]engine.SearxngResult, 0, len(in))
+	for _, r := range in {
 		if r.URL == "" || seen[r.URL] {
 			continue
 		}

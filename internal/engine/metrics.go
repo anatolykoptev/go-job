@@ -119,12 +119,38 @@ const (
 	// client-side, not a server-side mid-response drop. It turns a previously
 	// un-attributable transport error into an answerable question.
 	MetricHuntList = "hunt_list_total"
+
+	// MetricHuntDiscoveryURLs is the labelled counter
+	// gojob_hunt_discovery_urls_total{platform}.
+	// Bumped once per discovery call with the number of board URLs found.
+	// platform ∈ {greenhouse,lever,ashby}. A sustained zero signals the
+	// slug-discovery substep is empty (the regression that caused the 2026-06-22
+	// collapse) before the hunt_jobs table goes stale.
+	MetricHuntDiscoveryURLs = "hunt_discovery_urls_total"
+
+	// MetricHuntDiscoverySource is the labelled counter
+	// gojob_hunt_discovery_source_total{source}.
+	// source ∈ {"go-search","local-fallback"} — the Scenario-2 discriminator:
+	// when go-search is unreachable the counter shifts to local-fallback so ops
+	// can see "running on degraded DDG floor" without waiting for the table to go stale.
+	MetricHuntDiscoverySource = "hunt_discovery_source_total"
+
+	// MetricHuntCycleDuration is the histogram of ingest worker cycle durations
+	// gojob_hunt_cycle_duration_seconds.  Buckets cover 1s–10m.
+	MetricHuntCycleDuration = "hunt_cycle_duration_seconds"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
 // Range 1KB–4MB covers typical MCP response overflow; each step is ~4×.
 // Registered via reg.RegisterHistogram in engine.Init() before first Observe.
 var OversizeBytesBuckets = []float64{1024, 4096, 16384, 65536, 262144, 1048576, 4194304}
+
+// HuntCycleDurationBuckets covers one ATS ingest worker cycle (seconds).
+// A cycle spans N queries × 3 platforms, each capped at 45s:
+//   worst-case = 3 queries × 3 platforms × 45s = 405s ≈ 7m.
+// Buckets: 1s, 5s, 15s, 30s, 1m, 2m, 5m, 10m — covers the full range.
+// Registered via reg.RegisterHistogram in engine.Init() before first Observe.
+var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
 func GetMetrics() map[string]int64 {
@@ -177,6 +203,17 @@ func FormatMetrics() string {
 			keys = append(keys, MetricPlatformResults+"{platform="+p+",outcome="+oc+"}")
 		}
 	}
+	// Discovery source counters pre-touched so rate()-floor alerts see 0 when
+	// HUNT_INGEST_ENABLED is off (or go-search is healthy but idle) — same class
+	// as per-platform outcome above.  Both validDiscoverySources and
+	// validDiscoveryPlatforms are bounded enums (2 × 3 = 6 series).
+	for _, src := range []string{"go-search", "local-fallback"} {
+		keys = append(keys, MetricHuntDiscoverySource+"{source="+src+"}")
+	}
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		keys = append(keys, MetricHuntDiscoveryURLs+"{platform="+p+"}")
+	}
+
 	var sb strings.Builder
 	for _, k := range keys {
 		fmt.Fprintf(&sb, "%s %d\n", k, m[k])
@@ -326,4 +363,54 @@ func IncrCompanyResearch(outcome string) {
 		return
 	}
 	reg.Incr(MetricCompanyResearch + "{outcome=" + outcome + "}")
+}
+
+// ATS platform label constants for the hunt_discovery_* metrics.
+// Defined here (not in engine/jobs) so metrics.go can use them in FormatMetrics
+// pre-touch loops without creating a cross-package import cycle.
+const (
+	DiscoveryPlatformGreenhouse = "greenhouse"
+	DiscoveryPlatformLever      = "lever"
+	DiscoveryPlatformAshby      = "ashby"
+)
+
+// validDiscoveryPlatforms bounds the platform label for hunt_discovery_urls_total.
+var validDiscoveryPlatforms = map[string]bool{
+	DiscoveryPlatformGreenhouse: true,
+	DiscoveryPlatformLever:      true,
+	DiscoveryPlatformAshby:      true,
+}
+
+// validDiscoverySources bounds the source label for hunt_discovery_source_total.
+// "go-search" = fused multi-source path (Brave-API + ox-browser + DDG via go-search).
+// "local-fallback" = degraded DDG/Marginalia-only path (go-job's own SearchDirect).
+var validDiscoverySources = map[string]bool{
+	"go-search": true, "local-fallback": true,
+}
+
+// IncrHuntDiscoveryURLs adds n to gojob_hunt_discovery_urls_total{platform=<p>}.
+// n is the number of board URLs returned by the discovery step for this platform.
+// n=0 is accepted and treated as Add(0) which initializes the series to 0 —
+// makes "zero URLs found" visible as a flat counter rather than a missing series,
+// guarding the 2026-06-22 silent-collapse class.
+func IncrHuntDiscoveryURLs(platform string, n int) {
+	if !validDiscoveryPlatforms[platform] {
+		return
+	}
+	reg.Add(MetricHuntDiscoveryURLs+"{platform="+platform+"}", int64(n))
+}
+
+// IncrHuntDiscoverySource bumps gojob_hunt_discovery_source_total{source=<s>}.
+// source ∈ {"go-search","local-fallback"}. Unrecognised values are dropped.
+func IncrHuntDiscoverySource(source string) {
+	if !validDiscoverySources[source] {
+		return
+	}
+	reg.Incr(MetricHuntDiscoverySource + "{source=" + source + "}")
+}
+
+// ObserveHuntCycleDuration records a worker cycle duration into
+// gojob_hunt_cycle_duration_seconds.
+func ObserveHuntCycleDuration(d float64) {
+	reg.Observe(MetricHuntCycleDuration, d)
 }
