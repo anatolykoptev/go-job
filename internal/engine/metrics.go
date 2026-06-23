@@ -150,6 +150,17 @@ const (
 	// MetricHuntCycleDuration is the histogram of ingest worker cycle durations
 	// gojob_hunt_cycle_duration_seconds.  Buckets cover 1s–10m.
 	MetricHuntCycleDuration = "hunt_cycle_duration_seconds"
+
+	// MetricATSFetchErrors is the labelled counter
+	// gojob_ats_fetch_errors_total{platform,reason}.
+	// Bumped at each ATS board-fetch error exit (lever/greenhouse/ashby).
+	// platform ∈ {greenhouse,lever,ashby}, reason ∈ {parse,truncated,status,transport}.
+	// The Debug-only error logging that existed before P5 was the root cause of the
+	// insiderone silent-empty class: a 3.75 MB board was truncated at the old 2 MB cap,
+	// json.Unmarshal failed "Unterminated string", the error was only logged at Debug
+	// level, and 0 results propagated silently. This counter makes "discovered slug but
+	// board-fetch failed" visible on the flat metrics endpoint and in Prometheus.
+	MetricATSFetchErrors = "ats_fetch_errors_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -245,6 +256,14 @@ func FormatMetrics() string {
 	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
 		keys = append(keys, MetricHuntDiscoveryURLs+"{platform="+p+"}")
+	}
+	// ATS fetch-error counters pre-touched so rate()-floor alerts see 0 before the
+	// first board-fetch error — same pattern as discovery URL pre-touch above.
+	// 3 platforms × 4 reasons = 12 series (bounded, safe cardinality).
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		for _, r := range []string{"parse", "truncated", "status", "transport"} {
+			keys = append(keys, MetricATSFetchErrors+"{platform="+p+",reason="+r+"}")
+		}
 	}
 
 	var sb strings.Builder
@@ -487,6 +506,31 @@ func IncrHuntDiscoverySource(source string) {
 		return
 	}
 	reg.Incr(MetricHuntDiscoverySource + "{source=" + source + "}")
+}
+
+// validATSFetchErrorReasons bounds the reason label for ats_fetch_errors_total.
+// reason ∈ {parse,truncated,status,transport}.
+//   - parse:     json.Unmarshal failed on a well-sized body.
+//   - truncated: io.LimitReader cap hit — body is incomplete, parse would fail.
+//   - status:    non-200/non-404 HTTP status code from the ATS board API.
+//   - transport: network error (timeout, connection refused, TLS, etc.).
+var validATSFetchErrorReasons = map[string]bool{
+	"parse":     true,
+	"truncated": true,
+	"status":    true,
+	"transport": true,
+}
+
+// IncrATSFetchErrors bumps gojob_ats_fetch_errors_total{platform=<p>,reason=<r>}.
+// platform ∈ {greenhouse,lever,ashby}, reason ∈ {parse,truncated,status,transport}.
+// Unrecognised label values are silently dropped (cardinality guard).
+// Called at every ATS board-fetch error exit so "discovered slug, board failed"
+// is visible in Prometheus before the hunt_jobs table goes stale.
+func IncrATSFetchErrors(platform, reason string) {
+	if !validDiscoveryPlatforms[platform] || !validATSFetchErrorReasons[reason] {
+		return
+	}
+	reg.Incr(MetricATSFetchErrors + "{platform=" + platform + ",reason=" + reason + "}")
 }
 
 // ObserveHuntCycleDuration records a worker cycle duration into
