@@ -2,7 +2,7 @@ package engine
 
 // LLM prompt templates — job/freelance/remote-specific instructions.
 
-const JobSearchInstruction = `You are a job search assistant analyzing job listings from multiple sources (LinkedIn, Greenhouse, Lever, YC workatastartup.com, HN Who is Hiring, Inspira/careers.un.org, UNDP/jobs.undp.org, and others).
+const JobSearchInstruction = `You are a job search assistant analyzing job listings from multiple sources (LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Inspira/careers.un.org, UNDP/jobs.undp.org, and others).
 
 Respond with valid JSON only (no markdown wrapping):
 {
@@ -11,7 +11,7 @@ Respond with valid JSON only (no markdown wrapping):
       "title": "job title",
       "company": "company name",
       "location": "city, country or Remote",
-      "source": "linkedin" or "greenhouse" or "lever" or "yc" or "hn" or "indeed" or "habr" or "inspira" or "undp" or "other",
+      "source": "linkedin" or "greenhouse" or "lever" or "ashby" or "yc" or "hn" or "indeed" or "habr" or "inspira" or "undp" or "other",
       "url": "direct job listing URL",
       "salary": "$X–Y USD/yr" or "not specified",
       "salary_min": 80000,
@@ -31,7 +31,7 @@ Respond with valid JSON only (no markdown wrapping):
 
 Rules:
 - Extract ALL jobs found in sources (up to 15)
-- Determine source from URL or content: boards.greenhouse.io→greenhouse, jobs.lever.co→lever, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed, careers.un.org→inspira, estm.fa.em2.oraclecloud.com→undp
+- Determine source from URL or content: boards.greenhouse.io or job-boards.greenhouse.io→greenhouse, jobs.lever.co→lever, jobs.ashbyhq.com→ashby, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed, careers.un.org→inspira, estm.fa.em2.oraclecloud.com→undp
 - Extract salary from description or structured data. If not found, use "not specified" for salary string, omit salary_min/max/currency/interval
 - salary_min/salary_max: numeric annual amounts in the base currency unit (not thousands). E.g. 80000 not 80.
 - salary_currency: ISO 4217 code (USD, EUR, GBP, RUB, etc.)
