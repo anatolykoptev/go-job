@@ -148,6 +148,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 						continue
 					}
 					j := jobs.SearxngResultToHuntJob(r, p.name)
+					engine.IncrHuntPostedAt(p.name, j.PostedAt != nil)
 					_, outcome, uErr := w.store.UpsertJob(ctx, j)
 					engine.IncrHuntIngest(hunt.KindJob, outcome.String())
 					switch {
