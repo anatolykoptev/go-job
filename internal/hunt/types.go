@@ -41,25 +41,25 @@ const (
 
 // Bounty is a persistent open-source bounty record (widest projection of BountyListing).
 type Bounty struct {
-	ID             int64           `json:"id"`
-	DedupHash      string          `json:"dedup_hash"`
-	Title          string          `json:"title"`
-	URL            string          `json:"url"`
-	Org            string          `json:"org,omitempty"`
-	Source         string          `json:"source"`
-	AmountCents    int64           `json:"amount_cents,omitempty"`
-	Currency       string          `json:"currency,omitempty"`
-	IssueNumber    int             `json:"issue_number,omitempty"`
-	Skills         []string        `json:"skills,omitempty"`
-	Description    string          `json:"description,omitempty"`
-	Relevance      float32         `json:"relevance,omitempty"`
-	Status         string          `json:"status"` // "open" / "closed" / "merged" / "archived"
-	ClosedAt       *time.Time      `json:"closed_at,omitempty"`
-	LastCheckedAt  *time.Time      `json:"last_checked_at,omitempty"`
-	PostedAt       *time.Time      `json:"posted_at,omitempty"`
-	FirstSeenAt    time.Time       `json:"first_seen_at"`
-	LastSeenAt     time.Time       `json:"last_seen_at"`
-	Raw            json.RawMessage `json:"raw,omitempty"`
+	ID            int64           `json:"id"`
+	DedupHash     string          `json:"dedup_hash"`
+	Title         string          `json:"title"`
+	URL           string          `json:"url"`
+	Org           string          `json:"org,omitempty"`
+	Source        string          `json:"source"`
+	AmountCents   int64           `json:"amount_cents,omitempty"`
+	Currency      string          `json:"currency,omitempty"`
+	IssueNumber   int             `json:"issue_number,omitempty"`
+	Skills        []string        `json:"skills,omitempty"`
+	Description   string          `json:"description,omitempty"`
+	Relevance     float32         `json:"relevance,omitempty"`
+	Status        string          `json:"status"` // "open" / "closed" / "merged" / "archived"
+	ClosedAt      *time.Time      `json:"closed_at,omitempty"`
+	LastCheckedAt *time.Time      `json:"last_checked_at,omitempty"`
+	PostedAt      *time.Time      `json:"posted_at,omitempty"`
+	FirstSeenAt   time.Time       `json:"first_seen_at"`
+	LastSeenAt    time.Time       `json:"last_seen_at"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
 }
 
 // Job is a persistent job listing record (widest projection of JobListing).
@@ -154,6 +154,34 @@ type AuditContest struct {
 	FirstSeenAt time.Time       `json:"first_seen_at"`
 	LastSeenAt  time.Time       `json:"last_seen_at"`
 	Raw         json.RawMessage `json:"raw,omitempty"`
+}
+
+// ScoreResult carries the LLM fit-scoring output for a single job.
+// The FitReasons, FitGaps, and SuccessReasoning fields are marshalled
+// together into the score_rationale JSONB column as:
+//
+//	{"fit_reasons":["..."],"fit_gaps":["..."],"success_reasoning":"..."}
+//
+// FitScore is the 0-100 fit alignment score (Axis 1).
+// FitBand is one of "high"/"medium"/"low".
+// SuccessBand is one of "STRONG"/"MODERATE"/"LONGSHOT".
+// OverUnder is one of "under_qualified"/"well_matched"/"over_qualified".
+type ScoreResult struct {
+	FitScore         int       `json:"fit_score"`
+	FitBand          string    `json:"fit_band"`
+	SuccessBand      string    `json:"success_band"`
+	OverUnder        string    `json:"over_under"`
+	FitReasons       []string  `json:"fit_reasons"`
+	FitGaps          []string  `json:"fit_gaps"`
+	SuccessReasoning string    `json:"success_reasoning"`
+	ScoredAt         time.Time `json:"scored_at"`
+}
+
+// scoreRationale is the JSON shape stored in the score_rationale JSONB column.
+type scoreRationale struct {
+	FitReasons       []string `json:"fit_reasons"`
+	FitGaps          []string `json:"fit_gaps"`
+	SuccessReasoning string   `json:"success_reasoning"`
 }
 
 // Rating is a per-user kanban rating for any hunt entry.

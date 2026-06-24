@@ -3,6 +3,7 @@ package hunt
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -319,6 +320,42 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
+}
+
+// SetJobScore persists the fit-scoring result for a job.
+// It updates ONLY the score columns (fit_score, fit_band, success_band,
+// over_under, score_rationale, scored_at). It does NOT touch status,
+// closed_at, first_seen_at, or any ingest fields — scoring is orthogonal
+// to ingest (see UpsertJob invariant at store.go:299-301).
+func (s *Store) SetJobScore(ctx context.Context, id int64, sr ScoreResult) error {
+	rationale := scoreRationale{
+		FitReasons:       sr.FitReasons,
+		FitGaps:          sr.FitGaps,
+		SuccessReasoning: sr.SuccessReasoning,
+	}
+	rationaleJSON, err := json.Marshal(rationale)
+	if err != nil {
+		return fmt.Errorf("hunt: marshal score rationale: %w", err)
+	}
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE hunt_jobs
+		SET fit_score       = $1,
+		    fit_band        = $2,
+		    success_band    = $3,
+		    over_under      = $4,
+		    score_rationale = $5,
+		    scored_at       = $6
+		WHERE id = $7`,
+		sr.FitScore, sr.FitBand, sr.SuccessBand, sr.OverUnder,
+		rationaleJSON, sr.ScoredAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: set job score: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("hunt: set job score: %w", ErrNotFound)
+	}
+	return nil
 }
 
 // JobFilter narrows ListJobs results.
