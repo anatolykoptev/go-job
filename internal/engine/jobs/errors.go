@@ -2,6 +2,12 @@ package jobs
 
 import "errors"
 
+// isBodyTruncated returns true when err is or wraps ErrBodyTruncated.
+// Used by ATS fetchers to distinguish DoS-ceiling hit from genuine parse failures.
+func isBodyTruncated(err error) bool {
+	return errors.Is(err, ErrBodyTruncated)
+}
+
 // Sentinel errors for per-source failure classification.
 //
 // These errors are part of the jobs package public contract: callers (including
@@ -22,10 +28,10 @@ var ErrNoAPIKey = errors.New("source: API key not configured")
 // Maps to outcome=parse_fail in the metric classifier.
 var ErrParse = errors.New("source: response parse failure")
 
-// ErrBodyTruncated is returned when the ATS board response body was silently
-// truncated by io.LimitReader: len(body) == atsBoardMaxBytes means the cap was
-// hit and the body is almost certainly incomplete. Feeding truncated JSON to
-// json.Unmarshal would produce an "unterminated string" parse error and silently
-// return 0 results — returning this sentinel instead makes the failure visible
-// as reason=truncated in gojob_ats_fetch_errors_total.
+// ErrBodyTruncated is returned when the ATS board response body hit the
+// atsBoardMaxBytes DoS ceiling mid-decode: the countingReader in atsBoardDecode
+// consumed exactly the cap and json.Decoder returned an EOF/unexpected-EOF,
+// meaning the board exceeds the ceiling. Makes the failure visible as
+// reason=truncated in gojob_ats_fetch_errors_total rather than as a confusing
+// parse error.
 var ErrBodyTruncated = errors.New("source: ATS board body truncated at read cap")
