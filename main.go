@@ -218,8 +218,8 @@ func initEngine() {
 		BountyMedConfMax:      env.Int("BOUNTY_MED_CONF_MAX", 3),
 		BountySkillBoost:      float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
 		BountyMinRelevance:    float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
-		VaelorNotifyURL:    env.Str("VAELOR_NOTIFY_URL", ""),
-		BountyNotifyChatID: env.Str("BOUNTY_NOTIFY_CHAT_ID", "428660"),
+		// VaelorNotifyURL and BountyNotifyChatID removed — notifications now go via
+		// the go-kit ProductSink bot (TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID).
 		DirectDDG:             env.Bool("DIRECT_DDG", false),
 		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
 		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
@@ -320,13 +320,16 @@ func initEngine() {
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.
 				hStore.SetEnricher(enrich.NewEnricher(jobs.NewGithubFetcherAdapter()))
 				// Notifier: fires on OutcomeCreated (open-only) for any ingest path.
-				// OnSend wires gojob_hunt_notify_total{outcome=sent|failed} metric.
-				notif := notify.NewFromEnv(
-					engine.Cfg.VaelorNotifyURL,
-					engine.Cfg.BountyNotifyChatID,
-				)
-				notif.OnSend = engine.IncrHuntNotify
-				hStore.SetNotifier(notif)
+				// Uses go-kit ProductSink (own bot) — not vaelor loopback.
+				// Requires TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID at deploy.
+				// OnSend bridges sent/failed counts into gojob_hunt_notify_total{outcome}.
+				notif, notifErr := notify.NewFromEnv(engine.Reg())
+				if notifErr != nil {
+					slog.Warn("hunt notify: disabled (bot init failed)", slog.Any("error", notifErr))
+				} else {
+					notif.OnSend = engine.IncrHuntNotify
+					hStore.SetNotifier(notif)
+				}
 
 				slog.Info("hunt store ready")
 			}

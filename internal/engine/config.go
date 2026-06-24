@@ -78,9 +78,9 @@ type Config struct {
 	BountySkillBoost     float32 // boost when query matches bounty skills (default 0.05)
 	BountyMinRelevance   float32 // minimum best-score to return results (default 0.75)
 
-	// Bounty notify (ingest-side hook — no background monitor since Phase 3).
-	VaelorNotifyURL    string // VAELOR_NOTIFY_URL for sending Telegram notifications
-	BountyNotifyChatID string // BOUNTY_NOTIFY_CHAT_ID (default "428660")
+	// Bounty notify: env vars are read directly by go-kit's NewProductSinkFromEnv.
+	// TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID are required at deploy.
+	// VaelorNotifyURL and BountyNotifyChatID removed — no longer used.
 
 	// LLMModelFallback is a CSV cross-provider model fallback chain
 	// (e.g. "cerebras-qwen-3-235b,groq-llama-3.3-70b"). When non-empty,

@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/anatolykoptev/go-engine v1.38.0
-	github.com/anatolykoptev/go-kit v0.85.0
+	github.com/anatolykoptev/go-kit v0.91.0
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.15.0
 	github.com/anatolykoptev/go-stealth v1.16.0
@@ -21,6 +21,7 @@ require (
 
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526 // indirect
 	github.com/PuerkitoBio/goquery v1.11.0 // indirect
 	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect

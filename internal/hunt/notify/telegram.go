@@ -2,153 +2,105 @@
 // Notifications fire on OutcomeCreated — any ingest path (search-tool, MCP, cron).
 // This replaces the 3 hand-rolled monitor goroutines (bounty_monitor.go,
 // freelance_monitor.go, security_monitor.go) that only covered the monitor path.
+//
+// Transport: go-kit ProductSink (own bot, rate-limited fan-out via broadcast.Pacer).
+// VAELOR_NOTIFY_URL is no longer used and can be removed from compose/apps.yml.
+//
+// Env vars required at deploy:
+//   - TELEGRAM_BOT_TOKEN  — bot token for the HUNT_NOTIFY bot
+//   - HUNT_NOTIFY_CHAT_ID — default recipient chat ID (e.g. 428660)
 package notify
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
-	"time"
+
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
+	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// defaultBountyChatID is the Telegram chat ID used when BOUNTY_NOTIFY_CHAT_ID is unset.
-// NIT: extracted from inline literal "428660" to a named constant for clarity.
-const defaultBountyChatID = "428660"
-
-// notifySemSize is the maximum number of concurrent Telegram send goroutines.
-// Prevents unbounded fan-out: 50 new bounties = 50 simultaneous POSTs without this guard.
-const notifySemSize = 8
-
-// notifySem is a counting semaphore that bounds concurrent notify.send goroutines.
-var notifySem = make(chan struct{}, notifySemSize)
-
-// vaelorMsgRequest is the request body for vaelor's message tool API.
-type vaelorMsgRequest struct {
-	Content string `json:"content"`
-	Channel string `json:"channel"`
-	ChatID  string `json:"chat_id"`
+// ProductNotifier wraps a go-kit ProductSink and implements hunt.Notifier.
+// Methods dispatch fire-and-forget goroutines; fan-out and rate limiting are
+// handled by the Pacer inside ProductSink (no semaphore needed here).
+// OnSend, if set, is called with "sent" or "failed" after each Notify call —
+// it bridges into gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify.
+type ProductNotifier struct {
+	sink     kitnotify.ProductSink
+	chatIDs  []int64         // explicit recipient list; empty = use sink's defaultChatIDs
+	OnSend   func(outcome string) // optional metric hook
 }
 
-// Notifier sends Telegram messages via the vaelor message tool.
-// Methods are no-ops when URL is empty. Never construct with a nil pointer —
-// NewFromEnv always returns a valid *Notifier (URL="" = disabled).
-type Notifier struct {
-	URL     string
-	ChatID  string
-	Client  *http.Client
-	OnSend  func(outcome string) // optional metric hook: called with "sent" or "failed"
-}
-
-// NewFromEnv constructs a Notifier from VAELOR_NOTIFY_URL and BOUNTY_NOTIFY_CHAT_ID
-// environment variables. Always returns non-nil; methods are no-ops if URL is empty.
-// The nil-in-interface trap is avoided: callers can store a *Notifier unconditionally;
-// the nil-URL guard inside each method prevents actual sends when URL is empty.
-func NewFromEnv(url, chatID string) *Notifier {
-	if chatID == "" {
-		chatID = defaultBountyChatID
-	}
-	return &Notifier{
-		URL:    url,
-		ChatID: chatID,
-		Client: &http.Client{Timeout: 10 * time.Second},
-	}
-}
-
-// NotifyNewBounty sends a notification for a new bounty entry.
-// Fire-and-forget: spawns a goroutine bounded by the notify semaphore.
-func (n *Notifier) NotifyNewBounty(b hunt.Bounty) {
-	if n == nil || n.URL == "" {
-		return
-	}
-	msg := formatBountyMsg(b)
-	go n.sendBounded(msg)
-}
-
-// NotifyNewJob sends a notification for a new job entry.
-func (n *Notifier) NotifyNewJob(j hunt.Job) {
-	if n == nil || n.URL == "" {
-		return
-	}
-	msg := formatJobMsg(j)
-	go n.sendBounded(msg)
-}
-
-// NotifyNewFreelance sends a notification for a new freelance entry.
-func (n *Notifier) NotifyNewFreelance(f hunt.Freelance) {
-	if n == nil || n.URL == "" {
-		return
-	}
-	msg := formatFreelanceMsg(f)
-	go n.sendBounded(msg)
-}
-
-// NotifyNewSecurity sends a notification for a new security program entry.
-func (n *Notifier) NotifyNewSecurity(s hunt.Security) {
-	if n == nil || n.URL == "" {
-		return
-	}
-	msg := formatSecurityMsg(s)
-	go n.sendBounded(msg)
-}
-
-// sendBounded acquires a semaphore slot before calling send, bounding concurrent POSTs.
-func (n *Notifier) sendBounded(msg string) {
-	notifySem <- struct{}{}
-	defer func() { <-notifySem }()
-	n.send(msg)
-}
-
-func (n *Notifier) send(msg string) {
-	payload, _ := json.Marshal(vaelorMsgRequest{
-		Content: msg,
-		Channel: "telegram",
-		ChatID:  n.ChatID,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.URL+"/api/tools/message", bytes.NewReader(payload))
+// NewFromEnv constructs a ProductNotifier using go-kit's NewProductSinkFromEnv.
+//
+// Required env:
+//   - TELEGRAM_BOT_TOKEN   — bot token (read by go-kit)
+//   - HUNT_NOTIFY_CHAT_ID  — default recipient chat ID (prefix="HUNT")
+//
+// m may be nil (go-kit/metrics.Registry is nil-safe).
+// Returns an error if TELEGRAM_BOT_TOKEN is missing or the BotAPI handshake fails.
+func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
+	sink, err := kitnotify.NewProductSinkFromEnv("HUNT", m)
 	if err != nil {
-		slog.Warn("hunt notify: build request failed", slog.Any("error", err))
-		if n.OnSend != nil {
-			n.OnSend("failed")
-		}
-		return
+		return nil, fmt.Errorf("hunt notify: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := n.Client.Do(req)
-	if err != nil {
-		slog.Warn("hunt notify: send failed", slog.Any("error", err))
-		if n.OnSend != nil {
-			n.OnSend("failed")
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		slog.Warn("hunt notify: non-200 response",
-			slog.Int("status", resp.StatusCode),
-			slog.String("body", string(body)))
-		if n.OnSend != nil {
-			n.OnSend("failed")
-		}
-		return
-	}
-	if n.OnSend != nil {
-		n.OnSend("sent")
-	}
+	return &ProductNotifier{sink: sink}, nil
 }
+
+// NewFromSink constructs a ProductNotifier from a pre-built ProductSink.
+// Used in tests and wherever a fully-configured sink is injected.
+// chatIDs, when non-empty, overrides the sink's default recipients — useful
+// in tests where the sink was built without a default chat ID.
+func NewFromSink(sink kitnotify.ProductSink, chatIDs ...int64) *ProductNotifier {
+	return &ProductNotifier{sink: sink, chatIDs: chatIDs}
+}
+
+// NotifyNewBounty sends a notification for a new bounty entry (fire-and-forget).
+func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
+	n.dispatch(formatBountyMsg(b))
+}
+
+// NotifyNewJob sends a notification for a new job entry (fire-and-forget).
+func (n *ProductNotifier) NotifyNewJob(j hunt.Job) {
+	n.dispatch(formatJobMsg(j))
+}
+
+// NotifyNewFreelance sends a notification for a new freelance entry (fire-and-forget).
+func (n *ProductNotifier) NotifyNewFreelance(f hunt.Freelance) {
+	n.dispatch(formatFreelanceMsg(f))
+}
+
+// NotifyNewSecurity sends a notification for a new security program entry (fire-and-forget).
+func (n *ProductNotifier) NotifyNewSecurity(s hunt.Security) {
+	n.dispatch(formatSecurityMsg(s))
+}
+
+// dispatch sends msg asynchronously via ProductSink.Notify.
+// Successful and failed send counts are forwarded to OnSend if set.
+// n.chatIDs, when non-empty, are passed as Product.ChatIDs; otherwise the
+// sink's configured defaultChatIDs are used (set via HUNT_NOTIFY_CHAT_ID).
+func (n *ProductNotifier) dispatch(msg string) {
+	go func() {
+		sent, failed, err := n.sink.Notify(context.Background(), kitnotify.Product{Text: msg, ChatIDs: n.chatIDs})
+		if err != nil {
+			slog.Warn("hunt notify: send error", slog.Any("error", err))
+		}
+		if n.OnSend != nil {
+			for range sent {
+				n.OnSend("sent")
+			}
+			for range failed {
+				n.OnSend("failed")
+			}
+		}
+	}()
+}
+
+// Compile-time check: *ProductNotifier satisfies hunt.Notifier.
+var _ hunt.Notifier = (*ProductNotifier)(nil)
 
 func formatBountyMsg(b hunt.Bounty) string {
 	var sb strings.Builder
