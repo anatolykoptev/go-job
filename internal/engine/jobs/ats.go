@@ -291,17 +291,67 @@ func unionDiscoverSlugs(
 	return union
 }
 
-// atsBoardMaxBytes caps the board response body read for all three ATS fetchers
-// (greenhouse, lever, ashby). 16 MB is generous for even the largest known boards
-// (insiderone lever board ≈ 3.75 MB; Notion/OpenAI ashby ≈ 2 MB); the old 2 MB
-// cap silently truncated large boards, causing json.Unmarshal to fail with
-// "Unterminated string" and return 0 results with no visible error (P5 incident).
+// atsBoardMaxBytes is the hard DoS-ceiling for ATS board responses across all
+// three fetchers (greenhouse, lever, ashby). The cap is enforced via a
+// io.LimitReader wrapping the response body, but the body is STREAM-DECODED
+// (json.NewDecoder.Decode) rather than ReadAll'd, so this constant is a safety
+// ceiling — not the expected working size. Boards under the cap consume only
+// as much RAM as the JSON decoder needs (incremental), not the full payload.
 //
-// io.LimitReader truncates SILENTLY — after ReadAll, callers MUST check
-// len(body) == atsBoardMaxBytes and return ErrBodyTruncated rather than feeding
-// guaranteed-broken JSON to json.Unmarshal. This converts the silent class into a
-// visible gojob_ats_fetch_errors_total{reason=truncated} counter.
-const atsBoardMaxBytes = 16 * 1024 * 1024 // 16 MiB
+// 64 MiB chosen as: 4× the live worst-case (insiderone lever ≈ 16 MB sales-heavy
+// board per P6 incident) while remaining well below the 24 GB box RAM budget even
+// with N parallel union-fetches.  The old 16 MiB cap caused the P6 counter hit
+// (fetch_errors{lever,reason=truncated}=1) on large sales-heavy lever boards.
+//
+// Truncation detection: if json.Decode returns an error AND the countingReader
+// consumed >= cap bytes, the LimitReader hit the ceiling mid-decode →
+// ErrBodyTruncated (visible as reason=truncated). Any other decode error →
+// reason=parse.
+//
+// Declared as var (not const) to allow test substitution (same pattern as
+// leverAPIBase / greenhouseBoardsAPI); production value is never mutated.
+//
+//nolint:gochecknoglobals // var (not const) to allow test substitution
+var atsBoardMaxBytes int64 = 64 * 1024 * 1024 // 64 MiB DoS ceiling
+
+// atsBoardDecode stream-decodes a JSON board response from r into target.
+// Wraps r in an atsBoardMaxBytes LimitReader (DoS ceiling). Returns
+// ErrBodyTruncated if the cap was hit mid-decode; a decode error otherwise.
+//
+// Memory: incremental — no full-body buffer. Peak allocation is O(one JSON token).
+func atsBoardDecode(r io.Reader, target any) error {
+	return atsBoardDecodeWithCap(r, atsBoardMaxBytes, target)
+}
+
+// atsBoardDecodeWithCap is the cap-parameterised implementation used by
+// atsBoardDecode and directly by unit tests (which use a small cap to avoid
+// allocating a 64 MB fixture).
+func atsBoardDecodeWithCap(r io.Reader, cap int64, target any) error {
+	cr := &countingReader{r: r}
+	lr := io.LimitReader(cr, cap)
+	dec := json.NewDecoder(lr)
+	if err := dec.Decode(target); err != nil {
+		// If consumed >= cap the LimitReader hit the ceiling mid-stream →
+		// the decoder received an unexpected EOF. Surface as ErrBodyTruncated.
+		if cr.n >= cap {
+			return ErrBodyTruncated
+		}
+		return err
+	}
+	return nil
+}
+
+// countingReader wraps an io.Reader and tracks total bytes read.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
 
 // --- Greenhouse ---
 
@@ -454,24 +504,13 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 		return nil, fmt.Errorf("greenhouse API status %d for %s", resp.StatusCode, slug)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
-	if err != nil {
-		greenhouseBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "transport")
-		return nil, err
-	}
-	// io.LimitReader truncates silently: if body is exactly the cap the JSON is
-	// incomplete and Unmarshal will fail. Detect and return an explicit error so
-	// the outcome shows as reason=truncated, not a confusing parse_fail.
-	if len(body) == atsBoardMaxBytes {
-		greenhouseBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "truncated")
-		return nil, fmt.Errorf("greenhouse %s: %w", slug, ErrBodyTruncated)
-	}
-
 	var gr greenhouseResponse
-	if err := json.Unmarshal(body, &gr); err != nil {
+	if err := atsBoardDecode(resp.Body, &gr); err != nil {
 		greenhouseBreaker.Record(false)
+		if isBodyTruncated(err) {
+			engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "truncated")
+			return nil, fmt.Errorf("greenhouse %s: %w", slug, ErrBodyTruncated)
+		}
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "parse")
 		return nil, fmt.Errorf("greenhouse parse: %w", err)
 	}
@@ -662,22 +701,13 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 		return nil, fmt.Errorf("lever API status %d for %s", resp.StatusCode, slug)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
-	if err != nil {
-		leverBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "transport")
-		return nil, err
-	}
-	// io.LimitReader truncates silently — detect and surface via counter.
-	if len(body) == atsBoardMaxBytes {
-		leverBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "truncated")
-		return nil, fmt.Errorf("lever %s: %w", slug, ErrBodyTruncated)
-	}
-
 	var postings []leverPosting
-	if err := json.Unmarshal(body, &postings); err != nil {
+	if err := atsBoardDecode(resp.Body, &postings); err != nil {
 		leverBreaker.Record(false)
+		if isBodyTruncated(err) {
+			engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "truncated")
+			return nil, fmt.Errorf("lever %s: %w", slug, ErrBodyTruncated)
+		}
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "parse")
 		return nil, fmt.Errorf("lever parse: %w", err)
 	}
@@ -862,23 +892,14 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 		return nil, fmt.Errorf("ashby API status %d for %s", resp.StatusCode, slug)
 	}
 
-	// Raised from 5MB to atsBoardMaxBytes (16MB) for parity with lever/greenhouse.
-	// Same truncation guard: cap hit = incomplete JSON, surface via counter.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, atsBoardMaxBytes))
-	if err != nil {
-		ashbyBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "transport")
-		return nil, err
-	}
-	if len(body) == atsBoardMaxBytes {
-		ashbyBreaker.Record(false)
-		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "truncated")
-		return nil, fmt.Errorf("ashby %s: %w", slug, ErrBodyTruncated)
-	}
-
+	// Stream-decode: no full-body ReadAll; DoS ceiling via atsBoardMaxBytes LimitReader.
 	var ar ashbyResponse
-	if err := json.Unmarshal(body, &ar); err != nil {
+	if err := atsBoardDecode(resp.Body, &ar); err != nil {
 		ashbyBreaker.Record(false)
+		if isBodyTruncated(err) {
+			engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "truncated")
+			return nil, fmt.Errorf("ashby %s: %w", slug, ErrBodyTruncated)
+		}
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "parse")
 		return nil, fmt.Errorf("ashby parse: %w", err)
 	}
