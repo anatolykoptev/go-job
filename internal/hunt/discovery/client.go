@@ -89,6 +89,12 @@ type restRequest struct {
 	// synthesis.  Sources[] populated immediately from search result snippets.
 	// Confirmed by live probe 2026-06-23.
 	Depth string `json:"depth"`
+	// BoardDiscovery instructs go-search to relax the per-domain dedup cap so
+	// many results from the same ATS board host (jobs.lever.co, boards.greenhouse.io,
+	// jobs.ashbyhq.com) survive into the result pool instead of being capped at 2.
+	// Added in go-search PR #65 (board_discovery JSON key, omitempty on their side).
+	// Inert / ignored by older go-search versions — backward-compatible.
+	BoardDiscovery bool `json:"board_discovery,omitempty"`
 }
 
 // Client calls go-search's research tool over the REST bridge (plain HTTP+JSON,
@@ -119,8 +125,9 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 	defer cancel()
 
 	body, err := json.Marshal(restRequest{
-		Query: query,
-		Depth: "fast",
+		Query:          query,
+		Depth:          "fast",
+		BoardDiscovery: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("discovery: marshal request: %w", err)

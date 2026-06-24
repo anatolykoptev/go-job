@@ -27,7 +27,8 @@ func cannedResponse(sources []restSource) []byte {
 // StreamableHTTPHandler's "must contain both application/json and
 // text/event-stream" check (which would 400 on POST /mcp).
 //
-// RED if: path changed back to /mcp, Content-Type removed, query/depth fields missing.
+// RED if: path changed back to /mcp, Content-Type removed, query/depth fields missing,
+// or board_discovery=true is removed (reverts the go-search PR #65 integration).
 func TestClient_DiscoverBoardURLs_RequestContract(t *testing.T) {
 	var capturedReq *http.Request
 	var capturedBody restRequest
@@ -67,6 +68,12 @@ func TestClient_DiscoverBoardURLs_RequestContract(t *testing.T) {
 	// Body fields.
 	assert.Contains(t, capturedBody.Query, "boards.greenhouse.io")
 	assert.Equal(t, "fast", capturedBody.Depth)
+	// board_discovery must be true so go-search relaxes its per-domain dedup cap.
+	// RED if BoardDiscovery is removed from restRequest or set to false — go-search
+	// would revert to capping board host results at 2 and lever/greenhouse discovery
+	// yield would drop back to 0-1 slugs.
+	assert.True(t, capturedBody.BoardDiscovery,
+		"board_discovery must be true for ATS slug discovery (go-search PR #65)")
 }
 
 func TestClient_DiscoverBoardURLs_OK(t *testing.T) {
