@@ -384,6 +384,40 @@ type greenhouseResponse struct {
 	Jobs []greenhouseJob `json:"jobs"`
 }
 
+// metaKeyPostedAt is the SearxngResult.Metadata key carrying the structured ATS
+// posting date (RFC3339). SearxngResultToHuntJob reads this back into
+// hunt.Job.PostedAt without depending on the lossy LLM "posted"-field round-trip
+// (the content string drops the date for lever entirely and labels it
+// inconsistently for greenhouse/ashby). The value is the ATS API field verbatim
+// for ISO sources (greenhouse updated_at, ashby publishedAt) or the epoch-ms
+// conversion for lever createdAt.
+const metaKeyPostedAt = "posted_at"
+
+// leverCreatedAtToISO converts a Lever createdAt epoch-millisecond timestamp to an
+// RFC3339 string. Returns "" for non-positive input (field absent / zero), mirroring
+// the opire.go bounty-posted conversion. Lever's API delivers createdAt as epoch ms,
+// not seconds, so time.UnixMilli is the correct constructor.
+func leverCreatedAtToISO(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+}
+
+// setPostedAtMeta stores posted (an RFC3339 / ISO date string from the ATS API) into
+// r.Metadata under metaKeyPostedAt, lazily allocating the map. Empty posted is a
+// no-op so absent dates stay absent (SearxngResultToHuntJob then yields a nil
+// PostedAt → NULL posted_at, the pre-fix behaviour for that single row).
+func setPostedAtMeta(r *engine.SearxngResult, posted string) {
+	if posted == "" {
+		return
+	}
+	if r.Metadata == nil {
+		r.Metadata = make(map[string]string, 1)
+	}
+	r.Metadata[metaKeyPostedAt] = posted
+}
+
 // SearchGreenhouseJobs discovers company slugs via multi-query union (P1) +
 // runtime slug cache (P2), then hits the public JSON API for each slug.
 func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
@@ -437,12 +471,14 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 				desc := engine.TruncateRunes(engine.CleanHTML(job.Content), 600, "...")
 				content += "\n\n" + desc
 			}
-			allResults = append(allResults, engine.SearxngResult{
+			sr := engine.SearxngResult{
 				Title:   job.Title,
 				Content: content,
 				URL:     jobURL,
 				Score:   0.9,
-			})
+			}
+			setPostedAtMeta(&sr, job.UpdatedAt) // greenhouse updated_at is RFC3339 ISO
+			allResults = append(allResults, sr)
 			if len(allResults) >= limit {
 				break
 			}
@@ -636,12 +672,14 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 				desc := engine.TruncateRunes(p.DescriptionPlain, 600, "...")
 				content += "\n\n" + desc
 			}
-			allResults = append(allResults, engine.SearxngResult{
+			sr := engine.SearxngResult{
 				Title:   p.Text,
 				Content: content,
 				URL:     jobURL,
 				Score:   0.9,
-			})
+			}
+			setPostedAtMeta(&sr, leverCreatedAtToISO(p.CreatedAt)) // lever createdAt is epoch ms
+			allResults = append(allResults, sr)
 			if len(allResults) >= limit {
 				break
 			}
@@ -825,12 +863,14 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 				desc := engine.TruncateRunes(j.DescriptionPlain, 600, "...")
 				content += "\n\n" + desc
 			}
-			allResults = append(allResults, engine.SearxngResult{
+			sr := engine.SearxngResult{
 				Title:   j.Title,
 				Content: content,
 				URL:     jobURL,
 				Score:   0.9,
-			})
+			}
+			setPostedAtMeta(&sr, j.PublishedAt) // ashby publishedAt is RFC3339 ISO
+			allResults = append(allResults, sr)
 			if len(allResults) >= limit {
 				break
 			}

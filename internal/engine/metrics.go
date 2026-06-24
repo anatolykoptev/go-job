@@ -169,6 +169,20 @@ const (
 	// A sustained miss rate signals query templates need tuning.
 	MetricHuntDiscoveryVariants = "hunt_discovery_variants_total"
 
+	// MetricHuntPostedAt is the labelled counter
+	// gojob_hunt_posted_at_total{platform,present}.
+	// Bumped once per ATS row ingested by the worker (SearxngResultToHuntJob path).
+	// platform ∈ {greenhouse,lever,ashby}, present ∈ {"true","false"}.
+	// present="true" means the ATS API date (greenhouse updated_at / lever createdAt /
+	// ashby publishedAt) parsed into hunt_jobs.posted_at; present="false" means the
+	// row landed with a NULL posted_at and will be skipped by the #70 recency gate.
+	// This is the regression discriminator for the "ATS rows lose the date" class:
+	// a sustained present=false floor distinguishes "the date-threading fix regressed"
+	// from "the ATS API stopped sending the field" (the latter shows in BOTH the
+	// false count rising AND the upstream board response), before the recency gate
+	// silently skips every ATS posting as no_date.
+	MetricHuntPostedAt = "hunt_posted_at_total"
+
 	// MetricSlugCacheSize is not exposed as a counter (it is a gauge).
 	// Logged via slog; increment/decrement not tracked here.
 
@@ -299,6 +313,13 @@ func FormatMetrics() string {
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
 		for _, r := range []string{"lru", "board_404", "ttl"} {
 			keys = append(keys, MetricSlugCacheEvictions+"{platform="+p+",reason="+r+"}")
+		}
+	}
+	// posted_at population counters pre-touched so a present=false floor is visible
+	// before the first ingest cycle. 3 platforms × 2 present values = 6 series.
+	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
+		for _, present := range []string{"true", "false"} {
+			keys = append(keys, MetricHuntPostedAt+"{platform="+p+",present="+present+"}")
 		}
 	}
 
@@ -567,6 +588,22 @@ func IncrATSFetchErrors(platform, reason string) {
 		return
 	}
 	reg.Incr(MetricATSFetchErrors + "{platform=" + platform + ",reason=" + reason + "}")
+}
+
+// IncrHuntPostedAt bumps gojob_hunt_posted_at_total{platform=<p>,present=<b>}.
+// platform ∈ {greenhouse,lever,ashby}; present is "true" when the ingested ATS row
+// carried a parseable posted_at, "false" when it landed NULL. Unrecognised platform
+// values are silently dropped (cardinality guard); the bool is normalised to the
+// "true"/"false" string here so callers pass a plain bool.
+func IncrHuntPostedAt(platform string, present bool) {
+	if !validDiscoveryPlatforms[platform] {
+		return
+	}
+	val := "false"
+	if present {
+		val = "true"
+	}
+	reg.Incr(MetricHuntPostedAt + "{platform=" + platform + ",present=" + val + "}")
 }
 
 // ObserveHuntCycleDuration records a worker cycle duration into
