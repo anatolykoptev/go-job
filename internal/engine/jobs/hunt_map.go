@@ -292,6 +292,13 @@ func parseTimestamp(s string) *time.Time {
 // platform should be one of "greenhouse", "lever", "ashby".
 // Title / company are best-effort from the snippet; the URL is the authoritative
 // dedup key.
+//
+// PostedAt is read from r.Metadata[metaKeyPostedAt] — the structured ATS API date
+// the fetchers thread through (greenhouse updated_at, lever createdAt→ISO, ashby
+// publishedAt). This path does NOT go through the LLM extractor, so without this
+// the worker's ATS rows always landed with a NULL posted_at and the #70 recency
+// gate skipped every one of them as no_date. parseTimestamp returns nil on an
+// absent/garbage value, keeping posted_at NULL for that single row.
 func SearxngResultToHuntJob(r engine.SearxngResult, platform string) hunt.Job {
 	rawJSON, _ := json.Marshal(r)
 	return hunt.Job{
@@ -300,6 +307,7 @@ func SearxngResultToHuntJob(r engine.SearxngResult, platform string) hunt.Job {
 		URL:         r.URL,
 		Source:      platform,
 		Description: r.Content,
+		PostedAt:    parseTimestamp(r.Metadata[metaKeyPostedAt]),
 		Raw:         rawJSON,
 	}
 }
