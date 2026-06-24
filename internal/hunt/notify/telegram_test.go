@@ -3,6 +3,7 @@ package notify_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,13 +74,15 @@ func TestNotifyNewBounty_SendsOnce(t *testing.T) {
 	}
 }
 
-// TestNotifyNewJob_SendsOnce verifies NotifyNewJob dispatches to the bot.
+// TestNotifyNewJob_SendsOnce verifies NotifyNewJob dispatches to the bot for a fresh posting.
+// PostedAt is set to 1h ago (within the 48h recency gate) so the gate lets it through.
 // Red-on-revert: remove dispatch call in NotifyNewJob → callCount stays 0.
 func TestNotifyNewJob_SendsOnce(t *testing.T) {
 	stub := &stubSender{}
 	n := newNotifier(stub, kitmetrics.NewRegistry(), testChatID)
 
-	n.NotifyNewJob(hunt.Job{Title: "SRE", Company: "Acme", URL: "https://jobs.acme.io/1", Source: "greenhouse"})
+	postedAt := time.Now().Add(-1 * time.Hour)
+	n.NotifyNewJob(hunt.Job{Title: "SRE", Company: "Acme", URL: "https://jobs.acme.io/1", Source: "greenhouse", PostedAt: &postedAt})
 	drainDispatch()
 
 	if stub.callCount.Load() == 0 {
@@ -220,3 +223,135 @@ func TestFanOutViaNotifier(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 var _ hunt.Notifier = (*notify.ProductNotifier)(nil)
+
+// ---------------------------------------------------------------------------
+// Recency gate (NotifyNewJob only)
+// ---------------------------------------------------------------------------
+
+func TestNotifyNewJob_FreshJob_Sends(t *testing.T) {
+	// job posted 1h ago → within 48h → dispatch fires
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	postedAt := time.Now().Add(-1 * time.Hour)
+	n.NotifyNewJob(hunt.Job{Title: "fresh", URL: "https://jobs.io/1", Source: "greenhouse", PostedAt: &postedAt})
+	drainDispatch()
+
+	if stub.callCount.Load() == 0 {
+		t.Error("fresh job (posted 1h ago) must dispatch to Telegram, got 0 calls")
+	}
+}
+
+func TestNotifyNewJob_StaleJob_Skips(t *testing.T) {
+	// job posted 8 days ago → older than 48h → no dispatch, stale counter
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	var outcomes []string
+	var mu sync.Mutex
+	n.OnSend = func(outcome string) {
+		mu.Lock()
+		outcomes = append(outcomes, outcome)
+		mu.Unlock()
+	}
+
+	postedAt := time.Now().Add(-8 * 24 * time.Hour)
+	n.NotifyNewJob(hunt.Job{Title: "stale", URL: "https://jobs.io/2", Source: "greenhouse", PostedAt: &postedAt})
+	drainDispatch()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if stub.callCount.Load() != 0 {
+		t.Errorf("stale job must NOT dispatch to Telegram, got %d calls", stub.callCount.Load())
+	}
+	if len(outcomes) != 1 || outcomes[0] != "stale" {
+		t.Errorf("expected OnSend(\"stale\"), got %v", outcomes)
+	}
+}
+
+func TestNotifyNewJob_NilPostedAt_Skips(t *testing.T) {
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	var outcomes []string
+	var mu sync.Mutex
+	n.OnSend = func(outcome string) {
+		mu.Lock()
+		outcomes = append(outcomes, outcome)
+		mu.Unlock()
+	}
+
+	// PostedAt is nil
+	n.NotifyNewJob(hunt.Job{Title: "no-date", URL: "https://jobs.io/3", Source: "habr"})
+	drainDispatch()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if stub.callCount.Load() != 0 {
+		t.Errorf("job with nil PostedAt must NOT dispatch to Telegram, got %d calls", stub.callCount.Load())
+	}
+	if len(outcomes) != 1 || outcomes[0] != "no_date" {
+		t.Errorf("expected OnSend(\"no_date\"), got %v", outcomes)
+	}
+}
+
+func TestNotifyNewJob_JustUnderMaxAge_Sends(t *testing.T) {
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	maxAge := 48 * time.Hour
+	n := notify.NewFromSinkWithMaxAge(sink, maxAge, testChatID)
+
+	postedAt := time.Now().Add(-(maxAge - time.Minute))
+	n.NotifyNewJob(hunt.Job{Title: "boundary-fresh", URL: "https://jobs.io/4", Source: "lever", PostedAt: &postedAt})
+	drainDispatch()
+
+	if stub.callCount.Load() == 0 {
+		t.Error("job posted just under maxAge must dispatch to Telegram, got 0 calls")
+	}
+}
+
+func TestNotifyNewJob_JustOverMaxAge_Skips(t *testing.T) {
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	maxAge := 48 * time.Hour
+	n := notify.NewFromSinkWithMaxAge(sink, maxAge, testChatID)
+
+	var outcomes []string
+	var mu sync.Mutex
+	n.OnSend = func(outcome string) {
+		mu.Lock()
+		outcomes = append(outcomes, outcome)
+		mu.Unlock()
+	}
+
+	postedAt := time.Now().Add(-(maxAge + time.Minute))
+	n.NotifyNewJob(hunt.Job{Title: "boundary-stale", URL: "https://jobs.io/5", Source: "lever", PostedAt: &postedAt})
+	drainDispatch()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if stub.callCount.Load() != 0 {
+		t.Errorf("job posted just over maxAge must NOT dispatch, got %d calls", stub.callCount.Load())
+	}
+	if len(outcomes) != 1 || outcomes[0] != "stale" {
+		t.Errorf("expected OnSend(\"stale\"), got %v", outcomes)
+	}
+}
+
+func TestNotifyNewBounty_NilPostedAt_StillSends(t *testing.T) {
+	// Bounties are NOT gated by recency — PostedAt nil must not skip bounties
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	// Bounty has a PostedAt nil (typical; Bounty.PostedAt exists but won't be checked)
+	n.NotifyNewBounty(hunt.Bounty{Title: "bounty", URL: "https://algora.io/5", AmountCents: 100})
+	drainDispatch()
+
+	if stub.callCount.Load() == 0 {
+		t.Error("NotifyNewBounty must NOT be gated by recency logic, got 0 calls")
+	}
+}
