@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"slices"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -89,6 +90,18 @@ func (c *Client) doRequest(ctx context.Context, baseURL, apiKey string, req *Cha
 
 	msg := chatResp.Choices[0].Message
 	clean, reasoning := splitReasoning(msg.Content, msg.ReasoningContent)
+	// Empty-completion guard: a 200-OK whose assistant message carries no usable
+	// content (no text AND no tool calls) is a semantic failure, not a success.
+	// Observed in production when a reasoning model exhausts its max_tokens budget
+	// on reasoning tokens and emits finish_reason=length with empty content. Pre-
+	// guard this short-circuited the model-fallback chain on the first such model
+	// and propagated an empty answer with no error (silent downgrade). Surface it
+	// as the empty-completion sentinel so the chain advances to a model that can
+	// answer (and a single endpoint reports a real error instead of "").
+	// Tool-call responses legitimately have empty content, so they are exempt.
+	if clean == "" && len(msg.ToolCalls) == 0 {
+		return nil, newEmptyCompletionError(chatResp.Choices[0].FinishReason)
+	}
 	return &ChatResponse{
 		Content:      clean,
 		Reasoning:    reasoning,
@@ -163,6 +176,14 @@ func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequ
 		epReq.Model = ep.Model
 	}
 
+	// Per-endpoint reasoning_effort gate: strip from endpoints NOT in the allowlist.
+	// Empty allowlist = pass-through (existing behavior preserved).
+	if epReq.ReasoningEffort != "" && len(c.reasoningEffortModels) > 0 {
+		if !slices.Contains(c.reasoningEffortModels, epReq.Model) {
+			epReq.ReasoningEffort = ""
+		}
+	}
+
 	// Per-attempt timeout: derive a child ctx bounded by d, but only when
 	// d > 0 and WithEndpoints is in use. The outer ctx remains the absolute
 	// ceiling — context.WithTimeout takes min(d, time-left-on-outer).
@@ -198,7 +219,44 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 		var lastErr error
 		attempted := false
 		endpoints, skipCooled := c.cooldownCandidates()
-		for _, ep := range endpoints {
+		// tryOrder is the iteration slice for the loop. It may be a reordered or
+		// filtered subset of endpoints (never a superset). The original endpoints
+		// slice from cooldownCandidates is always preserved as the source of the
+		// never-fail-closed race guard at the bottom (endpoints[0]), because tryOrder
+		// can be empty (e.g. all models weight-0 under SelectionWeighted).
+		tryOrder := endpoints
+		switch c.selectionStrategy {
+		case SelectionRandom:
+			// When skipCooled=true (≥1 healthy candidate exists), build the
+			// eligible (non-cooled) subset and shuffle it. When skipCooled=false
+			// (cooldown disabled OR all-cooled last-resort path), endpoints is
+			// either the full chain (no cooldown) or endpoints[:1] (all-cooled);
+			// shuffle the full list in the no-cooldown case, preserve order in
+			// the last-resort case.
+			if skipCooled {
+				// eligibleEndpoints is Guard A: filter to non-cooled subset before
+				// shuffling so a cooled model is never placed in the try-order.
+				// Guard B (the per-ep cooling() check in the loop below) is the
+				// race-safety backstop for the concurrent-cooldown window where a
+				// model may be cooled between this snapshot and the loop iteration.
+				tryOrder = shuffleEndpoints(eligibleEndpoints(endpoints, c.cooldown), c.rander)
+			} else if c.cooldown == nil {
+				// No cooldown configured: all endpoints are eligible; shuffle all.
+				tryOrder = shuffleEndpoints(endpoints, c.rander)
+			}
+			// else: all-cooled last-resort (endpoints[:1]): keep priority order.
+		case SelectionWeighted:
+			if skipCooled {
+				// eligibleEndpoints is Guard A for weighted path: filter non-cooled
+				// subset first, then apply weighted exclusion + ordering.
+				tryOrder = weightedShuffleEndpoints(eligibleEndpoints(endpoints, c.cooldown), c.modelWeights, c.rander)
+			} else if c.cooldown == nil {
+				// No cooldown: all endpoints eligible for weighted shuffle.
+				tryOrder = weightedShuffleEndpoints(endpoints, c.modelWeights, c.rander)
+			}
+			// else: all-cooled last-resort (endpoints[:1]): keep priority order.
+		}
+		for _, ep := range tryOrder {
 			// Skip a model in quota cooldown, but only while a healthier
 			// candidate remains — degraded > dead.
 			if skipCooled && c.cooldown.cooling(ep.Model) {
