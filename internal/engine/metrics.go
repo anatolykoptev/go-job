@@ -79,8 +79,8 @@ const (
 	MetricHuntIngest = "hunt_ingest_total"
 
 	// MetricHuntNotify is the labelled counter gojob_hunt_notify_total{outcome}.
-	// Incremented by the Telegram notifier after each send attempt.
-	// outcome ∈ {"sent", "failed"}.
+	// Incremented by the Telegram notifier after each send attempt or recency-gate
+	// decision. outcome ∈ {"sent", "failed", "stale", "no_date"}.
 	MetricHuntNotify = "hunt_notify_total"
 
 	// MetricCompanyResearch is the labelled counter
@@ -191,7 +191,9 @@ var SourceDurationBuckets = []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120}
 
 // HuntCycleDurationBuckets covers one ATS ingest worker cycle (seconds).
 // A cycle spans N queries × 3 platforms, each capped at 45s:
-//   worst-case = 3 queries × 3 platforms × 45s = 405s ≈ 7m.
+//
+//	worst-case = 3 queries × 3 platforms × 45s = 405s ≈ 7m.
+//
 // Buckets: 1s, 5s, 15s, 30s, 1m, 2m, 5m, 10m — covers the full range.
 // Registered via reg.RegisterHistogram in engine.Init() before first Observe.
 var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
@@ -209,7 +211,6 @@ func GetMetrics() map[string]int64 {
 	m["cache_misses_total"] = misses
 	return m
 }
-
 
 // FormatMetrics returns metrics as a simple text format for HTTP endpoint.
 func FormatMetrics() string {
@@ -281,6 +282,11 @@ func FormatMetrics() string {
 			keys = append(keys, MetricATSFetchErrors+"{platform="+p+",reason="+r+"}")
 		}
 	}
+	// hunt_notify_total pre-touched for all outcomes so rate()-floor alerts see 0
+	// before the first notify fire. outcome ∈ {"sent","failed","stale","no_date"}.
+	for _, oc := range []string{"sent", "failed", "stale", "no_date"} {
+		keys = append(keys, MetricHuntNotify+"{outcome="+oc+"}")
+	}
 	// Discovery variant counters (P1 multi-query union).
 	// 3 platforms × 2 results = 6 series.
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
@@ -324,7 +330,7 @@ func IncrCantinaRequests()       { reg.Incr(MetricCantinaRequests) }
 func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
-func IncrToolCall() { reg.Incr(MetricToolCalls) }
+func IncrToolCall()              { reg.Incr(MetricToolCalls) }
 
 // validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
 // Unknown kinds are rejected to prevent Prometheus cardinality explosion.
@@ -383,8 +389,8 @@ func ObserveOversizeBytes(n int) {
 }
 
 // IncrHuntNotify bumps gojob_hunt_notify_total{outcome=<outcome>}.
-// outcome must be "sent" or "failed" — bounded label (no cardinality risk).
-// Called by the Telegram notifier after each send attempt.
+// outcome ∈ {"sent", "failed", "stale", "no_date"} — bounded label (no cardinality risk).
+// Called by the Telegram notifier after each send attempt or recency-gate decision.
 func IncrHuntNotify(outcome string) {
 	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
 }
