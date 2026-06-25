@@ -102,7 +102,13 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 		assert.Equal(t, sr, notifier.scores[0], "full ScoreResult must be threaded to notifier")
 	})
 
-	t.Run("unscored_sends_degraded", func(t *testing.T) {
+	t.Run("unscored_dispatches_degraded_fail_open", func(t *testing.T) {
+		// LLM-fail (FitBand=="unscored") → fail-open: the notifier IS called with
+		// the degraded card even with a high MIN_FIT (unscored bypasses the fit
+		// gate). The "unscored" metric is emitted by the NOTIFIER after its recency
+		// gate (see telegram_test Test_NotifyNewJob_UnscoredMetric), NOT here — so a
+		// stale unscored job never double-counts "unscored"+"stale". The worker's
+		// only pre-dispatch metric is "low_fit".
 		t.Setenv("HUNT_NOTIFY_MIN_FIT", "60")
 
 		metrics := &fakeMetricSink{}
@@ -115,8 +121,11 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 		sr := &hunt.ScoreResult{FitBand: "unscored"}
 		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
 
-		assert.Equal(t, int32(1), notifier.callCount.Load(), "unscored (LLM fail): notifier must be called (fail-open)")
-		assert.Contains(t, metrics.outcomes, "unscored", "unscored outcome must be recorded in metrics")
+		assert.Equal(t, int32(1), notifier.callCount.Load(), "unscored (LLM fail): notifier must be called (fail-open dispatch)")
+		// The worker emits NO pre-dispatch metric on the unscored path (the
+		// notifier owns "unscored" post-recency). RED-on-revert: re-add a
+		// worker-side w.notifyMetric("unscored") before dispatch → this fails.
+		assert.Empty(t, metrics.outcomes, "worker must emit no pre-dispatch metric on the unscored path")
 	})
 
 	t.Run("nil_score_sends_recency_only", func(t *testing.T) {

@@ -341,6 +341,85 @@ func TestNotifyNewJob_JustOverMaxAge_Skips(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// "unscored" metric — emitted post-recency, never double-counts with stale
+// ---------------------------------------------------------------------------
+
+// Test_NotifyNewJob_UnscoredMetric: a FRESH degraded (FitBand=="unscored") card
+// passes recency → OnSend("unscored") fires AND the card dispatches (fail-open).
+// Red-on-revert: remove the OnSend("unscored") line in NotifyNewJob → no "unscored".
+func Test_NotifyNewJob_UnscoredMetric(t *testing.T) {
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	var outcomes []string
+	var mu sync.Mutex
+	n.OnSend = func(outcome string) {
+		mu.Lock()
+		outcomes = append(outcomes, outcome)
+		mu.Unlock()
+	}
+
+	postedAt := time.Now().Add(-1 * time.Hour) // fresh
+	n.NotifyNewJob(
+		hunt.Job{Title: "degraded", URL: "https://jobs.io/u1", Source: "greenhouse", PostedAt: &postedAt},
+		&hunt.ScoreResult{FitBand: "unscored"},
+	)
+	drainDispatch()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var hasUnscored bool
+	for _, o := range outcomes {
+		if o == "unscored" {
+			hasUnscored = true
+		}
+	}
+	if !hasUnscored {
+		t.Errorf("fresh unscored card must emit OnSend(\"unscored\"), got %v", outcomes)
+	}
+	if stub.callCount.Load() == 0 {
+		t.Error("fresh unscored card must still dispatch (fail-open), got 0 calls")
+	}
+}
+
+// Test_NotifyNewJob_StaleUnscored_NoDoubleCount is the regression guard for the
+// metric double-count: a STALE unscored job must count ONLY as "stale" — never
+// "unscored"+"stale". The "unscored" emit lives AFTER the recency gate, so a
+// recency-dropped job never reaches it.
+// Red-on-revert: move the OnSend("unscored") line BEFORE the recency check (or
+// back into the worker before dispatch) → "unscored" leaks here and this fails.
+func Test_NotifyNewJob_StaleUnscored_NoDoubleCount(t *testing.T) {
+	stub := &stubSender{}
+	sink := kitnotify.NewProductSink(stub, kitnotify.WithRPS(1000))
+	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
+
+	var outcomes []string
+	var mu sync.Mutex
+	n.OnSend = func(outcome string) {
+		mu.Lock()
+		outcomes = append(outcomes, outcome)
+		mu.Unlock()
+	}
+
+	postedAt := time.Now().Add(-8 * 24 * time.Hour) // stale (>48h)
+	n.NotifyNewJob(
+		hunt.Job{Title: "stale-degraded", URL: "https://jobs.io/u2", Source: "greenhouse", PostedAt: &postedAt},
+		&hunt.ScoreResult{FitBand: "unscored"},
+	)
+	drainDispatch()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if stub.callCount.Load() != 0 {
+		t.Errorf("stale unscored job must NOT dispatch, got %d calls", stub.callCount.Load())
+	}
+	if len(outcomes) != 1 || outcomes[0] != "stale" {
+		t.Errorf("stale unscored job must emit exactly [\"stale\"] (no double-count), got %v", outcomes)
+	}
+}
+
 func TestNotifyNewBounty_NilPostedAt_StillSends(t *testing.T) {
 	// Bounties are NOT gated by recency — PostedAt nil must not skip bounties
 	stub := &stubSender{}

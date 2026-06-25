@@ -29,9 +29,11 @@ import (
 // ProductNotifier wraps a go-kit ProductSink and implements hunt.Notifier.
 // Methods dispatch fire-and-forget goroutines; fan-out and rate limiting are
 // handled by the Pacer inside ProductSink (no semaphore needed here).
-// OnSend, if set, is called with "sent", "failed", "stale", or "no_date" after
-// each Notify or recency-gate decision — it bridges into
-// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify.
+// OnSend, if set, is called with "sent", "failed", "stale", "no_date", or
+// "unscored" after each Notify or recency-gate decision — it bridges into
+// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify. "unscored" is a
+// card-type marker emitted only for a degraded card that PASSES recency (so it
+// never overlaps a terminal "stale"/"no_date" drop).
 type ProductNotifier struct {
 	sink    kitnotify.ProductSink
 	chatIDs []int64              // explicit recipient list; empty = use sink's defaultChatIDs
@@ -95,7 +97,10 @@ func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
 // NotifyNewJob sends a notification for a new job entry (fire-and-forget).
 // Recency gate: jobs with nil PostedAt are skipped (outcome "no_date"); jobs
 // posted more than maxAge ago are skipped (outcome "stale"). Both outcomes bump
-// OnSend but do NOT call dispatch.
+// OnSend but do NOT call dispatch. A degraded (FitBand=="unscored") card that
+// PASSES recency additionally bumps OnSend("unscored") before dispatch — the
+// emit lives here, after the recency gate, so an unscored job that is also stale
+// counts only as "stale" (no double-count).
 // score is nil when scoring is disabled or not yet available — in that case a
 // degraded recency-only card is rendered. When FitBand=="unscored" (LLM failed),
 // a degraded card is also rendered. For all other non-nil scores, a full fit-card
@@ -114,6 +119,15 @@ func (n *ProductNotifier) NotifyNewJob(j hunt.Job, score *hunt.ScoreResult) {
 			n.OnSend("stale")
 		}
 		return
+	}
+	// Recency passed → terminal dispatch. A degraded (LLM-fail) card is marked
+	// "unscored" HERE, after recency, so a stale unscored job is counted only as
+	// "stale" — never "unscored"+"stale". "unscored" is a card-TYPE marker on
+	// dispatched degraded cards (it overlaps the per-recipient "sent"/"failed"
+	// from dispatch by design); the mutually-exclusive TERMINAL-DROP outcomes are
+	// stale/no_date (here) and low_fit (the worker fit gate).
+	if score != nil && score.FitBand == hunt.FitBandUnscored && n.OnSend != nil {
+		n.OnSend("unscored")
 	}
 	n.dispatch(formatJobMsg(j, score))
 }
@@ -185,7 +199,7 @@ func FormatJobMsgForTest(j hunt.Job, score *hunt.ScoreResult) string {
 //
 //	<url>
 //
-// Degraded card (score == nil OR score.FitBand == "unscored"):
+// Degraded card (score == nil OR score.FitBand == hunt.FitBandUnscored):
 //
 //	[fresh · recency-only] <title>
 //	<company> · <location/remote> · <salary if present>
@@ -196,7 +210,7 @@ func FormatJobMsgForTest(j hunt.Job, score *hunt.ScoreResult) string {
 // It is assembled from the enum band (STRONG/MODERATE/LONGSHOT) and the
 // already-sanitised reasoning string only. No fmt.Sprintf with numeric arg.
 func formatJobMsg(j hunt.Job, score *hunt.ScoreResult) string {
-	isDegraded := score == nil || score.FitBand == "unscored"
+	isDegraded := score == nil || score.FitBand == hunt.FitBandUnscored
 
 	var sb strings.Builder
 
