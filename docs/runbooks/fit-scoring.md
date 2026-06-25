@@ -19,12 +19,19 @@ and consumed by the `hunt_list` / `job_match` MCP tools.
 | `HUNT_NOTIFY_MIN_FIT` | `0` | Minimum `fit_score` to notify (0 = gate open, all scores pass) |
 | `HUNT_SCORE_MIN_JACCARD` | `8` | Jaccard pre-filter threshold (0–100); below → `reject` without LLM |
 | `HUNT_SCORE_MAX_LLM_PER_CYCLE` | `50` | Per-cycle LLM budget ceiling (circuit breaker) |
-| `HUNT_SCORE_SWEEP_LIMIT` | `50` | Max unscored-open jobs to backfill per cycle |
+| `HUNT_SCORE_SWEEP_LIMIT` | `50` | Max unscored-open jobs to backfill per cycle (see note below) |
 | `HUNT_SCORE_FAIL_OPEN` | `true` | On LLM error: `true` → notify with degraded card; `false` → drop |
 | `HUNT_NOTIFY_MAX_AGE` | `48h` | Recency gate; jobs posted older than this → `stale` without LLM |
 | `HUNT_SCORE_RESCORE_ALL` | `false` | One-shot: sweep re-scores ALL open jobs, not just unscored ones |
 
 All knobs are read **per-cycle** (no redeploy needed to change them at runtime).
+
+> **Note on `HUNT_SCORE_SWEEP_LIMIT` vs `HUNT_SCORE_MAX_LLM_PER_CYCLE`:** setting
+> `HUNT_SCORE_SWEEP_LIMIT` larger than `HUNT_SCORE_MAX_LLM_PER_CYCLE` is safe —
+> the sweep only fetches as many jobs as there is remaining LLM budget per cycle
+> (budget cap is enforced in the implementation). A larger limit just under-utilises;
+> it never abandons jobs to permanent-unscored. Keeping both values equal is the
+> simplest configuration.
 
 ---
 

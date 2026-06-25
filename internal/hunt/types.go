@@ -179,6 +179,17 @@ type AuditContest struct {
 // distinct from the numeric display bands ("strong"/"moderate"/"low"/"reject").
 const FitBandUnscored = "unscored"
 
+// FitBandStale and FitBandReject are the pre-LLM short-circuit bands.
+// FitBandStale: job PostedAt nil or older than HUNT_NOTIFY_MAX_AGE.
+// FitBandReject: job failed the Jaccard keyword-overlap pre-filter.
+// Both are keyed by observeScore (worker) and the scorer to route the
+// hunt_score_filtered_total metric. Centralised here so a rename cannot
+// silently diverge scorer.go from worker.go.
+const (
+	FitBandStale  = "stale"
+	FitBandReject = "reject"
+)
+
 type ScoreResult struct {
 	FitScore         int       `json:"fit_score"`
 	FitBand          string    `json:"fit_band"`

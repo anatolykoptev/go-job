@@ -1288,9 +1288,10 @@ type jobScanner interface {
 }
 
 // scanJobRow scans one hunt_jobs row (full projection including status columns).
-// Centralises the nullable-field unwrapping that is otherwise copy-pasted across
-// ListJobs, UnscoredOpenJobs, GetJob, and similar selects. The caller must provide
-// a row that was queried with the canonical column order (id … last_checked_at).
+// Centralises the nullable-field unwrapping for the two pgx.Rows-based callers:
+// ListJobs and UnscoredOpenJobs. GetJob uses an inline pgx.QueryRow scan and is
+// NOT routed through this helper. The caller must provide a row that was queried
+// with the canonical column order (id … last_checked_at).
 func scanJobRow(row jobScanner) (Job, error) {
 	var j Job
 	var company, extID, location, remote, jobType, exp, cur, interval, desc *string

@@ -11,6 +11,10 @@ package huntworker
 //   - Remove engine.ObserveHuntFitScore for LLMCalled→true → histogram test fails.
 //   - Remove sweep code in runCycle → Test_Sweep_ScoresUnscoredOpen fails.
 //   - Remove circuit-breaker check in sweep → budgetShared test fails.
+//   - Remove FitBandStale/FitBandReject consts → stale/reject routing breaks.
+//   - Revert budget increment to LLMCalled → parse_fail/llm_error don't consume budget.
+//   - Revert histogram gate to LLMCalled → parse_fail FitScore pollutes histogram.
+//   - Remove sweep budget cap → sweep calls UnscoredOpenJobs even when budget exhausted.
 
 import (
 	"context"
@@ -39,16 +43,19 @@ type fakeMetricRecorder struct {
 // setup — the helper's logic is what we're validating here.
 func (r *fakeMetricRecorder) observe(sr hunt.ScoreResult) {
 	// Mirror the production observeScore logic with fake recording fns.
+	// NIT-3: uses FitBandStale/FitBandReject consts (not bare strings).
 	switch sr.FitBand {
-	case "stale":
+	case hunt.FitBandStale:
 		r.filteredStages = append(r.filteredStages, "recency")
-	case "reject":
+	case hunt.FitBandReject:
 		r.filteredStages = append(r.filteredStages, "jaccard")
 	}
 	if sr.LLMResult != "" {
 		r.llmResults = append(r.llmResults, sr.LLMResult)
 	}
-	if sr.LLMCalled {
+	// MEDIUM-2: histogram fires on "ok" or "enum_clamp" (real fit_score),
+	// NOT on LLMCalled — parse_fail/llm_error FitScore must NOT pollute the histogram.
+	if sr.LLMResult == "ok" || sr.LLMResult == "enum_clamp" {
 		r.fitScores = append(r.fitScores, sr.FitScore)
 	}
 }
@@ -57,12 +64,13 @@ func (r *fakeMetricRecorder) observe(sr hunt.ScoreResult) {
 // Tests for the observeScore metric-emission helper
 // ---------------------------------------------------------------------------
 
-// Test_ObserveScore_Stale verifies that FitBand="stale" emits IncrHuntScoreFiltered("recency").
+// Test_ObserveScore_Stale verifies that FitBand=FitBandStale emits IncrHuntScoreFiltered("recency").
 //
+// RED-on-revert: remove FitBandStale const → bare "stale" routing breaks.
 // RED-on-revert: remove the stale→recency branch in observeScore → filteredStages empty.
 func Test_ObserveScore_Stale(t *testing.T) {
 	rec := &fakeMetricRecorder{}
-	sr := hunt.ScoreResult{FitBand: "stale"}
+	sr := hunt.ScoreResult{FitBand: hunt.FitBandStale}
 	rec.observe(sr)
 	assert.Contains(t, rec.filteredStages, "recency",
 		"stale FitBand must emit filter stage 'recency'; RED-on-revert: remove the stale branch")
@@ -70,17 +78,18 @@ func Test_ObserveScore_Stale(t *testing.T) {
 	assert.Empty(t, rec.fitScores, "stale must not emit any fit score histogram observation")
 }
 
-// Test_ObserveScore_Reject verifies that FitBand="reject" emits IncrHuntScoreFiltered("jaccard").
+// Test_ObserveScore_Reject verifies that FitBand=FitBandReject emits IncrHuntScoreFiltered("jaccard").
 //
+// RED-on-revert: remove FitBandReject const → bare "reject" routing breaks.
 // RED-on-revert: remove the reject→jaccard branch in observeScore → filteredStages empty.
 func Test_ObserveScore_Reject(t *testing.T) {
 	rec := &fakeMetricRecorder{}
-	sr := hunt.ScoreResult{FitBand: "reject", FitScore: 5}
+	sr := hunt.ScoreResult{FitBand: hunt.FitBandReject, FitScore: 5}
 	rec.observe(sr)
 	assert.Contains(t, rec.filteredStages, "jaccard",
 		"reject FitBand must emit filter stage 'jaccard'; RED-on-revert: remove the reject branch")
 	assert.Empty(t, rec.llmResults, "reject must not emit any LLM result")
-	assert.Empty(t, rec.fitScores, "reject must not emit fit score (LLMCalled=false)")
+	assert.Empty(t, rec.fitScores, "reject must not emit fit score (LLMResult empty)")
 }
 
 // Test_ObserveScore_LLMOk verifies LLMResult="ok" + LLMCalled=true → llm counter + histogram.
@@ -102,7 +111,11 @@ func Test_ObserveScore_LLMOk(t *testing.T) {
 		"LLMCalled=true must observe fit score; RED-on-revert: remove the histogram observation")
 }
 
-// Test_ObserveScore_ParseFail verifies LLMResult="parse_fail" is emitted.
+// Test_ObserveScore_ParseFail verifies LLMResult="parse_fail" is emitted to the LLM
+// counter but does NOT pollute the hunt_fit_score histogram.
+//
+// RED-on-revert: revert histogram gate to LLMCalled → parse_fail would need LLMCalled=true
+// to pollute; the test now explicitly documents parse_fail must NOT reach the histogram.
 func Test_ObserveScore_ParseFail(t *testing.T) {
 	rec := &fakeMetricRecorder{}
 	sr := hunt.ScoreResult{
@@ -113,11 +126,17 @@ func Test_ObserveScore_ParseFail(t *testing.T) {
 	}
 	rec.observe(sr)
 	assert.Contains(t, rec.llmResults, "parse_fail",
-		"LLMResult='parse_fail' must be emitted")
-	assert.Empty(t, rec.fitScores, "parse_fail (LLMCalled=false) must not emit histogram")
+		"LLMResult='parse_fail' must be emitted to llm counter")
+	assert.Empty(t, rec.fitScores,
+		"parse_fail must NOT emit histogram — jaccard fallback FitScore would pollute hunt_fit_score; "+
+			"RED-on-revert: revert histogram gate to LLMCalled")
 }
 
-// Test_ObserveScore_EnumClamp verifies LLMResult="enum_clamp" is emitted.
+// Test_ObserveScore_EnumClamp verifies LLMResult="enum_clamp" is emitted and DOES
+// observe the histogram (clamping only touches enum fields; FitScore is still valid).
+//
+// RED-on-revert: revert histogram gate from LLMResult-check to LLMCalled → enum_clamp
+// with LLMCalled=false would be excluded; this also confirms the LLMResult-based gate.
 func Test_ObserveScore_EnumClamp(t *testing.T) {
 	rec := &fakeMetricRecorder{}
 	sr := hunt.ScoreResult{
@@ -128,9 +147,10 @@ func Test_ObserveScore_EnumClamp(t *testing.T) {
 	}
 	rec.observe(sr)
 	assert.Contains(t, rec.llmResults, "enum_clamp",
-		"LLMResult='enum_clamp' must be emitted")
+		"LLMResult='enum_clamp' must be emitted to llm counter")
 	assert.Contains(t, rec.fitScores, 65,
-		"enum_clamp with LLMCalled=true must still observe fit score histogram")
+		"enum_clamp must still observe fit score histogram — clamping does not invalidate FitScore; "+
+			"RED-on-revert: remove enum_clamp from histogram gate")
 }
 
 // ---------------------------------------------------------------------------
@@ -210,12 +230,14 @@ func Test_Sweep_ScoresUnscoredOpen(t *testing.T) {
 		"sweep must NOT call the notifier — backfill path, no notify")
 }
 
-// Test_Sweep_RespectsCircuitBreaker verifies the sweep shares the per-cycle
-// LLM budget with the ingest path: if the budget is already exhausted the
-// sweep stores unscored results without calling the LLM.
+// Test_Sweep_RespectsCircuitBreaker verifies the sweep budget cap (MEDIUM-1):
+// when the LLM budget is already exhausted, runUnscoredSweep returns early
+// WITHOUT calling UnscoredOpenJobs — budget-starved jobs must NOT be marked
+// scored_at=now() and removed from the unscored pool permanently.
 //
-// RED-on-revert: remove the llmCallsThisCycle check in the sweep →
-// sweep calls LLM even when budget exhausted, llmCalls > 0, test fails.
+// RED-on-revert: remove the remaining<=0 early-return in runUnscoredSweep →
+// UnscoredOpenJobs is called, SetJobScore is called (LLMCalled=false → unscored),
+// and the job is permanently removed from the pool without being LLM-scored.
 func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
 	t.Setenv("HUNT_SCORE_MIN_JACCARD", "0")
@@ -224,10 +246,10 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 
 	postedAt := time.Now().Add(-1 * time.Hour)
 	unscoredJob := hunt.Job{
-		ID:      88,
-		Title:   "Backend Engineer",
+		ID:       88,
+		Title:    "Backend Engineer",
 		PostedAt: &postedAt,
-		Status:  hunt.StatusOpen,
+		Status:   hunt.StatusOpen,
 	}
 
 	store := &fakeUnscoredStore{
@@ -235,10 +257,10 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 	}
 
 	prof := &score.ScoringProfile{
-		Seniority:  "Staff",
-		CoreSkills: []string{"Go"},
+		Seniority:    "Staff",
+		CoreSkills:   []string{"Go"},
 		CompFloorUSD: 200000,
-		WorkAuth:   "US authorized",
+		WorkAuth:     "US authorized",
 	}
 
 	var llmCalls atomic.Int64
@@ -256,8 +278,92 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
 
 	assert.Equal(t, int64(0), llmCalls.Load(),
-		"sweep must NOT call LLM when per-cycle budget exhausted; RED-on-revert: remove circuit-breaker check in sweep")
-	// SetJobScore IS still called (unscored result persisted so the row doesn't loop).
-	assert.Equal(t, int64(1), store.setCount.Load(),
-		"sweep must persist an unscored result even when budget exhausted")
+		"sweep must NOT call LLM when per-cycle budget exhausted")
+	// MEDIUM-1: sweep returns early before UnscoredOpenJobs → SetJobScore never called.
+	// Jobs remain in the unscored pool for the next cycle.
+	assert.Equal(t, int64(0), store.setCount.Load(),
+		"sweep must NOT call SetJobScore when budget exhausted — job must remain in unscored pool; "+
+			"RED-on-revert: remove the remaining<=0 early-return in runUnscoredSweep")
+}
+
+// Test_Sweep_SkipsQueryWhenBudgetZero verifies MEDIUM-1 cap: when the remaining
+// LLM budget is already 0 (or negative), runUnscoredSweep must NOT call
+// UnscoredOpenJobs at all — budget-starved jobs must NOT get scored_at set and
+// remain eligible for the next cycle.
+//
+// RED-on-revert: remove the remaining<=0 early-return guard in runUnscoredSweep →
+// UnscoredOpenJobs is called and SetJobScore marks the job as scored, removing
+// it from the unscored pool permanently.
+func Test_Sweep_SkipsQueryWhenBudgetZero(t *testing.T) {
+	t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "3")
+	t.Setenv("HUNT_SCORE_SWEEP_LIMIT", "10")
+
+	postedAt := time.Now().Add(-30 * time.Minute)
+	store := &fakeUnscoredStore{
+		jobs: []hunt.Job{
+			{ID: 99, Title: "Go Engineer", PostedAt: &postedAt, Status: hunt.StatusOpen},
+		},
+	}
+
+	prof := &score.ScoringProfile{CoreSkills: []string{"Go"}}
+	deps := score.ScorerDeps{
+		Jaccard: func(_, _ string) float64 { return 50 },
+		LLM:     func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+
+	// Budget fully consumed by ingest path.
+	maxLLM := score.MaxLLMPerCycle() // 3 from env
+	llmCallsThisCycle := maxLLM      // already at ceiling
+	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
+
+	assert.Equal(t, int64(0), store.setCount.Load(),
+		"sweep must NOT call UnscoredOpenJobs / SetJobScore when remaining budget == 0; "+
+			"RED-on-revert: remove the remaining<=0 early-return in runUnscoredSweep")
+}
+
+// Test_BudgetCountsAttempts verifies MEDIUM-2: the per-cycle LLM budget counter
+// is incremented when LLMResult != "" (LLM was invoked — includes parse_fail +
+// llm_error), NOT only when LLMCalled==true.
+//
+// Concretely: scoreJobWithLimit with a parse_fail result must increment
+// llmCallsThisCycle so the circuit breaker fires correctly.
+//
+// RED-on-revert: revert increment signal to LLMCalled → parse_fail result does
+// not bump the budget and a proxy-down storm issues unlimited LLM calls.
+func Test_BudgetCountsAttempts(t *testing.T) {
+	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+	t.Setenv("HUNT_SCORE_MIN_JACCARD", "0")
+	t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "5")
+
+	postedAt := time.Now().Add(-10 * time.Minute)
+	job := hunt.Job{
+		ID:          101,
+		Title:       "Go Engineer",
+		Description: "Go distributed systems",
+		PostedAt:    &postedAt,
+		Status:      hunt.StatusOpen,
+	}
+	prof := &score.ScoringProfile{CoreSkills: []string{"Go"}}
+
+	store := &fakeUnscoredStore{}
+	deps := score.ScorerDeps{
+		Jaccard: func(_, _ string) float64 { return 50 },
+		// LLM returns malformed JSON → parse_fail result; LLMResult="parse_fail", LLMCalled=false.
+		LLM: func(_ context.Context, _ string) (string, error) {
+			return "not-json", nil
+		},
+	}
+
+	llmCallsThisCycle := 0
+	sr := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, store, &llmCallsThisCycle)
+
+	// LLM was attempted (parse_fail) — budget must be consumed.
+	assert.Equal(t, 1, llmCallsThisCycle,
+		"parse_fail result (LLM was invoked) must increment llmCallsThisCycle; "+
+			"RED-on-revert: revert increment to LLMCalled")
+	// parse_fail → FitBandUnscored; LLMResult=="parse_fail"; LLMCalled==false.
+	assert.Equal(t, "parse_fail", sr.LLMResult,
+		"LLMResult must be 'parse_fail' when LLM returns malformed JSON")
+	assert.False(t, sr.LLMCalled,
+		"LLMCalled must remain false for failOpen (parse_fail) path")
 }

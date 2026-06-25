@@ -92,7 +92,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	// --- Stage 1: recency pre-gate ---
 	maxAge := env.Duration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour)
 	if job.PostedAt == nil || time.Since(*job.PostedAt) > maxAge {
-		return hunt.ScoreResult{FitBand: "stale", ScoredAt: time.Now()}
+		return hunt.ScoreResult{FitBand: hunt.FitBandStale, ScoredAt: time.Now()}
 	}
 
 	// --- Stage 2: Jaccard pre-filter ---
@@ -104,7 +104,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	if jaccardScore < minJaccard {
 		return hunt.ScoreResult{
 			FitScore: int(jaccardScore),
-			FitBand:  "reject",
+			FitBand:  hunt.FitBandReject,
 			ScoredAt: time.Now(),
 		}
 	}
@@ -128,6 +128,15 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 			slog.String("raw_truncated", truncate(raw, 200)),
 		)
 		return failOpen(ctx, int(jaccardScore), "parse_fail")
+	}
+	// parseScoreResponse may return a fail-open result (FitBandUnscored) without an
+	// error when HUNT_SCORE_FAIL_OPEN=true — the JSON was malformed but the caller
+	// was shielded. Do not stamp LLMCalled=true on a fail-open result: the LLM was
+	// invoked but produced no valid fit_score, so the circuit-breaker (LLMResult!="")
+	// will still count the attempt, but the histogram must not observe the fallback FitScore.
+	if result.FitBand == hunt.FitBandUnscored {
+		result.ScoredAt = time.Now()
+		return result
 	}
 
 	result.ScoredAt = time.Now()
