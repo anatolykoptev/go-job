@@ -20,10 +20,10 @@ type mockNotifier struct {
 	security  []hunt.Security
 }
 
-func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)       { m.bounties = append(m.bounties, b) }
-func (m *mockNotifier) NotifyNewJob(j hunt.Job)             { m.jobs = append(m.jobs, j) }
-func (m *mockNotifier) NotifyNewFreelance(f hunt.Freelance) { m.freelance = append(m.freelance, f) }
-func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)   { m.security = append(m.security, s) }
+func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)                    { m.bounties = append(m.bounties, b) }
+func (m *mockNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult)     { m.jobs = append(m.jobs, j) }
+func (m *mockNotifier) NotifyNewFreelance(f hunt.Freelance)              { m.freelance = append(m.freelance, f) }
+func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)               { m.security = append(m.security, s) }
 
 // TestUpsert_DoesNotNotifyClosedBounty verifies that notifier.NotifyNewBounty is NOT
 // called when a new bounty is inserted with Status != open (e.g. claimed/completed).

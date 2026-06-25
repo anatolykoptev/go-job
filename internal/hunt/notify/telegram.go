@@ -29,9 +29,11 @@ import (
 // ProductNotifier wraps a go-kit ProductSink and implements hunt.Notifier.
 // Methods dispatch fire-and-forget goroutines; fan-out and rate limiting are
 // handled by the Pacer inside ProductSink (no semaphore needed here).
-// OnSend, if set, is called with "sent", "failed", "stale", or "no_date" after
-// each Notify or recency-gate decision — it bridges into
-// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify.
+// OnSend, if set, is called with "sent", "failed", "stale", "no_date", or
+// "unscored" after each Notify or recency-gate decision — it bridges into
+// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify. "unscored" is a
+// card-type marker emitted only for a degraded card that PASSES recency (so it
+// never overlaps a terminal "stale"/"no_date" drop).
 type ProductNotifier struct {
 	sink    kitnotify.ProductSink
 	chatIDs []int64              // explicit recipient list; empty = use sink's defaultChatIDs
@@ -95,10 +97,17 @@ func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
 // NotifyNewJob sends a notification for a new job entry (fire-and-forget).
 // Recency gate: jobs with nil PostedAt are skipped (outcome "no_date"); jobs
 // posted more than maxAge ago are skipped (outcome "stale"). Both outcomes bump
-// OnSend but do NOT call dispatch.
+// OnSend but do NOT call dispatch. A degraded (FitBand=="unscored") card that
+// PASSES recency additionally bumps OnSend("unscored") before dispatch — the
+// emit lives here, after the recency gate, so an unscored job that is also stale
+// counts only as "stale" (no double-count).
+// score is nil when scoring is disabled or not yet available — in that case a
+// degraded recency-only card is rendered. When FitBand=="unscored" (LLM failed),
+// a degraded card is also rendered. For all other non-nil scores, a full fit-card
+// is rendered.
 // NOTE: recency gate applies to jobs only; bounties/freelance/security do not
 // expire by posting date the same way — extend here if wanted.
-func (n *ProductNotifier) NotifyNewJob(j hunt.Job) {
+func (n *ProductNotifier) NotifyNewJob(j hunt.Job, score *hunt.ScoreResult) {
 	if j.PostedAt == nil {
 		if n.OnSend != nil {
 			n.OnSend("no_date")
@@ -111,7 +120,16 @@ func (n *ProductNotifier) NotifyNewJob(j hunt.Job) {
 		}
 		return
 	}
-	n.dispatch(formatJobMsg(j))
+	// Recency passed → terminal dispatch. A degraded (LLM-fail) card is marked
+	// "unscored" HERE, after recency, so a stale unscored job is counted only as
+	// "stale" — never "unscored"+"stale". "unscored" is a card-TYPE marker on
+	// dispatched degraded cards (it overlaps the per-recipient "sent"/"failed"
+	// from dispatch by design); the mutually-exclusive TERMINAL-DROP outcomes are
+	// stale/no_date (here) and low_fit (the worker fit gate).
+	if score != nil && score.FitBand == hunt.FitBandUnscored && n.OnSend != nil {
+		n.OnSend("unscored")
+	}
+	n.dispatch(formatJobMsg(j, score))
 }
 
 // NotifyNewFreelance sends a notification for a new freelance entry (fire-and-forget).
@@ -162,15 +180,116 @@ func formatBountyMsg(b hunt.Bounty) string {
 	return sb.String()
 }
 
-func formatJobMsg(j hunt.Job) string {
+// FormatJobMsgForTest exposes formatJobMsg for white-box tests in notify_test package.
+// It is the only exported symbol in this file and exists solely for testing.
+func FormatJobMsgForTest(j hunt.Job, score *hunt.ScoreResult) string {
+	return formatJobMsg(j, score)
+}
+
+// formatJobMsg renders a Telegram message for a job notification.
+//
+// Full fit-card (score != nil AND score.FitBand != "unscored"):
+//
+//	[<fit_band> · <fit_score>] <title>
+//	<company> · <location/remote> · <salary if present>
+//
+//	Why you: <≤2 fit_reasons>
+//	Gaps: <≤2 fit_gaps>
+//	Success: <BAND> — <success_reasoning>
+//
+//	<url>
+//
+// Degraded card (score == nil OR score.FitBand == hunt.FitBandUnscored):
+//
+//	[fresh · recency-only] <title>
+//	<company> · <location/remote> · <salary if present>
+//
+//	<url>
+//
+// INVARIANT: the "Success:" line MUST NEVER interpolate a number.
+// It is assembled from the enum band (STRONG/MODERATE/LONGSHOT) and the
+// already-sanitised reasoning string only. No fmt.Sprintf with numeric arg.
+func formatJobMsg(j hunt.Job, score *hunt.ScoreResult) string {
+	isDegraded := score == nil || score.FitBand == hunt.FitBandUnscored
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "[%s] %s\n", j.Source, j.Title)
-	if j.Company != "" {
-		fmt.Fprintf(&sb, "Company: %s\n", j.Company)
+
+	// --- Header line ---
+	if isDegraded {
+		fmt.Fprintf(&sb, "[fresh · recency-only] %s\n", j.Title)
+	} else {
+		fmt.Fprintf(&sb, "[%s · %d] %s\n", score.FitBand, score.FitScore, j.Title)
 	}
-	if j.SalaryMin > 0 || j.SalaryMax > 0 {
-		fmt.Fprintf(&sb, "Salary: $%d–$%d\n", j.SalaryMin, j.SalaryMax)
+
+	// --- Company · location/remote · salary ---
+	{
+		var meta []string
+		if j.Company != "" {
+			meta = append(meta, j.Company)
+		}
+		loc := j.Location
+		if j.Remote != "" && j.Remote != "false" && j.Remote != "0" {
+			if loc != "" {
+				loc += " (remote)"
+			} else {
+				loc = "Remote"
+			}
+		}
+		if loc != "" {
+			meta = append(meta, loc)
+		}
+		if j.SalaryMin > 0 || j.SalaryMax > 0 {
+			currency := j.SalaryCurrency
+			if currency == "" {
+				currency = "USD"
+			}
+			meta = append(meta, fmt.Sprintf("$%d–$%d %s", j.SalaryMin, j.SalaryMax, currency))
+		}
+		if len(meta) > 0 {
+			sb.WriteString(strings.Join(meta, " · "))
+			sb.WriteByte('\n')
+		}
 	}
+
+	sb.WriteByte('\n')
+
+	if !isDegraded {
+		// --- Why you ---
+		if len(score.FitReasons) > 0 {
+			reasons := score.FitReasons
+			if len(reasons) > 2 {
+				reasons = reasons[:2]
+			}
+			fmt.Fprintf(&sb, "Why you: %s\n", strings.Join(reasons, "; "))
+		}
+
+		// --- Gaps ---
+		if len(score.FitGaps) > 0 {
+			gaps := score.FitGaps
+			if len(gaps) > 2 {
+				gaps = gaps[:2]
+			}
+			fmt.Fprintf(&sb, "Gaps: %s\n", strings.Join(gaps, "; "))
+		}
+
+		// --- Success (INVARIANT: no number interpolated here) ---
+		// The success line is built from: enum band string + prose reasoning string.
+		// No numeric value is ever formatted into this line.
+		if score.SuccessBand != "" || score.SuccessReasoning != "" {
+			band := score.SuccessBand
+			if band == "" {
+				band = "MODERATE" // enum-clamp fallback
+			}
+			// band is one of STRONG/MODERATE/LONGSHOT — no digits possible.
+			// score.SuccessReasoning is a free-text string produced by the LLM prompt
+			// that instructs "no percentages, no numbers" — but we do not re-validate
+			// it here (the prompt + parse layer is the enforcement point).
+			fmt.Fprintf(&sb, "Success: %s — %s\n", band, score.SuccessReasoning)
+		}
+
+		sb.WriteByte('\n')
+	}
+
 	sb.WriteString(j.URL)
 	return sb.String()
 }
