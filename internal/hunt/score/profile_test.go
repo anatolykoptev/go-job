@@ -145,11 +145,11 @@ func TestLoadProfile_DB_MarketingEventExcluded(t *testing.T) {
 		{"Agile", "methodology", "intermediate"},
 	}
 	domains := []string{
-		"AI Infrastructure",    // tech — keep
-		"Media",                // noise — drop
-		"Digital Marketing",    // noise — drop
-		"Event Production",     // noise — drop
-		"Developer Tools",      // tech — keep
+		"AI Infrastructure", // tech — keep
+		"Media",             // noise — drop
+		"Digital Marketing", // noise — drop
+		"Event Production",  // noise — drop
+		"Developer Tools",   // tech — keep
 	}
 
 	seedResumeProfile(t, pool, skills, domains)
@@ -193,13 +193,13 @@ func TestLoadProfile_EnvOverrides(t *testing.T) {
 	// Write a minimal valid profile JSON so loader uses file path (no DB needed).
 	dir := t.TempDir()
 	minProfile := score.ScoringProfile{
-		Seniority:      "Principal", // will be overridden by env
-		CompFloorUSD:   200000,
-		CoreSkills:     []string{"Go"},
-		TargetDomains:  []string{"Dev Tools"},
-		Locations:      []string{"New York"},
-		WorkAuth:       "US citizen",
-		AvoidSignals:   []string{"sales"},
+		Seniority:     "Principal", // will be overridden by env
+		CompFloorUSD:  200000,
+		CoreSkills:    []string{"Go"},
+		TargetDomains: []string{"Dev Tools"},
+		Locations:     []string{"New York"},
+		WorkAuth:      "US citizen",
+		AvoidSignals:  []string{"sales"},
 	}
 	data, _ := json.Marshal(minProfile)
 	path := filepath.Join(dir, "profile.json")
