@@ -42,6 +42,10 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 		CSRFKey:  []byte(csrfKey),
 	})
 	resource.Register(p, jobsResource(pool))
+	resource.Register(p, bountiesResource(pool))
+	resource.Register(p, freelanceResource(pool))
+	resource.Register(p, securityResource(pool))
+	resource.Register(p, contestsResource(pool))
 	return p.Handler(), true
 }
 
