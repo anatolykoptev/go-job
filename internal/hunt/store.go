@@ -373,6 +373,41 @@ func (s *Store) SetJobScore(ctx context.Context, id int64, sr ScoreResult) error
 	return nil
 }
 
+// UnscoredOpenJobs returns open jobs that have never been scored (scored_at IS
+// NULL), oldest first, capped at limit. Uses the idx_hunt_jobs_unscored partial
+// index (migration 008). When rescoreAll is true, the scored_at filter is
+// dropped (re-score existing rows) for the HUNT_SCORE_RESCORE_ALL one-shot.
+func (s *Store) UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]Job, error) {
+	limit = clampLimit(limit, 50, 500)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, dedup_hash, title, company, url, source, external_id, location, remote,
+		       job_type, experience, salary_min, salary_max, salary_currency, salary_interval,
+		       skills, tags, description, posted_at, first_seen_at, last_seen_at,
+		       status, closed_at, last_checked_at
+		FROM hunt_jobs
+		WHERE status = 'open'
+		  AND (scored_at IS NULL OR $2)
+		ORDER BY first_seen_at ASC
+		LIMIT $1`, limit, rescoreAll)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: unscored open jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Job
+	for rows.Next() {
+		j, scanErr := scanJobRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("hunt: unscored open jobs scan: %w", scanErr)
+		}
+		result = append(result, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("hunt: unscored open jobs rows: %w", err)
+	}
+	return result, nil
+}
+
 // JobFilter narrows ListJobs results.
 type JobFilter struct {
 	Source        string
@@ -435,51 +470,9 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, error) {
 
 	var result []Job
 	for rows.Next() {
-		var j Job
-		var company, extID, location, remote, jobType, exp, cur, interval, desc *string
-		var salMin, salMax *int
-		if err := rows.Scan(
-			&j.ID, &j.DedupHash, &j.Title, &company, &j.URL, &j.Source,
-			&extID, &location, &remote, &jobType, &exp,
-			&salMin, &salMax, &cur, &interval,
-			&j.Skills, &j.Tags, &desc, &j.PostedAt,
-			&j.FirstSeenAt, &j.LastSeenAt,
-			&j.Status, &j.ClosedAt, &j.LastCheckedAt,
-		); err != nil {
-			return nil, fmt.Errorf("hunt: list jobs scan: %w", err)
-		}
-		if company != nil {
-			j.Company = *company
-		}
-		if extID != nil {
-			j.ExternalID = *extID
-		}
-		if location != nil {
-			j.Location = *location
-		}
-		if remote != nil {
-			j.Remote = *remote
-		}
-		if jobType != nil {
-			j.JobType = *jobType
-		}
-		if exp != nil {
-			j.Experience = *exp
-		}
-		if salMin != nil {
-			j.SalaryMin = *salMin
-		}
-		if salMax != nil {
-			j.SalaryMax = *salMax
-		}
-		if cur != nil {
-			j.SalaryCurrency = *cur
-		}
-		if interval != nil {
-			j.SalaryInterval = *interval
-		}
-		if desc != nil {
-			j.Description = *desc
+		j, scanErr := scanJobRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("hunt: list jobs scan: %w", scanErr)
 		}
 		result = append(result, j)
 	}
@@ -1287,6 +1280,66 @@ func kindTable(kind string) (string, error) {
 }
 
 // --- row scanner helpers ---
+
+// jobScanner is the subset of pgx.Rows used by scanJobRow.
+// Using an interface avoids importing pgx in callers and enables testing.
+type jobScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanJobRow scans one hunt_jobs row (full projection including status columns).
+// Centralises the nullable-field unwrapping that is otherwise copy-pasted across
+// ListJobs, UnscoredOpenJobs, GetJob, and similar selects. The caller must provide
+// a row that was queried with the canonical column order (id … last_checked_at).
+func scanJobRow(row jobScanner) (Job, error) {
+	var j Job
+	var company, extID, location, remote, jobType, exp, cur, interval, desc *string
+	var salMin, salMax *int
+	if err := row.Scan(
+		&j.ID, &j.DedupHash, &j.Title, &company, &j.URL, &j.Source,
+		&extID, &location, &remote, &jobType, &exp,
+		&salMin, &salMax, &cur, &interval,
+		&j.Skills, &j.Tags, &desc, &j.PostedAt,
+		&j.FirstSeenAt, &j.LastSeenAt,
+		&j.Status, &j.ClosedAt, &j.LastCheckedAt,
+	); err != nil {
+		return Job{}, err
+	}
+	if company != nil {
+		j.Company = *company
+	}
+	if extID != nil {
+		j.ExternalID = *extID
+	}
+	if location != nil {
+		j.Location = *location
+	}
+	if remote != nil {
+		j.Remote = *remote
+	}
+	if jobType != nil {
+		j.JobType = *jobType
+	}
+	if exp != nil {
+		j.Experience = *exp
+	}
+	if salMin != nil {
+		j.SalaryMin = *salMin
+	}
+	if salMax != nil {
+		j.SalaryMax = *salMax
+	}
+	if cur != nil {
+		j.SalaryCurrency = *cur
+	}
+	if interval != nil {
+		j.SalaryInterval = *interval
+	}
+	if desc != nil {
+		j.Description = *desc
+	}
+	return j, nil
+}
 
 // bountyScanner is the subset of pgx.Rows used by scanBountyRow.
 // Using an interface avoids importing pgx in callers and enables testing.

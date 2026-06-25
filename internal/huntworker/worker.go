@@ -46,6 +46,13 @@ type jobScoreSetter interface {
 	SetJobScore(ctx context.Context, id int64, sr hunt.ScoreResult) error
 }
 
+// unscoredJobStore is the narrow store interface used by the end-of-cycle
+// unscored-open sweep. Implemented by *hunt.Store; tests inject a fake.
+type unscoredJobStore interface {
+	jobScoreSetter
+	UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]hunt.Job, error)
+}
+
 // defaultIngestQueries are generic role/skill strings used when the operator
 // has not set HUNT_INGEST_QUERIES.  No company names, no personal targets —
 // PUBLIC-repo-safe.
@@ -293,12 +300,24 @@ func (w *Worker) runCycle(ctx context.Context) {
 						// OutcomeCreated; scoring is orthogonal to notification.
 						sr := scoreJobWithLimit(ctx, outcome, j,
 							w.scoringProfile, w.scorerDeps, w.store, &llmCallsThisCycle)
+						if sr != nil {
+							observeScore(*sr)
+						}
 						w.maybeNotifyJob(j, outcome, sr)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
 					}
 				}
 			}()
+		}
+	}
+
+	// End-of-cycle unscored-open sweep: score jobs that were ingested in previous
+	// cycles but never scored (scored_at IS NULL). Only when scoring is enabled and
+	// the store satisfies the unscoredJobStore interface (production path).
+	if w.scoringProfile != nil {
+		if sweepStore, ok := interface{}(w.store).(unscoredJobStore); ok {
+			runUnscoredSweep(ctx, sweepStore, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle)
 		}
 	}
 
@@ -388,6 +407,73 @@ func scoreJobIfCreated(
 		)
 	}
 	return result
+}
+
+// observeScore emits the Phase 6 fit-scoring metrics for a single scored job.
+//
+// Metric routing:
+//   - FitBand=="stale"  → IncrHuntScoreFiltered("recency")
+//   - FitBand=="reject" → IncrHuntScoreFiltered("jaccard")
+//   - LLMResult != ""   → IncrHuntScoreLLM(sr.LLMResult)
+//   - LLMCalled==true   → ObserveHuntFitScore(sr.FitScore)
+//
+// Called after scoreJobWithLimit returns (both ingest path and sweep path).
+func observeScore(sr hunt.ScoreResult) {
+	switch sr.FitBand {
+	case "stale":
+		engine.IncrHuntScoreFiltered("recency")
+	case "reject":
+		engine.IncrHuntScoreFiltered("jaccard")
+	}
+	if sr.LLMResult != "" {
+		engine.IncrHuntScoreLLM(sr.LLMResult)
+	}
+	if sr.LLMCalled {
+		engine.ObserveHuntFitScore(sr.FitScore)
+	}
+}
+
+// runUnscoredSweep performs the end-of-cycle backfill: scores open jobs that
+// have never been scored (scored_at IS NULL), or all open jobs when
+// HUNT_SCORE_RESCORE_ALL=true is set (one-shot re-score).
+//
+// The sweep shares the per-cycle LLM budget (llmCallsThisCycle) with the
+// ingest path so that a large backfill cannot exhaust the LLM ceiling on its
+// own. Jobs processed by the sweep are NOT notified — the sweep is a backfill
+// path for hunt_list/job_match consumption only.
+//
+// sweepLimit is read from HUNT_SCORE_SWEEP_LIMIT (default 50).
+func runUnscoredSweep(
+	ctx context.Context,
+	store unscoredJobStore,
+	profile *score.ScoringProfile,
+	deps score.ScorerDeps,
+	llmCallsThisCycle *int,
+) {
+	rescoreAll := env.Bool("HUNT_SCORE_RESCORE_ALL", false)
+	sweepLimit := env.Int("HUNT_SCORE_SWEEP_LIMIT", 50)
+
+	jobs, err := store.UnscoredOpenJobs(ctx, sweepLimit, rescoreAll)
+	if err != nil {
+		slog.WarnContext(ctx, "hunt worker: sweep UnscoredOpenJobs failed", slog.Any("error", err))
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+
+	scored := 0
+	for _, j := range jobs {
+		sr := scoreJobWithLimit(ctx, hunt.OutcomeCreated, j, profile, deps, store, llmCallsThisCycle)
+		if sr != nil {
+			observeScore(*sr)
+			scored++
+		}
+	}
+	slog.InfoContext(ctx, "hunt worker: sweep complete",
+		slog.Int("swept", len(jobs)),
+		slog.Int("scored", scored),
+	)
 }
 
 // huntIngestEnabled reads the HUNT_INGEST_ENABLED env flag.

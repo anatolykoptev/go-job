@@ -117,7 +117,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 			slog.Any("error", err),
 			slog.String("job_title", job.Title),
 		)
-		return failOpen(ctx, int(jaccardScore))
+		return failOpen(ctx, int(jaccardScore), "llm_error")
 	}
 
 	result, parseErr := parseScoreResponse(raw, int(jaccardScore))
@@ -127,7 +127,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 			slog.String("job_title", job.Title),
 			slog.String("raw_truncated", truncate(raw, 200)),
 		)
-		return failOpen(ctx, int(jaccardScore))
+		return failOpen(ctx, int(jaccardScore), "parse_fail")
 	}
 
 	result.ScoredAt = time.Now()
@@ -136,15 +136,17 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 }
 
 // failOpen returns an unscored result with the Jaccard score as the FitScore.
+// llmResult is the transient signal ("parse_fail" | "llm_error") for the
+// hunt_score_llm_total metric emitted by the worker after this call returns.
 // Called when the LLM fails or parse fails and HUNT_SCORE_FAIL_OPEN=true.
 // If HUNT_SCORE_FAIL_OPEN=false, the caller has already checked and handled.
-func failOpen(ctx context.Context, jaccardScore int) hunt.ScoreResult {
+func failOpen(ctx context.Context, jaccardScore int, llmResult string) hunt.ScoreResult {
 	if !scoringFailOpen() {
 		// Should not be called when fail-closed; return unscored anyway (defensive).
-		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now()}
+		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now(), LLMResult: llmResult}
 	}
 	slog.WarnContext(ctx, "fit scoring: fail-open — returning unscored, job still eligible for notify")
-	return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now()}
+	return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now(), LLMResult: llmResult}
 }
 
 // scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default true).
@@ -177,7 +179,7 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 	var resp llmScoreResponse
 	if err := json.Unmarshal([]byte(cleaned), &resp); err != nil {
 		if scoringFailOpen() {
-			return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardFallback}, nil
+			return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardFallback, LLMResult: "parse_fail"}, nil
 		}
 		return hunt.ScoreResult{}, fmt.Errorf("score: parse LLM response: %w", err)
 	}
@@ -192,11 +194,16 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 	}
 
 	// Enum-clamp success_band: unknown → "MODERATE" (log warning).
+	// enumClamped is set true on any clamp so we can emit the "enum_clamp" metric
+	// signal (LLMResult) rather than "ok" — the result is still usable but the LLM
+	// deviated from the spec, so we distinguish it from a clean response.
+	enumClamped := false
 	successBand := resp.SuccessBand
 	if !validSuccessBands[successBand] {
 		slog.Warn("fit scoring: unknown success_band — clamping to MODERATE",
 			slog.String("raw_band", successBand))
 		successBand = "MODERATE"
+		enumClamped = true
 	}
 
 	// Enum-clamp over_under: unknown → "well_matched" (log warning).
@@ -205,6 +212,7 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 		slog.Warn("fit scoring: unknown over_under — clamping to well_matched",
 			slog.String("raw_over_under", overUnder))
 		overUnder = "well_matched"
+		enumClamped = true
 	}
 
 	// Derive FitBand from fit_score (used for display and gate in Phase 5).
@@ -229,6 +237,13 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 	fitReasons := stripPercentagesSlice(resp.FitReasons, "fit_reasons")
 	fitGaps := stripPercentagesSlice(resp.FitGaps, "fit_gaps")
 
+	// Set LLMResult transient signal: "enum_clamp" when any enum was clamped,
+	// "ok" when the response was fully spec-compliant.
+	llmResult := "ok"
+	if enumClamped {
+		llmResult = "enum_clamp"
+	}
+
 	return hunt.ScoreResult{
 		FitScore:         fitScore,
 		FitBand:          fitBand,
@@ -237,6 +252,7 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 		FitReasons:       fitReasons,
 		FitGaps:          fitGaps,
 		SuccessReasoning: successReasoning,
+		LLMResult:        llmResult,
 	}, nil
 }
 
