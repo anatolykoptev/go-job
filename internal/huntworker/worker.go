@@ -5,14 +5,17 @@
 // and upserts results into hunt_jobs via UpsertJob.
 //
 // Separate from package hunt to avoid the import cycle:
-//   engine/jobs → hunt (hunt_map.go) would cycle if hunt imported engine/jobs.
+//
+//	engine/jobs → hunt (hunt_map.go) would cycle if hunt imported engine/jobs.
+//
 // huntworker imports both hunt and engine/jobs without any back-edge.
 //
 // Gate: HUNT_INGEST_ENABLED=true (default false).
 // Interval: HUNT_INGEST_INTERVAL (default 6h).
 // Queries: HUNT_INGEST_QUERIES comma-separated generic role strings
-//          (default "software engineer,backend engineer,golang developer").
-//          NO company names, NO ATS slugs — this is a PUBLIC repo.
+//
+//	(default "software engineer,backend engineer,golang developer").
+//	NO company names, NO ATS slugs — this is a PUBLIC repo.
 package huntworker
 
 import (
@@ -39,6 +42,7 @@ const perPlatformTimeout = 45 * time.Second
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
 	store    *hunt.Store
+	notifier hunt.Notifier
 	interval time.Duration
 	queries  []string
 }
@@ -55,6 +59,21 @@ func NewWorker(store *hunt.Store) *Worker {
 		store:    store,
 		interval: env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
 		queries:  queries,
+	}
+}
+
+// SetNotifier wires the Telegram notifier into the worker.
+// Must be called before Run(). Optional — if nil, no notifications are sent.
+func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
+
+// maybeNotifyJob fires NotifyNewJob when the outcome is OutcomeCreated and the
+// job is open or has an empty status. Empty status is treated as open because
+// SearxngResultToHuntJob does not set a Status field — UpsertJob normalises it
+// to StatusOpen in Postgres, but the in-memory Job struct retains "".
+func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome) {
+	if outcome == hunt.OutcomeCreated && w.notifier != nil &&
+		(j.Status == hunt.StatusOpen || j.Status == "") {
+		w.notifier.NotifyNewJob(j)
 	}
 }
 
@@ -160,6 +179,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 						)
 					case outcome == hunt.OutcomeCreated:
 						totalCreated++
+						w.maybeNotifyJob(j, outcome)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
 					}
@@ -186,7 +206,8 @@ func huntIngestEnabled() bool {
 // StartWorker starts the durable ingest worker in a background goroutine when
 // HUNT_INGEST_ENABLED=true and the store is available.  Noop otherwise.
 // Must be called after engine.SetHuntStore.
-func StartWorker(ctx context.Context, store *hunt.Store) {
+// notifier may be nil — if nil, no Telegram notifications are sent by the worker.
+func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier) {
 	if !huntIngestEnabled() {
 		slog.Debug("hunt worker: disabled (HUNT_INGEST_ENABLED not set)")
 		return
@@ -196,5 +217,6 @@ func StartWorker(ctx context.Context, store *hunt.Store) {
 		slog.Warn("hunt worker: no store — skipping")
 		return
 	}
+	w.SetNotifier(notifier)
 	go w.Run(ctx)
 }

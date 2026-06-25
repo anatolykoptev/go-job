@@ -20,10 +20,10 @@ type mockNotifier struct {
 	security  []hunt.Security
 }
 
-func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)     { m.bounties = append(m.bounties, b) }
-func (m *mockNotifier) NotifyNewJob(j hunt.Job)            { m.jobs = append(m.jobs, j) }
+func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)       { m.bounties = append(m.bounties, b) }
+func (m *mockNotifier) NotifyNewJob(j hunt.Job)             { m.jobs = append(m.jobs, j) }
 func (m *mockNotifier) NotifyNewFreelance(f hunt.Freelance) { m.freelance = append(m.freelance, f) }
-func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)  { m.security = append(m.security, s) }
+func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)   { m.security = append(m.security, s) }
 
 // TestUpsert_DoesNotNotifyClosedBounty verifies that notifier.NotifyNewBounty is NOT
 // called when a new bounty is inserted with Status != open (e.g. claimed/completed).
@@ -169,4 +169,69 @@ func TestUpsert_DoesNotNotifyClosedSecurity(t *testing.T) {
 	_, _, err := s.UpsertSecurity(ctx, archived)
 	require.NoError(t, err)
 	assert.Empty(t, notifier.security, "notifier must NOT fire for archived security program")
+}
+
+// TestUpsert_NeverNotifiesJob verifies that after phase-3 relocation, UpsertJob does
+// NOT call NotifyNewJob even for an open job. Notify is now the worker's responsibility.
+// RED before the store.go change; GREEN after removing the notifier call from UpsertJob.
+func TestUpsert_NeverNotifiesJob(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	notifier := &mockNotifier{}
+	s.SetNotifier(notifier)
+
+	open := hunt.Job{
+		DedupHash: hunt.DedupHash("https://company.com/jobs/notify-open-p3"),
+		Title:     "Open position",
+		URL:       "https://company.com/jobs/notify-open-p3",
+		Source:    "greenhouse",
+		Status:    hunt.StatusOpen,
+	}
+	_, outcome, err := s.UpsertJob(ctx, open)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeCreated, outcome)
+	// Phase 3: notify relocated to runCycle — UpsertJob must NOT call NotifyNewJob.
+	assert.Empty(t, notifier.jobs,
+		"UpsertJob must NOT notify (phase 3: notify relocated to runCycle)")
+}
+
+// TestStore_NotifyJobIfOpen_OpenJob verifies the new helper notifies for an open job.
+func TestStore_NotifyJobIfOpen_OpenJob(t *testing.T) {
+	notifier := &mockNotifier{}
+	s := hunt.NewStore(nil) // no pool needed — NotifyJobIfOpen is pure notify
+	s.SetNotifier(notifier)
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
+	s.NotifyJobIfOpen(j)
+	assert.Len(t, notifier.jobs, 1, "NotifyJobIfOpen must fire for open job")
+}
+
+// TestStore_NotifyJobIfOpen_EmptyStatus treats empty status as open (worker path).
+func TestStore_NotifyJobIfOpen_EmptyStatus(t *testing.T) {
+	notifier := &mockNotifier{}
+	s := hunt.NewStore(nil)
+	s.SetNotifier(notifier)
+	j := hunt.Job{URL: "https://x.com/j", Status: ""}
+	s.NotifyJobIfOpen(j)
+	assert.Len(t, notifier.jobs, 1, "NotifyJobIfOpen must fire for empty-status job (treated as open)")
+}
+
+// TestStore_NotifyJobIfOpen_ClosedJob_NoNotify verifies closed jobs are silenced.
+func TestStore_NotifyJobIfOpen_ClosedJob_NoNotify(t *testing.T) {
+	notifier := &mockNotifier{}
+	s := hunt.NewStore(nil)
+	s.SetNotifier(notifier)
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusClosed}
+	s.NotifyJobIfOpen(j)
+	assert.Empty(t, notifier.jobs, "NotifyJobIfOpen must NOT fire for closed job")
+}
+
+// TestStore_NotifyJobIfOpen_NilNotifier verifies no panic when notifier is not wired.
+func TestStore_NotifyJobIfOpen_NilNotifier(t *testing.T) {
+	s := hunt.NewStore(nil) // no notifier wired
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
+	s.NotifyJobIfOpen(j) // must not panic
 }
