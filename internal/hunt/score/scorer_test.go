@@ -252,10 +252,13 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
 	// success_reasoning AND fit_gaps, then asserts the returned ScoreResult has
 	// NO "%" in either field. A clean reasoning must pass through unchanged.
 	t.Run("fake_precision_stripped_from_stored_result", func(t *testing.T) {
-		// LLM ignored the prompt instruction and included percentages.
+		// LLM ignored the prompt instruction and included percentages in ALL
+		// three free-text surfaces — success_reasoning, fit_gaps AND fit_reasons.
+		// fit_reasons is rendered on the card's "Why you:" line (Phase 5), so it
+		// must be stripped at the same store boundary as the other two.
 		dirty := `{
   "fit_score": 72,
-  "fit_reasons": ["Go expert"],
+  "fit_reasons": ["Go expert, matches ~90% of the JD", "distributed systems"],
   "fit_gaps": ["missing k8s cert (~40% of JD focus)", "salary floor misaligned"],
   "success_band": "MODERATE",
   "success_reasoning": "strong match, ~73% likely given the pool",
@@ -274,8 +277,15 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
 				"persisted FitGaps entry must be percentage-free; got: %q", gap)
 		}
 
-		// The non-percentage fit_reasons must pass through unchanged.
-		assert.Equal(t, []string{"Go expert"}, result.FitReasons)
+		// Each fit_reasons entry must have no "%" character.
+		// RED-on-revert: revert the FitReasons sanitization (scorer.go) → the
+		// "~90%" survives into the "Why you:" card line and this assertion fails.
+		for _, reason := range result.FitReasons {
+			assert.NotContains(t, reason, "%",
+				"persisted FitReasons entry must be percentage-free; got: %q", reason)
+		}
+		// The non-percentage portions are preserved (stripper is surgical).
+		assert.Equal(t, []string{"Go expert, matches of the JD", "distributed systems"}, result.FitReasons)
 	})
 
 	// --- clean reasoning passes through unchanged ---

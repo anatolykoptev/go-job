@@ -64,9 +64,12 @@ type StatusUpdater interface {
 }
 
 // Notifier fires on ingest outcomes.
+// NotifyNewJob accepts a *ScoreResult so the card renderer can produce a
+// full fit-card (score != nil) or a degraded recency-only card (score == nil).
+// Callers pass nil when scoring is disabled or the score is not yet available.
 type Notifier interface {
 	NotifyNewBounty(b Bounty)
-	NotifyNewJob(j Job)
+	NotifyNewJob(j Job, score *ScoreResult)
 	NotifyNewFreelance(f Freelance)
 	NotifyNewSecurity(s Security)
 }
@@ -104,9 +107,11 @@ func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
 // NotifyJobIfOpen fires NotifyNewJob on the wired notifier for an open job.
 // It is a no-op if the notifier is nil or the job is not open/empty-status.
 // Called by the MCP path (persistJobListings) when HUNT_NOTIFY_ON_SEARCH=true.
+// score is nil because the MCP path scores lazily (Decision 5) — the worker's
+// next cycle picks up unscored rows via the scored_at IS NULL sweep.
 func (s *Store) NotifyJobIfOpen(j Job) {
 	if s.notifier != nil && (j.Status == StatusOpen || j.Status == "") {
-		s.notifier.NotifyNewJob(j)
+		s.notifier.NotifyNewJob(j, nil)
 	}
 }
 

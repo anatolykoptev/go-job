@@ -86,7 +86,7 @@ type llmScoreResponse struct {
 func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps ScorerDeps) hunt.ScoreResult {
 	// --- Stage 0: nil profile means scoring disabled ---
 	if profile == nil {
-		return hunt.ScoreResult{FitBand: "unscored", ScoredAt: time.Now()}
+		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, ScoredAt: time.Now()}
 	}
 
 	// --- Stage 1: recency pre-gate ---
@@ -141,10 +141,10 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 func failOpen(ctx context.Context, jaccardScore int) hunt.ScoreResult {
 	if !scoringFailOpen() {
 		// Should not be called when fail-closed; return unscored anyway (defensive).
-		return hunt.ScoreResult{FitBand: "unscored", FitScore: jaccardScore, ScoredAt: time.Now()}
+		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now()}
 	}
 	slog.WarnContext(ctx, "fit scoring: fail-open — returning unscored, job still eligible for notify")
-	return hunt.ScoreResult{FitBand: "unscored", FitScore: jaccardScore, ScoredAt: time.Now()}
+	return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now()}
 }
 
 // scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default true).
@@ -177,7 +177,7 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 	var resp llmScoreResponse
 	if err := json.Unmarshal([]byte(cleaned), &resp); err != nil {
 		if scoringFailOpen() {
-			return hunt.ScoreResult{FitBand: "unscored", FitScore: jaccardFallback}, nil
+			return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardFallback}, nil
 		}
 		return hunt.ScoreResult{}, fmt.Errorf("score: parse LLM response: %w", err)
 	}
@@ -222,24 +222,19 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 		)
 	}
 
-	fitGaps := make([]string, len(resp.FitGaps))
-	for i, gap := range resp.FitGaps {
-		sanitized := stripPercentages(gap)
-		if sanitized != gap {
-			slog.Warn("fit scoring: stripped fake-precision percentage from fit_gaps entry",
-				slog.String("original", gap),
-				slog.String("sanitized", sanitized),
-			)
-		}
-		fitGaps[i] = sanitized
-	}
+	// Sanitize fake-precision in BOTH list fields symmetrically. FitReasons is
+	// rendered on the card's "Why you:" line (Phase 5), so an un-stripped
+	// "matches ~90% of the JD" would leak fake precision exactly like the
+	// success line — strip it at the same store boundary, not just FitGaps.
+	fitReasons := stripPercentagesSlice(resp.FitReasons, "fit_reasons")
+	fitGaps := stripPercentagesSlice(resp.FitGaps, "fit_gaps")
 
 	return hunt.ScoreResult{
 		FitScore:         fitScore,
 		FitBand:          fitBand,
 		SuccessBand:      successBand,
 		OverUnder:        overUnder,
-		FitReasons:       resp.FitReasons,
+		FitReasons:       fitReasons,
 		FitGaps:          fitGaps,
 		SuccessReasoning: successReasoning,
 	}, nil
@@ -370,6 +365,26 @@ func stripPercentages(s string) string {
 	// Collapse multiple internal spaces that the removal may leave behind.
 	stripped = strings.Join(strings.Fields(stripped), " ")
 	return stripped
+}
+
+// stripPercentagesSlice applies stripPercentages to every entry, logging any
+// entry that actually changed. field names the source ("fit_reasons" vs
+// "fit_gaps") so the two list fields stay distinguishable in the logs.
+// Returns a new slice; nil/empty in → empty (non-nil) out.
+func stripPercentagesSlice(in []string, field string) []string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		sanitized := stripPercentages(s)
+		if sanitized != s {
+			slog.Warn("fit scoring: stripped fake-precision percentage",
+				slog.String("field", field),
+				slog.String("original", s),
+				slog.String("sanitized", sanitized),
+			)
+		}
+		out[i] = sanitized
+	}
+	return out
 }
 
 // stripMarkdownFences removes ```json and ``` wrappers from LLM output.

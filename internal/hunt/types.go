@@ -163,7 +163,8 @@ type AuditContest struct {
 //	{"fit_reasons":["..."],"fit_gaps":["..."],"success_reasoning":"..."}
 //
 // FitScore is the 0-100 fit alignment score (Axis 1).
-// FitBand is one of "high"/"medium"/"low".
+// FitBand is the display band derived from FitScore ("strong"/"moderate"/"low"/
+// "reject"), or the FitBandUnscored sentinel when the LLM scorer failed.
 // SuccessBand is one of "STRONG"/"MODERATE"/"LONGSHOT".
 // OverUnder is one of "under_qualified"/"well_matched"/"over_qualified".
 // LLMCalled is true only when the full LLM branch was reached (i.e. the job
@@ -171,6 +172,13 @@ type AuditContest struct {
 // It is false for stale/nil-profile/sub-Jaccard short-circuits. The per-cycle
 // circuit-breaker counter MUST use this flag rather than counting all jobs
 // processed, so stale/rejected jobs do not exhaust the real LLM budget.
+// FitBandUnscored is the sentinel FitBand for a degraded score: the LLM scorer
+// failed (parse error / proxy down) so the job is notified fail-open with a
+// recency-only card. The worker, notifier, and scorer all key on this value to
+// select the degraded render path and the post-recency "unscored" metric; it is
+// distinct from the numeric display bands ("strong"/"moderate"/"low"/"reject").
+const FitBandUnscored = "unscored"
+
 type ScoreResult struct {
 	FitScore         int       `json:"fit_score"`
 	FitBand          string    `json:"fit_band"`

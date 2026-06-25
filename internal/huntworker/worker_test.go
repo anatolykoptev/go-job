@@ -14,10 +14,10 @@ type fakeHuntNotifier struct {
 	jobs []hunt.Job
 }
 
-func (f *fakeHuntNotifier) NotifyNewBounty(b hunt.Bounty)        {}
-func (f *fakeHuntNotifier) NotifyNewJob(j hunt.Job)              { f.jobs = append(f.jobs, j) }
-func (f *fakeHuntNotifier) NotifyNewFreelance(fr hunt.Freelance) {}
-func (f *fakeHuntNotifier) NotifyNewSecurity(s hunt.Security)    {}
+func (f *fakeHuntNotifier) NotifyNewBounty(b hunt.Bounty)                    {}
+func (f *fakeHuntNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult)     { f.jobs = append(f.jobs, j) }
+func (f *fakeHuntNotifier) NotifyNewFreelance(fr hunt.Freelance)             {}
+func (f *fakeHuntNotifier) NotifyNewSecurity(s hunt.Security)                {}
 
 // TestWorker_SetNotifier_Wires verifies SetNotifier assigns the notifier field.
 func TestWorker_SetNotifier_Wires(t *testing.T) {
@@ -32,7 +32,7 @@ func TestWorker_MaybeNotifyJob_Created_Open(t *testing.T) {
 	f := &fakeHuntNotifier{}
 	w := &Worker{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
 	assert.Len(t, f.jobs, 1, "OutcomeCreated + open status must notify")
 }
 
@@ -41,7 +41,7 @@ func TestWorker_MaybeNotifyJob_Created_EmptyStatus(t *testing.T) {
 	f := &fakeHuntNotifier{}
 	w := &Worker{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: ""}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
 	assert.Len(t, f.jobs, 1, "empty Status must be treated as open — SearxngResultToHuntJob leaves Status empty")
 }
 
@@ -50,7 +50,7 @@ func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
 	f := &fakeHuntNotifier{}
 	w := &Worker{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeMerged)
+	w.maybeNotifyJob(j, hunt.OutcomeMerged, nil)
 	assert.Empty(t, f.jobs, "OutcomeMerged must not notify")
 }
 
@@ -58,7 +58,7 @@ func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
 func TestWorker_MaybeNotifyJob_NilNotifier(t *testing.T) {
 	w := &Worker{notifier: nil}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated) // must not panic
+	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil) // must not panic
 }
 
 // TestWorker_MaybeNotifyJob_Closed_NoNotify: closed job must not notify even on create.
@@ -66,7 +66,7 @@ func TestWorker_MaybeNotifyJob_Closed_NoNotify(t *testing.T) {
 	f := &fakeHuntNotifier{}
 	w := &Worker{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusClosed}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
 	assert.Empty(t, f.jobs, "closed status must not notify")
 }
 
