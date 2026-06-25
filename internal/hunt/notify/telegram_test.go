@@ -82,7 +82,7 @@ func TestNotifyNewJob_SendsOnce(t *testing.T) {
 	n := newNotifier(stub, kitmetrics.NewRegistry(), testChatID)
 
 	postedAt := time.Now().Add(-1 * time.Hour)
-	n.NotifyNewJob(hunt.Job{Title: "SRE", Company: "Acme", URL: "https://jobs.acme.io/1", Source: "greenhouse", PostedAt: &postedAt})
+	n.NotifyNewJob(hunt.Job{Title: "SRE", Company: "Acme", URL: "https://jobs.acme.io/1", Source: "greenhouse", PostedAt: &postedAt}, nil)
 	drainDispatch()
 
 	if stub.callCount.Load() == 0 {
@@ -235,7 +235,7 @@ func TestNotifyNewJob_FreshJob_Sends(t *testing.T) {
 	n := notify.NewFromSinkWithMaxAge(sink, 48*time.Hour, testChatID)
 
 	postedAt := time.Now().Add(-1 * time.Hour)
-	n.NotifyNewJob(hunt.Job{Title: "fresh", URL: "https://jobs.io/1", Source: "greenhouse", PostedAt: &postedAt})
+	n.NotifyNewJob(hunt.Job{Title: "fresh", URL: "https://jobs.io/1", Source: "greenhouse", PostedAt: &postedAt}, nil)
 	drainDispatch()
 
 	if stub.callCount.Load() == 0 {
@@ -258,7 +258,7 @@ func TestNotifyNewJob_StaleJob_Skips(t *testing.T) {
 	}
 
 	postedAt := time.Now().Add(-8 * 24 * time.Hour)
-	n.NotifyNewJob(hunt.Job{Title: "stale", URL: "https://jobs.io/2", Source: "greenhouse", PostedAt: &postedAt})
+	n.NotifyNewJob(hunt.Job{Title: "stale", URL: "https://jobs.io/2", Source: "greenhouse", PostedAt: &postedAt}, nil)
 	drainDispatch()
 
 	mu.Lock()
@@ -285,7 +285,7 @@ func TestNotifyNewJob_NilPostedAt_Skips(t *testing.T) {
 	}
 
 	// PostedAt is nil
-	n.NotifyNewJob(hunt.Job{Title: "no-date", URL: "https://jobs.io/3", Source: "habr"})
+	n.NotifyNewJob(hunt.Job{Title: "no-date", URL: "https://jobs.io/3", Source: "habr"}, nil)
 	drainDispatch()
 
 	mu.Lock()
@@ -305,7 +305,7 @@ func TestNotifyNewJob_JustUnderMaxAge_Sends(t *testing.T) {
 	n := notify.NewFromSinkWithMaxAge(sink, maxAge, testChatID)
 
 	postedAt := time.Now().Add(-(maxAge - time.Minute))
-	n.NotifyNewJob(hunt.Job{Title: "boundary-fresh", URL: "https://jobs.io/4", Source: "lever", PostedAt: &postedAt})
+	n.NotifyNewJob(hunt.Job{Title: "boundary-fresh", URL: "https://jobs.io/4", Source: "lever", PostedAt: &postedAt}, nil)
 	drainDispatch()
 
 	if stub.callCount.Load() == 0 {
@@ -328,7 +328,7 @@ func TestNotifyNewJob_JustOverMaxAge_Skips(t *testing.T) {
 	}
 
 	postedAt := time.Now().Add(-(maxAge + time.Minute))
-	n.NotifyNewJob(hunt.Job{Title: "boundary-stale", URL: "https://jobs.io/5", Source: "lever", PostedAt: &postedAt})
+	n.NotifyNewJob(hunt.Job{Title: "boundary-stale", URL: "https://jobs.io/5", Source: "lever", PostedAt: &postedAt}, nil)
 	drainDispatch()
 
 	mu.Lock()

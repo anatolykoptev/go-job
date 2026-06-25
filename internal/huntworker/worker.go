@@ -29,6 +29,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ const perPlatformTimeout = 45 * time.Second
 type Worker struct {
 	store          *hunt.Store
 	notifier       hunt.Notifier
+	notifyMetric   func(outcome string) // wired to engine.IncrHuntNotify in production
 	interval       time.Duration
 	queries        []string
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
@@ -72,9 +74,10 @@ func NewWorker(store *hunt.Store) *Worker {
 	}
 	queries := parseQueries(env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries))
 	return &Worker{
-		store:    store,
-		interval: env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
-		queries:  queries,
+		store:        store,
+		interval:     env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
+		queries:      queries,
+		notifyMetric: engine.IncrHuntNotify,
 		// scoringProfile is loaded lazily on first Run (requires DB + context).
 		// scorerDeps wired with concrete engine functions.
 		scorerDeps: score.ScorerDeps{
@@ -91,15 +94,76 @@ func NewWorker(store *hunt.Store) *Worker {
 // Must be called before Run(). Optional — if nil, no notifications are sent.
 func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
 
-// maybeNotifyJob fires NotifyNewJob when the outcome is OutcomeCreated and the
-// job is open or has an empty status. Empty status is treated as open because
-// SearxngResultToHuntJob does not set a Status field — UpsertJob normalises it
-// to StatusOpen in Postgres, but the in-memory Job struct retains "".
-func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome) {
-	if outcome == hunt.OutcomeCreated && w.notifier != nil &&
-		(j.Status == hunt.StatusOpen || j.Status == "") {
-		w.notifier.NotifyNewJob(j)
+// huntNotifyMinFit reads HUNT_NOTIFY_MIN_FIT from the environment.
+// Default 0 = gate fully open (all scored jobs pass through).
+// Set to e.g. 60 to drop jobs with fit_score < 60.
+func huntNotifyMinFit() int {
+	v := strings.TrimSpace(os.Getenv("HUNT_NOTIFY_MIN_FIT"))
+	if v == "" {
+		return 0
 	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// maybeNotifyJob applies the fit gate and fires NotifyNewJob when the outcome
+// is OutcomeCreated and the job is open (or has empty status — see comment
+// on SearxngResultToHuntJob below).
+//
+// Gate table (Phase 5):
+//   - score == nil (scoring disabled)     → notify (recency-only card), metric: "sent" (via notifier)
+//   - score.FitBand == "unscored" (LLM fail) → notify (degraded card), metric: "unscored"
+//   - score.FitScore < MIN_FIT (real band)   → skip notify, metric: "low_fit"
+//   - else                                    → notify (full fit-card), metric: "sent" (via notifier)
+//
+// Note: "sent" and "failed" metric outcomes are emitted by ProductNotifier.dispatch
+// via its OnSend hook; "low_fit" and "unscored" are emitted here, before dispatch.
+//
+// Empty status is treated as open because SearxngResultToHuntJob does not set a
+// Status field — UpsertJob normalises it to StatusOpen in Postgres, but the
+// in-memory Job struct retains "".
+func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, score *hunt.ScoreResult) {
+	if outcome != hunt.OutcomeCreated {
+		return
+	}
+	if w.notifier == nil {
+		return
+	}
+	if j.Status != hunt.StatusOpen && j.Status != "" {
+		return
+	}
+
+	// Unscored (LLM failure, fail-open): notify with degraded card.
+	if score != nil && score.FitBand == "unscored" {
+		if w.notifyMetric != nil {
+			w.notifyMetric("unscored")
+		}
+		w.notifier.NotifyNewJob(j, score)
+		return
+	}
+
+	// Real score present: apply the fit gate.
+	if score != nil {
+		minFit := huntNotifyMinFit()
+		if minFit > 0 && score.FitScore < minFit {
+			if w.notifyMetric != nil {
+				w.notifyMetric("low_fit")
+			}
+			slog.Debug("hunt worker: fit gate dropped job",
+				slog.Int64("job_id", j.ID),
+				slog.Int("fit_score", score.FitScore),
+				slog.Int("min_fit", minFit),
+			)
+			return
+		}
+	}
+
+	// nil score (scoring disabled) or fit ≥ threshold: notify.
+	// "sent"/"failed" outcomes are reported by ProductNotifier.dispatch via OnSend.
+	w.notifier.NotifyNewJob(j, score)
 }
 
 // parseQueries splits a comma-separated query string, trims whitespace, and
@@ -220,9 +284,9 @@ func (w *Worker) runCycle(ctx context.Context) {
 						j.ID = id
 						// Score first (persist fit data), then notify — both fire on
 						// OutcomeCreated; scoring is orthogonal to notification.
-						scoreJobWithLimit(ctx, outcome, j,
+						sr := scoreJobWithLimit(ctx, outcome, j,
 							w.scoringProfile, w.scorerDeps, w.store, &llmCallsThisCycle)
-						w.maybeNotifyJob(j, outcome)
+						w.maybeNotifyJob(j, outcome, sr)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
 					}
@@ -246,6 +310,10 @@ func (w *Worker) runCycle(ctx context.Context) {
 // If the circuit breaker has tripped (llmCallsThisCycle >= max), the job is
 // persisted as "unscored" without calling the LLM.
 //
+// Returns a pointer to the ScoreResult so the caller (runCycle) can thread it
+// into maybeNotifyJob for the fit gate and card rendering. Returns nil when
+// outcome is not OutcomeCreated (no scoring performed).
+//
 // llmCallsThisCycle is incremented ONLY when the LLM was actually invoked
 // (ScoreResult.LLMCalled == true). Stale, sub-Jaccard, and nil-profile jobs
 // short-circuit before the LLM and must NOT consume budget.
@@ -257,9 +325,9 @@ func scoreJobWithLimit(
 	deps score.ScorerDeps,
 	store jobScoreSetter,
 	llmCallsThisCycle *int,
-) {
+) *hunt.ScoreResult {
 	if outcome != hunt.OutcomeCreated {
-		return
+		return nil
 	}
 
 	maxLLM := score.MaxLLMPerCycle()
@@ -272,7 +340,7 @@ func scoreJobWithLimit(
 				slog.Any("error", err),
 			)
 		}
-		return
+		return &result
 	}
 
 	// Run the full cascade scorer. Increment the counter only when the LLM was
@@ -281,6 +349,7 @@ func scoreJobWithLimit(
 	if result.LLMCalled {
 		*llmCallsThisCycle++
 	}
+	return &result
 }
 
 // scoreJobIfCreated scores a single OutcomeCreated job and persists the result.
