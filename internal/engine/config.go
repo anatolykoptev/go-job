@@ -132,6 +132,9 @@ func Init(c Config) {
 	// Per-source duration histogram (ADR-J3, P3): range 0.1s–120s covers fast JSON
 	// APIs through slow UN portal fan-outs. Registered before first Observe.
 	reg.RegisterHistogram(MetricSourceDuration, kitmetrics.WithBuckets(SourceDurationBuckets))
+	// Fit-score histogram (P6): range 0–100 in 20-point steps.
+	// Answers "what is my fit distribution?" so the operator can tune HUNT_NOTIFY_MIN_FIT.
+	reg.RegisterHistogram(MetricHuntFitScore, kitmetrics.WithBuckets(HuntFitScoreBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}

@@ -54,6 +54,18 @@ const (
 	kindFreelance    = "freelance"
 	kindSecurity     = "security"
 
+	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
+	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
+	scoreFilterRecency = "recency"
+	scoreFilterJaccard = "jaccard"
+
+	// Fit-scoring LLM result labels (hunt_score_llm_total{result}).
+	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
+	scoreLLMOk        = "ok"
+	scoreLLMEnumClamp = "enum_clamp"
+	scoreLLMParseFail = "parse_fail"
+	scoreLLMError     = "llm_error"
+
 	// MetricLLMModelsDropped counts model ids absent from /v1/models at chain
 	// construction time (gojob_llm_models_dropped_total).
 	// Bumped once per dropped model id; a non-zero value means the env chain has
@@ -191,6 +203,31 @@ const (
 	// platform ∈ {greenhouse,lever,ashby}, reason ∈ {lru,board_404,ttl}.
 	// lru=size-pressure; board_404=HTTP 404 from board-fetch; ttl=reserved.
 	MetricSlugCacheEvictions = "hunt_slug_cache_evictions_total"
+
+	// MetricHuntFitScore is the histogram of fit-score values for LLM-scored jobs
+	// gojob_hunt_fit_score. Observed once per LLM call (LLMCalled=true).
+	// Answers "what is my fit distribution?" so the operator can tune HUNT_NOTIFY_MIN_FIT.
+	// Buckets: 0, 20, 40, 60, 80, 100 — evenly spaced over the 0-100 scale.
+	// Registered via reg.RegisterHistogram in engine.Init() before first Observe.
+	MetricHuntFitScore = "hunt_fit_score"
+
+	// MetricHuntScoreFiltered is the labelled counter
+	// gojob_hunt_score_filtered_total{stage}.
+	// stage ∈ {"recency","jaccard"} — the two pre-LLM drop points.
+	// recency: job was stale (posted_at nil or > HUNT_NOTIFY_MAX_AGE).
+	// jaccard: job was below the Jaccard pre-filter threshold.
+	// Pre-touch both in FormatMetrics so rate()-floor alerts see 0 before first run.
+	MetricHuntScoreFiltered = "hunt_score_filtered_total"
+
+	// MetricHuntScoreLLM is the labelled counter
+	// gojob_hunt_score_llm_total{result}.
+	// result ∈ {"ok","enum_clamp","parse_fail","llm_error"} — bounded LLM outcome.
+	// ok: LLM returned valid parseable JSON with known enum values.
+	// enum_clamp: JSON parsed but success_band or over_under was unknown and clamped.
+	// parse_fail: JSON could not be parsed (fail-open → unscored).
+	// llm_error: LLM call itself failed (fail-open → unscored).
+	// Pre-touch all four in FormatMetrics so rate()-floor alerts see 0 before first LLM call.
+	MetricHuntScoreLLM = "hunt_score_llm_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -211,6 +248,11 @@ var SourceDurationBuckets = []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120}
 // Buckets: 1s, 5s, 15s, 30s, 1m, 2m, 5m, 10m — covers the full range.
 // Registered via reg.RegisterHistogram in engine.Init() before first Observe.
 var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
+
+// HuntFitScoreBuckets are evenly-spaced bucket boundaries for the fit-score histogram.
+// Range 0–100 in 20-point steps: 0, 20, 40, 60, 80, 100.
+// Registered via reg.RegisterHistogram in engine.Init() before first Observe.
+var HuntFitScoreBuckets = []float64{0, 20, 40, 60, 80, 100}
 
 // GetMetrics returns a snapshot of all metrics including cache stats.
 // Returns an empty map if the registry has not been initialised (e.g. in
@@ -324,6 +366,16 @@ func FormatMetrics() string {
 		for _, present := range []string{"true", "false"} {
 			keys = append(keys, MetricHuntPostedAt+"{platform="+p+",present="+present+"}")
 		}
+	}
+	// Fit-scoring filter counters (P6): pre-touch both stages so rate()-floor alerts
+	// see 0 before the first ingest cycle. 2 stages = 2 series.
+	for _, stage := range []string{scoreFilterRecency, scoreFilterJaccard} {
+		keys = append(keys, MetricHuntScoreFiltered+"{stage="+stage+"}")
+	}
+	// Fit-scoring LLM result counters (P6): pre-touch all four results so
+	// rate()-floor alerts see 0 before the first LLM call. 4 results = 4 series.
+	for _, result := range []string{scoreLLMOk, scoreLLMEnumClamp, scoreLLMParseFail, scoreLLMError} {
+		keys = append(keys, MetricHuntScoreLLM+"{result="+result+"}")
 	}
 
 	var sb strings.Builder
@@ -616,6 +668,50 @@ func IncrHuntPostedAt(platform string, present bool) {
 // gojob_hunt_cycle_duration_seconds.
 func ObserveHuntCycleDuration(d float64) {
 	reg.Observe(MetricHuntCycleDuration, d)
+}
+
+// validHuntScoreFilterStages bounds the stage label for hunt_score_filtered_total.
+// stage ∈ {"recency","jaccard"} — the two pre-LLM drop points in the cascade scorer.
+var validHuntScoreFilterStages = map[string]bool{scoreFilterRecency: true, scoreFilterJaccard: true}
+
+// validHuntScoreLLMResults bounds the result label for hunt_score_llm_total.
+// result ∈ {"ok","enum_clamp","parse_fail","llm_error"}.
+// ok:         LLM returned valid parseable JSON with known enum values.
+// enum_clamp: JSON parsed but an enum field was unknown and clamped.
+// parse_fail: JSON could not be parsed (fail-open → unscored).
+// llm_error:  LLM call itself failed (fail-open → unscored).
+var validHuntScoreLLMResults = map[string]bool{
+	scoreLLMOk: true, scoreLLMEnumClamp: true, scoreLLMParseFail: true, scoreLLMError: true,
+}
+
+// IncrHuntScoreFiltered bumps gojob_hunt_score_filtered_total{stage=<s>}.
+// stage ∈ {scoreFilterRecency,scoreFilterJaccard} — bounded enum.
+// Called by the worker after scoreJobWithLimit when the result short-circuited
+// before the LLM (stale → recency, sub-Jaccard → jaccard).
+// Unknown values are silently dropped (cardinality guard).
+func IncrHuntScoreFiltered(stage string) {
+	if !validHuntScoreFilterStages[stage] {
+		return
+	}
+	reg.Incr(MetricHuntScoreFiltered + "{stage=" + stage + "}")
+}
+
+// IncrHuntScoreLLM bumps gojob_hunt_score_llm_total{result=<r>}.
+// result ∈ {scoreLLMOk,scoreLLMEnumClamp,scoreLLMParseFail,scoreLLMError} — bounded enum.
+// Called by the worker for any job that reached the LLM scorer stage.
+// Unknown values are silently dropped (cardinality guard).
+func IncrHuntScoreLLM(result string) {
+	if !validHuntScoreLLMResults[result] {
+		return
+	}
+	reg.Incr(MetricHuntScoreLLM + "{result=" + result + "}")
+}
+
+// ObserveHuntFitScore records a single fit-score observation into the
+// gojob_hunt_fit_score histogram. Called once per LLM-scored job (LLMCalled=true).
+// Buckets are pre-configured via reg.RegisterHistogram in engine.Init().
+func ObserveHuntFitScore(score int) {
+	reg.Observe(MetricHuntFitScore, float64(score))
 }
 
 // validDiscoveryVariantResults bounds the result label for hunt_discovery_variants_total.
