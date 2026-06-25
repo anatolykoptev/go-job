@@ -16,6 +16,10 @@ import (
 
 // New builds the admin handler mounted at /admin. Returns (nil,false) when
 // ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled.
+//
+// Routing: an outer http.ServeMux wraps p.Handler() as a /admin/ catch-all,
+// allowing bespoke 4-segment routes (e.g. GET /admin/jobs/{id}/view) that
+// never collide with go-panel's 3-segment routes (GET /admin/jobs/rows, etc.).
 func New(pool *pgxpool.Pool) (http.Handler, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
@@ -46,7 +50,15 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 	resource.Register(p, freelanceResource(pool))
 	resource.Register(p, securityResource(pool))
 	resource.Register(p, contestsResource(pool))
-	return p.Handler(), true
+	resource.Register(p, oversizeResource(pool))
+
+	// Outer mux: bespoke routes (4-seg) first, panel catch-all last.
+	// 4-seg routes (/{id}/view) never match go-panel's 3-seg routes
+	// (/rows, /new, /{id}) so there is no routing conflict.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /admin/jobs/{id}/view", a.Require(jobDetailHandler(pool)))
+	mux.Handle("/admin/", p.Handler())
+	return mux, true
 }
 
 func envOr(key, def string) string {
