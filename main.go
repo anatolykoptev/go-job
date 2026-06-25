@@ -422,7 +422,7 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 }
 
 // startAdminServer starts the operator admin UI (go-panel) on ADMIN_PORT
-// (default 8896, bound to 127.0.0.1), mounted at /admin. Fail-soft: when admin
+// (default 8896, host-restricted to 127.0.0.1 by compose), mounted at /admin. Fail-soft: when admin
 // credentials are unset (adminui.New returns ok=false) the listener is skipped,
 // so deploying before the env is wired changes nothing.
 func startAdminServer(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
@@ -431,7 +431,11 @@ func startAdminServer(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logg
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
 		return
 	}
-	addr := "127.0.0.1:" + env.Str("ADMIN_PORT", "8896")
+	// Bind all interfaces inside the container; host exposure is restricted to
+	// 127.0.0.1 by the compose port mapping (127.0.0.1:8896:8896), matching the
+	// MCP/prometheus listeners. Binding 127.0.0.1 here would be unreachable via
+	// the published port (Docker forwards to the container eth0, not loopback).
+	addr := ":" + env.Str("ADMIN_PORT", "8896")
 	mux := http.NewServeMux()
 	mux.Handle("/admin/", handler)
 	srv := &http.Server{
