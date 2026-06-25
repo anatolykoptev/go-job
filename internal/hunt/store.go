@@ -90,6 +90,11 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+// Pool returns the underlying pgxpool.Pool used by this Store.
+// Callers that need direct pool access (e.g. score.LoadProfile) should use this
+// accessor rather than coupling to the internal field.
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
 // SetEnricher wires a background GitHub enricher that triggers on ListBounties reads.
 func (s *Store) SetEnricher(e BountyEnricher) { s.enricher = e }
 
