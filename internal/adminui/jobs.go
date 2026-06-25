@@ -12,6 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Column/filter keys reused across the sort spec and filter spec.
+const (
+	colStatus = "status"
+	colSource = "source"
+)
+
 // jobsSpec drives the /admin/jobs table sort/columns. Cell order in the Lister
 // MUST match Columns order. Ported from go-nerv's retired jobsSortSpec.
 var jobsSpec = admintable.Spec{
@@ -20,16 +26,25 @@ var jobsSpec = admintable.Spec{
 		{Key: "title", Label: "Title", Sortable: true, SQLExpr: "title"},
 		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "company", NullsLast: true},
 		{Key: "rec", Label: "Rec", Sortable: true, SQLExpr: "recommendation_rank", NullsLast: true},
-		{Key: "status", Label: "Status", Sortable: true, SQLExpr: "status"},
+		{Key: colStatus, Label: "Status", Sortable: true, SQLExpr: colStatus},
 		{Key: "posted", Label: "Posted", Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC"},
 		{Key: "recent", Label: "Recent", Sortable: true, SQLExpr: "last_seen_at"},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: "salary", Label: "Salary", Sortable: false},
-		{Key: "source", Label: "Source", Sortable: false},
+		{Key: colSource, Label: "Source", Sortable: false},
 	},
 	DefaultKey: "fit",
 	DefaultDir: admintable.Desc,
 }
+
+// jobsFilter declares the /admin/jobs filter bar. Every SQLExpr is author-constant;
+// request values reach SQL only as bind args (never concatenated). Allowed sets are
+// safe-degrade (an unknown value drops the filter, never an error).
+var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
+	{Key: "q", SQLExprs: []string{"title", "company"}, Match: admintable.ILike},
+	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{"open", "applied", "interviewing", "rejected", "offer", "closed"}},
+	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
+}}
 
 func jobsResource(pool *pgxpool.Pool) resource.Resource {
 	return resource.Resource{
@@ -38,6 +53,7 @@ func jobsResource(pool *pgxpool.Pool) resource.Resource {
 		Icon:   "\U0001F4BC",
 		Group:  "Hunt",
 		Sort:   jobsSpec,
+		Filter: jobsFilter,
 		Perms:  resource.ReadAny,
 		Lister: jobsLister(pool),
 	}
