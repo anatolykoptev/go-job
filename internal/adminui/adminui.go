@@ -63,6 +63,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
+	p.AddNav(shell.NavItem{ID: "linkedin", Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
 
 	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
@@ -73,6 +74,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
+	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, applicationsDir)))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }
