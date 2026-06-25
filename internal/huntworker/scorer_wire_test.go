@@ -176,3 +176,71 @@ func TestMaxLLMPerCycle_CircuitBreaker(t *testing.T) {
 	assert.Equal(t, int64(5), scoreStore.setCount.Load(),
 		"SetJobScore must be called for all OutcomeCreated jobs (even unscored ones)")
 }
+
+// TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget verifies that
+// stale and sub-Jaccard jobs do NOT increment the per-cycle LLM counter. The
+// bug was: llmCallsThisCycle incremented unconditionally, so 50 stale jobs
+// tripped the breaker while the real LLM budget was never spent.
+//
+// Setup: limit=2; feed 3 stale + 2 fit jobs in sequence.
+// Expected: exactly 2 LLM calls (the 2 fit jobs), breaker does NOT trip after stale jobs.
+//
+// RED-on-revert: revert counter to unconditional increment → llmCalls==0 (stale
+// jobs trip the breaker before any fit job runs), test fails.
+func TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget(t *testing.T) {
+	t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "2")
+	t.Setenv("HUNT_SCORE_MIN_JACCARD", "8") // default threshold
+	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+
+	var llmCalls atomic.Int64
+	scoreStore := &fakeScoreStore{}
+
+	stalePosted := time.Now().Add(-72 * time.Hour) // 3 days old → stale
+	freshPosted := time.Now().Add(-1 * time.Hour)  // fresh → passes recency gate
+
+	prof := &score.ScoringProfile{CoreSkills: []string{"Go"}}
+
+	fitDeps := score.ScorerDeps{
+		Jaccard: func(kw, text string) float64 { return 50 }, // above threshold
+		LLM: func(_ context.Context, _ string) (string, error) {
+			llmCalls.Add(1)
+			return `{"fit_score":80,"fit_reasons":[],"fit_gaps":[],"success_band":"STRONG","success_reasoning":"good","over_under":"well_matched"}`, nil
+		},
+	}
+
+	staleDeps := score.ScorerDeps{
+		Jaccard: func(kw, text string) float64 { return 50 }, // above threshold but recency gate fires
+		LLM:     fitDeps.LLM,
+	}
+
+	cycleCounter := 0
+
+	// 3 stale jobs — must NOT consume any LLM budget.
+	for i := 0; i < 3; i++ {
+		job := hunt.Job{
+			ID:          int64(200 + i),
+			Title:       "Go Engineer",
+			Description: "Go systems",
+			PostedAt:    &stalePosted,
+		}
+		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, staleDeps, scoreStore, &cycleCounter)
+	}
+
+	// 2 fit jobs — must each call the LLM (budget is not exhausted by stale jobs).
+	for i := 0; i < 2; i++ {
+		job := hunt.Job{
+			ID:          int64(210 + i),
+			Title:       "Go Engineer",
+			Description: "Go systems",
+			PostedAt:    &freshPosted,
+		}
+		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, fitDeps, scoreStore, &cycleCounter)
+	}
+
+	// Stale jobs must not have used any LLM budget.
+	assert.Equal(t, int64(2), llmCalls.Load(),
+		"stale jobs must not consume LLM budget; expected exactly 2 LLM calls (the fit jobs)")
+	// cycleCounter must reflect only real LLM calls: 2.
+	assert.Equal(t, 2, cycleCounter,
+		"llmCallsThisCycle must count only actual LLM calls, not stale-shortcircuited ones")
+}

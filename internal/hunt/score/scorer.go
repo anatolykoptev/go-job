@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +32,12 @@ import (
 // Kept LOW because ScoreJobMatchCoverage (overlap-coefficient) can return
 // low values on verbose JDs — a threshold of 8 only kills true non-matches.
 const defaultMinJaccard = 8.0
+
+// percentageRE matches any token of the form [~][digits][.digits]% so we can
+// strip fake precision from LLM text before it is persisted. The leading
+// optional "~" is treated as part of the "approximation" cluster and removed
+// together with any surrounding whitespace by stripPercentages.
+var percentageRE = regexp.MustCompile(`~?\s*\d+(\.\d+)?\s*%`)
 
 // validSuccessBands is the exhaustive allowlist for success_band values.
 var validSuccessBands = map[string]bool{
@@ -125,6 +131,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	}
 
 	result.ScoredAt = time.Now()
+	result.LLMCalled = true
 	return result
 }
 
@@ -203,14 +210,38 @@ func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, erro
 	// Derive FitBand from fit_score (used for display and gate in Phase 5).
 	fitBand := fitBandFromScore(fitScore)
 
+	// Sanitize fake-precision at the STORE boundary (MAJOR 1).
+	// The prompt instructs the LLM to never include percentages in reasoning
+	// fields, but LLMs can ignore that instruction. We strip any percentage
+	// token here so that NO percentage is ever persisted in score_rationale.
+	successReasoning := stripPercentages(resp.SuccessReasoning)
+	if successReasoning != resp.SuccessReasoning {
+		slog.Warn("fit scoring: stripped fake-precision percentage from success_reasoning",
+			slog.String("original", resp.SuccessReasoning),
+			slog.String("sanitized", successReasoning),
+		)
+	}
+
+	fitGaps := make([]string, len(resp.FitGaps))
+	for i, gap := range resp.FitGaps {
+		sanitized := stripPercentages(gap)
+		if sanitized != gap {
+			slog.Warn("fit scoring: stripped fake-precision percentage from fit_gaps entry",
+				slog.String("original", gap),
+				slog.String("sanitized", sanitized),
+			)
+		}
+		fitGaps[i] = sanitized
+	}
+
 	return hunt.ScoreResult{
 		FitScore:         fitScore,
 		FitBand:          fitBand,
 		SuccessBand:      successBand,
 		OverUnder:        overUnder,
 		FitReasons:       resp.FitReasons,
-		FitGaps:          resp.FitGaps,
-		SuccessReasoning: resp.SuccessReasoning,
+		FitGaps:          fitGaps,
+		SuccessReasoning: successReasoning,
 	}, nil
 }
 
@@ -323,6 +354,24 @@ Respond ONLY with valid JSON (no markdown fences, no extra text):
 	)
 }
 
+// stripPercentages removes fake-precision percentage tokens from an LLM text
+// string before it is persisted. Any substring matching [~]<number>% — e.g.
+// "~73%", "40%", "73.5%" — is removed. Surrounding whitespace is normalised
+// afterwards. This enforces the honesty invariant at the STORE boundary so no
+// percentage ever reaches hunt_jobs.score_rationale, regardless of whether the
+// LLM obeyed the prompt instruction.
+//
+// Example:
+//
+//	"strong match, ~73% likely given the pool" → "strong match, likely given the pool"
+//	"missing k8s cert (~40% of JD focus)"       → "missing k8s cert ( of JD focus)"
+func stripPercentages(s string) string {
+	stripped := percentageRE.ReplaceAllString(s, "")
+	// Collapse multiple internal spaces that the removal may leave behind.
+	stripped = strings.Join(strings.Fields(stripped), " ")
+	return stripped
+}
+
 // stripMarkdownFences removes ```json and ``` wrappers from LLM output.
 // Mirrors the StripMarkdownFences function in internal/engine/jobs/master_resume.go
 // to avoid cross-package imports. Both functions must stay in sync.
@@ -372,9 +421,3 @@ func MinJaccard() float64 {
 func MaxLLMPerCycle() int {
 	return env.Int("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
 }
-
-// os.Getenv is used here for a simpler failOpen check where env.Bool reads
-// the real env. We need os directly to avoid import of go-kit in test-visible
-// ways; however, env.Bool is already available and used above.
-// This blank import ensures we don't accidentally use raw os.Getenv elsewhere.
-var _ = os.Getenv

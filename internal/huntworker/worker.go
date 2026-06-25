@@ -246,7 +246,9 @@ func (w *Worker) runCycle(ctx context.Context) {
 // If the circuit breaker has tripped (llmCallsThisCycle >= max), the job is
 // persisted as "unscored" without calling the LLM.
 //
-// llmCallsThisCycle is incremented only when the LLM is actually called.
+// llmCallsThisCycle is incremented ONLY when the LLM was actually invoked
+// (ScoreResult.LLMCalled == true). Stale, sub-Jaccard, and nil-profile jobs
+// short-circuit before the LLM and must NOT consume budget.
 func scoreJobWithLimit(
 	ctx context.Context,
 	outcome hunt.Outcome,
@@ -273,19 +275,21 @@ func scoreJobWithLimit(
 		return
 	}
 
-	// Run the full cascade scorer, then count this slot regardless of whether
-	// the inner scorer skipped the LLM (stale/reject/nil-profile).  The circuit
-	// breaker is a conservative per-cycle cap on *potential* LLM calls, not an
-	// exact counter.  Overcount is intentional and safe.
-	scoreJobIfCreated(ctx, outcome, job, profile, deps, store)
-	*llmCallsThisCycle++
+	// Run the full cascade scorer. Increment the counter only when the LLM was
+	// actually called — stale/reject/nil-profile short-circuits spend zero budget.
+	result := scoreJobIfCreated(ctx, outcome, job, profile, deps, store)
+	if result.LLMCalled {
+		*llmCallsThisCycle++
+	}
 }
 
 // scoreJobIfCreated scores a single OutcomeCreated job and persists the result.
 // It is extracted as a separate function for unit testability (injected store + deps).
-// No-op for any outcome other than OutcomeCreated.
+// No-op for any outcome other than OutcomeCreated — returns zero ScoreResult.
 //
 // Write failures from SetJobScore are logged but do not abort the cycle.
+// The returned ScoreResult carries LLMCalled so the caller can update the
+// per-cycle circuit-breaker counter only when an actual LLM call occurred.
 func scoreJobIfCreated(
 	ctx context.Context,
 	outcome hunt.Outcome,
@@ -293,9 +297,9 @@ func scoreJobIfCreated(
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
 	store jobScoreSetter,
-) {
+) hunt.ScoreResult {
 	if outcome != hunt.OutcomeCreated {
-		return
+		return hunt.ScoreResult{}
 	}
 
 	result := score.Score(ctx, profile, job, deps)
@@ -307,6 +311,7 @@ func scoreJobIfCreated(
 			slog.Any("error", err),
 		)
 	}
+	return result
 }
 
 // huntIngestEnabled reads the HUNT_INGEST_ENABLED env flag.

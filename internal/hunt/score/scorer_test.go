@@ -8,7 +8,6 @@ package score
 
 import (
 	"context"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -247,28 +246,56 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
 		assert.Equal(t, 100, result.FitScore, "fit_score > 100 must clamp to 100")
 	})
 
-	// --- success_reasoning must not contain percentages (honesty guard) ---
-	// This test validates the prompt's honesty instruction by checking that a
-	// response containing a percentage in success_reasoning gets flagged or
-	// that our parse + card rendering wouldn't pass one through.
-	// We verify this by asserting the rendered "Success:" line does not match
-	// the fake-precision regex. Since parse doesn't strip reasoning, we test the
-	// regex itself against what would be rendered.
-	t.Run("success_line_no_fake_precision_regex", func(t *testing.T) {
-		fakePrecisionRE := regexp.MustCompile(`\d+(\.\d+)?%`)
+	// --- fake-precision stripper at STORE boundary (MAJOR 1 guard) ---
+	// RED-on-revert: revert stripPercentages → persisted SuccessReasoning keeps "73%".
+	// This test feeds parseScoreResponse an LLM-shaped JSON with percentages in
+	// success_reasoning AND fit_gaps, then asserts the returned ScoreResult has
+	// NO "%" in either field. A clean reasoning must pass through unchanged.
+	t.Run("fake_precision_stripped_from_stored_result", func(t *testing.T) {
+		// LLM ignored the prompt instruction and included percentages.
+		dirty := `{
+  "fit_score": 72,
+  "fit_reasons": ["Go expert"],
+  "fit_gaps": ["missing k8s cert (~40% of JD focus)", "salary floor misaligned"],
+  "success_band": "MODERATE",
+  "success_reasoning": "strong match, ~73% likely given the pool",
+  "over_under": "well_matched"
+}`
+		result, err := parseScoreResponse(dirty, 30)
+		require.NoError(t, err)
 
-		// Simulate what formatJobMsg would output for the Success line.
-		// The band is enum-controlled; only reasoning can leak fake precision.
-		cleanReasoning := "well-matched on seniority and stack"
-		successLine := "Success: MODERATE — " + cleanReasoning
+		// success_reasoning must have no "%" character.
+		assert.NotContains(t, result.SuccessReasoning, "%",
+			"persisted SuccessReasoning must be percentage-free; got: %q", result.SuccessReasoning)
 
-		assert.False(t, fakePrecisionRE.MatchString(successLine),
-			"success line with clean reasoning must not contain percentage: %q", successLine)
+		// Each fit_gaps entry must have no "%" character.
+		for _, gap := range result.FitGaps {
+			assert.NotContains(t, gap, "%",
+				"persisted FitGaps entry must be percentage-free; got: %q", gap)
+		}
 
-		// Confirm the regex WOULD catch a fake-precise line (falsification).
-		fakeLine := "Success: MODERATE — 73% likely match for this role"
-		assert.True(t, fakePrecisionRE.MatchString(fakeLine),
-			"fake-precision check must detect percentage in success line")
+		// The non-percentage fit_reasons must pass through unchanged.
+		assert.Equal(t, []string{"Go expert"}, result.FitReasons)
+	})
+
+	// --- clean reasoning passes through unchanged ---
+	// RED-on-revert: if stripPercentages removes too much, clean text is mutated.
+	t.Run("clean_reasoning_passes_through_unchanged", func(t *testing.T) {
+		clean := `{
+  "fit_score": 80,
+  "fit_reasons": ["Go expert"],
+  "fit_gaps": ["missing k8s cert"],
+  "success_band": "STRONG",
+  "success_reasoning": "strong seniority and domain match; missing only a nice-to-have cert",
+  "over_under": "well_matched"
+}`
+		result, err := parseScoreResponse(clean, 30)
+		require.NoError(t, err)
+		assert.Equal(t, "strong seniority and domain match; missing only a nice-to-have cert",
+			result.SuccessReasoning,
+			"clean SuccessReasoning must not be mutated by the stripper")
+		assert.Equal(t, []string{"missing k8s cert"}, result.FitGaps,
+			"clean FitGaps must not be mutated by the stripper")
 	})
 }
 
