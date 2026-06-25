@@ -11,6 +11,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
@@ -59,14 +60,19 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	resource.Register(p, contestsResource(pool))
 	resource.Register(p, oversizeResource(pool))
 
+	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
+	p.AddNav(shell.NavItem{Group: "Profile"})
+	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
+
 	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
 	// Outer mux: bespoke routes (4-/5-segment) first, panel catch-all last.
 	// These routes cannot shadow go-panel's 3-segment routes (/rows, /new, /{id}).
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(store, adminUser, a, []byte(csrfKey))))
+	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(p, store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
+	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }

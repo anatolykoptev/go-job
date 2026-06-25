@@ -93,7 +93,7 @@ templ listTable(d listPageData) {
 		<thead>
 			<tr>
 				for _, col := range d.Resource.Sort.Columns {
-					<th>
+					<th style={ colHeaderStyle(col) }>
 						if col.Sortable {
 							<a
 								class={ "crm-th-sort", templ.KV("active", col.Key == d.SortState.Key) }
@@ -131,13 +131,13 @@ templ listTable(d listPageData) {
 				<tr>
 					for i, cell := range row.Cells {
 						if i == 0 && row.Href != "" {
-							<td>
+							<td style={ colCellStyle(d, i) }>
 								<a class="row-name" href={ templ.SafeURL(row.Href) }>{ cell.Value }</a>
 							</td>
 						} else if cell.HTML {
-							<td>@templ.Raw(cell.Value)</td>
+							<td style={ colCellStyle(d, i) }>@templ.Raw(cell.Value)</td>
 						} else {
-							<td>{ cell.Value }</td>
+							<td style={ colCellStyle(d, i) }>{ cell.Value }</td>
 						}
 					}
 					if d.Resource.Writer != nil {
@@ -220,4 +220,31 @@ func pageURL(d listPageData, page int) string {
 		base += fmt.Sprintf("&sort=%s&dir=%s", d.SortState.Key, string(d.SortState.Dir))
 	}
 	return base
+}
+
+// colHeaderStyle builds the inline style for a <th> element from Column.Width and Column.Align.
+// Returns an empty string when neither is set (no style attribute rendered).
+func colHeaderStyle(col admintable.Column) string {
+	s := ""
+	if col.Width != "" {
+		s += "width:" + col.Width + ";"
+	}
+	if col.Align != "" {
+		s += "text-align:" + col.Align + ";"
+	}
+	return s
+}
+
+// colCellStyle builds the inline style for a <td> element using the column at index i.
+// Out-of-bounds index (extra cells) returns an empty string safely.
+func colCellStyle(d listPageData, i int) string {
+	if i >= len(d.Resource.Sort.Columns) {
+		return ""
+	}
+	col := d.Resource.Sort.Columns[i]
+	s := ""
+	if col.Align != "" {
+		s += "text-align:" + col.Align + ";"
+	}
+	return s
 }
