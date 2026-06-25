@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"bytes"
 	"errors"
 	"html/template"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/render"
+	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5"
 )
@@ -78,17 +80,10 @@ var jobDetailTmplFuncs = template.FuncMap{
 	"derefInt": intStr,
 }
 
-// jobDetailTmplSrc is the HTML template source for the job detail page.
+// jobDetailTmplSrc is the HTML content fragment for the job detail page.
+// This is embedded inside the go-panel shell.Layout via renderShell.
 // Kept as a const so tests can inspect it without executing.
-const jobDetailTmplSrc = `<!doctype html>
-<html lang="en" class="dark">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} - go-job admin</title>
-<link rel="stylesheet" href="/admin/static/pm7.css">
-<style>
-body{margin:0;font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
+const jobDetailTmplSrc = `<style>
 .page{max-width:860px;margin:0 auto;padding:2rem 1.5rem}
 .back{display:inline-block;margin-bottom:1.5rem;color:#60a5fa;text-decoration:none;font-size:.9rem}
 .back:hover{color:#93c5fd}
@@ -121,8 +116,6 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
 .rate-form button{margin-top:.5rem;padding:.5rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem}
 .rate-form button:hover{background:#1d4ed8}
 </style>
-</head>
-<body>
 <div class="page">
   <a class="back" href="/admin/jobs">&larr; Jobs</a>
   <h2>{{.Title}}</h2>
@@ -177,13 +170,12 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
       <button type="submit">Save rating</button>
     </form>
   </div>
-</div>
-</body>
-</html>`
+</div>`
 
 // jobDetailHandler returns an http.HandlerFunc that renders a single hunt_jobs
-// row as a full HTML page. Wrap with a.Require() before mounting on the mux.
-func jobDetailHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+// row wrapped in the go-panel shell.Layout chrome. Wrap with a.Require() before
+// mounting on the mux.
+func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	tmpl := template.Must(template.New("job_detail").Funcs(jobDetailTmplFuncs).Parse(jobDetailTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -237,11 +229,13 @@ func jobDetailHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csr
 		sessVal := sessionValue(r, a.SessionCookieName())
 		d.CSRFToken = csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
 
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if execErr := tmpl.Execute(w, d); execErr != nil {
-			// Headers already sent; response may be truncated, so log for visibility.
+		var buf bytes.Buffer
+		if execErr := tmpl.Execute(&buf, d); execErr != nil {
 			slog.Error("jobDetailHandler: template execute", "err", execErr)
+			http.Error(w, "render error", http.StatusInternalServerError)
+			return
 		}
+		renderShell(w, r, p, "Job — "+d.Title, "jobs", buf.String())
 	}
 }
 

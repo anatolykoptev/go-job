@@ -13,6 +13,53 @@
 // Tenant-scope invariant: every non-Global resource gets city_slug WHERE injected
 // unconditionally. The fitness test in resource_test.go asserts this.
 //
-// Phase 1+ will add Detailer and Phase 2+ will add Writer. These are intentionally
-// absent in foundations to keep the kit minimal and prove it on read-only entities first.
+// # Detailer (Show view)
+//
+// Set Resource.Detailer to enable a per-row detail page at
+// GET {basePath}/{name}/{id}.  The closure returns []DetailSection — a
+// schema-agnostic list of titled cards, each containing []DetailItem (label +
+// value) or a RawHTML block (for consumer-built panels such as a two-column
+// fit/gap card).  go-panel owns the chrome (shell.Layout, back-link, nav);
+// the consumer owns the content.
+//
+//	resource.Register(panel, resource.Resource{
+//	    Name:  "jobs",
+//	    Title: "Jobs",
+//	    Lister: jobsLister,
+//	    Detailer: func(ctx context.Context, id string) ([]resource.DetailSection, error) {
+//	        job, err := store.GetJob(ctx, id)
+//	        if err != nil { return nil, err }
+//	        return []resource.DetailSection{
+//	            {Title: "Overview", Items: []resource.DetailItem{
+//	                {Label: "Company", Value: job.Company},
+//	                {Label: "Location", Value: job.Location},
+//	            }},
+//	        }, nil
+//	    },
+//	})
+//
+// XSS contract: DetailItem.Value is HTML-escaped by go-panel unless HTML=true.
+// Set HTML=true only for values assembled from closed-enum constants (e.g. a
+// chip HTML string built from a band map) — never for raw DB or user text.
+// DetailSection.RawHTML is rendered verbatim via templ.Raw; the consumer is
+// responsible for ensuring it is XSS-free before embedding.
+//
+// # Status chips (CSS)
+//
+// The theme in shell/styles.templ ships two reusable chip families for consumers
+// that render scored/classified data:
+//
+//   - Fit axis:    .fit-chip + .fit-strong / .fit-moderate / .fit-weak / .fit-low /
+//     .fit-reject / .fit-unscored  (green→red ramp, monospace)
+//   - Market Read: .suc-chip + .suc-strong / .suc-moderate / .suc-longshot  (purple family)
+//   - Over/under:  .ou-glyph + .ou-over / .ou-match / .ou-under  (inline glyphs)
+//
+// These are intentionally orthogonal to the existing .badge-* classes (which carry
+// semantic system success/error meaning) — do not substitute one for the other.
+//
+// # Column Width / Align
+//
+// admintable.Column.Width and .Align are now wired through list.templ.
+// Set Width (e.g. "7rem") to constrain a column and Align ("right", "center")
+// to control cell text-align.  Both map to inline styles on <th> and <td>.
 package resource
