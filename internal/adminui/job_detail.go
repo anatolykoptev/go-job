@@ -1,13 +1,15 @@
 package adminui
 
 import (
-	"fmt"
+	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/anatolykoptev/go-panel/render"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -166,15 +168,15 @@ func jobDetailHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if execErr := tmpl.Execute(w, d); execErr != nil {
-			// Headers already sent; log is best effort.
-			_ = fmt.Errorf("jobDetailHandler: template: %w", execErr)
+			// Headers already sent; response may be truncated, so log for visibility.
+			slog.Error("jobDetailHandler: template execute", "err", execErr)
 		}
 	}
 }
 
-// isJobNotFound returns true when pgx reports no rows in result set.
+// isJobNotFound returns true when the row SELECT matched no job.
 func isJobNotFound(err error) bool {
-	return err != nil && err.Error() == "no rows in result set"
+	return errors.Is(err, pgx.ErrNoRows)
 }
 
 func salaryDetailStr(lo, hi *int, cur, interval string) string {

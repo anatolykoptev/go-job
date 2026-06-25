@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,7 +34,7 @@ func TestJobDetailHandler_Smoke(t *testing.T) {
 		}
 
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/jobs/1/view", nil)
-		req.SetPathValue("id", itoa64(id))
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
 
 		rr := httptest.NewRecorder()
 		handler(rr, req)
@@ -71,17 +72,4 @@ func TestJobDetailHandler_Smoke(t *testing.T) {
 			t.Fatalf("want 400, got %d", rr.Code)
 		}
 	})
-}
-
-func itoa64(n int64) string {
-	const base = 10
-	if n == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 20)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%base)}, buf...)
-		n /= base
-	}
-	return string(buf)
 }
