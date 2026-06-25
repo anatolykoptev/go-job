@@ -1,4 +1,4 @@
-LOAD 'age';
+-- age is in shared_preload_libraries; no per-session LOAD needed (and LOAD is superuser-only).
 SET search_path = ag_catalog, "$user", public;
 
 DO $$
