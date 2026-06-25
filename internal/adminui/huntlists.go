@@ -63,7 +63,7 @@ var bountiesSpec = admintable.Spec{
 		{Key: "org", Label: "Org", Sortable: true, SQLExpr: "org", NullsLast: true},
 		{Key: "amount", Label: "Amount", Sortable: true, SQLExpr: "amount_cents", NullsLast: true},
 		{Key: colSource, Label: lblSource, Sortable: false},
-		{Key: "posted", Label: "Posted", Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC"},
+		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC"},
 		{Key: keyRecent, Label: lblRecent, Sortable: true, SQLExpr: colLastSeen},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
 	},
@@ -72,7 +72,7 @@ var bountiesSpec = admintable.Spec{
 
 var bountiesFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{colKeyTitle, "org"}, Match: admintable.ILike},
-	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{"open", "closed"}},
+	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{statusOpen, statusClosed}},
 }}
 
 func bountiesResource(pool *pgxpool.Pool) resource.Resource {
@@ -104,7 +104,7 @@ var freelanceSpec = admintable.Spec{
 		{Key: "budget", Label: "Budget", Sortable: true, SQLExpr: "COALESCE(budget_max,0)"},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false},
-		{Key: "posted", Label: "Posted", Sortable: true, SQLExpr: "posted_at", NullsLast: true},
+		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true},
 		{Key: keyRecent, Label: lblRecent, Sortable: true, SQLExpr: colLastSeen},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: "COALESCE(status,'open')"},
 	},
