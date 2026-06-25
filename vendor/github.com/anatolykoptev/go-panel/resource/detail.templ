@@ -1,0 +1,56 @@
+package resource
+
+// detailPageData holds all data needed to render a resource detail (Show) page.
+type detailPageData struct {
+	Resource Resource
+	ID       string
+	Sections []DetailSection
+	BasePath string
+}
+
+// detailPageContent renders the full detail page content (back link + sections).
+// Wrapped by Layout for all detail requests (detail pages are always full-page — no htmx fragment path).
+templ detailPageContent(d detailPageData) {
+	<div class="page-header">
+		<a
+			href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name) }
+			style="display:inline-flex;align-items:center;gap:.375rem;font-size:.8125rem;color:var(--text-secondary);text-decoration:none;margin-bottom:.75rem"
+		>
+			<span aria-hidden="true">&#8592;</span>
+			Back to { d.Resource.Title }
+		</a>
+	</div>
+	<div class="detail-page">
+		if len(d.Sections) == 0 {
+			<p style="color:var(--text-muted);font-family:var(--font-mono);font-size:.8125rem">No detail available.</p>
+		}
+		for _, section := range d.Sections {
+			@detailSection(section)
+		}
+	</div>
+}
+
+// detailSection renders one DetailSection as a card.
+templ detailSection(s DetailSection) {
+	<div class="detail-section">
+		if s.Title != "" {
+			<div class="detail-section-title">{ s.Title }</div>
+		}
+		if s.RawHTML != "" {
+			@templ.Raw(s.RawHTML)
+		} else if len(s.Items) > 0 {
+			<dl class="detail-items">
+				for _, item := range s.Items {
+					<div class="detail-item">
+						<dt class="detail-item-label">{ item.Label }</dt>
+						if item.HTML {
+							<dd class="detail-item-value">@templ.Raw(item.Value)</dd>
+						} else {
+							<dd class="detail-item-value">{ item.Value }</dd>
+						}
+					</div>
+				}
+			</dl>
+		}
+	</div>
+}
