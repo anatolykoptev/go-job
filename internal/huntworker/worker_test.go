@@ -4,9 +4,71 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeHuntNotifier records NotifyNewJob calls for worker unit tests.
+type fakeHuntNotifier struct {
+	jobs []hunt.Job
+}
+
+func (f *fakeHuntNotifier) NotifyNewBounty(b hunt.Bounty)        {}
+func (f *fakeHuntNotifier) NotifyNewJob(j hunt.Job)              { f.jobs = append(f.jobs, j) }
+func (f *fakeHuntNotifier) NotifyNewFreelance(fr hunt.Freelance) {}
+func (f *fakeHuntNotifier) NotifyNewSecurity(s hunt.Security)    {}
+
+// TestWorker_SetNotifier_Wires verifies SetNotifier assigns the notifier field.
+func TestWorker_SetNotifier_Wires(t *testing.T) {
+	w := &Worker{}
+	n := &fakeHuntNotifier{}
+	w.SetNotifier(n)
+	assert.Equal(t, n, w.notifier, "SetNotifier must wire the notifier field")
+}
+
+// TestWorker_MaybeNotifyJob_Created_Open: OutcomeCreated + StatusOpen → notify fires.
+func TestWorker_MaybeNotifyJob_Created_Open(t *testing.T) {
+	f := &fakeHuntNotifier{}
+	w := &Worker{notifier: f}
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
+	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	assert.Len(t, f.jobs, 1, "OutcomeCreated + open status must notify")
+}
+
+// TestWorker_MaybeNotifyJob_Created_EmptyStatus: empty Status treated as open (SearxngResultToHuntJob leaves Status="").
+func TestWorker_MaybeNotifyJob_Created_EmptyStatus(t *testing.T) {
+	f := &fakeHuntNotifier{}
+	w := &Worker{notifier: f}
+	j := hunt.Job{URL: "https://x.com/j", Status: ""}
+	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	assert.Len(t, f.jobs, 1, "empty Status must be treated as open — SearxngResultToHuntJob leaves Status empty")
+}
+
+// TestWorker_MaybeNotifyJob_Merged_NoNotify: OutcomeMerged must not notify.
+func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
+	f := &fakeHuntNotifier{}
+	w := &Worker{notifier: f}
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
+	w.maybeNotifyJob(j, hunt.OutcomeMerged)
+	assert.Empty(t, f.jobs, "OutcomeMerged must not notify")
+}
+
+// TestWorker_MaybeNotifyJob_NilNotifier: no panic when notifier is nil.
+func TestWorker_MaybeNotifyJob_NilNotifier(t *testing.T) {
+	w := &Worker{notifier: nil}
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
+	w.maybeNotifyJob(j, hunt.OutcomeCreated) // must not panic
+}
+
+// TestWorker_MaybeNotifyJob_Closed_NoNotify: closed job must not notify even on create.
+func TestWorker_MaybeNotifyJob_Closed_NoNotify(t *testing.T) {
+	f := &fakeHuntNotifier{}
+	w := &Worker{notifier: f}
+	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusClosed}
+	w.maybeNotifyJob(j, hunt.OutcomeCreated)
+	assert.Empty(t, f.jobs, "closed status must not notify")
+}
 
 func TestParseQueries_Basic(t *testing.T) {
 	got := parseQueries("golang developer, backend engineer, ")

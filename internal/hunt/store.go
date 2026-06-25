@@ -96,6 +96,15 @@ func (s *Store) SetEnricher(e BountyEnricher) { s.enricher = e }
 // SetNotifier wires a Telegram notifier that fires on OutcomeCreated ingest events.
 func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
 
+// NotifyJobIfOpen fires NotifyNewJob on the wired notifier for an open job.
+// It is a no-op if the notifier is nil or the job is not open/empty-status.
+// Called by the MCP path (persistJobListings) when HUNT_NOTIFY_ON_SEARCH=true.
+func (s *Store) NotifyJobIfOpen(j Job) {
+	if s.notifier != nil && (j.Status == StatusOpen || j.Status == "") {
+		s.notifier.NotifyNewJob(j)
+	}
+}
+
 // Migrate runs schema migrations in lexical order. Idempotent (all DDL uses IF NOT EXISTS).
 func (s *Store) Migrate(ctx context.Context) error {
 	entries, err := schemaFS.ReadDir("schema")
@@ -313,10 +322,6 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert job: %w", err)
 	}
 	if created {
-		// Only notify for open jobs — non-open status means already-closed listing.
-		if s.notifier != nil && status == StatusOpen {
-			s.notifier.NotifyNewJob(j)
-		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil

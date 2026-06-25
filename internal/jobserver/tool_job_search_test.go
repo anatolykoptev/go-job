@@ -8,6 +8,7 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {
@@ -209,4 +210,22 @@ func errMsgOrEmpty(fn func() error) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// TestHuntNotifyOnSearch_DefaultFalse verifies the MCP notify path is off by default.
+func TestHuntNotifyOnSearch_DefaultFalse(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_ON_SEARCH", "")
+	assert.False(t, huntNotifyOnSearch(), "HUNT_NOTIFY_ON_SEARCH must default to false")
+}
+
+// TestHuntNotifyOnSearch_TrueWhenSet verifies opting in via env var works.
+func TestHuntNotifyOnSearch_TrueWhenSet(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_ON_SEARCH", "true")
+	assert.True(t, huntNotifyOnSearch(), "HUNT_NOTIFY_ON_SEARCH=true must return true")
+}
+
+// TestHuntNotifyOnSearch_CaseInsensitive verifies "TRUE" is also accepted.
+func TestHuntNotifyOnSearch_CaseInsensitive(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_ON_SEARCH", "TRUE")
+	assert.True(t, huntNotifyOnSearch(), "HUNT_NOTIFY_ON_SEARCH must be case-insensitive")
 }
