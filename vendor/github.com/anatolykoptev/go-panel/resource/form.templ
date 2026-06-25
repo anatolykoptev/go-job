@@ -1,0 +1,317 @@
+package resource
+
+import (
+	"strings"
+
+	"github.com/anatolykoptev/go-panel/locale"
+)
+
+// formPageData holds all data needed to render a create/edit form page.
+type formPageData struct {
+	Resource     Resource
+	ID           string            // empty = create
+	Values       map[string]string // current field values
+	Errors       formErrors        // per-field validation errors (may be nil)
+	CSRFToken    string
+	BasePath     string
+	Locales      locale.Set    // configured i18n locales; zero value = single-locale
+	ActiveLocale locale.Locale // locale currently being edited ("" = single-locale/default)
+}
+
+// isEdit returns true when editing an existing record.
+func (d formPageData) isEdit() bool {
+	return d.ID != ""
+}
+
+// multiLocale reports whether more than one locale is configured.
+func (d formPageData) multiLocale() bool {
+	return len(d.Locales.Available) > 1
+}
+
+// showLocaleSwitcher reports whether to render the per-locale switcher. Only on
+// the edit form: create always happens in the Default locale (you cannot
+// translate a record that does not exist yet).
+func (d formPageData) showLocaleSwitcher() bool {
+	return d.isEdit() && d.multiLocale()
+}
+
+// onSecondaryLocale reports whether the active locale is a non-default one (i.e.
+// the editor is translating, so only Translatable fields are shown).
+func (d formPageData) onSecondaryLocale() bool {
+	return d.showLocaleSwitcher() && d.ActiveLocale != d.Locales.Default && d.ActiveLocale != ""
+}
+
+// localeFields returns the field set for the active locale (all fields on the
+// Default locale / single-locale; only Translatable fields on a secondary one).
+func (d formPageData) localeFields() []Field {
+	return d.Resource.Writer.Form.localeFields(d.ActiveLocale, d.Locales.Default, d.showLocaleSwitcher())
+}
+
+// localeIsActive reports whether loc is the locale currently being edited.
+func (d formPageData) localeIsActive(loc locale.Locale) bool {
+	return loc == d.ActiveLocale
+}
+
+// localeLabel renders a locale code for display, e.g. "en" → "EN".
+func (d formPageData) localeLabel(loc locale.Locale) string {
+	return strings.ToUpper(string(loc))
+}
+
+// localeTabURL builds the edit URL for a given locale, preserving the record id.
+func (d formPageData) localeTabURL(loc locale.Locale) string {
+	return d.BasePath + "/" + d.Resource.Name + "/" + d.ID + "/edit?locale=" + string(loc)
+}
+
+// localeBadge returns the locale label to show beside a translatable field's
+// label (empty for shared fields or single-locale deployments).
+func (d formPageData) localeBadge(fld Field) string {
+	if fld.Translatable && d.multiLocale() {
+		return strings.ToUpper(string(d.ActiveLocale))
+	}
+	return ""
+}
+
+// saveURL returns the POST action URL for the form. On an edit form with more
+// than one locale it carries ?locale= so the POST persists into the active
+// locale; create always lands in the Default locale (no query).
+func (d formPageData) saveURL() string {
+	if d.ID == "" {
+		return d.BasePath + "/" + d.Resource.Name + "/new/save"
+	}
+	u := d.BasePath + "/" + d.Resource.Name + "/" + d.ID + "/save"
+	if d.showLocaleSwitcher() {
+		u += "?locale=" + string(d.ActiveLocale)
+	}
+	return u
+}
+
+// fieldValue returns the current value for a field.
+func (d formPageData) fieldValue(key string) string {
+	if d.Values == nil {
+		return ""
+	}
+	return d.Values[key]
+}
+
+// fieldError returns the error message for a field (empty if none).
+func (d formPageData) fieldError(key string) string {
+	if d.Errors == nil {
+		return ""
+	}
+	return d.Errors.get(key)
+}
+
+// formPageContent renders the form page content (header + form).
+templ formPageContent(d formPageData) {
+	<div class="page-header">
+		if d.isEdit() {
+			<h2>Edit { d.Resource.Title }</h2>
+		} else {
+			<h2>New { d.Resource.Title }</h2>
+		}
+		<a
+			href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name) }
+			style="font-size:.8125rem;color:var(--text-secondary);text-decoration:none"
+		>&larr; Back to list</a>
+	</div>
+	if d.showLocaleSwitcher() {
+		@localeSwitcher(d)
+	}
+	<form
+		method="POST"
+		action={ templ.SafeURL(d.saveURL()) }
+		style="max-width:40rem"
+	>
+		<input type="hidden" name="_csrf" value={ d.CSRFToken }/>
+		for _, fld := range d.localeFields() {
+			@formField(fld, d.fieldValue(fld.Key), d.fieldError(fld.Key), d.localeBadge(fld))
+		}
+		<div style="display:flex;gap:.75rem;margin-top:1.5rem">
+			<button type="submit" class="pm7-button pm7-button--primary">
+				if d.isEdit() {
+					Save Changes
+				} else {
+					Create
+				}
+			</button>
+			<a
+				href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name) }
+				class="pm7-button pm7-button--outline"
+				style="text-decoration:none"
+			>Cancel</a>
+		</div>
+	</form>
+}
+
+// localeSwitcher renders the per-locale tab bar for an edit form, plus a hint
+// when a secondary (translation) locale is active.
+templ localeSwitcher(d formPageData) {
+	<div
+		role="tablist"
+		aria-label="Locale"
+		style="display:flex;gap:.375rem;margin-bottom:1rem;border-bottom:1px solid var(--pm7-border);padding-bottom:.5rem"
+	>
+		for _, loc := range d.Locales.Available {
+			if d.localeIsActive(loc) {
+				<span
+					role="tab"
+					aria-selected="true"
+					style="padding:.25rem .625rem;border-radius:.375rem;font-size:.8125rem;font-weight:600;background:var(--pm7-primary);color:var(--pm7-primary-foreground)"
+				>{ d.localeLabel(loc) }</span>
+			} else {
+				<a
+					role="tab"
+					aria-selected="false"
+					href={ templ.SafeURL(d.localeTabURL(loc)) }
+					style="padding:.25rem .625rem;border-radius:.375rem;font-size:.8125rem;text-decoration:none;color:var(--pm7-foreground);border:1px solid var(--pm7-border)"
+				>{ d.localeLabel(loc) }</a>
+			}
+		}
+	</div>
+	if d.onSecondaryLocale() {
+		<p style="margin:-.5rem 0 1rem;font-size:.75rem;color:var(--pm7-muted-foreground)">
+			Editing the { d.localeLabel(d.ActiveLocale) } translation. Shared fields are
+			edited on the { d.localeLabel(d.Locales.Default) } version.
+		</p>
+	}
+}
+
+// formField renders a single form field by Kind. localeBadge, when non-empty,
+// shows which locale's value is being edited (translatable fields, multi-locale).
+templ formField(fld Field, value, errMsg, localeBadge string) {
+	<div style="margin-bottom:1rem">
+		<label
+			for={ "field-" + fld.Key }
+			style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem"
+		>
+			{ fld.Label }
+			if fld.Required {
+				<span style="color:#ef4444;margin-left:.125rem" aria-hidden="true">*</span>
+			}
+			if localeBadge != "" {
+				<span
+					style="margin-left:.375rem;padding:.0625rem .3125rem;border-radius:.25rem;font-size:.625rem;font-weight:600;letter-spacing:.03em;background:var(--pm7-muted);color:var(--pm7-muted-foreground)"
+				>{ localeBadge }</span>
+			}
+		</label>
+		if fld.Kind == FieldText {
+			<input
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				type="text"
+				value={ value }
+				placeholder={ fld.Placeholder }
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			/>
+		} else if fld.Kind == FieldNumber {
+			<input
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				type="number"
+				value={ value }
+				placeholder={ fld.Placeholder }
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			/>
+		} else if fld.Kind == FieldDate {
+			<input
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				type="date"
+				value={ value }
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			/>
+		} else if fld.Kind == FieldTextarea {
+			<textarea
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				placeholder={ fld.Placeholder }
+				rows="4"
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				style="resize:vertical"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			>{ value }</textarea>
+		} else if fld.Kind == FieldJSON {
+			<textarea
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				placeholder={ fld.Placeholder }
+				rows="6"
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				style="resize:vertical;font-family:var(--font-mono);font-size:.8125rem"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			>{ value }</textarea>
+		} else if fld.Kind == FieldSelect {
+			<select
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			>
+				if !fld.Required {
+					<option value="">— select —</option>
+				}
+				for _, opt := range fld.Options {
+					<option
+						value={ opt.Value }
+						if opt.Value == value {
+							selected
+						}
+					>{ opt.Label }</option>
+				}
+			</select>
+		} else if fld.Kind == FieldCheckbox {
+			<label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+				<input
+					id={ "field-" + fld.Key }
+					name={ fld.Key }
+					type="checkbox"
+					value="true"
+					if value == "true" || value == "on" || value == "1" {
+						checked
+					}
+					class="pm7-checkbox"
+				/>
+				<span style="font-size:.875rem;color:var(--pm7-foreground)">{ fld.Label }</span>
+			</label>
+		}
+		if errMsg != "" {
+			<p style="margin-top:.25rem;font-size:.75rem;color:#ef4444" role="alert">{ errMsg }</p>
+		}
+		if fld.Help != "" {
+			<p style="margin-top:.25rem;font-size:.75rem;color:var(--pm7-muted-foreground)">{ fld.Help }</p>
+		}
+	</div>
+}

@@ -1,0 +1,223 @@
+package resource
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/anatolykoptev/go-kit/admintable"
+)
+
+// listPageData holds all data needed to render a resource list page.
+type listPageData struct {
+	Resource    Resource
+	Rows        []Row
+	SortState   admintable.State
+	Page        int
+	PageSize    int
+	Total       int
+	TotalPages  int
+	BasePath    string
+	QueryString string // raw query string for sort link base URL
+}
+
+// listPageContent renders the full list page content (page header + filter bar + table + pagination).
+// Wrapped by Layout for non-htmx requests; used directly for htmx fragment swap.
+templ listPageContent(d listPageData) {
+	<div class="page-header">
+		<div style="display:flex;align-items:center;justify-content:space-between;gap:1rem">
+			<div>
+				<h2>{ d.Resource.Title }</h2>
+				<p>{ strconv.Itoa(d.Total) } total</p>
+			</div>
+			if d.Resource.Writer != nil {
+				<a
+					href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/new") }
+					class="pm7-button pm7-button--primary"
+					style="text-decoration:none;white-space:nowrap"
+				>+ New</a>
+			}
+		</div>
+	</div>
+	@filterBar(d)
+	@listTable(d)
+	@pagination(d)
+}
+
+// listRowsFragment renders only the table + pagination (for htmx row swap).
+templ listRowsFragment(d listPageData) {
+	<div id={ d.Resource.Name + "-region" }>
+		@listTable(d)
+		@pagination(d)
+	</div>
+}
+
+// filterBar renders the filter chips for ILike text search and Eq/AnyOf chip selectors.
+templ filterBar(d listPageData) {
+	if len(d.Resource.Filter.Filters) > 0 {
+		<form
+			class="filter-bar"
+			hx-get={ d.BasePath + "/" + d.Resource.Name + "/rows" }
+			hx-target={ "#" + d.Resource.Name + "-region" }
+			hx-push-url="true"
+			hx-trigger="change, submit"
+		>
+			for _, f := range d.Resource.Filter.Filters {
+				if len(f.Allowed) > 0 {
+					<div style="display:flex;gap:.25rem;align-items:center">
+						<span style="font-family:var(--font-mono);font-size:.625rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em">{ f.Key }</span>
+						for _, a := range f.Allowed {
+							<button
+								type="submit"
+								name={ f.Key }
+								value={ a }
+								class="filter-chip"
+							>{ a }</button>
+						}
+					</div>
+				} else {
+					<input
+						type="search"
+						name={ f.Key }
+						placeholder={ "Search " + f.Key + "..." }
+						style="padding:.375rem .625rem;background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--font-sans);font-size:.8125rem"
+					/>
+				}
+			}
+		</form>
+	}
+}
+
+// listTable renders the sortable table with headers and rows.
+templ listTable(d listPageData) {
+	<table class="crm-table" id={ d.Resource.Name + "-table" }>
+		<thead>
+			<tr>
+				for _, col := range d.Resource.Sort.Columns {
+					<th>
+						if col.Sortable {
+							<a
+								class={ "crm-th-sort", templ.KV("active", col.Key == d.SortState.Key) }
+								href={ templ.SafeURL(sortURL(d, col.Key)) }
+								hx-get={ sortURL(d, col.Key) }
+								hx-target={ "#" + d.Resource.Name + "-region" }
+								hx-swap="outerHTML"
+								hx-push-url="true"
+							>
+								{ col.Label }
+								<span class="crm-th-arrow" aria-hidden="true">{ sortArrow(d.SortState, col.Key) }</span>
+							</a>
+						} else {
+							{ col.Label }
+						}
+					</th>
+				}
+				if d.Resource.Writer != nil {
+					<th style="width:4rem"></th>
+				}
+			</tr>
+		</thead>
+		<tbody>
+			if len(d.Rows) == 0 {
+				<tr>
+					<td
+						colspan={ listColspan(d) }
+						style="text-align:center;color:var(--text-muted);padding:2rem"
+					>
+						No results
+					</td>
+				</tr>
+			}
+			for _, row := range d.Rows {
+				<tr>
+					for i, cell := range row.Cells {
+						if i == 0 && row.Href != "" {
+							<td>
+								<a class="row-name" href={ templ.SafeURL(row.Href) }>{ cell.Value }</a>
+							</td>
+						} else if cell.HTML {
+							<td>@templ.Raw(cell.Value)</td>
+						} else {
+							<td>{ cell.Value }</td>
+						}
+					}
+					if d.Resource.Writer != nil {
+						<td style="text-align:right">
+							<a
+								href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + row.ID + "/edit") }
+								style="font-size:.75rem;color:var(--text-secondary);text-decoration:none"
+							>Edit</a>
+						</td>
+					}
+				</tr>
+			}
+		</tbody>
+	</table>
+}
+
+// pagination renders page navigation links.
+templ pagination(d listPageData) {
+	if d.TotalPages > 1 {
+		<div class="pagination">
+			if d.Page > 1 {
+				<a
+					href={ templ.SafeURL(pageURL(d, d.Page-1)) }
+					hx-get={ pageURL(d, d.Page-1) }
+					hx-target={ "#" + d.Resource.Name + "-region" }
+					hx-swap="outerHTML"
+					hx-push-url="true"
+					style="padding:.375rem .75rem;border:1px solid var(--border);border-radius:var(--radius);color:var(--text-secondary);text-decoration:none"
+				>&larr; Prev</a>
+			}
+			<span style="padding:.375rem .75rem;color:var(--text-muted);font-family:var(--font-mono);font-size:.8125rem">
+				{ fmt.Sprintf("%d / %d", d.Page, d.TotalPages) }
+			</span>
+			if d.Page < d.TotalPages {
+				<a
+					href={ templ.SafeURL(pageURL(d, d.Page+1)) }
+					hx-get={ pageURL(d, d.Page+1) }
+					hx-target={ "#" + d.Resource.Name + "-region" }
+					hx-swap="outerHTML"
+					hx-push-url="true"
+					style="padding:.375rem .75rem;border:1px solid var(--border);border-radius:var(--radius);color:var(--text-secondary);text-decoration:none"
+				>Next &rarr;</a>
+			}
+		</div>
+	}
+}
+
+// --- helper functions (not components) ---
+
+// listColspan returns the total column count including the optional edit column.
+func listColspan(d listPageData) string {
+	n := len(d.Resource.Sort.Columns)
+	if d.Resource.Writer != nil {
+		n++
+	}
+	return strconv.Itoa(n)
+}
+
+func sortURL(d listPageData, colKey string) string {
+	dir := "asc"
+	if colKey == d.SortState.Key && d.SortState.Dir == admintable.Asc {
+		dir = "desc"
+	}
+	return fmt.Sprintf("%s/%s/rows?sort=%s&dir=%s", d.BasePath, d.Resource.Name, colKey, dir)
+}
+
+func sortArrow(st admintable.State, key string) string {
+	if key != st.Key {
+		return ""
+	}
+	if st.Dir == admintable.Asc {
+		return "▲"
+	}
+	return "▼"
+}
+
+func pageURL(d listPageData, page int) string {
+	base := fmt.Sprintf("%s/%s/rows?page=%d", d.BasePath, d.Resource.Name, page)
+	if d.SortState.Key != "" {
+		base += fmt.Sprintf("&sort=%s&dir=%s", d.SortState.Key, string(d.SortState.Dir))
+	}
+	return base
+}
