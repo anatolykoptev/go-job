@@ -107,7 +107,7 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 			}
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
-				Href: url,
+				Href: "/admin/jobs/" + strconv.FormatInt(id, 10) + "/view",
 				Cells: []resource.Cell{
 					{Value: intStr(fit)},
 					{Value: title},
