@@ -401,7 +401,6 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 	ch <- sourceResult{name: src.Name(), results: results, err: err}
 }
 
-
 func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.SearxngResult {
 	if blacklist == "" {
 		return results
@@ -433,20 +432,35 @@ func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.S
 	return filtered
 }
 
+// huntNotifyOnSearch reads HUNT_NOTIFY_ON_SEARCH (default false).
+// When false, persistJobListings is silent — the MCP caller sees results inline
+// so a Telegram blast per result is redundant. Set to true to opt into inline
+// notifications (e.g. when called from a background batch, not an interactive session).
+func huntNotifyOnSearch() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUNT_NOTIFY_ON_SEARCH")), "true")
+}
+
 // persistJobListings writes LLM-extracted job listings into the hunt store (best-effort).
 func persistJobListings(ctx context.Context, jobListings []engine.JobListing) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	notifyOnSearch := huntNotifyOnSearch()
 	for _, j := range jobListings {
 		if j.URL == "" {
 			continue
 		}
-		_, outcome, err := store.UpsertJob(ctx, jobs.JobListingToHunt(j))
+		hj := jobs.JobListingToHunt(j)
+		_, outcome, err := store.UpsertJob(ctx, hj)
 		engine.IncrHuntIngest(hunt.KindJob, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert job failed", slog.Any("error", err))
+			continue
+		}
+		if notifyOnSearch && outcome == hunt.OutcomeCreated {
+			// Inline notify: MCP caller opted in via HUNT_NOTIFY_ON_SEARCH=true.
+			store.NotifyJobIfOpen(hj)
 		}
 	}
 }
