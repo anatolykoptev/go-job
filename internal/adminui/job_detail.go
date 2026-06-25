@@ -2,6 +2,7 @@ package adminui
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"log/slog"
@@ -17,8 +18,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// jobDetailQuery selects all non-JSONB columns from hunt_jobs for a single row.
-// JSONB cols (raw, score_rationale) are intentionally excluded.
+// jobDetailQuery selects columns from hunt_jobs for a single row, including
+// score_rationale JSONB for fit-card rendering.
 const jobDetailQuery = `
 SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
        COALESCE(source,''), COALESCE(location,''), COALESCE(remote,''),
@@ -28,7 +29,8 @@ SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
        fit_score, COALESCE(fit_band,''), COALESCE(success_band,''), COALESCE(over_under,''),
        scored_at, posted_at, first_seen_at, last_seen_at,
        COALESCE(description,''),
-       recommendation_rank, COALESCE(recommendation_tier,''), COALESCE(recommendation_note,'')
+       recommendation_rank, COALESCE(recommendation_tier,''), COALESCE(recommendation_note,''),
+       score_rationale
   FROM hunt_jobs
  WHERE id = $1`
 
@@ -68,6 +70,14 @@ type jobDetailData struct {
 	RecTier         string
 	RecNote         string
 	SalaryDisplay   string
+	// FitCardHTML holds the pre-rendered FIT ASSESSMENT card (two-column WHY YOU / GAPS).
+	// Built from score_rationale JSONB; empty string when job is unscored.
+	// XSS-safe: buildFitCardHTML uses html.EscapeString on all LLM free-text.
+	FitCardHTML template.HTML
+	// MarketCardHTML holds the pre-rendered MARKET READ card (chip + over/under + disclaimer).
+	// Built from success_band / over_under / score_rationale.success_reasoning.
+	// XSS-safe: buildMarketCardHTML uses html.EscapeString on free-text.
+	MarketCardHTML template.HTML
 	// CSRF token for write forms on this page.
 	CSRFToken string
 	// Rating holds the current hunt_ratings row; nil when not yet rated.
@@ -115,6 +125,25 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
 .rate-form textarea{min-height:5rem;resize:vertical}
 .rate-form button{margin-top:.5rem;padding:.5rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem}
 .rate-form button:hover{background:#1d4ed8}
+/* Fit/Market assessment cards */
+.fit-card-cols{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.5rem}
+.fit-col-label{font-size:.75rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.5rem}
+.fit-col-list{margin:0;padding-left:1.2em;font-size:.875rem;color:#cbd5e1}
+.fit-col-list li{margin-bottom:.25rem}
+.market-card{background:#1e293b;border-radius:.5rem;padding:1rem}
+.market-card-header{display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem}
+.market-card-label{font-size:.75rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}
+.market-reasoning{font-size:.875rem;color:#cbd5e1;margin-bottom:.75rem}
+.market-disclaimer{font-size:.75rem;color:#64748b;border-top:1px solid #334155;padding-top:.5rem;margin-top:.5rem}
+/* Chip styles */
+.fit-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.15rem .5rem;border-radius:.75rem;font-size:.8rem;font-weight:600}
+.fit-strong{background:#14532d;color:#86efac}.fit-moderate{background:#1e3a5f;color:#93c5fd}
+.fit-weak{background:#78350f;color:#fcd34d}.fit-low{background:#4c1d21;color:#fca5a5}
+.fit-reject{background:#3b1c1c;color:#f87171}.fit-unscored{background:#1e293b;color:#64748b}
+.suc-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.15rem .5rem;border-radius:.75rem;font-size:.8rem;font-weight:600}
+.suc-strong{background:#14532d;color:#86efac}.suc-moderate{background:#1e3a5f;color:#93c5fd}
+.suc-longshot{background:#4c1d21;color:#fca5a5}.suc-none{color:#64748b}
+.ou-glyph{font-size:.85rem}.ou-over{color:#fbbf24}.ou-match{color:#34d399}.ou-under{color:#f87171}
 </style>
 <div class="page">
   <a class="back" href="/admin/jobs">&larr; Jobs</a>
@@ -137,6 +166,17 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
   {{if .URL}}<a class="apply-btn" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Apply &#x2197;</a>{{end}}
   <a class="dl-link" href="/admin/jobs/{{.ID}}/download/resume">Resume PDF</a>
   <a class="dl-link" href="/admin/jobs/{{.ID}}/download/cover">Cover PDF</a>
+  {{if .FitCardHTML}}
+  <div class="section">
+    <h3>Fit Assessment</h3>
+    {{.FitCardHTML}}
+  </div>
+  {{end}}
+  {{if .MarketCardHTML}}
+  <div class="section">
+    {{.MarketCardHTML}}
+  </div>
+  {{end}}
   {{if .DescriptionHTML}}
   <div class="section">
     <h3>Description</h3>
@@ -188,6 +228,7 @@ func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a 
 
 		var d jobDetailData
 		var descRaw string
+		var rationaleRaw []byte
 		row := store.Pool().QueryRow(r.Context(), jobDetailQuery, id64)
 		if err := row.Scan(
 			&d.ID, &d.Title, &d.Company, &d.URL,
@@ -199,6 +240,7 @@ func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a 
 			&d.ScoredAt, &d.PostedAt, &d.FirstSeenAt, &d.LastSeenAt,
 			&descRaw,
 			&d.RecRank, &d.RecTier, &d.RecNote,
+			&rationaleRaw,
 		); err != nil {
 			if isJobNotFound(err) {
 				http.Error(w, "job not found", http.StatusNotFound)
@@ -212,6 +254,26 @@ func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a 
 		if descRaw != "" {
 			d.DescriptionHTML = render.Markdown(descRaw)
 		}
+
+		// Parse score_rationale JSONB and build fit/market card HTML.
+		// buildFitCardHTML / buildMarketCardHTML are in jobs.go (same package).
+		// All LLM free-text is escaped inside those builders — safe to cast to template.HTML.
+		var scoreRat struct {
+			FitReasons       []string `json:"fit_reasons"`
+			FitGaps          []string `json:"fit_gaps"`
+			SuccessReasoning string   `json:"success_reasoning"`
+		}
+		if len(rationaleRaw) > 0 {
+			if jsonErr := json.Unmarshal(rationaleRaw, &scoreRat); jsonErr != nil {
+				slog.Warn("jobDetailHandler: malformed score_rationale", "id", id64, "err", jsonErr)
+			}
+		}
+		// Fit card: only render when scored (not unscored/stale/nil/reject).
+		if d.FitScore != nil && d.FitBand != fitBandUnscored && d.FitBand != fitBandStale && d.FitBand != fitBandReject {
+			d.FitCardHTML = template.HTML(buildFitCardHTML(scoreRat.FitReasons, scoreRat.FitGaps)) //nolint:gosec // XSS-safe: builders use html.EscapeString on all free-text
+		}
+		// Market card: always render (shows "not assessed" state when band is empty).
+		d.MarketCardHTML = template.HTML(buildMarketCardHTML(d.SuccessBand, d.OverUnder, scoreRat.SuccessReasoning)) //nolint:gosec // XSS-safe: builders use html.EscapeString on all free-text
 
 		// Fetch current rating via canonical Store method. Not found is OK — just no rating yet.
 		rat, ratingErr := store.GetRating(r.Context(), "job", id64, adminUser)

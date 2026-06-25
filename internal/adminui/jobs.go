@@ -2,10 +2,8 @@ package adminui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"html"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -59,28 +57,30 @@ const (
 
 // CSS class constants (goconst: used 4+ times across the chip helpers).
 const (
-	cssFitUnscored  = "fit-unscored"
-	cssSucModerate  = "suc-moderate"
+	cssFitUnscored = "fit-unscored"
+	cssSucModerate = "suc-moderate"
 )
 
 // Column label constants (goconst: "Posted" used across jobs + huntlists specs).
 const lblPosted = "Posted"
 
-// scoreRationale mirrors the JSONB shape in score_rationale.
-// The struct is defined in internal/hunt/types.go but lives in package hunt.
-// We redeclare a local anonymous shape to avoid a cross-package import.
-type adminScoreRationale struct {
-	FitReasons       []string `json:"fit_reasons"`
-	FitGaps          []string `json:"fit_gaps"`
-	SuccessReasoning string   `json:"success_reasoning"`
-}
+// Job status value constants (goconst: "open"/"closed" used across jobs + huntlists filter specs).
+const (
+	statusOpen   = "open"
+	statusClosed = "closed"
+)
 
 // jobsSpec drives the /admin/jobs table sort/columns. Cell order in the Lister
-// MUST match Columns order. Ported from go-nerv's retired jobsSortSpec.
+// MUST match Columns order.
+//
+// IMPORTANT: cell index 0 is the Href-linked cell in go-panel's list template.
+// The template wraps cell-0 in <a href=…>{EscapeString(value)}</a> and ignores
+// cell.HTML for that index. Therefore cell-0 MUST be plain text (Title/Company).
+// Fit and Market Read chips are at indices 1 and 2 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: "fit", Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "8rem"},
 		{Key: colKeyTitle, Label: "Title / Company", Sortable: true, SQLExpr: colKeyTitle},
+		{Key: "fit", Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "8rem"},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
 		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "6rem"},
@@ -96,21 +96,23 @@ var jobsSpec = admintable.Spec{
 // safe-degrade (an unknown value drops the filter, never an error).
 var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{colKeyTitle, "company"}, Match: admintable.ILike},
-	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{"open", "applied", "interviewing", "rejected", "offer", "closed"}},
+	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{statusOpen, "applied", "interviewing", "rejected", "offer", statusClosed}},
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
 }}
 
 func jobsResource(pool *pgxpool.Pool) resource.Resource {
 	return resource.Resource{
-		Name:     "jobs",
-		Title:    "Jobs",
-		Icon:     "\U0001F4BC",
-		Group:    "Hunt",
-		Sort:     jobsSpec,
-		Filter:   jobsFilter,
-		Perms:    resource.ReadAny,
-		Lister:   jobsLister(pool),
-		Detailer: jobsDetailer(pool),
+		Name:   "jobs",
+		Title:  "Jobs",
+		Icon:   "\U0001F4BC",
+		Group:  "Hunt",
+		Sort:   jobsSpec,
+		Filter: jobsFilter,
+		Perms:  resource.ReadAny,
+		Lister: jobsLister(pool),
+		// No Detailer — detail surface is the bespoke /admin/jobs/{id}/view handler
+		// (job_detail.go) which includes the rate form, PDF download links, and now
+		// the fit-card sections. Row.Href points there.
 	}
 }
 
@@ -157,12 +159,16 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 			if company != "" {
 				titleCompany = title + " · " + company
 			}
+			// Cell order MUST match jobsSpec.Columns order.
+			// Cell-0 = Title/Company (plain text — go-panel wraps cell-0 in <a href>,
+			// ignoring cell.HTML; chips at i>0 are rendered with cell.HTML respected).
+			// Row.Href → bespoke /view handler (rate form + PDF + fit-card).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(id, 10) + "/view",
 				Cells: []resource.Cell{
-					{Value: fitChipHTML(fit, fitBand), HTML: true},
 					{Value: titleCompany},
+					{Value: fitChipHTML(fit, fitBand), HTML: true},
 					{Value: marketReadHTML(sucBand, ou), HTML: true},
 					{Value: status},
 					{Value: dateStr(posted)},
@@ -249,105 +255,6 @@ func marketReadHTML(band, ou string) string {
 	)
 }
 
-// jobsDetailer returns the Detailer closure for the jobs resource. It loads
-// one job by id (string) and builds the fit-card + market-read-card sections.
-// XSS contract: fit_reasons / fit_gaps / success_reasoning are LLM free-text
-// and go into DetailItem{HTML:false} so go-panel HTML-escapes them. Only
-// closed-enum chip HTML (fitChipHTML / marketReadHTML) uses HTML:true or RawHTML.
-func jobsDetailer(pool *pgxpool.Pool) func(context.Context, string) ([]resource.DetailSection, error) {
-	return func(ctx context.Context, idStr string) ([]resource.DetailSection, error) {
-		id64, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("adminui: detail jobs: bad id %q", idStr)
-		}
-
-		var (
-			title, company, url, source, location string
-			fitScore                               *int
-			fitBand, sucBand, ou                  string
-			postedAt                               *time.Time
-			rationaleRaw                           []byte
-		)
-		const q = `
-			SELECT COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
-			       COALESCE(source,''), COALESCE(location,''),
-			       fit_score, COALESCE(fit_band,''), COALESCE(success_band,''), COALESCE(over_under,''),
-			       posted_at, score_rationale
-			  FROM hunt_jobs WHERE id = $1`
-		if err := pool.QueryRow(ctx, q, id64).Scan(
-			&title, &company, &url, &source, &location,
-			&fitScore, &fitBand, &sucBand, &ou,
-			&postedAt, &rationaleRaw,
-		); err != nil {
-			return nil, fmt.Errorf("adminui: detail jobs fetch: %w", err)
-		}
-
-		// Parse score_rationale JSONB. Nil or malformed → empty rationale (honest "not assessed").
-		var rat adminScoreRationale
-		if len(rationaleRaw) > 0 {
-			if err := json.Unmarshal(rationaleRaw, &rat); err != nil {
-				slog.WarnContext(ctx, "adminui: detail jobs: malformed score_rationale, showing not-assessed",
-					slog.Int64("job_id", id64), slog.Any("err", err))
-				// Leave rat empty — detail renders "not assessed" cards.
-			}
-		}
-
-		var sections []resource.DetailSection
-
-		// ── Job header section ─────────────────────────────────────────────────
-		headerItems := []resource.DetailItem{
-			{Label: "Company", Value: company},
-			{Label: "Source", Value: source},
-			{Label: "Location", Value: location},
-			{Label: "Posted", Value: dateStr(postedAt)},
-			{Label: "Fit", Value: fitChipHTML(fitScore, fitBand), HTML: true},
-		}
-		if url != "" {
-			headerItems = append(headerItems, resource.DetailItem{
-				Label: "Posting",
-				Value: `<a href="` + html.EscapeString(url) + `" target="_blank" rel="noopener noreferrer">Open ↗</a>`,
-				HTML:  true,
-			})
-		}
-		sections = append(sections, resource.DetailSection{
-			Title: title,
-			Items: filterEmpty(headerItems),
-		})
-
-		// ── FIT ASSESSMENT card ────────────────────────────────────────────────
-		switch {
-		case fitScore == nil || fitBand == fitBandUnscored || fitBand == fitBandStale:
-			sections = append(sections, resource.DetailSection{
-				Title: "FIT ASSESSMENT",
-				Items: []resource.DetailItem{
-					{Label: "Status", Value: "Not yet assessed — scorer ran without profile or job is stale"},
-				},
-			})
-		case fitBand == fitBandReject:
-			sections = append(sections, resource.DetailSection{
-				Title: "FIT ASSESSMENT",
-				Items: []resource.DetailItem{
-					{Label: "Status", Value: "Rejected by keyword pre-filter (Jaccard) — no LLM scoring"},
-				},
-			})
-		default:
-			// Build the two-column fit-card as RawHTML (only free-text via html.EscapeString).
-			sections = append(sections, resource.DetailSection{
-				Title:   "FIT ASSESSMENT",
-				RawHTML: buildFitCardHTML(rat.FitReasons, rat.FitGaps),
-			})
-		}
-
-		// ── MARKET READ card ───────────────────────────────────────────────────
-		sections = append(sections, resource.DetailSection{
-			Title:   "MARKET READ",
-			RawHTML: buildMarketCardHTML(sucBand, ou, rat.SuccessReasoning),
-		})
-
-		return sections, nil
-	}
-}
-
 // buildFitCardHTML renders the two-column WHY YOU / GAPS layout.
 // fit_reasons and fit_gaps are LLM free-text — every item is escaped via
 // html.EscapeString before being placed in HTML. No raw text enters as markup.
@@ -408,17 +315,6 @@ func buildMarketCardHTML(band, ou, reasoning string) string {
 
 	b.WriteString(`</div>`)
 	return b.String()
-}
-
-// filterEmpty removes DetailItems whose Value is empty.
-func filterEmpty(items []resource.DetailItem) []resource.DetailItem {
-	out := make([]resource.DetailItem, 0, len(items))
-	for _, it := range items {
-		if it.Value != "" {
-			out = append(out, it)
-		}
-	}
-	return out
 }
 
 func intStr(p *int) string {

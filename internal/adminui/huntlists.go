@@ -72,7 +72,7 @@ var bountiesSpec = admintable.Spec{
 
 var bountiesFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{colKeyTitle, "org"}, Match: admintable.ILike},
-	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{"open", "closed"}},
+	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{statusOpen, statusClosed}},
 }}
 
 func bountiesResource(pool *pgxpool.Pool) resource.Resource {

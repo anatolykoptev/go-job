@@ -1,13 +1,17 @@
 package adminui
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -59,7 +63,7 @@ func TestFitChipHTML_BandMatrix(t *testing.T) {
 				t.Errorf("fitChipHTML(%v, %q): want label %q in %q", tc.fit, tc.band, tc.wantLbl, got)
 			}
 			if tc.wantNum {
-				numStr := strconvItoa(*tc.fit)
+				numStr := strconv.Itoa(*tc.fit)
 				if !strings.Contains(got, numStr) {
 					t.Errorf("fitChipHTML(%v, %q): want score %q in %q", tc.fit, tc.band, numStr, got)
 				}
@@ -76,9 +80,9 @@ func TestFitChipHTML_BandMatrix(t *testing.T) {
 // success bands and over/under values. Also verifies the unscored (empty) path.
 func TestMarketReadHTML_BandMatrix(t *testing.T) {
 	tests := []struct {
-		band     string
-		ou       string
-		wantCls  string
+		band      string
+		ou        string
+		wantCls   string
 		wantGlyph string
 	}{
 		{sucBandStrong, ouMatch, "suc-strong", "◆"},
@@ -156,7 +160,7 @@ func TestBuildMarketCardHTML_HonestyFitness(t *testing.T) {
 		}
 		// Honesty disclaimer must always be present.
 		if !strings.Contains(got, "LLM heuristic") {
-			t.Errorf("buildMarketCardHTML(%q, %q, %q): honesty disclaimer missing", tc.band, tc.ou, tc.reasoning)
+			t.Errorf("buildMarketCardHTML(%q, %qu, %q): honesty disclaimer missing", tc.band, tc.ou, tc.reasoning)
 		}
 	}
 }
@@ -180,22 +184,43 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 
 // TestJobsSpec_CellColumnAlignment asserts the cell count in a synthetic row
 // matches the column count in jobsSpec. Guards the "cell order MUST match
-// Columns order" invariant. RED-on-revert: add a column without a cell.
+// Columns order" invariant. Cell-0 = Title/Company (plain text).
+// RED-on-revert: add a column without a cell, or reorder cells.
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
-	// Synthetic minimal row matching the lister's cell assembly.
 	score := 68
+	// MUST match the Lister cell assembly order:
+	// 0=Title/Company, 1=Fit chip, 2=Market chip, 3=Status, 4=Posted, 5=Location, 6=Source.
 	cells := []resource.Cell{
-		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},   // fit
-		{Value: "Some Title · Acme Corp"},                          // title/company
-		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // market
-		{Value: "open"},                                             // status
-		{Value: "2026-06-01"},                                      // posted
-		{Value: "Remote (US)"},                                     // location
-		{Value: "linkedin"},                                         // source
+		{Value: "Some Title · Acme Corp"},                           // 0: title — plain text cell-0
+		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 1: fit chip
+		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 2: market chip
+		{Value: "open"},        // 3: status
+		{Value: "2026-06-01"},  // 4: posted
+		{Value: "Remote (US)"}, // 5: location
+		{Value: "linkedin"},    // 6: source
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
 			len(cells), len(jobsSpec.Columns))
+	}
+	// Assert cell-0 is plain text (HTML:false).
+	if cells[0].HTML {
+		t.Errorf("cell[0] (Title/Company) must have HTML:false — go-panel template ignores HTML on cell-0 with Href")
+	}
+	// Assert fit chip is at index 1 (HTML:true, not cell-0).
+	if !cells[1].HTML {
+		t.Errorf("cell[1] (Fit chip) must have HTML:true")
+	}
+	// Assert market chip is at index 2 (HTML:true, not cell-0).
+	if !cells[2].HTML {
+		t.Errorf("cell[2] (Market Read chip) must have HTML:true")
+	}
+	// Assert column order: Title first, Fit second.
+	if jobsSpec.Columns[0].Key != colKeyTitle {
+		t.Errorf("column[0] must be Title/Company (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
+	}
+	if jobsSpec.Columns[1].Key != "fit" {
+		t.Errorf("column[1] must be Fit (key=%q), got key=%q", "fit", jobsSpec.Columns[1].Key)
 	}
 }
 
@@ -234,9 +259,143 @@ func TestFitChipHTML_UnscoredNeverZero(t *testing.T) {
 	}
 }
 
+// TestJobsSpec_OfflineQueryStructure asserts without DATABASE_URL that the column
+// definitions would produce a valid OrderBy clause containing the expected
+// expressions. Catches typos in SQLExpr that only fail at query-build time.
+func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
+	// Resolve the default sort (fit, DESC) and check the generated ORDER BY.
+	sortState := jobsSpec.Resolve("fit", "desc")
+	orderBy := jobsSpec.OrderBy(sortState)
+
+	if !strings.Contains(orderBy, "fit_score") {
+		t.Errorf("OrderBy for sort=fit should contain 'fit_score', got: %q", orderBy)
+	}
+
+	// Resolve market sort and check CASE is present.
+	sortMarket := jobsSpec.Resolve("market", "desc")
+	orderByMarket := jobsSpec.OrderBy(sortMarket)
+	if !strings.Contains(orderByMarket, "CASE") {
+		t.Errorf("OrderBy for sort=market should contain 'CASE', got: %q", orderByMarket)
+	}
+	if !strings.Contains(orderByMarket, "STRONG") {
+		t.Errorf("OrderBy for sort=market should contain 'STRONG', got: %q", orderByMarket)
+	}
+	if !strings.Contains(orderByMarket, "MODERATE") {
+		t.Errorf("OrderBy for sort=market should contain 'MODERATE', got: %q", orderByMarket)
+	}
+	if !strings.Contains(orderByMarket, "LONGSHOT") {
+		t.Errorf("OrderBy for sort=market should contain 'LONGSHOT', got: %q", orderByMarket)
+	}
+
+	// Column count sanity.
+	const expectedCols = 7
+	if len(jobsSpec.Columns) != expectedCols {
+		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
+	}
+}
+
+// noopAuth is a test-only auth stub that always considers the request authenticated.
+// It implements the interface required by resource.Config.Auth.
+type noopAuth struct{}
+
+func (noopAuth) Require(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { next(w, r) }
+}
+func (noopAuth) LoginHandler() http.Handler  { return http.NotFoundHandler() }
+func (noopAuth) LogoutHandler() http.Handler { return http.NotFoundHandler() }
+
+// TestJobsListTemplate_FitChipRendered is the MAJOR 1 regression test.
+// It renders a list row through the actual go-panel list template (via httptest)
+// and asserts the fit-chip <span> appears UN-escaped — i.e. the HTML:true cell
+// was honored at index >0.
+//
+// RED-on-revert: move the Fit chip back to cell index 0 (where list_templ.go:537
+// special-cases Href-linked cells and ignores cell.HTML, HTML-escaping the chip).
+func TestJobsListTemplate_FitChipRendered(t *testing.T) {
+	score := 72
+	// Synthetic lister that returns exactly one row — the Title at index 0,
+	// Fit chip at index 1. Mimics the real jobsLister cell order.
+	syntheticLister := func(_ context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
+		return []resource.Row{
+			{
+				ID:   "999",
+				Href: "/admin/jobs/999/view",
+				Cells: []resource.Cell{
+					{Value: "Staff Engineer · Acme Corp"},                   // cell-0: plain text with Href
+					{Value: fitChipHTML(&score, fitBandStrong), HTML: true}, // cell-1: chip HTML
+					{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true},
+					{Value: "open"},
+					{Value: "2026-06-20"},
+					{Value: "Remote"},
+					{Value: "linkedin"},
+				},
+			},
+		}, 1, nil
+	}
+
+	p := resource.New(resource.Config{
+		Title:    "test",
+		BasePath: "/admin",
+		Auth:     noopAuth{},
+	})
+	resource.Register(p, resource.Resource{
+		Name:   "jobs",
+		Title:  "Jobs",
+		Sort:   jobsSpec,
+		Filter: jobsFilter,
+		Perms:  resource.ReadAny,
+		Lister: syntheticLister,
+	})
+
+	srv := httptest.NewServer(p.Handler())
+	defer srv.Close()
+
+	// Hit the HTMX rows-fragment endpoint directly (avoids full-page shell render).
+	req, err := http.NewRequestWithContext(context.Background(),
+		http.MethodGet, srv.URL+"/admin/jobs/rows", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("HX-Request", "true") // HTMX fragment mode
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /admin/jobs/rows: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	html := buf.String()
+
+	// PRIMARY ASSERT: fit-chip span must appear as real HTML (not escaped).
+	if !strings.Contains(html, `class="fit-chip fit-strong"`) {
+		t.Errorf("fit-chip not rendered as HTML; got escaped text. body:\n%s", html)
+	}
+	// NEGATIVE ASSERT: escaped span must NOT appear (would mean cell.HTML was ignored).
+	if strings.Contains(html, "&lt;span") {
+		t.Errorf("fit-chip HTML was escaped (&lt;span found) — likely chip moved back to cell-0. body:\n%s", html)
+	}
+	// The score number should appear inside the rendered chip.
+	if !strings.Contains(html, strconv.Itoa(score)) {
+		t.Errorf("fit score %d not found in rendered HTML", score)
+	}
+	// The title should appear as plain text (linked in <a href>).
+	if !strings.Contains(html, "Staff Engineer") {
+		t.Errorf("job title not found in rendered HTML")
+	}
+}
+
 // TestJobsLister_SmokeWithFitCols runs the jobs Lister (with new columns) against
 // DATABASE_URL. Skips when DATABASE_URL is unset (CI-safe). Asserts cell count
 // matches updated jobsSpec and no percentage appears in any cell.
+// Also asserts cell-0 is plain text and Href points to the bespoke /view handler.
 func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -264,6 +423,14 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 		if len(r.Cells) != len(jobsSpec.Columns) {
 			t.Fatalf("row %d: %d cells, want %d", i, len(r.Cells), len(jobsSpec.Columns))
 		}
+		// Cell-0 must be plain text (not HTML).
+		if r.Cells[0].HTML {
+			t.Errorf("row %d: cell[0] has HTML:true — must be plain text", i)
+		}
+		// Href must point to the bespoke /view handler (rate form + PDF + fit-card).
+		if !strings.HasSuffix(r.Href, "/view") {
+			t.Errorf("row %d: Href %q must end with /view — bespoke detail page", i, r.Href)
+		}
 		// Honesty gate: no percentage in any cell value.
 		for j, c := range r.Cells {
 			if percentageRE.MatchString(c.Value) {
@@ -271,8 +438,17 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 			}
 		}
 	}
+
+	// Offline query structure checks (no DB required, but run here too).
+	sortState := jobsSpec.Resolve("fit", "desc")
+	orderBy := jobsSpec.OrderBy(sortState)
+	if !strings.Contains(orderBy, "fit_score") {
+		t.Errorf("OrderBy(fit) should reference fit_score, got: %q", orderBy)
+	}
+
 	t.Logf("jobs lister OK: %d rows (total=%d)", len(rows), total)
 }
 
-// strconvItoa is a package-local helper so the test doesn't need a raw import alias.
-func strconvItoa(n int) string { return strconv.Itoa(n) }
+// admintableSpecCheck is a compile-time sentinel ensuring admintable.Spec
+// still has Resolve and OrderBy. If the upstream API changes, this line fails fast.
+var _ = admintable.Spec.Resolve
