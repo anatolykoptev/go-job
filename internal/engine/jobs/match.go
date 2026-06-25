@@ -86,3 +86,46 @@ func ScoreJobMatch(resumeKW map[string]bool, jobText string) (score float64, mat
 	}
 	return score, matching, missing
 }
+
+// ScoreJobMatchCoverage computes an overlap-coefficient score (0–100) between
+// pre-extracted resume keywords and job text.
+//
+// Unlike the symmetric ScoreJobMatch (Jaccard = inter/union), this function uses
+// the overlap coefficient:
+//
+//	inter / min(|resumeKW|, |jobKW|)
+//
+// This avoids penalising long job descriptions: when a JD is verbose but fully
+// covers the resume keyword set, ScoreJobMatch collapses due to the large union,
+// whereas ScoreJobMatchCoverage correctly returns 100.
+//
+// Use this as the Jaccard pre-filter replacement in Phase 2+: it is a better
+// indicator of "does this role actually match the resume?" without discarding
+// semantically-strong matches on verbose JDs.
+//
+// The threshold floor for the scorer should be tuned separately from the
+// symmetric Jaccard threshold (default HUNT_SCORE_MIN_JACCARD=8 on 0–100 scale).
+func ScoreJobMatchCoverage(resumeKW map[string]bool, jobText string) float64 {
+	if len(resumeKW) == 0 {
+		return 0
+	}
+	jobKW := extractMatchKW(jobText)
+	if len(jobKW) == 0 {
+		return 0
+	}
+
+	inter := 0
+	for kw := range resumeKW {
+		if jobKW[kw] {
+			inter++
+		}
+	}
+
+	minSz := len(resumeKW)
+	if len(jobKW) < minSz {
+		minSz = len(jobKW)
+	}
+
+	raw := float64(inter) / float64(minSz) * 100
+	return float64(int(raw*10+0.5)) / 10 // round to 1 decimal
+}
