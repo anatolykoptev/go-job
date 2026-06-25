@@ -166,6 +166,11 @@ type AuditContest struct {
 // FitBand is one of "high"/"medium"/"low".
 // SuccessBand is one of "STRONG"/"MODERATE"/"LONGSHOT".
 // OverUnder is one of "under_qualified"/"well_matched"/"over_qualified".
+// LLMCalled is true only when the full LLM branch was reached (i.e. the job
+// was fresh, above the Jaccard threshold, and the LLM was actually invoked).
+// It is false for stale/nil-profile/sub-Jaccard short-circuits. The per-cycle
+// circuit-breaker counter MUST use this flag rather than counting all jobs
+// processed, so stale/rejected jobs do not exhaust the real LLM budget.
 type ScoreResult struct {
 	FitScore         int       `json:"fit_score"`
 	FitBand          string    `json:"fit_band"`
@@ -175,6 +180,9 @@ type ScoreResult struct {
 	FitGaps          []string  `json:"fit_gaps"`
 	SuccessReasoning string    `json:"success_reasoning"`
 	ScoredAt         time.Time `json:"scored_at"`
+	// LLMCalled is not persisted to the DB (no JSON tag) — it is a transient
+	// signal for the circuit-breaker in huntworker.
+	LLMCalled bool `json:"-"`
 }
 
 // scoreRationale is the JSON shape stored in the score_rationale JSONB column.

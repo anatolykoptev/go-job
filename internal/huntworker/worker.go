@@ -9,6 +9,13 @@
 //	engine/jobs → hunt (hunt_map.go) would cycle if hunt imported engine/jobs.
 //
 // huntworker imports both hunt and engine/jobs without any back-edge.
+// internal/hunt/score imports only hunt types (no engine), so the graph is:
+//
+//	huntworker → engine (CallLLM)
+//	huntworker → engine/jobs (ScoreJobMatchCoverage, search functions)
+//	huntworker → hunt (Store, Job, ScoreResult, Outcome)
+//	huntworker → hunt/score (Score, ScorerDeps, ScoringProfile)
+//	hunt/score → hunt (types only, no engine — cycle-free)
 //
 // Gate: HUNT_INGEST_ENABLED=true (default false).
 // Interval: HUNT_INGEST_INTERVAL (default 6h).
@@ -29,7 +36,14 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/hunt/score"
 )
+
+// jobScoreSetter is the narrow store interface used by scoring helpers.
+// *hunt.Store satisfies this; tests inject a fake.
+type jobScoreSetter interface {
+	SetJobScore(ctx context.Context, id int64, sr hunt.ScoreResult) error
+}
 
 // defaultIngestQueries are generic role/skill strings used when the operator
 // has not set HUNT_INGEST_QUERIES.  No company names, no personal targets —
@@ -41,10 +55,12 @@ const perPlatformTimeout = 45 * time.Second
 
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
-	store    *hunt.Store
-	notifier hunt.Notifier
-	interval time.Duration
-	queries  []string
+	store          *hunt.Store
+	notifier       hunt.Notifier
+	interval       time.Duration
+	queries        []string
+	scoringProfile *score.ScoringProfile // nil = scoring disabled
+	scorerDeps     score.ScorerDeps
 }
 
 // NewWorker builds a Worker from env vars.  Returns nil if the store is nil
@@ -59,6 +75,15 @@ func NewWorker(store *hunt.Store) *Worker {
 		store:    store,
 		interval: env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
 		queries:  queries,
+		// scoringProfile is loaded lazily on first Run (requires DB + context).
+		// scorerDeps wired with concrete engine functions.
+		scorerDeps: score.ScorerDeps{
+			Jaccard: func(profileKW, jobText string) float64 {
+				kw := jobs.ExtractResumeKeywords(profileKW)
+				return jobs.ScoreJobMatchCoverage(kw, jobText)
+			},
+			LLM: engine.CallLLM,
+		},
 	}
 }
 
@@ -102,6 +127,17 @@ func (w *Worker) Run(ctx context.Context) {
 		slog.Int("queries", len(w.queries)),
 	)
 
+	// Load the scoring profile once at startup (requires context + DB).
+	if score.ScoringEnabled() && w.store != nil {
+		prof, err := score.LoadProfile(ctx, w.store.Pool())
+		if err != nil {
+			slog.WarnContext(ctx, "hunt worker: scoring profile load error — scoring disabled",
+				slog.Any("error", err))
+		} else {
+			w.scoringProfile = prof // nil = disabled (LoadProfile logs its own WARN)
+		}
+	}
+
 	// Run one cycle immediately so the table is populated before the first tick.
 	w.runCycle(ctx)
 
@@ -134,6 +170,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 	}
 
 	var totalCreated, totalMerged, totalError int
+	llmCallsThisCycle := 0 // circuit-breaker counter, reset per cycle
 
 	for _, q := range w.queries {
 		for _, p := range platforms {
@@ -168,7 +205,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 					}
 					j := jobs.SearxngResultToHuntJob(r, p.name)
 					engine.IncrHuntPostedAt(p.name, j.PostedAt != nil)
-					_, outcome, uErr := w.store.UpsertJob(ctx, j)
+					id, outcome, uErr := w.store.UpsertJob(ctx, j)
 					engine.IncrHuntIngest(hunt.KindJob, outcome.String())
 					switch {
 					case uErr != nil:
@@ -179,6 +216,12 @@ func (w *Worker) runCycle(ctx context.Context) {
 						)
 					case outcome == hunt.OutcomeCreated:
 						totalCreated++
+						// Attach the job ID so SetJobScore can find the row.
+						j.ID = id
+						// Score first (persist fit data), then notify — both fire on
+						// OutcomeCreated; scoring is orthogonal to notification.
+						scoreJobWithLimit(ctx, outcome, j,
+							w.scoringProfile, w.scorerDeps, w.store, &llmCallsThisCycle)
 						w.maybeNotifyJob(j, outcome)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
@@ -195,7 +238,80 @@ func (w *Worker) runCycle(ctx context.Context) {
 		slog.Int("created", totalCreated),
 		slog.Int("merged", totalMerged),
 		slog.Int("errors", totalError),
+		slog.Int("llm_scored", llmCallsThisCycle),
 	)
+}
+
+// scoreJobWithLimit scores a job, enforcing the per-cycle LLM circuit breaker.
+// If the circuit breaker has tripped (llmCallsThisCycle >= max), the job is
+// persisted as "unscored" without calling the LLM.
+//
+// llmCallsThisCycle is incremented ONLY when the LLM was actually invoked
+// (ScoreResult.LLMCalled == true). Stale, sub-Jaccard, and nil-profile jobs
+// short-circuit before the LLM and must NOT consume budget.
+func scoreJobWithLimit(
+	ctx context.Context,
+	outcome hunt.Outcome,
+	job hunt.Job,
+	profile *score.ScoringProfile,
+	deps score.ScorerDeps,
+	store jobScoreSetter,
+	llmCallsThisCycle *int,
+) {
+	if outcome != hunt.OutcomeCreated {
+		return
+	}
+
+	maxLLM := score.MaxLLMPerCycle()
+	if *llmCallsThisCycle >= maxLLM {
+		// Circuit breaker tripped: persist unscored, do not call LLM.
+		result := hunt.ScoreResult{FitBand: "unscored", ScoredAt: time.Now()}
+		if err := store.SetJobScore(ctx, job.ID, result); err != nil {
+			slog.WarnContext(ctx, "hunt worker: SetJobScore (circuit-breaker unscored) failed",
+				slog.Int64("job_id", job.ID),
+				slog.Any("error", err),
+			)
+		}
+		return
+	}
+
+	// Run the full cascade scorer. Increment the counter only when the LLM was
+	// actually called — stale/reject/nil-profile short-circuits spend zero budget.
+	result := scoreJobIfCreated(ctx, outcome, job, profile, deps, store)
+	if result.LLMCalled {
+		*llmCallsThisCycle++
+	}
+}
+
+// scoreJobIfCreated scores a single OutcomeCreated job and persists the result.
+// It is extracted as a separate function for unit testability (injected store + deps).
+// No-op for any outcome other than OutcomeCreated — returns zero ScoreResult.
+//
+// Write failures from SetJobScore are logged but do not abort the cycle.
+// The returned ScoreResult carries LLMCalled so the caller can update the
+// per-cycle circuit-breaker counter only when an actual LLM call occurred.
+func scoreJobIfCreated(
+	ctx context.Context,
+	outcome hunt.Outcome,
+	job hunt.Job,
+	profile *score.ScoringProfile,
+	deps score.ScorerDeps,
+	store jobScoreSetter,
+) hunt.ScoreResult {
+	if outcome != hunt.OutcomeCreated {
+		return hunt.ScoreResult{}
+	}
+
+	result := score.Score(ctx, profile, job, deps)
+
+	if err := store.SetJobScore(ctx, job.ID, result); err != nil {
+		slog.WarnContext(ctx, "hunt worker: SetJobScore failed",
+			slog.Int64("job_id", job.ID),
+			slog.String("fit_band", result.FitBand),
+			slog.Any("error", err),
+		)
+	}
+	return result
 }
 
 // huntIngestEnabled reads the HUNT_INGEST_ENABLED env flag.
