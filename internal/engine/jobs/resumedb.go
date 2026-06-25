@@ -19,8 +19,12 @@ import (
 //go:embed schema/*.sql
 var schemaFS embed.FS
 
-// ageSetup runs per-connection AGE initialization.
-const ageSetup = `LOAD 'age'; SET search_path TO ag_catalog, "$user", public`
+// ageSetup runs per-connection AGE initialization. No LOAD 'age' is issued:
+// every graph call site uses the fully-qualified ag_catalog.cypher(...), and age
+// is in shared_preload_libraries, so cypher() is already available without LOAD.
+// LOAD is also disallowed for non-superuser roles such as the gojob app role,
+// so issuing it would break least-privilege / own-DB deploys.
+const ageSetup = `SET search_path TO ag_catalog, "$user", public`
 
 // Package-level singletons, set from main.go.
 var (
