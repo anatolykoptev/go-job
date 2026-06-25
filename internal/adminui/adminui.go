@@ -14,6 +14,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// adminBasePath is the base URL prefix for the admin panel.
+const adminBasePath = "/admin"
+
 // New builds the admin handler mounted at /admin. Returns (nil,false) when
 // ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled.
 //
@@ -35,13 +38,13 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 		Username:   envOr("ADMIN_USERNAME", "admin"),
 		Password:   password,
 		HMACKey:    []byte(hmacKey),
-		BasePath:   "/admin",
+		BasePath:   adminBasePath,
 		SessionTTL: 12 * time.Hour,
 		Secure:     true,
 	})
 	p := resource.New(resource.Config{
 		Title:    "go-job",
-		BasePath: "/admin",
+		BasePath: adminBasePath,
 		Auth:     a,
 		CSRFKey:  []byte(csrfKey),
 	})
@@ -52,12 +55,15 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 	resource.Register(p, contestsResource(pool))
 	resource.Register(p, oversizeResource(pool))
 
-	// Outer mux: bespoke routes (4-seg) first, panel catch-all last.
-	// 4-seg routes (/{id}/view) never match go-panel's 3-seg routes
-	// (/rows, /new, /{id}) so there is no routing conflict.
+	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
+
+	// Outer mux: bespoke routes (4-/5-segment) first, panel catch-all last.
+	// These routes cannot shadow go-panel's 3-segment routes (/rows, /new, /{id}).
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /admin/jobs/{id}/view", a.Require(jobDetailHandler(pool)))
-	mux.Handle("/admin/", p.Handler())
+	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(pool, a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(pool, a, []byte(csrfKey))))
+	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
+	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }
 

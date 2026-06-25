@@ -7,9 +7,22 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// testDetailAuth returns a throwaway auth for unit tests.
+func testDetailAuth() *auth.HMACAuth {
+	return auth.NewHMACAuth(auth.HMACConfig{
+		Username:   "admin",
+		Password:   "pw",
+		HMACKey:    []byte("00000000000000000000000000000000"),
+		BasePath:   "/admin",
+		SessionTTL: time.Hour,
+	})
+}
 
 // TestJobDetailHandler_Smoke runs jobDetailHandler against DATABASE_URL.
 // Skips when DATABASE_URL is unset (CI-safe). Fetches the first job's id and
@@ -25,7 +38,8 @@ func TestJobDetailHandler_Smoke(t *testing.T) {
 	}
 	defer pool.Close()
 
-	handler := jobDetailHandler(pool)
+	csrfKey := []byte("00000000000000000000000000000000")
+	handler := jobDetailHandler(pool, testDetailAuth(), csrfKey)
 
 	t.Run("existing_id", func(t *testing.T) {
 		var id int64
