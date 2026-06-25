@@ -179,6 +179,17 @@ type AuditContest struct {
 // distinct from the numeric display bands ("strong"/"moderate"/"low"/"reject").
 const FitBandUnscored = "unscored"
 
+// FitBandStale and FitBandReject are the pre-LLM short-circuit bands.
+// FitBandStale: job PostedAt nil or older than HUNT_NOTIFY_MAX_AGE.
+// FitBandReject: job failed the Jaccard keyword-overlap pre-filter.
+// Both are keyed by observeScore (worker) and the scorer to route the
+// hunt_score_filtered_total metric. Centralised here so a rename cannot
+// silently diverge scorer.go from worker.go.
+const (
+	FitBandStale  = "stale"
+	FitBandReject = "reject"
+)
+
 type ScoreResult struct {
 	FitScore         int       `json:"fit_score"`
 	FitBand          string    `json:"fit_band"`
@@ -191,6 +202,10 @@ type ScoreResult struct {
 	// LLMCalled is not persisted to the DB (no JSON tag) — it is a transient
 	// signal for the circuit-breaker in huntworker.
 	LLMCalled bool `json:"-"`
+	// LLMResult is a transient signal (not persisted) for the scorer-outcome metric.
+	// One of "ok" | "enum_clamp" | "parse_fail" | "llm_error"; empty for pre-LLM
+	// short-circuits (stale/reject) which are counted via FitBand + the filter metric.
+	LLMResult string `json:"-"`
 }
 
 // scoreRationale is the JSON shape stored in the score_rationale JSONB column.

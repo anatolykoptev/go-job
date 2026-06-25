@@ -452,3 +452,106 @@ func Test_Scorer_NilProfile_ReturnsUnscored(t *testing.T) {
 	assert.Equal(t, int64(0), llm.calls.Load(), "nil profile must not call LLM")
 	assert.Equal(t, "unscored", result.FitBand, "nil profile must return unscored")
 }
+
+// ---------------------------------------------------------------------------
+// Test 7: LLMResult transient signal (Phase 6)
+// ---------------------------------------------------------------------------
+//
+// Verifies that ScoreResult.LLMResult is set correctly on each LLM path.
+// Only LLM-path results set a non-empty LLMResult; pre-LLM short-circuits
+// (stale/reject) leave LLMResult empty so the worker can distinguish them.
+//
+// RED-on-revert:
+//   - Remove result.LLMResult = "ok" assignment → test fails (field stays "").
+//   - Remove result.LLMResult = "enum_clamp" assignment → test fails.
+//   - Remove result.LLMResult = "parse_fail" assignment → test fails.
+
+func Test_LLMResult_Signal(t *testing.T) {
+	prof := freshProfile()
+	postedAt := time.Now().Add(-1 * time.Hour)
+	freshJob := hunt.Job{
+		Title:       "Senior Go Engineer",
+		Description: "Go Rust PostgreSQL distributed systems AI infrastructure Kubernetes",
+		PostedAt:    &postedAt,
+	}
+
+	// Case 1: clean LLM response → LLMResult == "ok"
+	t.Run("clean_json_ok", func(t *testing.T) {
+		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+		llm := &stubLLM{} // returns valid JSON with well-known fields
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		result := Score(context.Background(), prof, freshJob, deps)
+		assert.Equal(t, "ok", result.LLMResult,
+			"clean LLM response must set LLMResult='ok'; RED-on-revert: remove the assignment → field empty")
+		assert.True(t, result.LLMCalled, "LLMCalled must be true when LLM was invoked")
+	})
+
+	// Case 2: unknown success_band → enum-clamped → LLMResult == "enum_clamp"
+	// The LLM returned an unrecognised success_band value; parseScoreResponse
+	// clamps it to "MODERATE" and sets LLMResult="enum_clamp".
+	t.Run("unknown_success_band_enum_clamp", func(t *testing.T) {
+		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+		llm := &stubLLM{reply: `{
+  "fit_score": 70,
+  "fit_reasons": ["Go"],
+  "fit_gaps": [],
+  "success_band": "EXCELLENT",
+  "success_reasoning": "top match",
+  "over_under": "well_matched"
+}`}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		result := Score(context.Background(), prof, freshJob, deps)
+		assert.Equal(t, "enum_clamp", result.LLMResult,
+			"unknown success_band must set LLMResult='enum_clamp'; RED-on-revert: remove the assignment → field stays 'ok'")
+	})
+
+	// Case 3: non-JSON response → parse_fail (fail-open) → LLMResult == "parse_fail"
+	t.Run("non_json_parse_fail", func(t *testing.T) {
+		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+		llm := &stubLLM{reply: "Sorry, I cannot score this job."}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		result := Score(context.Background(), prof, freshJob, deps)
+		assert.Equal(t, "parse_fail", result.LLMResult,
+			"non-JSON LLM response must set LLMResult='parse_fail'; RED-on-revert: remove the assignment → field empty")
+		assert.Equal(t, hunt.FitBandUnscored, result.FitBand, "parse_fail must result in unscored (fail-open)")
+	})
+
+	// Case 4: pre-LLM short-circuits leave LLMResult empty
+	t.Run("stale_job_no_llm_result", func(t *testing.T) {
+		stalePostedAt := time.Now().Add(-72 * time.Hour)
+		staleJob := hunt.Job{
+			Title:    "Go Engineer",
+			PostedAt: &stalePostedAt,
+		}
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		result := Score(context.Background(), prof, staleJob, deps)
+		assert.Equal(t, "", result.LLMResult,
+			"stale short-circuit must leave LLMResult empty (pre-LLM, not an LLM outcome)")
+		assert.Equal(t, "stale", result.FitBand)
+	})
+
+	t.Run("reject_job_no_llm_result", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 2 }, // below threshold
+			LLM:     llm.call,
+		}
+		result := Score(context.Background(), prof, freshJob, deps)
+		assert.Equal(t, "", result.LLMResult,
+			"jaccard-reject short-circuit must leave LLMResult empty (pre-LLM, not an LLM outcome)")
+		assert.Equal(t, "reject", result.FitBand)
+	})
+}
