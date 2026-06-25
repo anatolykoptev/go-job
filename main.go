@@ -31,7 +31,6 @@ import (
 	"github.com/anatolykoptev/go_job/internal/huntworker"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -61,7 +60,7 @@ func main() {
 
 	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
 	if hs := engine.GetHuntStore(); hs != nil {
-		startAdminServer(sigCtx, hs.Pool(), slog.Default())
+		startAdminServer(sigCtx, hs, slog.Default())
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{
@@ -425,8 +424,8 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 // (default 8896, host-restricted to 127.0.0.1 by compose), mounted at /admin. Fail-soft: when admin
 // credentials are unset (adminui.New returns ok=false) the listener is skipped,
 // so deploying before the env is wired changes nothing.
-func startAdminServer(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
-	handler, ok := adminui.New(pool)
+func startAdminServer(ctx context.Context, store *hunt.Store, logger *slog.Logger) {
+	handler, ok := adminui.New(store)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
 		return

@@ -8,9 +8,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/anatolykoptev/go-panel/auth"
+	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/render"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // jobDetailQuery selects all non-JSONB columns from hunt_jobs for a single row.
@@ -27,6 +29,13 @@ SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
        recommendation_rank, COALESCE(recommendation_tier,''), COALESCE(recommendation_note,'')
   FROM hunt_jobs
  WHERE id = $1`
+
+// currentRating holds the current hunt_ratings row for a job.
+type currentRating struct {
+	Stage     string
+	Note      string
+	UpdatedAt time.Time
+}
 
 // jobDetailData is the template context for the job detail page.
 type jobDetailData struct {
@@ -57,6 +66,10 @@ type jobDetailData struct {
 	RecTier         string
 	RecNote         string
 	SalaryDisplay   string
+	// CSRF token for write forms on this page.
+	CSRFToken string
+	// Rating holds the current hunt_ratings row; nil when not yet rated.
+	Rating *currentRating
 }
 
 // jobDetailTmplFuncs are the template helper functions used in the detail page.
@@ -94,6 +107,19 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
 .md-body pre{background:#334155;padding:.75rem 1rem;border-radius:.35rem;overflow-x:auto}
 .apply-btn{display:inline-block;margin-top:1.5rem;padding:.6rem 1.25rem;background:#2563eb;color:#fff;border-radius:.35rem;text-decoration:none;font-weight:500;font-size:.9rem}
 .apply-btn:hover{background:#1d4ed8}
+.dl-link{display:inline-block;margin-top:.75rem;margin-right:.75rem;padding:.45rem 1rem;background:#334155;color:#e2e8f0;border-radius:.35rem;text-decoration:none;font-size:.85rem}
+.dl-link:hover{background:#475569}
+.rate-form{margin-top:1.5rem;background:#1e293b;border-radius:.5rem;padding:1.25rem}
+.rate-form h3{margin:0 0 .75rem;font-size:1rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}
+.current-rating{margin-bottom:1rem;padding:.75rem 1rem;background:#0f172a;border-radius:.35rem;font-size:.85rem}
+.current-rating .stage{font-weight:600;color:#34d399}
+.current-rating .note{color:#94a3b8;margin-top:.25rem}
+.rate-form label{display:block;margin-bottom:.75rem;font-size:.875rem}
+.rate-form label span{color:#94a3b8;font-size:.75rem;display:block;margin-bottom:.25rem}
+.rate-form select,.rate-form textarea{width:100%;padding:.5rem .75rem;background:#0f172a;border:1px solid #334155;border-radius:.375rem;color:#e2e8f0;font-size:.875rem}
+.rate-form textarea{min-height:5rem;resize:vertical}
+.rate-form button{margin-top:.5rem;padding:.5rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem}
+.rate-form button:hover{background:#1d4ed8}
 </style>
 </head>
 <body>
@@ -116,19 +142,48 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
     {{if .Experience}}<dt>Experience</dt><dd>{{.Experience}}</dd>{{end}}
   </dl>
   {{if .URL}}<a class="apply-btn" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Apply &#x2197;</a>{{end}}
+  <a class="dl-link" href="/admin/jobs/{{.ID}}/download/resume">Resume PDF</a>
+  <a class="dl-link" href="/admin/jobs/{{.ID}}/download/cover">Cover PDF</a>
   {{if .DescriptionHTML}}
   <div class="section">
     <h3>Description</h3>
     <div class="md-body">{{.DescriptionHTML}}</div>
   </div>
   {{end}}
+  <div class="rate-form">
+    <h3>Rate</h3>
+    {{if .Rating}}
+    <div class="current-rating">
+      <span class="stage">Current stage: {{.Rating.Stage}}</span>
+      {{if .Rating.Note}}<div class="note">{{.Rating.Note}}</div>{{end}}
+    </div>
+    {{end}}
+    <form method="POST" action="/admin/jobs/{{.ID}}/rate">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <label>
+        <span>Stage</span>
+        <select name="stage">
+          <option value="new"{{if and .Rating (eq .Rating.Stage "new")}} selected{{end}}>new</option>
+          <option value="interesting"{{if and .Rating (eq .Rating.Stage "interesting")}} selected{{end}}>interesting</option>
+          <option value="saved"{{if and .Rating (eq .Rating.Stage "saved")}} selected{{end}}>saved</option>
+          <option value="discarded"{{if and .Rating (eq .Rating.Stage "discarded")}} selected{{end}}>discarded</option>
+          <option value="claimed"{{if and .Rating (eq .Rating.Stage "claimed")}} selected{{end}}>claimed</option>
+        </select>
+      </label>
+      <label>
+        <span>Note</span>
+        <textarea name="note">{{if .Rating}}{{.Rating.Note}}{{end}}</textarea>
+      </label>
+      <button type="submit">Save rating</button>
+    </form>
+  </div>
 </div>
 </body>
 </html>`
 
 // jobDetailHandler returns an http.HandlerFunc that renders a single hunt_jobs
 // row as a full HTML page. Wrap with a.Require() before mounting on the mux.
-func jobDetailHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func jobDetailHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	tmpl := template.Must(template.New("job_detail").Funcs(jobDetailTmplFuncs).Parse(jobDetailTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +196,7 @@ func jobDetailHandler(pool *pgxpool.Pool) http.HandlerFunc {
 
 		var d jobDetailData
 		var descRaw string
-		row := pool.QueryRow(r.Context(), jobDetailQuery, id64)
+		row := store.Pool().QueryRow(r.Context(), jobDetailQuery, id64)
 		if err := row.Scan(
 			&d.ID, &d.Title, &d.Company, &d.URL,
 			&d.Source, &d.Location, &d.Remote,
@@ -165,6 +220,22 @@ func jobDetailHandler(pool *pgxpool.Pool) http.HandlerFunc {
 		if descRaw != "" {
 			d.DescriptionHTML = render.Markdown(descRaw)
 		}
+
+		// Fetch current rating via canonical Store method. Not found is OK — just no rating yet.
+		rat, ratingErr := store.GetRating(r.Context(), "job", id64, adminUser)
+		if ratingErr == nil {
+			d.Rating = &currentRating{
+				Stage:     rat.Stage,
+				Note:      rat.Note,
+				UpdatedAt: rat.UpdatedAt,
+			}
+		} else if !errors.Is(ratingErr, hunt.ErrNotFound) {
+			slog.Warn("jobDetailHandler: fetch hunt_ratings", "id", id64, "err", ratingErr)
+		}
+
+		// Mint a CSRF token bound to the current session cookie.
+		sessVal := sessionValue(r, a.SessionCookieName())
+		d.CSRFToken = csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if execErr := tmpl.Execute(w, d); execErr != nil {
