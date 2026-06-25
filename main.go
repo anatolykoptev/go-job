@@ -40,7 +40,7 @@ var (
 )
 
 func main() {
-	initEngine()
+	huntNotifier := initEngine()
 
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
@@ -51,7 +51,9 @@ func main() {
 
 	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED is false or
 	// the hunt store is unavailable).  Must run after initEngine wired the store.
-	huntworker.StartWorker(sigCtx, engine.GetHuntStore())
+	// huntNotifier is the same Telegram notifier wired to the store so the worker
+	// fires on OutcomeCreated without going back through the store's unexported field.
+	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier)
 
 	startPrometheusScrape(sigCtx, slog.Default())
 
@@ -73,9 +75,9 @@ func main() {
 	}
 
 	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:                   "go_job",
-		Version:                version,
-		Port:                   mcpPort,
+		Name:    "go_job",
+		Version: version,
+		Port:    mcpPort,
 		// Return tool results as a single application/json body instead of the
 		// go-sdk default text/event-stream framing. The SSE path puts the entire
 		// JSON result on ONE `data:` line; large results (e.g. resume_profile's
@@ -85,13 +87,13 @@ func main() {
 		// (no mid-call progress notifications), so SSE buys nothing here. A plain
 		// JSON body has no per-line limit and is delivered intact. Clients send
 		// `Accept: application/json, text/event-stream`, so this is fully negotiated.
-		JSONResponse:           true,
+		JSONResponse: true,
 		// go-mcpserver v0.15.0+ plumbs http.Server.IdleTimeout (default 5m), which
 		// keeps idle pooled connections alive across pauses between tool calls — so
 		// the first MCP call after an idle window no longer drops. No ReadTimeout
 		// override needed (it defaults to 30s, the correct header-read deadline).
-		WriteTimeout:           600 * time.Second,
-		SessionTimeout:         10 * time.Minute,
+		WriteTimeout:   600 * time.Second,
+		SessionTimeout: 10 * time.Minute,
 		// ToolTimeout is the per-tool execution deadline enforced by
 		// ToolTimeoutMiddleware. The 90s default is fine for cheap DB/parse tools
 		// but too tight for tools that fan out web research and/or chain multiple
@@ -127,11 +129,11 @@ func heavyToolTimeouts() map[string]time.Duration {
 	out := make(map[string]time.Duration)
 	// Web-research tools: live SearXNG fetches + LLM synthesis.
 	for _, t := range []string{
-		"research",          // 3 parallel searches + 2 LLM calls
-		"application_prep",  // analysis + cover letter + interview prep + company research, in parallel
-		"interview_prep",    // company/person research + LLM
-		"pitch_generate",    // research + LLM
-		"resume_generate",   // JD extract + optional company research + assemble (up to 3 LLM + 3 fetch)
+		"research",         // 3 parallel searches + 2 LLM calls
+		"application_prep", // analysis + cover letter + interview prep + company research, in parallel
+		"interview_prep",   // company/person research + LLM
+		"pitch_generate",   // research + LLM
+		"resume_generate",  // JD extract + optional company research + assemble (up to 3 LLM + 3 fetch)
 		"opportunity_analyze",
 	} {
 		out[t] = web
@@ -188,47 +190,51 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 	}()
 }
 
-func initEngine() {
+// initEngine initialises the global engine (DB, proxy pool, clients) and returns
+// the hunt.Notifier that was wired to the hunt store (nil if bot init failed or
+// the store was not configured). The caller (main) passes this to StartWorker so
+// the ingest worker can fire Telegram notifications on OutcomeCreated.
+func initEngine() hunt.Notifier {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
-		SearxngURL:            env.Str("SEARXNG_URL", ""),
-		LLMAPIKey:             env.Str("LLM_API_KEY", ""),
-		LLMAPIKeyFallbacks:    env.List("LLM_API_KEY_FALLBACKS", ""),
-		LLMAPIBase:            env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
-		LLMModel:              env.Str("LLM_MODEL", "gemini-3.1-flash-lite-preview"),
-		LLMModelFallback:      env.Str("LLM_MODEL_FALLBACK", ""),
-		LLMTemperature:        env.Float("LLM_TEMPERATURE", 0.1),
-		LLMMaxTokens:          env.Int("LLM_MAX_TOKENS", 16384),
-		MaxFetchURLs:          env.Int("MAX_FETCH_URLS", 8),
-		MaxContentChars:       env.Int("MAX_CONTENT_CHARS", 6000),
-		FetchTimeout:          env.Duration("FETCH_TIMEOUT", 10*time.Second),
-		GithubToken:           env.Str("GITHUB_TOKEN", ""),
-		CacheMaxEntries:       env.Int("CACHE_MAX_ENTRIES", 1000),
-		CacheCleanupInterval:  env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
-		IndeedAPIKey:          env.Str("INDEED_API_KEY", ""),
-		DatabaseURL:           env.Str("DATABASE_URL", ""),
-		MemDBURL:              env.Str("MEMDB_URL", ""),
-		MemDBServiceSecret:    env.Str("INTERNAL_SERVICE_SECRET", ""),
-		EmbedURL:              env.Str("EMBED_URL", ""),
-		OxBrowserURL:          env.Str("OX_BROWSER_URL", ""),
-		BountyHighConfidence:  float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
-		BountyHighConfGap:     float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
-		BountyHighConfMax:     env.Int("BOUNTY_HIGH_CONF_MAX", 10),
-		BountyMedConfMax:      env.Int("BOUNTY_MED_CONF_MAX", 3),
-		BountySkillBoost:      float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
-		BountyMinRelevance:    float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
+		SearxngURL:           env.Str("SEARXNG_URL", ""),
+		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
+		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
+		LLMAPIBase:           env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
+		LLMModel:             env.Str("LLM_MODEL", "gemini-3.1-flash-lite-preview"),
+		LLMModelFallback:     env.Str("LLM_MODEL_FALLBACK", ""),
+		LLMTemperature:       env.Float("LLM_TEMPERATURE", 0.1),
+		LLMMaxTokens:         env.Int("LLM_MAX_TOKENS", 16384),
+		MaxFetchURLs:         env.Int("MAX_FETCH_URLS", 8),
+		MaxContentChars:      env.Int("MAX_CONTENT_CHARS", 6000),
+		FetchTimeout:         env.Duration("FETCH_TIMEOUT", 10*time.Second),
+		GithubToken:          env.Str("GITHUB_TOKEN", ""),
+		CacheMaxEntries:      env.Int("CACHE_MAX_ENTRIES", 1000),
+		CacheCleanupInterval: env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
+		IndeedAPIKey:         env.Str("INDEED_API_KEY", ""),
+		DatabaseURL:          env.Str("DATABASE_URL", ""),
+		MemDBURL:             env.Str("MEMDB_URL", ""),
+		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
+		EmbedURL:             env.Str("EMBED_URL", ""),
+		OxBrowserURL:         env.Str("OX_BROWSER_URL", ""),
+		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
+		BountyHighConfGap:    float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
+		BountyHighConfMax:    env.Int("BOUNTY_HIGH_CONF_MAX", 10),
+		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
+		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
+		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
 		// VaelorNotifyURL and BountyNotifyChatID removed — notifications now go via
 		// the go-kit ProductSink bot (TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID).
-		DirectDDG:             env.Bool("DIRECT_DDG", false),
-		DirectStartpage:       env.Bool("DIRECT_STARTPAGE", false),
-		DirectBrave:           env.Bool("DIRECT_BRAVE", false),
-		DirectReddit:             env.Bool("DIRECT_REDDIT", false),
-		DirectWikipedia:          env.Bool("DIRECT_WIKIPEDIA", false),
-		DirectMarginalia:         env.Bool("DIRECT_MARGINALIA", false),
-		SearchEarlyReturnAt:      env.Int("SEARCH_EARLY_RETURN_AT", 0),
-		SearchPerSourceTimeout:   env.Duration("SEARCH_PER_SOURCE_TIMEOUT", 0),
-		FetchDirectFirst:         directFirst,
+		DirectDDG:              env.Bool("DIRECT_DDG", false),
+		DirectStartpage:        env.Bool("DIRECT_STARTPAGE", false),
+		DirectBrave:            env.Bool("DIRECT_BRAVE", false),
+		DirectReddit:           env.Bool("DIRECT_REDDIT", false),
+		DirectWikipedia:        env.Bool("DIRECT_WIKIPEDIA", false),
+		DirectMarginalia:       env.Bool("DIRECT_MARGINALIA", false),
+		SearchEarlyReturnAt:    env.Int("SEARCH_EARLY_RETURN_AT", 0),
+		SearchPerSourceTimeout: env.Duration("SEARCH_PER_SOURCE_TIMEOUT", 0),
+		FetchDirectFirst:       directFirst,
 	}
 
 	// Initialize proxy pool from Webshare API (optional).
@@ -290,6 +296,9 @@ func initEngine() {
 
 	engine.Init(c)
 
+	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
+	var huntNotifier hunt.Notifier
+
 	// Resume DB (PostgreSQL + AGE graph)
 	if c.DatabaseURL != "" {
 		rdb, err := jobs.ConnectResumeDB(context.Background(), c.DatabaseURL)
@@ -329,6 +338,10 @@ func initEngine() {
 				} else {
 					notif.OnSend = engine.IncrHuntNotify
 					hStore.SetNotifier(notif)
+					// Capture for the ingest worker — same notifier instance,
+					// wired to the worker via StartWorker so the worker fires
+					// notifications in runCycle rather than inside UpsertJob.
+					huntNotifier = notif
 				}
 
 				slog.Info("hunt store ready")
@@ -375,6 +388,7 @@ func initEngine() {
 	// Background monitors replaced by lazy on-read enrichment (Phase 3).
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
+	return huntNotifier
 }
 
 // resolveFetchMode maps FETCH_DIRECT_FIRST env value to (directFirst, initPool) flags.
