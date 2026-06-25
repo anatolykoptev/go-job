@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
+	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -22,6 +23,17 @@ func testDetailAuth() *auth.HMACAuth {
 		HMACKey:    []byte("00000000000000000000000000000000"),
 		BasePath:   "/admin",
 		SessionTTL: time.Hour,
+	})
+}
+
+// testDetailPanel returns a minimal resource.Panel for unit tests.
+func testDetailPanel() *resource.Panel {
+	a := testDetailAuth()
+	return resource.New(resource.Config{
+		Title:    "go-job-test",
+		BasePath: "/admin",
+		Auth:     a,
+		CSRFKey:  []byte("00000000000000000000000000000000"),
 	})
 }
 
@@ -41,7 +53,8 @@ func TestJobDetailHandler_Smoke(t *testing.T) {
 
 	csrfKey := []byte("00000000000000000000000000000000")
 	hs := hunt.NewStore(pool)
-	handler := jobDetailHandler(hs, "admin", testDetailAuth(), csrfKey)
+	p := testDetailPanel()
+	handler := jobDetailHandler(p, hs, "admin", testDetailAuth(), csrfKey)
 
 	t.Run("existing_id", func(t *testing.T) {
 		var id int64
