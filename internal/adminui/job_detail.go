@@ -11,8 +11,8 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/render"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // jobDetailQuery selects all non-JSONB columns from hunt_jobs for a single row.
@@ -29,14 +29,6 @@ SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
        recommendation_rank, COALESCE(recommendation_tier,''), COALESCE(recommendation_note,'')
   FROM hunt_jobs
  WHERE id = $1`
-
-// jobRatingQuery fetches the latest rating for a job (entry_kind='job').
-const jobRatingQuery = `
-SELECT COALESCE(stage,''), COALESCE(note,''), updated_at
-  FROM hunt_ratings
- WHERE entry_kind = 'job' AND entry_id = $1
- ORDER BY id DESC
- LIMIT 1`
 
 // currentRating holds the current hunt_ratings row for a job.
 type currentRating struct {
@@ -191,7 +183,7 @@ h2{margin:0 0 1.5rem;font-size:1.5rem;font-weight:600;color:#f1f5f9}
 
 // jobDetailHandler returns an http.HandlerFunc that renders a single hunt_jobs
 // row as a full HTML page. Wrap with a.Require() before mounting on the mux.
-func jobDetailHandler(pool *pgxpool.Pool, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func jobDetailHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	tmpl := template.Must(template.New("job_detail").Funcs(jobDetailTmplFuncs).Parse(jobDetailTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +196,7 @@ func jobDetailHandler(pool *pgxpool.Pool, a *auth.HMACAuth, csrfKey []byte) http
 
 		var d jobDetailData
 		var descRaw string
-		row := pool.QueryRow(r.Context(), jobDetailQuery, id64)
+		row := store.Pool().QueryRow(r.Context(), jobDetailQuery, id64)
 		if err := row.Scan(
 			&d.ID, &d.Title, &d.Company, &d.URL,
 			&d.Source, &d.Location, &d.Remote,
@@ -229,13 +221,16 @@ func jobDetailHandler(pool *pgxpool.Pool, a *auth.HMACAuth, csrfKey []byte) http
 			d.DescriptionHTML = render.Markdown(descRaw)
 		}
 
-		// Fetch current rating (latest row for this job). Not found is OK — just no rating yet.
-		var rat currentRating
-		err = pool.QueryRow(r.Context(), jobRatingQuery, id64).Scan(&rat.Stage, &rat.Note, &rat.UpdatedAt)
-		if err == nil {
-			d.Rating = &rat
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("jobDetailHandler: fetch hunt_ratings", "id", id64, "err", err)
+		// Fetch current rating via canonical Store method. Not found is OK — just no rating yet.
+		rat, ratingErr := store.GetRating(r.Context(), "job", id64, adminUser)
+		if ratingErr == nil {
+			d.Rating = &currentRating{
+				Stage:     rat.Stage,
+				Note:      rat.Note,
+				UpdatedAt: rat.UpdatedAt,
+			}
+		} else if !errors.Is(ratingErr, hunt.ErrNotFound) {
+			slog.Warn("jobDetailHandler: fetch hunt_ratings", "id", id64, "err", ratingErr)
 		}
 
 		// Mint a CSRF token bound to the current session cookie.

@@ -45,7 +45,7 @@ func TestRateHandler_CSRFReject(t *testing.T) {
 	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") // 32 bytes
 	a := buildTestAuth(key)
 	// nil pool — we expect 403 before any DB call.
-	handler := rateHandler(nil, a, key)
+	handler := rateHandler(nil, "admin", a, key)
 
 	form := url.Values{}
 	form.Set("stage", "saved")
@@ -67,7 +67,7 @@ func TestRateHandler_CSRFReject(t *testing.T) {
 func TestRateHandler_CSRFExpired(t *testing.T) {
 	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	a := buildTestAuth(key)
-	handler := rateHandler(nil, a, key)
+	handler := rateHandler(nil, "admin", a, key)
 
 	// Forge a token with expiry=1 (Jan 1 1970) to guarantee it's expired.
 	expiredToken := "1|invalidmac"
@@ -92,7 +92,7 @@ func TestRateHandler_CSRFExpired(t *testing.T) {
 func TestRateHandler_BadID(t *testing.T) {
 	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	a := buildTestAuth(key)
-	handler := rateHandler(nil, a, key)
+	handler := rateHandler(nil, "admin", a, key)
 
 	form := url.Values{}
 	form.Set("stage", "saved")

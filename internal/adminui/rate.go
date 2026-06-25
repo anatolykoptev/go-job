@@ -8,7 +8,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // validHuntStages is the allowlist of accepted stage values for hunt_ratings.
@@ -23,7 +23,7 @@ var validHuntStages = map[string]bool{
 // rateHandler returns an http.HandlerFunc that upserts a hunt_ratings row.
 // The handler verifies the CSRF token before writing.
 // Wrap with a.Require() before mounting on the mux.
-func rateHandler(pool *pgxpool.Pool, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func rateHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -54,16 +54,7 @@ func rateHandler(pool *pgxpool.Pool, a *auth.HMACAuth, csrfKey []byte) http.Hand
 		}
 		note := r.FormValue("note")
 
-		_, dbErr := pool.Exec(r.Context(),
-			`INSERT INTO hunt_ratings (entry_kind, entry_id, stage, note)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (entry_kind, entry_id, user_name)
-			 DO UPDATE SET
-			     stage      = EXCLUDED.stage,
-			     note       = COALESCE(NULLIF(EXCLUDED.note, ''), hunt_ratings.note),
-			     updated_at = NOW()`,
-			"job", id64, stage, note)
-		if err := dbErr; err != nil {
+		if err := store.Rate(r.Context(), "job", id64, adminUser, stage, note); err != nil {
 			slog.Error("rateHandler: upsert hunt_ratings", "id", id64, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return

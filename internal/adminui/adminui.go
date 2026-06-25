@@ -11,7 +11,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // adminBasePath is the base URL prefix for the admin panel.
@@ -23,7 +23,7 @@ const adminBasePath = "/admin"
 // Routing: an outer http.ServeMux wraps p.Handler() as a /admin/ catch-all,
 // allowing bespoke 4-segment routes (e.g. GET /admin/jobs/{id}/view) that
 // never collide with go-panel's 3-segment routes (GET /admin/jobs/rows, etc.).
-func New(pool *pgxpool.Pool) (http.Handler, bool) {
+func New(store *hunt.Store) (http.Handler, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
 	if len(hmacKey) < 32 || password == "" {
@@ -34,8 +34,10 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 		csrfKey = hmacKey // single-operator fallback; HMAC key is already >=32 bytes
 	}
 
+	adminUser := envOr("ADMIN_USERNAME", "admin")
+
 	a := auth.NewHMACAuth(auth.HMACConfig{
-		Username:   envOr("ADMIN_USERNAME", "admin"),
+		Username:   adminUser,
 		Password:   password,
 		HMACKey:    []byte(hmacKey),
 		BasePath:   adminBasePath,
@@ -48,6 +50,8 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 		Auth:     a,
 		CSRFKey:  []byte(csrfKey),
 	})
+
+	pool := store.Pool()
 	resource.Register(p, jobsResource(pool))
 	resource.Register(p, bountiesResource(pool))
 	resource.Register(p, freelanceResource(pool))
@@ -60,8 +64,8 @@ func New(pool *pgxpool.Pool) (http.Handler, bool) {
 	// Outer mux: bespoke routes (4-/5-segment) first, panel catch-all last.
 	// These routes cannot shadow go-panel's 3-segment routes (/rows, /new, /{id}).
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(pool, a, []byte(csrfKey))))
-	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(pool, a, []byte(csrfKey))))
+	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(store, adminUser, a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true

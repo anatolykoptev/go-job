@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,7 +40,8 @@ func TestJobDetailHandler_Smoke(t *testing.T) {
 	defer pool.Close()
 
 	csrfKey := []byte("00000000000000000000000000000000")
-	handler := jobDetailHandler(pool, testDetailAuth(), csrfKey)
+	hs := hunt.NewStore(pool)
+	handler := jobDetailHandler(hs, "admin", testDetailAuth(), csrfKey)
 
 	t.Run("existing_id", func(t *testing.T) {
 		var id int64
