@@ -14,8 +14,18 @@ import (
 
 // Column/filter keys reused across the sort spec and filter spec.
 const (
-	colStatus = "status"
-	colSource = "source"
+	colStatus   = "status"
+	colSource   = "source"
+	colKeyTitle = "title"
+	keyRecent   = "recent"
+	colLastSeen = "last_seen_at"
+	lblStatus   = "Status"
+	lblRecent   = "Recent"
+	lblSource   = "Source"
+	lblPlatform = "Platform"
+	grpHunt     = "Hunt"
+	colPlatform = "platform"
+	keyQ        = "q"
 )
 
 // jobsSpec drives the /admin/jobs table sort/columns. Cell order in the Lister
@@ -23,15 +33,15 @@ const (
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: "fit", Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC"},
-		{Key: "title", Label: "Title", Sortable: true, SQLExpr: "title"},
+		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: colKeyTitle},
 		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "company", NullsLast: true},
 		{Key: "rec", Label: "Rec", Sortable: true, SQLExpr: "recommendation_rank", NullsLast: true},
-		{Key: colStatus, Label: "Status", Sortable: true, SQLExpr: colStatus},
+		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
 		{Key: "posted", Label: "Posted", Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC"},
-		{Key: "recent", Label: "Recent", Sortable: true, SQLExpr: "last_seen_at"},
+		{Key: keyRecent, Label: lblRecent, Sortable: true, SQLExpr: colLastSeen},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: "salary", Label: "Salary", Sortable: false},
-		{Key: colSource, Label: "Source", Sortable: false},
+		{Key: colSource, Label: lblSource, Sortable: false},
 	},
 	DefaultKey: "fit",
 	DefaultDir: admintable.Desc,
@@ -41,7 +51,7 @@ var jobsSpec = admintable.Spec{
 // request values reach SQL only as bind args (never concatenated). Allowed sets are
 // safe-degrade (an unknown value drops the filter, never an error).
 var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
-	{Key: "q", SQLExprs: []string{"title", "company"}, Match: admintable.ILike},
+	{Key: keyQ, SQLExprs: []string{colKeyTitle, "company"}, Match: admintable.ILike},
 	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{"open", "applied", "interviewing", "rejected", "offer", "closed"}},
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
 }}
