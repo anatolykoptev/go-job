@@ -1,0 +1,118 @@
+package shell
+
+import "github.com/anatolykoptev/go-panel/shell/internal/assets"
+
+// NavItem is a sidebar navigation entry registered by a Resource.
+type NavItem struct {
+	ID     string
+	Label  string
+	Icon   string
+	URL    string
+	Active bool
+	Group  string // non-empty = this item is a group header, not a link
+}
+
+// Layout renders the full admin page chrome: html head, pm7 CSS, sidebar nav,
+// and a content slot. Used for non-htmx (full-page) requests.
+// For htmx requests, render the content component directly (fragment swap).
+templ Layout(title string, nav []NavItem, content templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en" class="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title }</title>
+			<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230f172a'/><text x='6' y='22' font-size='18' fill='%233b82f6'>⚙</text></svg>"/>
+			<link rel="stylesheet" href="/admin/static/pm7.css"/>
+			@layoutStyles()
+		</head>
+		<body>
+			<div class="app">
+				<aside class="sidebar" id="sidebar">
+					<div class="sidebar-header">
+						<h1>{ title }</h1>
+						<button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
+					</div>
+					<nav class="sidebar-nav">
+						for _, item := range nav {
+							if item.Group != "" {
+								<div class="sidebar-group">
+									<div class="sidebar-group-label">{ item.Group }</div>
+								</div>
+							} else {
+								<a
+									class={ "sidebar-item pm7-sidebar-item", templ.KV("active pm7-sidebar-item--active", item.Active) }
+									href={ templ.SafeURL(item.URL) }
+								>
+									if item.Icon != "" {
+										<span class="sidebar-icon">{ item.Icon }</span>
+									}
+									<span class="sidebar-label">{ item.Label }</span>
+								</a>
+							}
+						}
+					</nav>
+					<div class="sidebar-bottom">
+						<a class="sidebar-item" href="/admin/logout">
+							<span class="sidebar-icon">&#x2192;</span>
+							<span class="sidebar-label">Logout</span>
+						</a>
+					</div>
+				</aside>
+				<main class="main">
+					<div id="content">
+						@content
+					</div>
+				</main>
+			</div>
+			<script src="/admin/static/htmx.min.js"></script>
+			<script src="/admin/static/pm7.js"></script>
+			<script src="/admin/static/admin.js" defer></script>
+		</body>
+	</html>
+}
+
+// LoginPage renders the standalone login form (no sidebar).
+templ LoginPage(basePath string, errMsg string) {
+	<!DOCTYPE html>
+	<html lang="en" class="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Admin Login</title>
+			<link rel="stylesheet" href={ basePath + "/static/pm7.css" }/>
+			<style>
+				body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--pm7-background)}
+				.pw-wrap{position:relative}
+				.pw-wrap input{padding-right:2.5rem}
+			</style>
+		</head>
+		<body>
+			<div class="pm7-card" style="width:100%;max-width:24rem;padding:2rem">
+				<div class="pm7-card-content">
+					<h1 style="font-size:1.25rem;font-weight:600;color:var(--pm7-foreground);margin-bottom:1.5rem;text-align:center">Admin</h1>
+					if errMsg != "" {
+						<div class="pm7-badge pm7-badge--destructive" style="display:block;margin-bottom:1rem;text-align:center">{ errMsg }</div>
+					}
+					<form method="POST" action={ templ.SafeURL(basePath + "/login") }>
+						<div style="margin-bottom:1rem">
+							<label for="username" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Username</label>
+							<input id="username" name="username" type="text" autocomplete="username" required autofocus class="pm7-input"/>
+						</div>
+						<div style="margin-bottom:1rem">
+							<label for="password" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Password</label>
+							<div class="pw-wrap">
+								<input id="password" name="password" type="password" autocomplete="current-password" required class="pm7-input"/>
+							</div>
+						</div>
+						<button type="submit" class="pm7-button pm7-button--primary" style="width:100%">Sign in</button>
+					</form>
+				</div>
+			</div>
+			<script src={ basePath + "/static/pm7.js" }></script>
+		</body>
+	</html>
+}
+
+// assets import used only for the embed.FS reference in shell.go
+var _ = assets.StaticFS

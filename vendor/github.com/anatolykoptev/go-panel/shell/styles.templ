@@ -1,0 +1,102 @@
+package shell
+
+// layoutStyles renders the inline CSS for the admin layout.
+// Ported from go-nerv/internal/admin/templates/layout.html.
+// Inline CSS avoids an extra HTTP round-trip for the layout-specific variables
+// and component overrides not present in pm7.css.
+templ layoutStyles() {
+	<style>
+		:root{
+			--bg-deep:#060b18;
+			--bg-base:#0c1222;
+			--bg-surface:#131c31;
+			--bg-elevated:#1a2540;
+			--border:#1e2d4a;
+			--border-subtle:#162038;
+			--text-primary:#e8edf5;
+			--text-secondary:#7b8ba8;
+			--text-muted:#4a5b78;
+			--accent:#3b82f6;
+			--accent-glow:rgba(59,130,246,.15);
+			--accent-dim:#1e3a6e;
+			--green:#10b981;
+			--green-dim:#064e3b;
+			--yellow:#f59e0b;
+			--yellow-dim:#78350f;
+			--red:#ef4444;
+			--red-dim:#7f1d1d;
+			--purple:#a78bfa;
+			--purple-dim:#4c1d95;
+			--teal:#0ea5e9;
+			--teal-dim:#0c3a53;
+			--orange:#f97316;
+			--orange-dim:#7c2d12;
+			--font-sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+			--font-mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
+			--radius:.5rem;
+			--radius-lg:.75rem;
+			--pm7-primary:#3b82f6;
+			--pm7-primary-hover:#2563eb;
+			--pm7-primary-active:#1d4ed8;
+			--pm7-primary-foreground:#fff;
+			--pm7-background:#060b18;
+			--pm7-foreground:#e8edf5;
+			--pm7-muted:#131c31;
+			--pm7-muted-foreground:#7b8ba8;
+			--pm7-border:#1e2d4a;
+			--pm7-border-hover:#4a5b78;
+			--pm7-success:#10b981;
+			--pm7-warning:#f59e0b;
+			--pm7-error:#ef4444;
+			--pm7-radius:.625rem;
+		}
+		*{margin:0;padding:0;box-sizing:border-box}
+		body{background:var(--bg-deep);color:var(--text-primary);font-family:var(--font-sans);min-height:100vh;font-size:.875rem;line-height:1.5}
+		a{color:var(--accent);text-decoration:none}
+		a:hover{opacity:.85}
+		.app{display:flex;min-height:100vh}
+		.main{flex:1;overflow-x:auto;background:var(--bg-base)}
+		.sidebar{width:220px;background:var(--bg-deep);border-right:1px solid var(--border-subtle);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+		.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;min-height:56px}
+		.sidebar-header h1{font-family:var(--font-mono);font-size:.8125rem;font-weight:600;color:var(--accent);letter-spacing:.02em;white-space:nowrap;overflow:hidden}
+		.sidebar-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.125rem;padding:.25rem;line-height:1;flex-shrink:0;transition:color .15s}
+		.sidebar-toggle:hover{color:var(--text-primary)}
+		.sidebar-nav{flex:1;padding:.25rem 0;overflow-y:auto}
+		.sidebar-group{margin-top:.75rem}
+		.sidebar-group-label{padding:.5rem 1.25rem .25rem;font-family:var(--font-mono);font-size:.5625rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.1em}
+		.sidebar-item{display:flex;align-items:center;gap:.625rem;padding:.4375rem 1.25rem;color:var(--text-secondary);text-decoration:none;font-size:.8125rem;font-weight:500;border-left:2px solid transparent;transition:color .15s,background-color .15s,border-color .15s;white-space:nowrap;cursor:pointer}
+		.sidebar-item:hover{color:var(--text-primary);background:var(--accent-glow)}
+		.sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-glow)}
+		.sidebar-icon{font-size:.9375rem;width:1.25rem;text-align:center;flex-shrink:0}
+		.sidebar-bottom{margin-top:auto;padding:.5rem 0;border-top:1px solid var(--border-subtle)}
+		#content{padding:1.5rem 2rem 2rem}
+		.htmx-indicator{display:none}
+		.htmx-request .htmx-indicator{display:inline-block}
+		.crm-th-sort{display:inline-flex;align-items:center;gap:.25rem;color:var(--text-secondary);text-decoration:none;transition:color .12s}
+		.crm-th-sort:hover,.crm-th-sort.active{color:var(--text-primary)}
+		.badge{display:inline-flex;align-items:center;padding:.1875rem .5rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:500;letter-spacing:.02em;white-space:nowrap;background:var(--bg-elevated);color:var(--text-secondary)}
+		.badge-blue{background:var(--accent-dim);color:#93c5fd}
+		.badge-green{background:var(--green-dim);color:#6ee7b7}
+		.badge-red{background:var(--red-dim);color:#fca5a5}
+		.badge-gray{background:var(--bg-elevated);color:#9dafc8;border:1px solid var(--border-subtle)}
+		.crm-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+		.crm-table thead th{text-align:left;padding:.5rem 1rem;color:var(--text-muted);font-family:var(--font-mono);font-size:.625rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border);background:var(--bg-deep);white-space:nowrap}
+		.crm-table thead th:first-child{padding-left:1.25rem}
+		.crm-table tbody tr{cursor:pointer;transition:background .08s}
+		.crm-table tbody tr:hover>td{background:rgba(59,130,246,.06)}
+		.crm-table td{padding:.625rem 1rem;border-bottom:1px solid var(--border-subtle);vertical-align:middle}
+		.crm-table td:first-child{padding-left:1.25rem}
+		.crm-table tbody tr:last-child td{border-bottom:none}
+		.row-name{font-weight:600;font-size:.875rem;color:var(--text-primary)}
+		.row-sub{font-size:.6875rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:.1rem;display:block}
+		.page-header{margin-bottom:1.25rem}
+		.page-header h2{font-size:1.125rem;font-weight:700;color:var(--text-primary);margin-bottom:.125rem}
+		.page-header p{color:var(--text-muted);font-family:var(--font-mono);font-size:.75rem}
+		.filter-bar{display:flex;gap:.5rem;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;padding:.5rem .75rem;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius);font-size:.75rem}
+		.filter-chip{padding:.1875rem .5rem;border:1px solid var(--border);border-radius:9999px;font-size:.6875rem;font-weight:500;color:var(--text-secondary);background:transparent;cursor:pointer;transition:color .12s,background-color .12s,border-color .12s;text-decoration:none;display:inline-block}
+		.filter-chip:hover{color:var(--text-primary);border-color:var(--text-muted)}
+		.filter-chip.active{color:#fff;background:var(--accent);border-color:var(--accent)}
+		.pagination{display:flex;gap:.5rem;justify-content:center;margin-top:1.25rem}
+		.sidebar .pm7-sidebar-item--active{border-left-color:var(--accent);background:var(--accent-glow)}
+	</style>
+}

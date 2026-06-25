@@ -21,6 +21,7 @@ import (
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
+	"github.com/anatolykoptev/go_job/internal/adminui"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
@@ -30,6 +31,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/huntworker"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -56,6 +58,11 @@ func main() {
 	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier)
 
 	startPrometheusScrape(sigCtx, slog.Default())
+
+	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
+	if hs := engine.GetHuntStore(); hs != nil {
+		startAdminServer(sigCtx, hs.Pool(), slog.Default())
+	}
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "go_job",
@@ -412,4 +419,36 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 		slog.Warn("unknown FETCH_DIRECT_FIRST value, falling back to 'proxy'", slog.String("value", s))
 		return false, true
 	}
+}
+
+// startAdminServer starts the operator admin UI (go-panel) on ADMIN_PORT
+// (default 8896, bound to 127.0.0.1), mounted at /admin. Fail-soft: when admin
+// credentials are unset (adminui.New returns ok=false) the listener is skipped,
+// so deploying before the env is wired changes nothing.
+func startAdminServer(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
+	handler, ok := adminui.New(pool)
+	if !ok {
+		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
+		return
+	}
+	addr := "127.0.0.1:" + env.Str("ADMIN_PORT", "8896")
+	mux := http.NewServeMux()
+	mux.Handle("/admin/", handler)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("admin UI endpoint", slog.String("addr", addr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("admin endpoint", slog.Any("error", err))
+		}
+	}()
+	go func() { //nolint:gosec // G118: shutdown needs a fresh context after ctx is done
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
 }
