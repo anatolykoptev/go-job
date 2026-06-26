@@ -24,17 +24,17 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		db := jobs.GetResumeDB()
 		if db == nil {
-		if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
-			slog.Error("adminui: render resume", "err", err)
-		}
+			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
+				slog.Error("adminui: render resume", "err", err)
+			}
 			return
 		}
 
 		personID := db.GetLatestPersonID(r.Context())
 		if personID == 0 {
-		if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
-			slog.Error("adminui: render resume", "err", err)
-		}
+			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
+				slog.Error("adminui: render resume", "err", err)
+			}
 			return
 		}
 
@@ -42,9 +42,9 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 		profile, err := jobs.GetResumeProfile(r.Context(), "")
 		if err != nil {
 			slog.Warn("resumeHandler: GetResumeProfile", "err", err)
-		if err2 := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Could not load resume: "+err.Error())); err2 != nil {
-			slog.Error("adminui: render resume", "err", err2)
-		}
+			if err2 := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Could not load resume: "+err.Error())); err2 != nil {
+				slog.Error("adminui: render resume", "err", err2)
+			}
 			return
 		}
 
@@ -93,7 +93,7 @@ func resumeSkillCategories(skills []jobs.SkillSummary) []string {
 }
 
 // resumeTmplSrc is the HTML content fragment for the resume profile page.
-// Embedded inside go-panel shell.Layout via renderShell.
+// Embedded inside go-panel shell.Layout via p.RenderPageHTML.
 const resumeTmplSrc = `<style>
 .rp{max-width:860px;margin:0 auto;padding:2rem 1.5rem;font-family:system-ui,sans-serif;color:#e2e8f0}
 .rp-header{margin-bottom:1.5rem}

@@ -17,12 +17,12 @@ import (
 // resumeEditData is the template context for the resume editor page.
 // All string fields come from the DB and are auto-escaped by html/template.
 type resumeEditData struct {
-	CSRFToken     string
-	Person        *jobs.PersonRecord
-	Experiences   []jobs.ExperienceRecord
-	Skills        []jobs.SkillRecord
-	Achievements  []jobs.AchievementRecord
-	Domains       []jobs.DomainRecord
+	CSRFToken      string
+	Person         *jobs.PersonRecord
+	Experiences    []jobs.ExperienceRecord
+	Skills         []jobs.SkillRecord
+	Achievements   []jobs.AchievementRecord
+	Domains        []jobs.DomainRecord
 	Methodologies  []jobs.MethodologyRecord
 	Projects       []jobs.ProjectRecord
 	Educations     []jobs.EducationRecord
@@ -71,12 +71,12 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 
 		sessVal := sessionValue(r, a.SessionCookieName())
 		d := resumeEditData{
-			CSRFToken:     csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
-			Person:        person,
-			Experiences:   exps,
-			Skills:        skills,
-			Achievements:  achs,
-			Domains:       domains,
+			CSRFToken:      csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
+			Person:         person,
+			Experiences:    exps,
+			Skills:         skills,
+			Achievements:   achs,
+			Domains:        domains,
 			Methodologies:  meths,
 			Projects:       projs,
 			Educations:     edus,
@@ -277,6 +277,7 @@ func resumeSkillLevelHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 }
 
 // resumeAchievementCreateHandler handles POST /admin/resume/achievement.
+//
 //nolint:dupl
 func resumeAchievementCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

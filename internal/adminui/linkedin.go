@@ -2,8 +2,8 @@ package adminui
 
 import (
 	"fmt"
-	"log/slog"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
