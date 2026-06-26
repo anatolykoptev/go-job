@@ -98,7 +98,8 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
     </label>
     <button type="submit">Save rating</button>
   </form>
-  <form method="POST" action="/admin/jobs/{{.ID}}/rescore">
+  <form method="POST" action="/admin/jobs/{{.ID}}/rescore"
+        onsubmit="var b=this.querySelector('.rescore-btn');b.disabled=true;b.textContent='Анализ...';">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <button type="submit" class="rescore-btn">Проанализировать заново</button>
   </form>
