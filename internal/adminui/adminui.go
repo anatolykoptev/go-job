@@ -62,6 +62,9 @@ func New(store *hunt.Store) (http.Handler, bool) {
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
+	// Shortlist (curated targets) is the primary vacancies view — first in nav.
+	p.AddNav(shell.NavItem{ID: navIDShortlist, Label: "Shortlist", Icon: "⭐", URL: "/admin/shortlist"})
+
 	jr := jobsResource(pool)
 	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), applicationsDir)
 	resource.Register(p, jr)
@@ -73,7 +76,6 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	resource.Register(p, oversizeResource(pool))
 
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
-	p.AddNav(shell.NavItem{ID: navIDShortlist, Label: "Shortlist", Icon: "⭐", URL: "/admin/shortlist"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
