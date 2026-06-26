@@ -7,7 +7,7 @@ require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
 	github.com/a-h/templ v0.3.1020
 	github.com/anatolykoptev/go-engine v1.38.0
-	github.com/anatolykoptev/go-kit v0.91.0
+	github.com/anatolykoptev/go-kit v0.91.1
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.15.0
 	github.com/anatolykoptev/go-panel v0.8.1-0.20260625164654-7e2bd3fba182

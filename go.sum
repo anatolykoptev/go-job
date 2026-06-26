@@ -14,8 +14,8 @@ github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/anatolykoptev/go-engine v1.38.0 h1:DQx4Vqnf+vhzUH1TqkE+EtaCDJGpWJRusPytCC4j/Rs=
 github.com/anatolykoptev/go-engine v1.38.0/go.mod h1:eAy/ydcSakMFixdFHIV+/9q+U4n9V7ylzK0FugtlVyE=
-github.com/anatolykoptev/go-kit v0.91.0 h1:7nrIj2TdSpMwh863ipJvg7rVdlJFcUHbugUZEvd4Aco=
-github.com/anatolykoptev/go-kit v0.91.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
+github.com/anatolykoptev/go-kit v0.91.1 h1:P5er6pG2OBSGpVmwM3VSjiA4CvtyUMNLn28I4PZhMVA=
+github.com/anatolykoptev/go-kit v0.91.1/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.15.0 h1:pRZ4QIwDy7WW+Lbl5En8uP3beHW4ZTa4Vq3T384V3AQ=
 github.com/anatolykoptev/go-mcpserver v0.15.0/go.mod h1:pQfKlzExLv/evW42l940ZHMMcliv1OU98oExwfBnIWQ=
 github.com/anatolykoptev/go-panel v0.8.1-0.20260625164654-7e2bd3fba182 h1:tXpsPTaQVfNGI6aS7zV+LpLmbzXEcjlcOOlTMZUqANs=
