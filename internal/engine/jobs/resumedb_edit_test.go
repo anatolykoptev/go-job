@@ -5,62 +5,57 @@ import (
 	"testing"
 )
 
-// TestResumeDBEdit_DeleteMethodSignatures_SQL asserts the SQL strings embedded
-// in the new Delete* / Update* methods contain the correct table names and
-// parameter placeholders. No DB connection is used.
-//
-// Red-on-revert: rename the method, change the table, or remove the $1 param
-// → the corresponding assertion fails.
+// TestResumeDBEdit_DeleteMethodSignatures_SQL asserts structural invariants on
+// the SHIPPED SQL consts (deleteExperienceSQL etc.). Editing a const in
+// resumedb_edit.go is what this test now reads — genuine red-on-revert.
+// No DB connection used.
 func TestResumeDBEdit_DeleteMethodSignatures_SQL(t *testing.T) {
 	cases := []struct {
-		name  string
-		query string // literal SQL string copy from the production method above
-		want  []string
+		name             string
+		shipped          string // the package const — same source the method executes
+		wantDeleteClause string // full "DELETE FROM <table> WHERE" fragment; change the table and it fails
+		wantPKClause     string
 	}{
 		{
-			name:  "DeleteExperience",
-			query: `DELETE FROM resume_experiences WHERE id = $1`,
-			want:  []string{"DELETE FROM resume_experiences", "id = $1"},
+			name:             "DeleteExperience",
+			shipped:          deleteExperienceSQL,
+			wantDeleteClause: "DELETE FROM resume_experiences WHERE",
+			wantPKClause:     "WHERE id = $1",
 		},
 		{
-			name:  "DeleteSkill",
-			query: `DELETE FROM resume_skills WHERE id = $1`,
-			want:  []string{"DELETE FROM resume_skills", "id = $1"},
+			name:             "DeleteSkill",
+			shipped:          deleteSkillSQL,
+			wantDeleteClause: "DELETE FROM resume_skills WHERE",
+			wantPKClause:     "WHERE id = $1",
 		},
 		{
-			name:  "DeleteAchievement",
-			query: `DELETE FROM resume_achievements WHERE id = $1`,
-			want:  []string{"DELETE FROM resume_achievements", "id = $1"},
+			name:             "DeleteAchievement",
+			shipped:          deleteAchievementSQL,
+			wantDeleteClause: "DELETE FROM resume_achievements WHERE",
+			wantPKClause:     "WHERE id = $1",
 		},
 		{
-			name:  "DeleteDomain",
-			query: `DELETE FROM public.resume_domains WHERE id = $1`,
-			want:  []string{"public.resume_domains", "id = $1"},
+			name:             "DeleteDomain",
+			shipped:          deleteDomainSQL,
+			wantDeleteClause: "DELETE FROM public.resume_domains WHERE",
+			wantPKClause:     "WHERE id = $1",
 		},
 		{
-			name:  "DeleteMethodology",
-			query: `DELETE FROM public.resume_methodologies WHERE id = $1`,
-			want:  []string{"public.resume_methodologies", "id = $1"},
-		},
-		{
-			name:  "UpdateSkillLevel",
-			query: `UPDATE resume_skills SET level = $2 WHERE id = $1`,
-			want:  []string{"UPDATE resume_skills", "level = $2", "id = $1"},
-		},
-		{
-			name:  "UpdateResumePerson",
-			query: `UPDATE resume_persons SET name = $2, email = $3, phone = $4, location = $5, links = $6, summary = $7, updated_at = now() WHERE id = $1`,
-			want:  []string{"UPDATE resume_persons", "name = $2", "email = $3", "phone = $4", "location = $5", "links = $6", "summary = $7", "id = $1"},
+			name:             "DeleteMethodology",
+			shipped:          deleteMethodologySQL,
+			wantDeleteClause: "DELETE FROM public.resume_methodologies WHERE",
+			wantPKClause:     "WHERE id = $1",
 		},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			for _, want := range tc.want {
-				if !strings.Contains(tc.query, want) {
-					t.Errorf("%s SQL missing %q\nfull: %s", tc.name, want, tc.query)
-				}
+			if !strings.Contains(tc.shipped, tc.wantDeleteClause) {
+				t.Errorf("%s: SQL must contain %q; got: %s", tc.name, tc.wantDeleteClause, tc.shipped)
+			}
+			if !strings.Contains(tc.shipped, tc.wantPKClause) {
+				t.Errorf("%s: SQL must contain %q for PK delete; got: %s", tc.name, tc.wantPKClause, tc.shipped)
 			}
 		})
 	}
@@ -92,28 +87,44 @@ func TestIsValidSkillLevel_Allowlist(t *testing.T) {
 	}
 }
 
-// TestUpdateResumePerson_LinksFieldIsJSON asserts that UpdateResumePerson
-// serialises the Links map as JSON before binding it to $6. We verify this
-// offline by confirming that the production SQL string references "$6" and
-// the actual PersonRecord.Links field is a map[string]string (not a []byte).
+// TestUpdateResumePerson_LinksFieldIsJSON asserts structural invariants on the
+// SHIPPED updateResumePersonSQL const:
+//   - targets the correct table
+//   - sets every editable column UpdateResumePerson writes (name/email/phone/location/links/summary/updated_at)
+//   - does NOT touch enriched_at (a field the method must preserve)
+//   - PK clause is present
 //
-// Red-on-revert: change $6 to the wrong param or drop Links from the UPDATE →
-// the SQL check or the type assertion below will fail.
+// Red-on-revert: change the const in resumedb_edit.go → this test reads it and fails.
 func TestUpdateResumePerson_LinksFieldIsJSON(t *testing.T) {
-	// Verify Links is map[string]string (needs json.Marshal, not plain bind).
-	var p PersonRecord
-	links := map[string]string{"github": "https://github.com/x"}
-	p.Links = links
+	sql := updateResumePersonSQL
 
-	if len(p.Links) != 1 {
-		t.Fatalf("PersonRecord.Links wrong length: %d", len(p.Links))
+	mustContain := []string{
+		"UPDATE resume_persons",
+		"name",
+		"email",
+		"phone",
+		"location",
+		"links",
+		"summary",
+		"updated_at",
+		"WHERE id = $",
+	}
+	for _, frag := range mustContain {
+		if !strings.Contains(sql, frag) {
+			t.Errorf("updateResumePersonSQL missing expected fragment %q\nfull SQL: %s", frag, sql)
+		}
 	}
 
-	const updateSQL = `UPDATE resume_persons
-		 SET name = $2, email = $3, phone = $4, location = $5, links = $6, summary = $7,
-		     updated_at = now()
-		 WHERE id = $1`
-	if !strings.Contains(updateSQL, "links = $6") {
-		t.Error("UpdateResumePerson SQL: links must be bound to $6")
+	// enriched_at must NOT be touched by this UPDATE — it is set by the enrichment
+	// pipeline and must survive a plain person-header edit.
+	if strings.Contains(sql, "enriched_at") {
+		t.Errorf("updateResumePersonSQL must NOT reference enriched_at; got: %s", sql)
+	}
+
+	// Verify Links is map[string]string (needs json.Marshal, not plain bind).
+	var p PersonRecord
+	p.Links = map[string]string{"github": "https://github.com/x"}
+	if len(p.Links) != 1 {
+		t.Fatalf("PersonRecord.Links wrong length: %d", len(p.Links))
 	}
 }
