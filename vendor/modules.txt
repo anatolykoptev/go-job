@@ -26,7 +26,7 @@ github.com/RadhiFadlillah/whatlanggo
 github.com/a-h/templ
 github.com/a-h/templ/runtime
 github.com/a-h/templ/safehtml
-# github.com/anatolykoptev/go-engine v1.38.0
+# github.com/anatolykoptev/go-engine v1.42.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-engine/extract
 github.com/anatolykoptev/go-engine/fetch
