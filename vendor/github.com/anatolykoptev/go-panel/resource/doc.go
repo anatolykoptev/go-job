@@ -16,7 +16,9 @@
 // # Detailer (Show view)
 //
 // Set Resource.Detailer to enable a per-row detail page at
-// GET {basePath}/{name}/{id}.  The closure returns []DetailSection — a
+// GET {basePath}/{name}/{id}.  The closure signature is (ctx, r, id)
+// where r is the *http.Request, enabling CSRF token minting or session reads
+// for interactive RawHTML sections.  The closure returns []DetailSection — a
 // schema-agnostic list of titled cards, each containing []DetailItem (label +
 // value) or a RawHTML block (for consumer-built panels such as a two-column
 // fit/gap card).  go-panel owns the chrome (shell.Layout, back-link, nav);
@@ -26,7 +28,8 @@
 //	    Name:  "jobs",
 //	    Title: "Jobs",
 //	    Lister: jobsLister,
-//	    Detailer: func(ctx context.Context, id string) ([]resource.DetailSection, error) {
+//	    Detailer: func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
+//	        // r is available for CSRF token minting or session reads in RawHTML sections.
 //	        job, err := store.GetJob(ctx, id)
 //	        if err != nil { return nil, err }
 //	        return []resource.DetailSection{
