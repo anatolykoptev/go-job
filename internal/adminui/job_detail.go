@@ -13,7 +13,6 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/render"
-	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5"
@@ -298,7 +297,6 @@ func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a 
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "Job — "+d.Title, "jobs", buf.String()); err != nil {
 			slog.Error("adminui: render job_detail", "err", err)
 		}

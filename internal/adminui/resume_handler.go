@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/anatolykoptev/go-panel/resource"
-	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
@@ -25,7 +24,6 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		db := jobs.GetResumeDB()
 		if db == nil {
-			shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
 			slog.Error("adminui: render resume", "err", err)
 		}
@@ -34,7 +32,6 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 
 		personID := db.GetLatestPersonID(r.Context())
 		if personID == 0 {
-			shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
 			slog.Error("adminui: render resume", "err", err)
 		}
@@ -45,7 +42,6 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 		profile, err := jobs.GetResumeProfile(r.Context(), "")
 		if err != nil {
 			slog.Warn("resumeHandler: GetResumeProfile", "err", err)
-			shell.SecurityHeaders(w)
 		if err2 := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Could not load resume: "+err.Error())); err2 != nil {
 			slog.Error("adminui: render resume", "err", err2)
 		}
@@ -58,7 +54,6 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "Resume", "resume", buf.String()); err != nil {
 			slog.Error("adminui: render resume", "err", err)
 		}

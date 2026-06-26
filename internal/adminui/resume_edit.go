@@ -11,7 +11,6 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/resource"
-	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
@@ -37,7 +36,6 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		db := jobs.GetResumeDB()
 		if db == nil {
-			shell.SecurityHeaders(w)
 			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
 				slog.Error("adminui: render resume_edit", "err", err)
 			}
@@ -47,7 +45,6 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		ctx := r.Context()
 		personID := db.GetLatestPersonID(ctx)
 		if personID == 0 {
-			shell.SecurityHeaders(w)
 			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
 				slog.Error("adminui: render resume_edit", "err", err)
 			}
@@ -57,7 +54,6 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		person, err := db.GetPerson(ctx, personID)
 		if err != nil {
 			slog.Warn("resumeEditHandler: GetPerson", "err", err)
-			shell.SecurityHeaders(w)
 			if err2 := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Could not load person: "+err.Error())); err2 != nil {
 				slog.Error("adminui: render resume_edit", "err", err2)
 			}
@@ -93,7 +89,6 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", buf.String()); err != nil {
 			slog.Error("adminui: render resume_edit", "err", err)
 		}

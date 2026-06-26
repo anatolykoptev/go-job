@@ -5,12 +5,11 @@ go 1.26
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
-	github.com/a-h/templ v0.3.1020
 	github.com/anatolykoptev/go-engine v1.38.0
 	github.com/anatolykoptev/go-kit v0.91.1
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.15.0
-	github.com/anatolykoptev/go-panel v0.8.1-0.20260626092615-2d3cda0273be
+	github.com/anatolykoptev/go-panel v0.8.1-0.20260626094728-0d978fcf8201
 	github.com/anatolykoptev/go-stealth v1.16.0
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/jackc/pgx/v5 v5.10.0
@@ -26,6 +25,7 @@ require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/PuerkitoBio/goquery v1.11.0 // indirect
 	github.com/RadhiFadlillah/whatlanggo v0.0.0-20240916001553-aac1f0f737fc // indirect
+	github.com/a-h/templ v0.3.1020 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect

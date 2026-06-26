@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go-panel/render"
-	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go-panel/resource"
 )
 
@@ -79,7 +78,6 @@ func linkedinHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		shell.SecurityHeaders(w)
 		if err := p.RenderPageHTML(w, r, "LinkedIn", "linkedin", buf.String()); err != nil {
 			slog.Error("adminui: render linkedin", "err", err)
 		}

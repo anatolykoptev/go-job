@@ -8,11 +8,14 @@ import (
 )
 
 // RenderPage renders content inside the panel shell (chrome + sidebar with
-// activeID marked active), setting the HTML content-type. For consumers mounting
-// bespoke routes alongside the resource framework. activeID matches a nav item's
-// ID (use AddNav to register the entry); pass "" for no active highlight.
+// activeID marked active), setting the HTML content-type and the standard admin
+// security headers (CSP, X-Frame-Options, Cache-Control — same as resource page
+// handlers). For consumers mounting bespoke routes alongside the resource
+// framework. activeID matches a nav item's ID (use AddNav to register the entry);
+// pass "" for no active highlight.
 func (p *Panel) RenderPage(w http.ResponseWriter, r *http.Request, title, activeID string, content templ.Component) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	shell.SecurityHeaders(w)
 	return shell.Layout(title, p.NavItemsActive(activeID), content).Render(r.Context(), w)
 }
 
