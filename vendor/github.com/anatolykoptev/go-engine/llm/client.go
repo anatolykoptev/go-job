@@ -30,6 +30,9 @@ type Client struct {
 	// disabled is set by NewOptional when no API key is configured.
 	// When true, all Complete* methods short-circuit to ErrUnavailable.
 	disabled bool
+	// primaryModel is the model name configured at construction time.
+	// Stored separately because go-kit's Client.model is private.
+	primaryModel string
 }
 
 // Option configures a Client.
@@ -49,6 +52,7 @@ type config struct {
 	temperature       float64
 	maxTokens         int
 	metrics           *metrics.Registry
+	reasoningEffortModels []string
 }
 
 // WithAPIBase sets the API base URL (e.g. "http://127.0.0.1:8317/v1").
@@ -220,6 +224,16 @@ func WithPerAttemptTimeout(d time.Duration) Option {
 	return func(c *config) { c.perAttemptTimeout = d }
 }
 
+// WithReasoningEffortModels sets the allowlist of exact model IDs that receive
+// reasoning_effort in a WithEndpoints chain. Delegates to go-kit's per-endpoint
+// gating in attemptEndpoint. Empty (default) = pass-through.
+//
+// Safe models (exact IDs): "gonka-qwen3-235b", "cerebras-glm-4.7", "nv-deepseek-v4-flash".
+// Unsafe (return HTTP 400): groq-llama-70b, or-gpt-oss-120b-free, zen-deepseek-v4-flash-free.
+func WithReasoningEffortModels(models []string) Option {
+	return func(c *config) { c.reasoningEffortModels = models }
+}
+
 // WithTemperature sets the default temperature.
 func WithTemperature(t float64) Option {
 	return func(c *config) { c.temperature = t }
@@ -287,12 +301,17 @@ func New(opts ...Option) *Client {
 		kitOpts = append(kitOpts, kitllm.WithFallbackKeys(cfg.fallbacks))
 	}
 
+	if len(cfg.reasoningEffortModels) > 0 {
+		kitOpts = append(kitOpts, kitllm.WithReasoningEffortModels(cfg.reasoningEffortModels))
+	}
+
 	kit := kitllm.NewClient(cfg.apiBase, cfg.apiKey, cfg.model, kitOpts...)
 	return &Client{
-		kit:         kit,
-		temperature: cfg.temperature,
-		maxTokens:   cfg.maxTokens,
-		metrics:     cfg.metrics,
+		kit:             kit,
+		temperature:     cfg.temperature,
+		maxTokens:       cfg.maxTokens,
+		metrics:         cfg.metrics,
+		primaryModel:    cfg.model,
 	}
 }
 
@@ -386,6 +405,13 @@ var WithChatTemperature = kitllm.WithChatTemperature
 
 // WithChatMaxTokens — re-export per-call max tokens override.
 var WithChatMaxTokens = kitllm.WithChatMaxTokens
+
+// WithReasoningEffort — re-export. Per-call reasoning effort override.
+// Valid values: "none", "low", "medium", "high". "none" disables chain-of-thought
+// on supported models (cerebras-glm-4.7), freeing the full token budget for output.
+// The go-kit transport layer gates per-endpoint via LLM_REASONING_EFFORT_MODELS
+// allowlist; mixed chains work correctly without sending the param to unsupported endpoints.
+var WithReasoningEffort = kitllm.WithReasoningEffort
 
 // currentDate returns today's date in ISO 8601 format (UTC).
 func currentDate() string {

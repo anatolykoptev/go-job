@@ -9,11 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
-	redditEndpoint  = "https://www.reddit.com/search.json"
-	redditBaseURL   = "https://www.reddit.com"
+	redditEndpoint    = "https://www.reddit.com/search.json"
+	redditBaseURL     = "https://www.reddit.com"
 	redditMaxSelftext = 300
 )
 
@@ -148,4 +149,65 @@ func isRedditRateLimited(data []byte) bool {
 	}
 
 	return strings.EqualFold(errResp.Message, "Too Many Requests")
+}
+
+const (
+	redditOAuthBase = "https://oauth.reddit.com"
+)
+
+// SearchOAuth searches Reddit via the OAuth API using a bearer token from tm.
+// The OAuth endpoint (oauth.reddit.com) returns the same Listing/t3 JSON shape
+// as the public API, so ParseRedditJSON is reused unchanged.
+func SearchOAuth(ctx context.Context, doer BrowserDoer, tm RedditTokenManager, query, userAgent string) ([]Result, error) {
+	tok, err := tm.Token(ctx, doer)
+	if err != nil {
+		return nil, fmt.Errorf("reddit oauth: token: %w", err)
+	}
+
+	u := redditOAuthBase + "/search?q=" + url.QueryEscape(query) +
+		"&type=link&raw_json=1&limit=10&sort=relevance&t=all"
+
+	headers := map[string]string{
+		"Authorization": "Bearer " + tok,
+		"User-Agent":    userAgent,
+		"Accept":        acceptJSON,
+	}
+
+	data, respHeaders, status, err := doer.Do(http.MethodGet, u, headers, nil)
+	if err != nil {
+		return nil, fmt.Errorf("reddit oauth search: %w", err)
+	}
+
+	// Handle rate limiting: check both HTTP status and JSON body.
+	if isRateLimitStatus(status) || isRedditRateLimited(data) {
+		rl := &ErrRateLimited{Engine: "reddit-oauth"}
+		if retryAfter, ok := respHeaders["retry-after"]; ok && retryAfter != "" {
+			// best-effort parse; ignore if malformed
+			if d, parseErr := time.ParseDuration(retryAfter + "s"); parseErr == nil {
+				rl.RetryAfter = d
+			}
+		}
+		return nil, rl
+	}
+
+	// 401 means the token expired; invalidate so next call refreshes.
+	if status == http.StatusUnauthorized {
+		tm.Invalidate()
+		return nil, errors.New("reddit oauth: token expired (401) — invalidated, retry")
+	}
+
+	if status >= 500 {
+		return nil, fmt.Errorf("reddit oauth search: status %d: %w", status, ErrTransient)
+	}
+
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("reddit oauth search: status %d", status)
+	}
+
+	results, err := ParseRedditJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("reddit oauth parse: %w", err)
+	}
+
+	return applyLimit(results, 0), nil
 }

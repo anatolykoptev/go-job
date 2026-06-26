@@ -33,8 +33,16 @@ type BrowserDoer interface {
 
 // DirectConfig controls the SearchDirect fan-out behavior.
 type DirectConfig struct {
-	Browser          BrowserDoer
-	FallbackBrowser  BrowserDoer // optional: used when Browser fails on proxy-quota/gateway statuses (402/407/5xx)
+	Browser         BrowserDoer
+	FallbackBrowser BrowserDoer // optional: used when Browser fails on proxy-quota/gateway statuses (402/407/5xx)
+	// MojeekBrowser, when non-nil, is the doer used exclusively for Mojeek
+	// (set it to a residential-proxy-backed BrowserClient). Mojeek blocks our
+	// datacenter egress IP at the network level (lighttpd 403 "automated
+	// queries", served before TLS/headers), so the shared direct-primary
+	// Browser is permanently blocked for it; the dualBrowser fallback only
+	// escalates on 402/407/5xx, not the 403 Mojeek returns. When nil, runMojeek
+	// falls back to Browser (default, backward-compatible).
+	MojeekBrowser    BrowserDoer
 	DDG              bool
 	Startpage        bool
 	Brave            bool
@@ -52,6 +60,22 @@ type DirectConfig struct {
 	BraveLimiter     *rate.Limiter
 	RedditLimiter    *rate.Limiter
 	BingLimiter      *rate.Limiter
+
+	// RedditTokenManager, when non-nil, enables Tier 1 OAuth search (Phase 2).
+	// Zero value (nil) → inactive; legacy SearchRedditDirect path used.
+	RedditTokenManager websearch.RedditTokenManager
+
+	// RedditUserAgent is sent as the User-Agent in Reddit OAuth requests.
+	// Only used when RedditTokenManager is non-nil.
+	RedditUserAgent string
+
+	// RedditCookieSearch, when non-nil, enables Tier 2 cookie-based search.
+	// Receives (ctx, query) and returns (results, error).
+	RedditCookieSearch func(ctx context.Context, query string) ([]sources.Result, error)
+
+	// RedditBrowserRender, when non-nil, enables Tier 3 browser-render search.
+	// Receives (ctx, query) and returns (results, error).
+	RedditBrowserRender func(ctx context.Context, query string) ([]sources.Result, error)
 
 	// PerSourceTimeout caps each source goroutine (retries included).
 	// Default defaultPerSourceTimeout (6s) when zero.
@@ -115,12 +139,20 @@ func runSourceWithTimeout(srcCtx context.Context, label string, fn func(context.
 }
 
 // metricSourceResult is the per-source fan-out outcome counter. Encoded as
-// name{source=<label>,outcome=ok|fail} so the go-kit/metrics Prometheus bridge
+// name{source=<label>,outcome=ok|empty|fail} so the go-kit/metrics Prometheus bridge
 // surfaces it as go_search_source_result_total{source="yep",outcome="fail"}.
+//
+// Outcomes:
+//   - ok    — source returned ≥1 result
+//   - empty — source returned HTTP 200 with zero results (silent-block signature:
+//     e.g. mojeek 403 masquerading as empty, geo-blocked source)
+//   - fail  — source returned an error
 //
 // Rationale: a source failing 100% (e.g. yep on the deprecated endpoint) was
 // invisible because a sibling source (yandex) silently covered the result set.
-// This counter makes a per-source failure rate alertable.
+// This counter makes a per-source failure rate alertable. The "empty" outcome
+// additionally surfaces silent blocks where the source appears healthy (no error)
+// but consistently returns zero usable results.
 const metricSourceResult = "go_search_source_result_total"
 
 // recordSourceResult increments the per-source outcome counter. Nil-safe.
@@ -241,6 +273,11 @@ func collectResults(ch <-chan directResult, m *metrics.Registry, earlyAt int, ca
 		if r.err != nil {
 			recordSourceResult(m, r.label, "fail")
 			slog.Warn("search source failed", slog.String("source", r.label), slog.Any("error", r.err))
+			continue
+		}
+		if len(r.results) == 0 {
+			recordSourceResult(m, r.label, "empty")
+			slog.Info("search source empty", slog.String("source", r.label))
 			continue
 		}
 		recordSourceResult(m, r.label, "ok")
