@@ -37,6 +37,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -48,6 +49,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go-panel/shell"
 )
 
 const (
@@ -210,14 +213,14 @@ func (a *HMACAuth) LoginHandler() http.Handler {
 				return
 			}
 			w.WriteHeader(http.StatusUnauthorized)
-			a.renderLogin(w, "Invalid username or password")
+			a.renderLogin(r.Context(), w, "Invalid username or password")
 			return
 		}
 		if a.Verified(r) {
 			http.Redirect(w, r, a.basePath+"/", http.StatusSeeOther)
 			return
 		}
-		a.renderLogin(w, "")
+		a.renderLogin(r.Context(), w, "")
 	})
 }
 
@@ -247,45 +250,16 @@ func (a *HMACAuth) Require(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // renderLogin writes the login form HTML. Uses LoginTempl if provided,
-// otherwise falls back to the built-in minimal form.
-func (a *HMACAuth) renderLogin(w http.ResponseWriter, errMsg string) {
+// otherwise renders the framework default pm7 login page (shell.LoginPage).
+func (a *HMACAuth) renderLogin(ctx context.Context, w http.ResponseWriter, errMsg string) {
 	if a.cfg.LoginTempl != nil {
 		a.cfg.LoginTempl(errMsg).ServeHTTP(w, nil) //nolint:staticcheck // nil r is intentional for template-only render
 		return
 	}
-	writeBuiltinLoginPage(w, a.cfg.BasePath, errMsg)
-}
-
-// writeBuiltinLoginPage writes a minimal login HTML form when no templ template
-// is configured. Intended for testing and quick-start setups.
-func writeBuiltinLoginPage(w http.ResponseWriter, basePath, errMsg string) {
-	errSection := ""
-	if errMsg != "" {
-		errSection = `<p style="color:#ef4444">` + errMsg + `</p>`
+	// Default: the pm7 design-system login page. Keeping it in the framework
+	// means every consumer gets a styled, standards-consistent login without
+	// wiring LoginTempl. Override via cfg.LoginTempl for a custom page.
+	if err := shell.LoginPage(a.basePath, errMsg).Render(ctx, w); err != nil {
+		slog.Error("auth: failed to render login page", "err", err)
 	}
-	html := `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Admin Login</title></head>
-<body style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:system-ui">
-<div style="background:#1e293b;padding:2rem;border-radius:.75rem;width:100%;max-width:22rem">
-<h1 style="font-size:1.25rem;font-weight:600;margin-bottom:1.5rem">Admin</h1>
-` + errSection + `
-<form method="POST" action="` + basePath + `/login">
-<label style="display:block;margin-bottom:.75rem">
-  <span style="font-size:.75rem;color:#94a3b8">Username</span><br>
-  <input name="username" type="text" required autofocus
-    style="width:100%;padding:.5rem .75rem;background:#0f172a;border:1px solid #334155;border-radius:.375rem;color:#e2e8f0;margin-top:.25rem">
-</label>
-<label style="display:block;margin-bottom:1rem">
-  <span style="font-size:.75rem;color:#94a3b8">Password</span><br>
-  <input name="password" type="password" required
-    style="width:100%;padding:.5rem .75rem;background:#0f172a;border:1px solid #334155;border-radius:.375rem;color:#e2e8f0;margin-top:.25rem">
-</label>
-<button type="submit"
-  style="width:100%;padding:.625rem;background:#3b82f6;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem">
-  Sign in
-</button>
-</form></div></body></html>`
-	_, _ = w.Write([]byte(html))
 }
