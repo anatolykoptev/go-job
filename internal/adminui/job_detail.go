@@ -98,6 +98,11 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
     </label>
     <button type="submit">Save rating</button>
   </form>
+  <form method="POST" action="/admin/jobs/{{.ID}}/rescore"
+        onsubmit="var b=this.querySelector('.rescore-btn');b.disabled=true;b.textContent='Анализ...';">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit" class="rescore-btn">Проанализировать заново</button>
+  </form>
   {{if or .HasResume .HasCover}}
   <div class="dl-links">
     {{if .HasResume}}<a class="dl-link" href="/admin/jobs/{{.ID}}/download/resume">Resume PDF</a>{{end}}
@@ -366,6 +371,8 @@ const jobDetailStyles = `<style>
 .rate-form textarea{min-height:5rem;resize:vertical}
 .rate-form button{margin-top:.5rem;padding:.5rem 1.25rem;background:#2563eb;color:#fff;border:none;border-radius:.375rem;cursor:pointer;font-size:.875rem}
 .rate-form button:hover{background:#1d4ed8}
+.rescore-btn{margin-top:.75rem;padding:.45rem 1rem;background:#334155;color:#e2e8f0;border:none;border-radius:.375rem;cursor:pointer;font-size:.85rem;display:block}
+.rescore-btn:hover{background:#475569}
 .fit-card-cols{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.5rem}
 .fit-col-label{font-size:.75rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.5rem}
 .fit-col-list{margin:0;padding-left:1.2em;font-size:.875rem;color:#cbd5e1}

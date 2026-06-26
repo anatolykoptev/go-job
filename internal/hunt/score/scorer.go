@@ -110,6 +110,33 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	}
 
 	// --- Stage 3: LLM precision scorer ---
+	return runLLMStage(ctx, profile, job, deps, int(jaccardScore))
+}
+
+// ScoreForce runs the LLM precision scorer unconditionally, bypassing Stage 1
+// (recency pre-gate) and Stage 2 (Jaccard pre-filter). Use for on-demand
+// re-scoring of stale or previously-rejected jobs via the admin UI.
+//
+// Stage 0 (nil profile guard) still applies: a nil profile returns FitBandUnscored.
+// ScorerDeps.Jaccard is accepted for API parity with Score but is never called.
+func ScoreForce(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps ScorerDeps) hunt.ScoreResult {
+	// --- Stage 0: nil profile means scoring disabled ---
+	if profile == nil {
+		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, ScoredAt: time.Now()}
+	}
+
+	// Bypass Stage 1 (recency) and Stage 2 (Jaccard) — go straight to LLM.
+	// jaccardFallback is 0: Jaccard was not run, so fail-open records score=0.
+	return runLLMStage(ctx, profile, job, deps, 0)
+}
+
+// runLLMStage executes Stage 3 of the cascade scorer: builds the prompt, calls
+// the LLM, parses the response, and stamps ScoredAt. jaccardFallback is the
+// Jaccard score passed to parseScoreResponse when fail-open is triggered (0 when
+// called from ScoreForce, which does not run Jaccard).
+//
+// Called by both Score (which already passed Stages 1–2) and ScoreForce.
+func runLLMStage(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps ScorerDeps, jaccardFallback int) hunt.ScoreResult {
 	prompt := buildScorerPrompt(profile, job)
 	raw, err := deps.LLM(ctx, prompt)
 	if err != nil {
@@ -117,17 +144,17 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 			slog.Any("error", err),
 			slog.String("job_title", job.Title),
 		)
-		return failOpen(ctx, int(jaccardScore), "llm_error")
+		return failOpen(ctx, jaccardFallback, "llm_error")
 	}
 
-	result, parseErr := parseScoreResponse(raw, int(jaccardScore))
+	result, parseErr := parseScoreResponse(raw, jaccardFallback)
 	if parseErr != nil {
 		slog.WarnContext(ctx, "fit scoring: parse failed",
 			slog.Any("error", parseErr),
 			slog.String("job_title", job.Title),
 			slog.String("raw_truncated", truncate(raw, 200)),
 		)
-		return failOpen(ctx, int(jaccardScore), "parse_fail")
+		return failOpen(ctx, jaccardFallback, "parse_fail")
 	}
 	// parseScoreResponse may return a fail-open result (FitBandUnscored) without an
 	// error when HUNT_SCORE_FAIL_OPEN=true — the JSON was malformed but the caller

@@ -555,3 +555,87 @@ func Test_LLMResult_Signal(t *testing.T) {
 		assert.Equal(t, "reject", result.FitBand)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Test 8: ScoreForce bypasses recency and Jaccard pre-gates
+// ---------------------------------------------------------------------------
+//
+// ScoreForce must call the LLM regardless of job staleness or sub-Jaccard overlap,
+// and must return a real fit band (not "stale" or "reject").
+//
+// RED-on-revert evidence:
+//   - (a) stale sub-case: replace ScoreForce body with a Score call →
+//     stale job returns FitBandStale without calling the LLM; assertion fails.
+//   - (b) sub-jaccard sub-case: same revert → returns FitBandReject; assertion fails.
+//   - (c) nil-profile sub-case: remove Stage 0 guard → panics or calls LLM on nil.
+
+func TestScoreForce_BypassesRecencyAndJaccard(t *testing.T) {
+	prof := freshProfile()
+
+	// --- (a) stale job (PostedAt > 48h) still calls LLM and returns real band ---
+	t.Run("stale_job_calls_llm", func(t *testing.T) {
+		llm := &stubLLM{} // returns valid JSON with fit_score=80, band="strong"
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 }, // not called by ScoreForce
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-72 * time.Hour) // 3 days old — Score() would return "stale"
+		job := hunt.Job{
+			Title:       "Senior Go Engineer",
+			Description: "We need Go Rust PostgreSQL distributed systems expert",
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+		result := ScoreForce(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(1), llm.calls.Load(), "ScoreForce must call LLM on stale job")
+		assert.NotEqual(t, hunt.FitBandStale, result.FitBand,
+			"ScoreForce must not return stale band — recency gate is bypassed")
+		assert.True(t, result.LLMCalled, "ScoreForce result must have LLMCalled=true")
+	})
+
+	// --- (b) sub-Jaccard job still calls LLM and returns real band ---
+	t.Run("sub_jaccard_calls_llm", func(t *testing.T) {
+		llm := &stubLLM{} // returns valid JSON with fit_score=80
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 2 }, // well below min threshold of 8
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		job := hunt.Job{
+			Title:       "Marketing Manager",
+			Description: "Sales event management brand awareness campaigns",
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+		result := ScoreForce(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(1), llm.calls.Load(), "ScoreForce must call LLM on sub-Jaccard job")
+		assert.NotEqual(t, hunt.FitBandReject, result.FitBand,
+			"ScoreForce must not return reject band — Jaccard gate is bypassed")
+		assert.True(t, result.LLMCalled, "ScoreForce result must have LLMCalled=true")
+	})
+
+	// --- (c) nil profile returns unscored without calling LLM ---
+	t.Run("nil_profile_unscored_no_llm", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		job := hunt.Job{
+			Title:       "Staff Engineer",
+			Description: "Go Rust distributed systems",
+			PostedAt:    &postedAt,
+		}
+
+		result := ScoreForce(context.Background(), nil, job, deps)
+
+		assert.Equal(t, int64(0), llm.calls.Load(), "nil profile must not call LLM")
+		assert.Equal(t, hunt.FitBandUnscored, result.FitBand,
+			"nil profile must return unscored — Stage 0 guard still applies")
+	})
+}
