@@ -256,8 +256,11 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string) resource.De
 
 	addItem("Company", rec.Company)
 	addItem("Location", rec.Location)
+	addItem("Remote", rec.Remote)
 	addItem("Salary", salaryDisplay)
 	addItem("Status", rec.Status)
+	addItem("Type", rec.JobType)
+	addItem("Experience", rec.Experience)
 	addItem("Source", rec.Source)
 	addTimeItem("Posted", rec.PostedAt)
 	addTimeItem("Last Seen", rec.LastSeenAt)

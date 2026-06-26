@@ -189,15 +189,44 @@ func TestJobDetailer_ErrDetailNotFound_RedCoverage(t *testing.T) {
 	}
 }
 
+// TestBuildOverviewSection_FieldsPresent verifies that buildOverviewSection
+// includes Remote, Type, and Experience items when the fields are non-empty.
+// This is a pure unit test — no database required.
+func TestBuildOverviewSection_FieldsPresent(t *testing.T) {
+	rec := jobDetailRecord{
+		Company:    "Acme Corp",
+		Location:   "San Francisco",
+		Remote:     "yes",
+		JobType:    "full-time",
+		Experience: "5+ years",
+		Status:     "new",
+	}
+	sec := buildOverviewSection(rec, "")
+	if sec.Title != "Overview" {
+		t.Fatalf("expected title Overview, got %q", sec.Title)
+	}
+	want := map[string]string{
+		"Company":    "Acme Corp",
+		"Location":   "San Francisco",
+		"Remote":     "yes",
+		"Type":       "full-time",
+		"Experience": "5+ years",
+		"Status":     "new",
+	}
+	got := make(map[string]string, len(sec.Items))
+	for _, item := range sec.Items {
+		got[item.Label] = item.Value
+	}
+	for label, wantVal := range want {
+		if gotVal, ok := got[label]; !ok {
+			t.Errorf("missing item %q in Overview", label)
+		} else if gotVal != wantVal {
+			t.Errorf("item %q: got %q, want %q", label, gotVal, wantVal)
+		}
+	}
+}
+
 // isJobDetailNotFound is a test helper that wraps the resource package check.
 func isJobDetailNotFound(err error) bool {
 	return err != nil && err.Error() == resource.ErrDetailNotFound.Error()
-}
-
-// min is a helper for Go versions before 1.21.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
