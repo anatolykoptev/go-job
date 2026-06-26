@@ -98,10 +98,14 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
     </label>
     <button type="submit">Save rating</button>
   </form>
-  <div>
-    <a class="dl-link" href="/admin/jobs/{{.ID}}/download/resume">Resume PDF</a>
-    <a class="dl-link" href="/admin/jobs/{{.ID}}/download/cover">Cover PDF</a>
+  {{if or .HasResume .HasCover}}
+  <div class="dl-links">
+    {{if .HasResume}}<a class="dl-link" href="/admin/jobs/{{.ID}}/download/resume">Resume PDF</a>{{end}}
+    {{if .HasCover}}<a class="dl-link" href="/admin/jobs/{{.ID}}/download/cover">Cover PDF</a>{{end}}
   </div>
+  {{else}}
+  <div class="no-pdf">No prepared application PDFs for this job.</div>
+  {{end}}
 </div>`))
 
 // applicationSectionData is the template context for the application section.
@@ -109,6 +113,8 @@ type applicationSectionData struct {
 	ID        int64
 	CSRFToken string
 	Rating    *currentRating
+	HasResume bool
+	HasCover  bool
 }
 
 // currentRating holds the current hunt_ratings row for a job.
@@ -130,7 +136,7 @@ type currentRating struct {
 //  4. Market Read — RawHTML market card
 //  5. Description — RawHTML rendered markdown
 //  6. Application — RawHTML rate form + download links
-func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
+func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte, applicationsDir string) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 	return func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 		id64, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
@@ -205,7 +211,8 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *aut
 			slog.WarnContext(ctx, "jobDetailer: fetch hunt_ratings", "id", id64, "err", ratingErr)
 		}
 
-		appHTML, err := buildApplicationSectionHTML(id64, csrfTok, rating)
+		hasResume, hasCover := scanJobPDFs(applicationsDir, rec.Company, rec.Title)
+		appHTML, err := buildApplicationSectionHTML(id64, csrfTok, rating, hasResume, hasCover)
 		if err != nil {
 			return nil, fmt.Errorf("jobDetailer: build application section: %w", err)
 		}
@@ -299,11 +306,13 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string) resource.De
 // buildApplicationSectionHTML renders the rate form and download links via
 // html/template (autoescape on all struct fields). The CSRF token is a
 // hex/base64 value from csrf.Issue and is safe as a hidden form value.
-func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRating) (string, error) {
+func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRating, hasResume, hasCover bool) (string, error) {
 	data := applicationSectionData{
 		ID:        id64,
 		CSRFToken: csrfTok,
 		Rating:    rating,
+		HasResume: hasResume,
+		HasCover:  hasCover,
 	}
 	var buf bytes.Buffer
 	if err := applicationSectionTmpl.Execute(&buf, data); err != nil {
@@ -344,6 +353,8 @@ const jobDetailStyles = `<style>
 .md-body pre{background:#334155;padding:.75rem 1rem;border-radius:.35rem;overflow-x:auto}
 .dl-link{display:inline-block;margin-top:.75rem;margin-right:.75rem;padding:.45rem 1rem;background:#334155;color:#e2e8f0;border-radius:.35rem;text-decoration:none;font-size:.85rem}
 .dl-link:hover{background:#475569}
+.dl-links{margin-top:.5rem}
+.no-pdf{margin-top:.75rem;font-size:.8rem;color:#64748b;font-style:italic}
 .rate-form{margin-top:1rem}
 .rate-form h3{margin:0 0 .75rem;font-size:1rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}
 .current-rating{margin-bottom:1rem;padding:.75rem 1rem;background:#0f172a;border-radius:.35rem;font-size:.85rem}

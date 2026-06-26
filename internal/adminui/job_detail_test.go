@@ -55,7 +55,7 @@ func TestJobDetailer_Smoke(t *testing.T) {
 	csrfKey := []byte("00000000000000000000000000000000")
 	hs := hunt.NewStore(pool)
 	a := testDetailAuth()
-	detailer := jobDetailer(pool, hs, "admin", a, csrfKey)
+	detailer := jobDetailer(pool, hs, "admin", a, csrfKey, t.TempDir())
 
 	t.Run("existing_id_section_shapes", func(t *testing.T) {
 		var id int64
@@ -139,7 +139,7 @@ func TestJobDetailer_Smoke(t *testing.T) {
 // produces a form with a _csrf field. This test does not require a database.
 func TestJobDetailer_ApplicationSection_CSRF(t *testing.T) {
 	const fakeTok = "test-csrf-token-abc123"
-	html, err := buildApplicationSectionHTML(42, fakeTok, nil)
+	html, err := buildApplicationSectionHTML(42, fakeTok, nil, false, false)
 	if err != nil {
 		t.Fatalf("buildApplicationSectionHTML: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestJobDetailer_ApplicationSection_CSRF(t *testing.T) {
 func TestJobDetailer_ApplicationSection_CSRF_WithRating(t *testing.T) {
 	const fakeTok = "test-csrf-token-xyz789"
 	rating := &currentRating{Stage: "interesting", Note: "looks good"}
-	html, err := buildApplicationSectionHTML(99, fakeTok, rating)
+	html, err := buildApplicationSectionHTML(99, fakeTok, rating, false, false)
 	if err != nil {
 		t.Fatalf("buildApplicationSectionHTML with rating: %v", err)
 	}

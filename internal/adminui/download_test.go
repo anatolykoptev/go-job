@@ -85,27 +85,93 @@ func TestFindApplicationPDF_Missing(t *testing.T) {
 	}
 }
 
-// TestFindApplicationSlugFromEntries_Match verifies slug prefix matching.
-func TestFindApplicationSlugFromEntries_Match(t *testing.T) {
+// dirEntries creates a temp dir with the named subdirectories and returns its entries.
+func dirEntries(t *testing.T, names ...string) []os.DirEntry {
+	t.Helper()
 	root := t.TempDir()
-	// Create a slug directory.
-	slugName := "acme-corp-software-engineer-2026"
-	slugDir := filepath.Join(root, slugName)
-	if err := os.MkdirAll(slugDir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(root, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return entries
+}
 
-	got, err := findApplicationSlugFromEntries(entries, "Acme Corp", "Software Engineer")
+// TestFindApplicationSlugFromEntries_TokenOmission: a curated dir omits the
+// less-distinctive title tokens; the token-subset matcher must still resolve it
+// (a naive full-title HasPrefix would 404).
+func TestFindApplicationSlugFromEntries_TokenOmission(t *testing.T) {
+	entries := dirEntries(t, "anthropic-databases", "openai-gpu-infra")
+	got, err := findApplicationSlugFromEntries(entries, "Anthropic", "Staff Software Engineer, Databases")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != slugName {
-		t.Errorf("got %q, want %q", got, slugName)
+	if got != "anthropic-databases" {
+		t.Errorf("got %q, want %q", got, "anthropic-databases")
+	}
+}
+
+// TestFindApplicationSlugFromEntries_BestMatch: the most-specific dir wins.
+func TestFindApplicationSlugFromEntries_BestMatch(t *testing.T) {
+	entries := dirEntries(t, "replit-agent", "replit-staff-agent-platform")
+	got, err := findApplicationSlugFromEntries(entries, "Replit", "Staff Agent Platform Engineer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "replit-staff-agent-platform" {
+		t.Errorf("got %q, want %q (most specific)", got, "replit-staff-agent-platform")
+	}
+}
+
+// TestFindApplicationSlugFromEntries_RejectsExtraToken: a dir token not in the
+// job's company+title (e.g. a stray year) means it is a different job.
+func TestFindApplicationSlugFromEntries_RejectsExtraToken(t *testing.T) {
+	entries := dirEntries(t, "acme-billing-2026")
+	if _, err := findApplicationSlugFromEntries(entries, "Acme", "Engineer"); err == nil {
+		t.Error("expected no match for a dir with an unrelated token")
+	}
+}
+
+// TestFindApplicationSlugFromEntries_WrongCompany: the company-slug prefix anchors the match.
+func TestFindApplicationSlugFromEntries_WrongCompany(t *testing.T) {
+	entries := dirEntries(t, "google-engineer")
+	if _, err := findApplicationSlugFromEntries(entries, "Acme", "Engineer"); err == nil {
+		t.Error("expected no match when dir does not start with the company slug")
+	}
+}
+
+// TestFindApplicationSlugFromEntries_AmbiguousRejected: two distinct dirs that
+// match a job equally well must NOT silently resolve to one (wrong-PDF guard).
+func TestFindApplicationSlugFromEntries_AmbiguousRejected(t *testing.T) {
+	entries := dirEntries(t, "anthropic-aa", "anthropic-bb")
+	if _, err := findApplicationSlugFromEntries(entries, "Anthropic", "AA BB"); err == nil {
+		t.Error("expected ambiguous match to be rejected")
+	}
+}
+
+// TestScanJobPDFs gates the detail-page links: true only when the PDF exists.
+func TestScanJobPDFs(t *testing.T) {
+	root := t.TempDir()
+	submit := filepath.Join(root, "acme-platform", "submit")
+	if err := os.MkdirAll(submit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(submit, "resume-acme.pdf"), []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hasResume, hasCover := scanJobPDFs(root, "Acme", "Platform Engineer")
+	if !hasResume {
+		t.Error("expected hasResume=true")
+	}
+	if hasCover {
+		t.Error("expected hasCover=false (no cover pdf)")
+	}
+	if hr, hc := scanJobPDFs(root, "Nobody", "Engineer"); hr || hc {
+		t.Errorf("expected false,false for unknown company; got %v,%v", hr, hc)
 	}
 }
 
