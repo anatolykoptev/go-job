@@ -58,11 +58,12 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	})
 
 	pool := store.Pool()
+	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
 	jr := jobsResource(pool)
-	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey))
+	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), applicationsDir)
 	resource.Register(p, jr)
 
 	resource.Register(p, bountiesResource(pool))
@@ -72,11 +73,10 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	resource.Register(p, oversizeResource(pool))
 
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
+	p.AddNav(shell.NavItem{ID: navIDShortlist, Label: "Shortlist", Icon: "⭐", URL: "/admin/shortlist"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
-
-	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
 	// Outer mux: bespoke 4-/5-segment routes first, panel catch-all last.
 	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
@@ -84,6 +84,8 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux := http.NewServeMux()
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
+	mux.HandleFunc("GET "+adminBasePath+"/shortlist", a.Require(shortlistHandler(p, applicationsDir)))
+	mux.Handle("GET "+adminBasePath+"/shortlist/{slug}/download/{kind}", a.Require(shortlistDownloadHandler(applicationsDir)))
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
 	// Resume editor routes (Part-D)
 	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey))))
