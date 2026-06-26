@@ -46,6 +46,24 @@ func TestResumeDBEdit_DeleteMethodSignatures_SQL(t *testing.T) {
 			wantDeleteClause: "DELETE FROM public.resume_methodologies WHERE",
 			wantPKClause:     "WHERE id = $1",
 		},
+		{
+			name:             "DeleteProject",
+			shipped:          deleteProjectSQL,
+			wantDeleteClause: "DELETE FROM resume_projects WHERE",
+			wantPKClause:     "WHERE id = $1",
+		},
+		{
+			name:             "DeleteEducation",
+			shipped:          deleteEducationSQL,
+			wantDeleteClause: "DELETE FROM resume_educations WHERE",
+			wantPKClause:     "WHERE id = $1",
+		},
+		{
+			name:             "DeleteCertification",
+			shipped:          deleteCertificationSQL,
+			wantDeleteClause: "DELETE FROM resume_certifications WHERE",
+			wantPKClause:     "WHERE id = $1",
+		},
 	}
 
 	for _, tc := range cases {

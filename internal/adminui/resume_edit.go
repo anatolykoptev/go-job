@@ -23,7 +23,10 @@ type resumeEditData struct {
 	Skills        []jobs.SkillRecord
 	Achievements  []jobs.AchievementRecord
 	Domains       []jobs.DomainRecord
-	Methodologies []jobs.MethodologyRecord
+	Methodologies  []jobs.MethodologyRecord
+	Projects       []jobs.ProjectRecord
+	Educations     []jobs.EducationRecord
+	Certifications []jobs.CertificationRecord
 }
 
 // resumeEditHandler renders the full resume editor page (GET /admin/resume/edit).
@@ -59,6 +62,9 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		achs, _ := db.GetAllAchievements(ctx, personID)
 		domains, _ := db.GetAllDomains(ctx, personID)
 		meths, _ := db.GetAllMethodologies(ctx, personID)
+		projs, _ := db.GetAllProjects(ctx, personID)
+		edus, _ := db.GetAllEducations(ctx, personID)
+		certs, _ := db.GetAllCertifications(ctx, personID)
 
 		sessVal := sessionValue(r, a.SessionCookieName())
 		d := resumeEditData{
@@ -68,7 +74,10 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 			Skills:        skills,
 			Achievements:  achs,
 			Domains:       domains,
-			Methodologies: meths,
+			Methodologies:  meths,
+			Projects:       projs,
+			Educations:     edus,
+			Certifications: certs,
 		}
 
 		var buf bytes.Buffer
@@ -263,6 +272,7 @@ func resumeSkillLevelHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 }
 
 // resumeAchievementCreateHandler handles POST /admin/resume/achievement.
+//nolint:dupl
 func resumeAchievementCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {

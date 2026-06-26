@@ -98,3 +98,36 @@ func (db *ResumeDB) UpdateResumePerson(ctx context.Context, personID int, p Pers
 		personID, p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary)
 	return err
 }
+
+// Package-level SQL constants for projects, educations, and certifications.
+// Tests reference these directly so editing a query here will break the test
+// (red-on-revert guaranteed).
+const (
+	deleteProjectSQL       = `DELETE FROM resume_projects WHERE id = $1`
+	deleteEducationSQL     = `DELETE FROM resume_educations WHERE id = $1`
+	deleteCertificationSQL = `DELETE FROM resume_certifications WHERE id = $1`
+)
+
+// DeleteProject removes a project row by primary key.
+// NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
+// invariant; if this DB ever becomes multi-person these must be person-scoped.
+func (db *ResumeDB) DeleteProject(ctx context.Context, projectID int) error {
+	_, err := db.pool.Exec(ctx, deleteProjectSQL, projectID)
+	return err
+}
+
+// DeleteEducation removes an education row by primary key.
+// NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
+// invariant; if this DB ever becomes multi-person these must be person-scoped.
+func (db *ResumeDB) DeleteEducation(ctx context.Context, educationID int) error {
+	_, err := db.pool.Exec(ctx, deleteEducationSQL, educationID)
+	return err
+}
+
+// DeleteCertification removes a certification row by primary key.
+// NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
+// invariant; if this DB ever becomes multi-person these must be person-scoped.
+func (db *ResumeDB) DeleteCertification(ctx context.Context, certificationID int) error {
+	_, err := db.pool.Exec(ctx, deleteCertificationSQL, certificationID)
+	return err
+}

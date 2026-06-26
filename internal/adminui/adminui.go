@@ -88,6 +88,12 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/resume/domain/{id}/delete", a.Require(resumeDomainDeleteHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/methodology", a.Require(resumeMethodologyCreateHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/methodology/{id}/delete", a.Require(resumeMethodologyDeleteHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/project", a.Require(resumeProjectCreateHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/project/{id}/delete", a.Require(resumeProjectDeleteHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/education", a.Require(resumeEducationCreateHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/education/{id}/delete", a.Require(resumeEducationDeleteHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/certification", a.Require(resumeCertificationCreateHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/resume/certification/{id}/delete", a.Require(resumeCertificationDeleteHandler(a, []byte(csrfKey))))
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, applicationsDir)))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
