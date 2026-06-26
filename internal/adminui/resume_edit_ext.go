@@ -118,6 +118,7 @@ func resumeEducationDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.Handler
 }
 
 // resumeCertificationCreateHandler handles POST /admin/resume/certification.
+//
 //nolint:dupl
 func resumeCertificationCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
