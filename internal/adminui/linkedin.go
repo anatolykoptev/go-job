@@ -3,6 +3,7 @@ package adminui
 import (
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,7 +78,9 @@ func linkedinHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		renderShell(w, r, p, "LinkedIn", "linkedin", buf.String())
+		if err := p.RenderPageHTML(w, r, "LinkedIn", "linkedin", buf.String()); err != nil {
+			slog.Error("adminui: render linkedin", "err", err)
+		}
 	}
 }
 

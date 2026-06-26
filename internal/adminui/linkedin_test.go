@@ -292,3 +292,31 @@ func TestRouting_LinkedInDoesNotShadowExistingRoutes(t *testing.T) {
 		assert.Equal(t, tc.want, strings.TrimSpace(rr.Body.String()), "path %s", tc.path)
 	}
 }
+
+// --- CSP backstop: RenderPageHTML must emit security headers ---
+
+// TestLinkedinHandler_SecurityHeaders guards against a regression where the
+// migration to p.RenderPageHTML causes security headers to be dropped.
+// The missing-file path (Missing=true) still calls p.RenderPageHTML, so no
+// LINKEDIN-UPDATE.md is needed — this test requires no DATABASE_URL either.
+func TestLinkedinHandler_SecurityHeaders(t *testing.T) {
+	p := testPanel(t)
+
+	// t.TempDir() has no LINKEDIN-UPDATE.md — triggers Missing=true empty-state
+	// which still exercises the p.RenderPageHTML path.
+	h := linkedinHandler(p, t.TempDir())
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/linkedin", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	csp := rr.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("Content-Security-Policy header missing — RenderPageHTML no longer sets admin security headers")
+	}
+
+	xfo := rr.Header().Get("X-Frame-Options")
+	if xfo != "DENY" {
+		t.Fatalf("X-Frame-Options: got %q, want DENY", xfo)
+	}
+}
