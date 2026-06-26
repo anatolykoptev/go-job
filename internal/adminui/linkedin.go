@@ -2,6 +2,7 @@ package adminui
 
 import (
 	"fmt"
+	"log/slog"
 	"html/template"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go-panel/render"
+	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go-panel/resource"
 )
 
@@ -77,7 +79,10 @@ func linkedinHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		renderShell(w, r, p, "LinkedIn", "linkedin", buf.String())
+		shell.SecurityHeaders(w)
+		if err := p.RenderPageHTML(w, r, "LinkedIn", "linkedin", buf.String()); err != nil {
+			slog.Error("adminui: render linkedin", "err", err)
+		}
 	}
 }
 
