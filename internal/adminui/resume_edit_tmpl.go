@@ -278,4 +278,141 @@ const resumeEditTmplSrc = `<style>
       </form>
     </div>
   </div>
+  {{/* ─── Projects ─── */}}
+  <div class="re-section">
+    <h3>Projects ({{len .Projects}})</h3>
+    {{range .Projects}}
+    <div class="re-row">
+      <div class="name">{{.Name}}{{if .Description}} <span class="meta">— {{.Description}}</span>{{end}}
+        {{if .URL}}<a href="{{.URL}}" style="font-size:.78rem;color:#60a5fa" target="_blank">link</a>{{end}}
+      </div>
+      <form method="POST" action="/admin/resume/project/{{.ID}}/delete" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <button class="re-btn re-btn-sm re-btn-del" type="submit"
+          onclick="return confirm(&#39;Delete project?&#39;)">Del</button>
+      </form>
+    </div>
+    {{end}}
+    <div class="re-add-form">
+      <h4>Add project</h4>
+      <form method="POST" action="/admin/resume/project">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <div class="re-form-grid">
+          <div>
+            <label class="re-label">Name *</label>
+            <input class="re-input" type="text" name="name" required>
+          </div>
+          <div>
+            <label class="re-label">URL</label>
+            <input class="re-input" type="text" name="url" placeholder="https://...">
+          </div>
+          <div class="re-form-full">
+            <label class="re-label">Description</label>
+            <input class="re-input" type="text" name="description">
+          </div>
+        </div>
+        <div style="margin-top:.75rem">
+          <button class="re-btn" type="submit">Add project</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {{/* ─── Educations ─── */}}
+  <div class="re-section">
+    <h3>Educations ({{len .Educations}})</h3>
+    {{range .Educations}}
+    <div class="re-row">
+      <div class="name">{{.School}}{{if .Degree}} <span class="meta">— {{.Degree}}{{if .Field}} / {{.Field}}{{end}}</span>{{end}}
+        {{if .StartDate}}<span class="meta"> {{.StartDate}}–{{.EndDate}}</span>{{end}}
+      </div>
+      <form method="POST" action="/admin/resume/education/{{.ID}}/delete" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <button class="re-btn re-btn-sm re-btn-del" type="submit"
+          onclick="return confirm(&#39;Delete education?&#39;)">Del</button>
+      </form>
+    </div>
+    {{end}}
+    <div class="re-add-form">
+      <h4>Add education</h4>
+      <form method="POST" action="/admin/resume/education">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <div class="re-form-grid">
+          <div>
+            <label class="re-label">School *</label>
+            <input class="re-input" type="text" name="school" required>
+          </div>
+          <div>
+            <label class="re-label">Degree</label>
+            <input class="re-input" type="text" name="degree">
+          </div>
+          <div>
+            <label class="re-label">Field</label>
+            <input class="re-input" type="text" name="field">
+          </div>
+          <div>
+            <label class="re-label">GPA</label>
+            <input class="re-input" type="text" name="gpa">
+          </div>
+          <div>
+            <label class="re-label">Start date</label>
+            <input class="re-input" type="text" name="start_date" placeholder="2018-09">
+          </div>
+          <div>
+            <label class="re-label">End date</label>
+            <input class="re-input" type="text" name="end_date" placeholder="2022-05">
+          </div>
+        </div>
+        <div style="margin-top:.75rem">
+          <button class="re-btn" type="submit">Add education</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {{/* ─── Certifications ─── */}}
+  <div class="re-section">
+    <h3>Certifications ({{len .Certifications}})</h3>
+    {{range .Certifications}}
+    <div class="re-row">
+      <div class="name">{{.Name}}{{if .Issuer}} <span class="meta">— {{.Issuer}}</span>{{end}}
+        {{if .Year}}<span class="meta"> ({{.Year}})</span>{{end}}
+        {{if .URL}}<a href="{{.URL}}" style="font-size:.78rem;color:#60a5fa" target="_blank">link</a>{{end}}
+      </div>
+      <form method="POST" action="/admin/resume/certification/{{.ID}}/delete" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <button class="re-btn re-btn-sm re-btn-del" type="submit"
+          onclick="return confirm(&#39;Delete certification?&#39;)">Del</button>
+      </form>
+    </div>
+    {{end}}
+    <div class="re-add-form">
+      <h4>Add certification</h4>
+      <form method="POST" action="/admin/resume/certification">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <div class="re-form-grid">
+          <div>
+            <label class="re-label">Name *</label>
+            <input class="re-input" type="text" name="name" required>
+          </div>
+          <div>
+            <label class="re-label">Issuer</label>
+            <input class="re-input" type="text" name="issuer">
+          </div>
+          <div>
+            <label class="re-label">Year</label>
+            <input class="re-input" type="text" name="year" placeholder="2024">
+          </div>
+          <div class="re-form-full">
+            <label class="re-label">URL</label>
+            <input class="re-input" type="text" name="url" placeholder="https://...">
+          </div>
+        </div>
+        <div style="margin-top:.75rem">
+          <button class="re-btn" type="submit">Add certification</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
 </div>`
