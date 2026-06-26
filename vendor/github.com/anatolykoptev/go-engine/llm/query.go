@@ -19,7 +19,9 @@ const (
 // Returns the original query if rewriting fails (non-blocking).
 func (c *Client) RewriteQuery(ctx context.Context, query string) string {
 	prompt := fmt.Sprintf(RewriteQueryPrompt, query)
-	raw, err := c.CompleteParams(ctx, prompt, rewriteQueryTemp, rewriteQueryMaxTok)
+	var callOpts []ChatOption
+	callOpts = append(callOpts, WithReasoningEffort("none"))
+	raw, err := c.CompleteParams(ctx, prompt, rewriteQueryTemp, rewriteQueryMaxTok, callOpts...)
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return query
 	}
@@ -34,7 +36,9 @@ func (c *Client) RewriteQuery(ctx context.Context, query string) string {
 // Returns up to n alternative queries. Fails fast — caller should fall back gracefully.
 func (c *Client) ExpandWebSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
 	prompt := fmt.Sprintf(ExpandWebQueryPrompt, n, query, n)
-	raw, err := c.CompleteParams(ctx, prompt, expandQueryTemp, expandQueryTok)
+	var callOpts []ChatOption
+	callOpts = append(callOpts, WithReasoningEffort("none"))
+	raw, err := c.CompleteParams(ctx, prompt, expandQueryTemp, expandQueryTok, callOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +56,9 @@ func (c *Client) ExpandWebSearchQueries(ctx context.Context, query string, n int
 // Returns up to n alternative queries. Fails fast — caller should fall back gracefully.
 func (c *Client) ExpandSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
 	prompt := fmt.Sprintf(ExpandQueryPrompt, n, query, n)
-	raw, err := c.CompleteParams(ctx, prompt, expandQueryTemp, expandQueryTok)
+	var callOpts []ChatOption
+	callOpts = append(callOpts, WithReasoningEffort("none"))
+	raw, err := c.CompleteParams(ctx, prompt, expandQueryTemp, expandQueryTok, callOpts...)
 	if err != nil {
 		return nil, err
 	}

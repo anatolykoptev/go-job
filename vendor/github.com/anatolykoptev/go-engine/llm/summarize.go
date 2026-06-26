@@ -145,6 +145,11 @@ type SummarizeOpts struct {
 	TotalBudget     int // total token budget for source context
 	CharsPerToken   float64
 	MaxOutputTokens int // 0 = use client default
+	// DisableReasoning, when true, passes WithReasoningEffort("none") to the LLM
+	// call, freeing the token budget from chain-of-thought for content output.
+	// The go-kit transport layer gates this per-endpoint via LLM_REASONING_EFFORT_MODELS
+	// allowlist, so mixed chains (reasoning + non-reasoning endpoints) work correctly.
+	DisableReasoning bool
 }
 
 // SummarizeWithOpts summarizes search results with full control over budget.
@@ -165,7 +170,11 @@ func (c *Client) SummarizeWithOpts(ctx context.Context, opts SummarizeOpts, resu
 		maxOut = c.maxTokens
 	}
 
-	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	var callOpts []ChatOption
+	if opts.DisableReasoning {
+		callOpts = append(callOpts, WithReasoningEffort("none"))
+	}
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut, callOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +203,11 @@ func (c *Client) SummarizeDeepWithOpts(ctx context.Context, opts SummarizeOpts, 
 		maxOut = c.maxTokens
 	}
 
-	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut)
+	var callOpts []ChatOption
+	if opts.DisableReasoning {
+		callOpts = append(callOpts, WithReasoningEffort("none"))
+	}
+	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut, callOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +264,9 @@ func (c *Client) SummarizeWithTier(ctx context.Context, opts SummarizeOpts, resu
 	maxOut := opts.MaxOutputTokens
 	if maxOut == 0 {
 		maxOut = c.maxTokens
+	}
+	if opts.DisableReasoning {
+		chatOpts = append([]ChatOption{WithReasoningEffort("none")}, chatOpts...)
 	}
 	raw, err := c.CompleteParams(ctx, prompt, c.temperature, maxOut, chatOpts...)
 	if err != nil {
