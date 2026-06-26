@@ -60,7 +60,7 @@ func rateHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey 
 			return
 		}
 
-		http.Redirect(w, r, fmt.Sprintf("/admin/jobs/%d/view", id64), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/admin/jobs/%d", id64), http.StatusSeeOther)
 	}
 }
 

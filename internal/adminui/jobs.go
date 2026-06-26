@@ -110,9 +110,7 @@ func jobsResource(pool *pgxpool.Pool) resource.Resource {
 		Filter: jobsFilter,
 		Perms:  resource.ReadAny,
 		Lister: jobsLister(pool),
-		// No Detailer — detail surface is the bespoke /admin/jobs/{id}/view handler
-		// (job_detail.go) which includes the rate form, PDF download links, and now
-		// the fit-card sections. Row.Href points there.
+		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
 
@@ -162,10 +160,10 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title/Company (plain text — go-panel wraps cell-0 in <a href>,
 			// ignoring cell.HTML; chips at i>0 are rendered with cell.HTML respected).
-			// Row.Href → bespoke /view handler (rate form + PDF + fit-card).
+			// Row.Href → /admin/jobs/{id} (go-panel Detailer, natural URL).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
-				Href: "/admin/jobs/" + strconv.FormatInt(id, 10) + "/view",
+				Href: "/admin/jobs/" + strconv.FormatInt(id, 10),
 				Cells: []resource.Cell{
 					{Value: titleCompany},
 					{Value: fitChipHTML(fit, fitBand), HTML: true},

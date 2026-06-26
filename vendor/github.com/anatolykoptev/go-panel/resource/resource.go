@@ -30,6 +30,7 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -145,7 +146,7 @@ type Resource struct {
 	// id=="new" is rejected with 404 (symmetric with the edit route).
 	// The closure must be safe to call concurrently (standard Go handler rules).
 	// See DetailSection / DetailItem for the schema-agnostic shape.
-	Detailer func(ctx context.Context, id string) ([]DetailSection, error)
+	Detailer func(ctx context.Context, r *http.Request, id string) ([]DetailSection, error)
 
 	// Writer enables create/edit forms. Nil = read-only (Phase 1 behaviour, default).
 	// When non-nil, CSRFKey must be set in Config (panic at Register if missing or < 32 bytes — fail-closed).
@@ -381,6 +382,9 @@ func validateWriterConfig(p *Panel, r Resource) {
 	}
 }
 
+// ErrDetailNotFound may be returned by Detailer to signal a 404.
+var ErrDetailNotFound = errors.New("resource: detail not found")
+
 // mountDetailRoute mounts the GET {basePath}/{name}/{id} handler for a Detailer-enabled resource.
 // Called only when r.Detailer != nil.
 func mountDetailRoute(p *Panel, r Resource) {
@@ -406,10 +410,14 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		sections, err := r.Detailer(req.Context(), id)
+		sections, err := r.Detailer(req.Context(), req, id)
 		if err != nil {
-			slog.Error("resource: detailer failed", "resource", r.Name, "id", id, "err", err)
-			http.Error(w, "detail failed: "+err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, ErrDetailNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			slog.ErrorContext(req.Context(), "detailer error", "err", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		nav := p.activeNav(r.Name)

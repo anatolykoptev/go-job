@@ -319,7 +319,7 @@ func TestJobsListTemplate_FitChipRendered(t *testing.T) {
 		return []resource.Row{
 			{
 				ID:   "999",
-				Href: "/admin/jobs/999/view",
+				Href: "/admin/jobs/999",
 				Cells: []resource.Cell{
 					{Value: "Staff Engineer · Acme Corp"},                   // cell-0: plain text with Href
 					{Value: fitChipHTML(&score, fitBandStrong), HTML: true}, // cell-1: chip HTML
@@ -395,7 +395,7 @@ func TestJobsListTemplate_FitChipRendered(t *testing.T) {
 // TestJobsLister_SmokeWithFitCols runs the jobs Lister (with new columns) against
 // DATABASE_URL. Skips when DATABASE_URL is unset (CI-safe). Asserts cell count
 // matches updated jobsSpec and no percentage appears in any cell.
-// Also asserts cell-0 is plain text and Href points to the bespoke /view handler.
+// Also asserts cell-0 is plain text and Href points to the go-panel Detailer URL.
 func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -427,9 +427,9 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 		if r.Cells[0].HTML {
 			t.Errorf("row %d: cell[0] has HTML:true — must be plain text", i)
 		}
-		// Href must point to the bespoke /view handler (rate form + PDF + fit-card).
-		if !strings.HasSuffix(r.Href, "/view") {
-			t.Errorf("row %d: Href %q must end with /view — bespoke detail page", i, r.Href)
+		// Href must point to /admin/jobs/{id} (go-panel Detailer, natural URL — no /view suffix).
+		if strings.HasSuffix(r.Href, "/view") {
+			t.Errorf("row %d: Href %q must NOT end with /view — stale bespoke route removed", i, r.Href)
 		}
 		// Honesty gate: no percentage in any cell value.
 		for j, c := range r.Cells {

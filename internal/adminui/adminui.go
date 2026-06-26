@@ -16,14 +16,19 @@ import (
 )
 
 // adminBasePath is the base URL prefix for the admin panel.
-const adminBasePath = "/admin"
+// navIDLinkedin is the nav entry ID for the LinkedIn bespoke page (goconst: 4 occurrences).
+const (
+	adminBasePath = "/admin"
+	navIDLinkedin = "linkedin"
+)
 
 // New builds the admin handler mounted at /admin. Returns (nil,false) when
 // ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled.
 //
-// Routing: an outer http.ServeMux wraps p.Handler() as a /admin/ catch-all,
-// allowing bespoke 4-segment routes (e.g. GET /admin/jobs/{id}/view) that
-// never collide with go-panel's 3-segment routes (GET /admin/jobs/rows, etc.).
+// Routing: an outer http.ServeMux wraps p.Handler() as a /admin/ catch-all.
+// Bespoke 4-/5-segment routes (POST /rate, GET /download/{kind}) precede the
+// panel catch-all and do not shadow go-panel's 3-segment routes (/rows, /{id}).
+// GET /admin/jobs/{id} is served by go-panel via the Detailer (natural URL).
 func New(store *hunt.Store) (http.Handler, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
@@ -53,7 +58,13 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	})
 
 	pool := store.Pool()
-	resource.Register(p, jobsResource(pool))
+
+	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
+	// by go-panel's framework detail page instead of a bespoke handler.
+	jr := jobsResource(pool)
+	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey))
+	resource.Register(p, jr)
+
 	resource.Register(p, bountiesResource(pool))
 	resource.Register(p, freelanceResource(pool))
 	resource.Register(p, securityResource(pool))
@@ -63,14 +74,14 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
-	p.AddNav(shell.NavItem{ID: "linkedin", Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
+	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
 
 	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
-	// Outer mux: bespoke routes (4-/5-segment) first, panel catch-all last.
-	// These routes cannot shadow go-panel's 3-segment routes (/rows, /new, /{id}).
+	// Outer mux: bespoke 4-/5-segment routes first, panel catch-all last.
+	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
+	// GET /admin/jobs/{id} (natural 3-segment URL) is now served by go-panel.
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+adminBasePath+"/jobs/{id}/view", a.Require(jobDetailHandler(p, store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
