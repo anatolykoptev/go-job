@@ -50,9 +50,13 @@ type shortlistEntry struct {
 }
 
 type shortlistView struct {
-	Count   int
-	Updated string
-	Entries []shortlistEntry
+	Updated   string
+	Total     int
+	PackReady int
+	Saved     int
+	WithDocs  int
+	Filter    string
+	Entries   []shortlistEntry
 }
 
 // loadTracker reads and parses <applicationsDir>/_tracker.json.
@@ -120,8 +124,14 @@ var shortlistTmpl = template.Must(template.New("shortlist").Parse(`<style>
 .sl-title a{color:#e2e8f0;text-decoration:none}
 .sl-title a:hover{color:#93c5fd}
 </style>
-<div class="page-header"><h2>Shortlist</h2></div>
-<div class="sl-meta">{{.Count}} curated targets · updated {{.Updated}}</div>
+<div class="page-header"><h2>Shortlist</h2><p>Curated target vacancies with prepared resume + cover letter</p></div>
+<div class="filter-bar">
+  <a class="filter-chip{{if eq .Filter ""}} active{{end}}" href="/admin/shortlist">All {{.Total}}</a>
+  <a class="filter-chip{{if eq .Filter "docs"}} active{{end}}" href="/admin/shortlist?status=docs">With docs {{.WithDocs}}</a>
+  <a class="filter-chip{{if eq .Filter "pack-ready"}} active{{end}}" href="/admin/shortlist?status=pack-ready">Pack-ready {{.PackReady}}</a>
+  <a class="filter-chip{{if eq .Filter "saved"}} active{{end}}" href="/admin/shortlist?status=saved">Saved {{.Saved}}</a>
+</div>
+<div class="sl-meta">updated {{.Updated}}</div>
 <table class="crm-table">
   <thead><tr><th>Company</th><th>Role</th><th>Score</th><th>Status</th><th>Comp</th><th>Documents</th></tr></thead>
   <tbody>
@@ -142,9 +152,46 @@ var shortlistTmpl = template.Must(template.New("shortlist").Parse(`<style>
   </tbody>
 </table>`))
 
-func renderShortlistHTML(tf *trackerFile, entries []shortlistEntry) string {
+func renderShortlistHTML(tf *trackerFile, entries []shortlistEntry, filter string) string {
+	var packReady, saved, withDocs int
+	for _, e := range entries {
+		switch e.Status {
+		case "pack-ready":
+			packReady++
+		case "saved":
+			saved++
+		}
+		if e.HasResume || e.HasCover {
+			withDocs++
+		}
+	}
+	shown := entries
+	switch filter {
+	case "pack-ready", "saved":
+		shown = nil
+		for _, e := range entries {
+			if e.Status == filter {
+				shown = append(shown, e)
+			}
+		}
+	case "docs":
+		shown = nil
+		for _, e := range entries {
+			if e.HasResume || e.HasCover {
+				shown = append(shown, e)
+			}
+		}
+	}
+	vm := shortlistView{
+		Updated:   tf.Updated,
+		Total:     len(entries),
+		PackReady: packReady,
+		Saved:     saved,
+		WithDocs:  withDocs,
+		Filter:    filter,
+		Entries:   shown,
+	}
 	var buf bytes.Buffer
-	vm := shortlistView{Count: len(entries), Updated: tf.Updated, Entries: entries}
 	if err := shortlistTmpl.Execute(&buf, vm); err != nil {
 		return `<div class="page-header"><h2>Shortlist</h2><p>render error</p></div>`
 	}
@@ -166,7 +213,8 @@ func shortlistHandler(p *resource.Panel, applicationsDir string) http.HandlerFun
 			return
 		}
 		entries := enrichShortlist(tf.Jobs, applicationsDir)
-		_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, renderShortlistHTML(tf, entries))
+		filter := r.URL.Query().Get("status")
+		_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, renderShortlistHTML(tf, entries, filter))
 	}
 }
 

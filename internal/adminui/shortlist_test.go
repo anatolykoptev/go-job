@@ -48,7 +48,7 @@ func TestShortlist_EnrichAndSort(t *testing.T) {
 	}
 
 	// rendering does not panic and includes the curated company.
-	html := renderShortlistHTML(tf, entries)
+	html := renderShortlistHTML(tf, entries, "")
 	if !strings.Contains(html, "Beta") || !strings.Contains(html, "/admin/shortlist/beta-staff/download/resume") {
 		t.Errorf("rendered shortlist missing expected content")
 	}
@@ -57,5 +57,32 @@ func TestShortlist_EnrichAndSort(t *testing.T) {
 func TestLoadTracker_Missing(t *testing.T) {
 	if _, err := loadTracker(t.TempDir()); err == nil {
 		t.Error("expected error when _tracker.json absent")
+	}
+}
+
+func TestShortlist_FilterCounts(t *testing.T) {
+	entries := []shortlistEntry{
+		{trackerJob: trackerJob{Company: "Acme", Status: "pack-ready"}, HasResume: true},
+		{trackerJob: trackerJob{Company: "Beta", Status: "saved"}},
+		{trackerJob: trackerJob{Company: "Gamma", Status: "saved"}},
+	}
+	tf := &trackerFile{Updated: "2026-06-11"}
+
+	all := renderShortlistHTML(tf, entries, "")
+	for _, want := range []string{"All 3", "With docs 1", "Pack-ready 1", "Saved 2"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("chip counts missing %q", want)
+		}
+	}
+	saved := renderShortlistHTML(tf, entries, "saved")
+	if strings.Contains(saved, ">Acme<") {
+		t.Error("saved filter must exclude pack-ready Acme")
+	}
+	if !strings.Contains(saved, ">Beta<") || !strings.Contains(saved, ">Gamma<") {
+		t.Error("saved filter must include Beta and Gamma")
+	}
+	docs := renderShortlistHTML(tf, entries, "docs")
+	if !strings.Contains(docs, ">Acme<") || strings.Contains(docs, ">Beta<") {
+		t.Error("docs filter must include only Acme")
 	}
 }
