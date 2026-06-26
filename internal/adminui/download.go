@@ -128,16 +128,78 @@ func findApplicationSlug(applicationsDir, company, title string) (string, error)
 //
 // Ported from go-nerv/internal/admin/page_hunt.go.
 func findApplicationSlugFromEntries(entries []os.DirEntry, company, title string) (string, error) {
-	needle := slugify(company + "-" + title)
+	companySlug := slugify(company)
+	if companySlug == "" {
+		return "", fmt.Errorf("empty company slug for title %q", title)
+	}
+	// An application dir name is a curated TOKEN SUBSET of company+title (the
+	// operator drops the less-distinctive title words, e.g. "anthropic-databases").
+	// Match anchored on the company slug: every token in the dir name must appear
+	// in the job's company+title token set. The most-specific dir wins (most
+	// tokens, then longest name); a tie between two distinct dirs is ambiguous and
+	// rejected (better no link than the wrong job's PDF). A naive full-title
+	// HasPrefix would 404 on these abbreviated dirs.
+	jobTokens := make(map[string]bool)
+	for _, tok := range strings.Split(slugify(company+"-"+title), "-") {
+		if tok != "" {
+			jobTokens[tok] = true
+		}
+	}
+	prefix := companySlug + "-"
+	bestSlug, bestScore, bestLen := "", 0, 0
+	ambiguous := false
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		if strings.HasPrefix(e.Name(), needle) {
-			return e.Name(), nil
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		matched, allMatch := 0, true
+		for _, tok := range strings.Split(name, "-") {
+			if tok == "" {
+				continue
+			}
+			if jobTokens[tok] {
+				matched++
+			} else {
+				allMatch = false
+				break
+			}
+		}
+		if !allMatch {
+			continue
+		}
+		switch {
+		case matched > bestScore || (matched == bestScore && len(name) > bestLen):
+			bestSlug, bestScore, bestLen, ambiguous = name, matched, len(name), false
+		case matched == bestScore && len(name) == bestLen && name != bestSlug:
+			ambiguous = true
 		}
 	}
-	return "", fmt.Errorf("no slug matching %q", needle)
+	if bestSlug == "" {
+		return "", fmt.Errorf("no application slug matching company=%q title=%q", company, title)
+	}
+	if ambiguous {
+		return "", fmt.Errorf("ambiguous application dir for company=%q title=%q", company, title)
+	}
+	return bestSlug, nil
+}
+
+// scanJobPDFs reports whether a prepared resume / cover PDF exists for the job's
+// application directory (derived from company+title). Used to gate the detail-page
+// download links so they appear only when the file actually exists (no dead 404s).
+func scanJobPDFs(applicationsDir, company, title string) (hasResume, hasCover bool) {
+	if applicationsDir == "" {
+		return false, false
+	}
+	slug, err := findApplicationSlug(applicationsDir, company, title)
+	if err != nil {
+		return false, false
+	}
+	slugDir := filepath.Join(applicationsDir, slug)
+	return findApplicationPDF(slugDir, "resume") != "", findApplicationPDF(slugDir, "cover") != ""
 }
 
 // slugNonAlphanumRe matches any run of non-alphanumeric characters.
