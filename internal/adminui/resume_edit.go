@@ -17,12 +17,12 @@ import (
 // resumeEditData is the template context for the resume editor page.
 // All string fields come from the DB and are auto-escaped by html/template.
 type resumeEditData struct {
-	CSRFToken     string
-	Person        *jobs.PersonRecord
-	Experiences   []jobs.ExperienceRecord
-	Skills        []jobs.SkillRecord
-	Achievements  []jobs.AchievementRecord
-	Domains       []jobs.DomainRecord
+	CSRFToken      string
+	Person         *jobs.PersonRecord
+	Experiences    []jobs.ExperienceRecord
+	Skills         []jobs.SkillRecord
+	Achievements   []jobs.AchievementRecord
+	Domains        []jobs.DomainRecord
 	Methodologies  []jobs.MethodologyRecord
 	Projects       []jobs.ProjectRecord
 	Educations     []jobs.EducationRecord
@@ -36,24 +36,27 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		db := jobs.GetResumeDB()
 		if db == nil {
-			renderShell(w, r, p, "Edit Resume", "resume",
-				resumeEmptyHTML("Resume database not configured (set DATABASE_URL)."))
+			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
+				slog.Error("adminui: render resume_edit", "err", err)
+			}
 			return
 		}
 
 		ctx := r.Context()
 		personID := db.GetLatestPersonID(ctx)
 		if personID == 0 {
-			renderShell(w, r, p, "Edit Resume", "resume",
-				resumeEmptyHTML("No resume data yet — run master_resume_build first."))
+			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
+				slog.Error("adminui: render resume_edit", "err", err)
+			}
 			return
 		}
 
 		person, err := db.GetPerson(ctx, personID)
 		if err != nil {
 			slog.Warn("resumeEditHandler: GetPerson", "err", err)
-			renderShell(w, r, p, "Edit Resume", "resume",
-				resumeEmptyHTML("Could not load person: "+err.Error()))
+			if err2 := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Could not load person: "+err.Error())); err2 != nil {
+				slog.Error("adminui: render resume_edit", "err", err2)
+			}
 			return
 		}
 
@@ -68,12 +71,12 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 
 		sessVal := sessionValue(r, a.SessionCookieName())
 		d := resumeEditData{
-			CSRFToken:     csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
-			Person:        person,
-			Experiences:   exps,
-			Skills:        skills,
-			Achievements:  achs,
-			Domains:       domains,
+			CSRFToken:      csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
+			Person:         person,
+			Experiences:    exps,
+			Skills:         skills,
+			Achievements:   achs,
+			Domains:        domains,
 			Methodologies:  meths,
 			Projects:       projs,
 			Educations:     edus,
@@ -86,7 +89,9 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		renderShell(w, r, p, "Edit Resume", "resume", buf.String())
+		if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", buf.String()); err != nil {
+			slog.Error("adminui: render resume_edit", "err", err)
+		}
 	}
 }
 
@@ -272,6 +277,7 @@ func resumeSkillLevelHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 }
 
 // resumeAchievementCreateHandler handles POST /admin/resume/achievement.
+//
 //nolint:dupl
 func resumeAchievementCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

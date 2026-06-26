@@ -91,7 +91,7 @@ var jobDetailTmplFuncs = template.FuncMap{
 }
 
 // jobDetailTmplSrc is the HTML content fragment for the job detail page.
-// This is embedded inside the go-panel shell.Layout via renderShell.
+// This is embedded inside the go-panel shell.Layout via p.RenderPageHTML.
 // Kept as a const so tests can inspect it without executing.
 const jobDetailTmplSrc = `<style>
 .page{max-width:860px;margin:0 auto;padding:2rem 1.5rem}
@@ -297,7 +297,9 @@ func jobDetailHandler(p *resource.Panel, store *hunt.Store, adminUser string, a 
 			http.Error(w, "render error", http.StatusInternalServerError)
 			return
 		}
-		renderShell(w, r, p, "Job — "+d.Title, "jobs", buf.String())
+		if err := p.RenderPageHTML(w, r, "Job — "+d.Title, "jobs", buf.String()); err != nil {
+			slog.Error("adminui: render job_detail", "err", err)
+		}
 	}
 }
 
