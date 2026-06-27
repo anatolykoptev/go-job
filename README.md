@@ -174,9 +174,10 @@ make restart  # restart only
 | Var | Default | Description |
 |-----|---------|-------------|
 | `SEARXNG_URL` | `http://127.0.0.1:8888` | SearXNG instance |
-| `LLM_API_KEY` | (required) | Gemini/OpenAI-compatible API key |
-| `LLM_API_BASE` | Gemini endpoint | OpenAI-compatible base URL |
-| `LLM_MODEL` | `gemini-3.1-flash-lite-preview` | Model name |
+| `LLM_API_KEY` | (required) | API key for the OpenAI-compatible LLM gateway |
+| `LLM_API_BASE` | `http://127.0.0.1:8317/v1` | OpenAI-compatible LLM gateway (cliproxyapi) base URL |
+| `LLM_MODEL` | (deploy-set) | Primary model name. Model selection is dynamic (go-engine/llm) — see `LLM_MODEL_FALLBACK` |
+| `LLM_MODEL_FALLBACK` | (empty) | CSV cross-provider fallback chain: tries the primary, then each entry on retryable failure, health-filtered against the gateway's `/v1/models` |
 | `MCP_PORT` | `8891` | MCP HTTP server port |
 | `PROM_PORT` | `9891` | Prometheus metrics port |
 | `REDIS_URL` | (optional) | Redis for L2 cache |

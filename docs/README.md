@@ -145,9 +145,10 @@ Override the base directory via `UPLOADS_ROOT` env var.
 |----------|---------|-------------|
 | `MCP_PORT` | `8891` | MCP HTTP listen port |
 | `PROM_PORT` | `9891` | Prometheus metrics port |
-| `LLM_API_KEY` | — | LLM API key (Gemini/OpenAI-compatible) |
-| `LLM_API_BASE` | `https://generativelanguage.googleapis.com/v1beta/openai` | LLM API base URL |
-| `LLM_MODEL` | `gemini-3.1-flash-lite-preview` | Model name |
+| `LLM_API_KEY` | — | API key for the OpenAI-compatible LLM gateway |
+| `LLM_API_BASE` | `http://127.0.0.1:8317/v1` | OpenAI-compatible LLM gateway (cliproxyapi) base URL |
+| `LLM_MODEL` | (deploy-set) | Primary model name. Model selection is dynamic (go-engine/llm) — see `LLM_MODEL_FALLBACK` |
+| `LLM_MODEL_FALLBACK` | (empty) | CSV cross-provider fallback chain: tries the primary, then each entry on retryable failure, health-filtered against the gateway's `/v1/models` |
 | `LLM_TEMPERATURE` | `0.1` | Sampling temperature |
 | `LLM_MAX_TOKENS` | `16384` | Max output tokens |
 | `SEARXNG_URL` | `http://127.0.0.1:8888` | SearXNG instance URL |
