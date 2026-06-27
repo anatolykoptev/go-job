@@ -25,7 +25,9 @@ import (
 	"github.com/anatolykoptev/go_job/internal/adminui"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/pdfrender"
 	"github.com/anatolykoptev/go_job/internal/hunt/discovery"
 	"github.com/anatolykoptev/go_job/internal/hunt/enrich"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
@@ -59,9 +61,14 @@ func main() {
 
 	startPrometheusScrape(sigCtx, slog.Default())
 
+	// Compose the application PDF authority.
+	// TypstAdapter wraps pandoc+typst; gracefully degrades when binaries absent.
+	legacyDir := env.Str("APPLICATIONS_DIR", "/data/applications")
+	authority := applications.New(pdfrender.New(), legacyDir)
+
 	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
 	if hs := engine.GetHuntStore(); hs != nil {
-		startAdminServer(sigCtx, hs, slog.Default())
+		startAdminServer(sigCtx, hs, authority, slog.Default())
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{
@@ -69,7 +76,7 @@ func main() {
 		Version: version,
 	}, nil)
 
-	jobserver.RegisterTools(server)
+	jobserver.RegisterTools(server, authority)
 	slog.Info("tools registered", slog.Int("count", 43))
 
 	hooks := mcpserver.MCPHooks{
@@ -441,8 +448,8 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 // (default 8896, host-restricted to 127.0.0.1 by compose), mounted at /admin. Fail-soft: when admin
 // credentials are unset (adminui.New returns ok=false) the listener is skipped,
 // so deploying before the env is wired changes nothing.
-func startAdminServer(ctx context.Context, store *hunt.Store, logger *slog.Logger) {
-	handler, ok := adminui.New(store)
+func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, logger *slog.Logger) {
+	handler, ok := adminui.New(store, authority)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
 		return
