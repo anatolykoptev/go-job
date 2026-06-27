@@ -115,7 +115,10 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/resume/certification", a.Require(resumeCertificationCreateHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/certification/{id}/delete", a.Require(resumeCertificationDeleteHandler(a, []byte(csrfKey))))
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, applicationsDir)))
-	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p)))
+	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/overview", a.Require(upworkOverviewEditHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/skill", a.Require(upworkSkillCreateHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/skill/{id}/delete", a.Require(upworkSkillDeleteHandler(a, []byte(csrfKey))))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }

@@ -184,7 +184,7 @@ func undpRequisitionToResult(j undpRequisition) engine.SearxngResult {
 		Metadata: map[string]string{
 			memdbKeySource:       sourceUNDP,
 			"org":          firstNonEmpty(j.Organization, j.BusinessUnit, "UNDP"),
-			"location":     loc,
+			"location":     loc, //nolint:goconst
 			"country":      j.PrimaryLocationCountry,
 			"workplace":    j.WorkplaceTypeCode,
 			"contract":     j.ContractType,

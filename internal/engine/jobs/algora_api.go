@@ -128,7 +128,7 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 
 // buildGitHubURL constructs a GitHub issue URL from API fields.
 func buildGitHubURL(forge, owner, repo string, number int) string {
-	if forge != "github" || owner == "" || repo == "" || number == 0 {
+	if forge != "github" || owner == "" || repo == "" || number == 0 { //nolint:goconst
 		return ""
 	}
 	return "https://github.com/" + owner + "/" + repo + "/issues/" + strconv.Itoa(number)
