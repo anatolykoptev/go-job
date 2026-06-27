@@ -1,9 +1,13 @@
 package jobserver
 
-import "github.com/modelcontextprotocol/go-sdk/mcp"
+import (
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
 
 // RegisterTools registers all work-related search tools on the given MCP server.
-func RegisterTools(server *mcp.Server) {
+// authority is the applications persistence authority for application_persist.
+func RegisterTools(server *mcp.Server, authority *applications.Authority) {
 	// Initialize the source registry before registering job_search.
 	initJobRegistry()
 	// Search
@@ -51,4 +55,6 @@ func RegisterTools(server *mcp.Server) {
 	registerOversize(server)
 	// Hunt entry listing (triggers lazy enricher on each call)
 	registerHuntList(server)
+	// Application persistence (write tool — separate from read-only generators)
+	registerApplicationPersist(server, authority)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
@@ -29,7 +30,7 @@ const (
 // Bespoke 4-/5-segment routes (POST /rate, GET /download/{kind}) precede the
 // panel catch-all and do not shadow go-panel's 3-segment routes (/rows, /{id}).
 // GET /admin/jobs/{id} is served by go-panel via the Detailer (natural URL).
-func New(store *hunt.Store) (http.Handler, bool) {
+func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
 	if len(hmacKey) < 32 || password == "" {
@@ -58,17 +59,16 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	})
 
 	pool := store.Pool()
-	applicationsDir := envOr("APPLICATIONS_DIR", "/data/applications")
 
 	// Shortlist (curated targets) is registered first so it appears first in the
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
 	// nav item — no manual p.AddNav call needed.
-	resource.Register(p, shortlistResource(store, adminUser, applicationsDir))
+	resource.Register(p, shortlistResource(store, adminUser, authority))
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
 	jr := jobsResource(pool)
-	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), applicationsDir)
+	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority)
 	resource.Register(p, jr)
 
 	resource.Register(p, bountiesResource(pool))
@@ -89,7 +89,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux := http.NewServeMux()
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
-	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
+	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
 	// /admin/shortlist (list + htmx rows) is handled by go-panel via resource.Register above.
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;
 	// PDFs are accessible via the job detail page at /admin/jobs/{id}).
@@ -114,7 +114,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/resume/education/{id}/delete", a.Require(resumeEducationDeleteHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/certification", a.Require(resumeCertificationCreateHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/certification/{id}/delete", a.Require(resumeCertificationDeleteHandler(a, []byte(csrfKey))))
-	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, applicationsDir)))
+	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, authority.LegacyDir())))
 	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/overview", a.Require(upworkOverviewEditHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/skill", a.Require(upworkSkillCreateHandler(a, []byte(csrfKey))))
