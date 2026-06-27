@@ -10,6 +10,7 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 
 	"github.com/anatolykoptev/go-kit/admintable"
@@ -842,11 +843,12 @@ func sortArrow(st admintable.State, key string) string {
 }
 
 func pageURL(d listPageData, page int) string {
-	base := fmt.Sprintf("%s/%s/rows?page=%d", d.BasePath, d.Resource.Name, page)
-	if d.SortState.Key != "" {
-		base += fmt.Sprintf("&sort=%s&dir=%s", d.SortState.Key, string(d.SortState.Dir))
-	}
-	return base
+	// Preserve all current query params (filter chips, sort state, per_page) and
+	// overwrite only the page param. Without this, filter params are silently
+	// dropped when the user navigates to page 2+, returning the wrong row window.
+	params, _ := url.ParseQuery(d.QueryString)
+	params.Set("page", strconv.Itoa(page))
+	return fmt.Sprintf("%s/%s/rows?%s", d.BasePath, d.Resource.Name, params.Encode())
 }
 
 // colHeaderStyle builds the inline style for a <th> element from Column.Width and Column.Align.
