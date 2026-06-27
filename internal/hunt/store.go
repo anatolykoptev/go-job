@@ -1325,6 +1325,98 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 	return result, nil
 }
 
+// TrackedJobRow is the postgres projection for the job_tracker MCP tool.
+// Joins hunt_jobs with hunt_ratings for a given user, optionally filtered by stage.
+type TrackedJobRow struct {
+	ID              int64
+	Title           string
+	Company         string
+	URL             string
+	Location        string
+	SalaryMin       *int
+	SalaryMax       *int
+	SalaryCurrency  string
+	SalaryInterval  string
+	Stage           string
+	Note            string
+	FirstSeenAt     time.Time
+	RatingUpdatedAt time.Time
+}
+
+// TrackedFilter is the parameter bag for Store.ListTrackedJobs.
+type TrackedFilter struct {
+	User  string // defaults to "krolik"
+	Stage string // empty = all stages
+	Limit int    // 0 = default 50, max 100
+}
+
+// ListTrackedJobs returns hunt_jobs rows that have a hunt_ratings row for the
+// given user (f.User), optionally filtered by stage. Returns rows and total count.
+func (s *Store) ListTrackedJobs(ctx context.Context, f TrackedFilter) ([]TrackedJobRow, int, error) {
+	if f.User == "" {
+		f.User = "krolik"
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	var args []any
+	filter := "r.user_name = $1"
+	args = append(args, f.User)
+	if f.Stage != "" {
+		filter += " AND r.stage = $2"
+		args = append(args, f.Stage)
+	}
+
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id WHERE "+filter,
+		args...,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("hunt: count tracked jobs: %w", err)
+	}
+
+	n := len(args)
+	rows, err := s.pool.Query(ctx, `
+		SELECT j.id,
+		       COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.url,''),
+		       COALESCE(j.location,''),
+		       j.salary_min, j.salary_max,
+		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
+		       r.stage, COALESCE(r.note,''),
+		       j.first_seen_at, r.updated_at
+		FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id
+		WHERE `+filter+
+		fmt.Sprintf(" ORDER BY r.updated_at DESC LIMIT $%d", n+1),
+		append(args, limit)...,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("hunt: list tracked jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var result []TrackedJobRow
+	for rows.Next() {
+		var row TrackedJobRow
+		var salMin, salMax *int
+		if err := rows.Scan(
+			&row.ID, &row.Title, &row.Company, &row.URL, &row.Location,
+			&salMin, &salMax, &row.SalaryCurrency, &row.SalaryInterval,
+			&row.Stage, &row.Note, &row.FirstSeenAt, &row.RatingUpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("hunt: scan tracked job: %w", err)
+		}
+		row.SalaryMin = salMin
+		row.SalaryMax = salMax
+		result = append(result, row)
+	}
+	if result == nil {
+		result = []TrackedJobRow{}
+	}
+	return result, total, rows.Err()
+}
+
 // --- status enrichment methods ---
 
 // UpdateStatus sets the status, closed_at and last_checked_at for a single entry.

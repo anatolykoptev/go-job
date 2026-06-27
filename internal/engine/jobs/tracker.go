@@ -2,15 +2,13 @@ package jobs
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/anatolykoptev/go-kit/uploads"
-	_ "modernc.org/sqlite"
+	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // JobStatus represents the application status for a tracked job.
@@ -74,66 +72,58 @@ type JobTrackerListResult struct {
 	Total int          `json:"total"`
 }
 
-var (
-	trackerDB   *sql.DB
-	trackerOnce sync.Once
-	trackerErr  error
-)
+// trackerUser is the user_name used for all job_tracker ratings.
+// Single-operator assumption per ADR-go-job-002.
+const trackerUser = "krolik"
 
-// openTrackerDB opens (or creates) the SQLite tracker database.
-// Storage: $UPLOADS_ROOT/go-job/tracker/tracker.db (go-kit/uploads canonical convention).
-// The uploads root defaults to $HOME/uploads; override via UPLOADS_ROOT env var.
-func openTrackerDB() (*sql.DB, error) {
-	trackerOnce.Do(func() {
-		dbPath, err := uploads.Path("go-job", "tracker", "tracker.db")
-		if err != nil {
-			trackerErr = fmt.Errorf("tracker: resolve path: %w", err)
-			return
-		}
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			trackerErr = fmt.Errorf("tracker: open db %s: %w", dbPath, err)
-			return
-		}
-		db.SetMaxOpenConns(1) // SQLite: single writer
-		if err := initTrackerSchema(db); err != nil {
-			trackerErr = fmt.Errorf("tracker: init schema: %w", err)
-			return
-		}
-		trackerDB = db
-	})
-	return trackerDB, trackerErr
-}
-
-// initTrackerSchema creates the jobs table if it doesn't exist.
-func initTrackerSchema(db *sql.DB) error {
-	schema := `CREATE TABLE IF NOT EXISTS jobs (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		title      TEXT NOT NULL,
-		company    TEXT NOT NULL,
-		url        TEXT,
-		status     TEXT NOT NULL DEFAULT 'saved',
-		notes      TEXT,
-		salary     TEXT,
-		location   TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`
-	_, err := db.Exec(schema) //nolint:noctx // schema init, no user context available
-	return err
-}
-
-// validStatus checks if a status string is valid.
-func validStatus(s string) bool {
-	switch JobStatus(s) {
-	case StatusSaved, StatusApplied, StatusInterview, StatusOffer, StatusRejected:
+// validTrackerStatus validates the status/stage tokens the tracker tool accepts.
+// These are a subset of hunt.Stage* constants (application pipeline).
+func validTrackerStatus(s string) bool {
+	switch s {
+	case string(StatusSaved), string(StatusApplied), string(StatusInterview),
+		string(StatusOffer), string(StatusRejected):
 		return true
 	}
 	return false
 }
 
-// AddTrackedJob saves a new job to the tracker.
-func AddTrackedJob(_ context.Context, input JobTrackerAddInput) (*JobTrackerResult, error) {
+// trackerDedup returns the dedup hash for a tracker entry.
+// Primary: DedupHash(url). Fallback for URL-less entries: slugify(company+"-"+title).
+func trackerDedup(url, company, title string) string {
+	if url != "" {
+		return hunt.DedupHash(url)
+	}
+	slug := strings.ToLower(strings.ReplaceAll(company+"-"+title, " ", "-"))
+	return hunt.DedupHash(slug)
+}
+
+// formatSalary renders salary_min/max/currency/interval into the Salary string field.
+func formatSalary(min, max *int, currency, interval string) string {
+	if min == nil && max == nil {
+		return ""
+	}
+	var sb strings.Builder
+	if min != nil && max != nil && *min > 0 && *max > 0 {
+		fmt.Fprintf(&sb, "%d–%d", *min, *max)
+	} else if min != nil && *min > 0 {
+		fmt.Fprintf(&sb, "%d+", *min)
+	} else if max != nil && *max > 0 {
+		fmt.Fprintf(&sb, "up to %d", *max)
+	}
+	if sb.Len() == 0 {
+		return ""
+	}
+	if currency != "" {
+		fmt.Fprintf(&sb, " %s", currency)
+	}
+	if interval != "" {
+		fmt.Fprintf(&sb, "/%s", interval)
+	}
+	return sb.String()
+}
+
+// AddTrackedJob saves a new job to the tracker via postgres.
+func AddTrackedJob(ctx context.Context, input JobTrackerAddInput) (*JobTrackerResult, error) {
 	if input.Title == "" || input.Company == "" {
 		return nil, errors.New("job_tracker_add: title and company are required")
 	}
@@ -142,27 +132,44 @@ func AddTrackedJob(_ context.Context, input JobTrackerAddInput) (*JobTrackerResu
 	if status == "" {
 		status = string(StatusSaved)
 	}
-	if !validStatus(status) {
+	if !validTrackerStatus(status) {
 		return nil, fmt.Errorf("job_tracker_add: invalid status %q (valid: saved, applied, interview, offer, rejected)", status)
 	}
 
-	db, err := openTrackerDB()
-	if err != nil {
-		return nil, err
+	store := engine.GetHuntStore()
+	if store == nil {
+		return nil, errors.New("job_tracker_add: hunt store not available (DATABASE_URL not set?)")
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec( //nolint:noctx // SQLite file-based tracker, no context
-		`INSERT INTO jobs (title, company, url, status, notes, salary, location, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.Title, input.Company, input.URL, status,
-		input.Notes, input.Salary, input.Location, now, now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("job_tracker_add: insert: %w", err)
+	j := hunt.Job{
+		DedupHash: trackerDedup(input.URL, input.Company, input.Title),
+		Title:     input.Title,
+		Company:   input.Company,
+		URL:       input.URL,
+		Source:    "tracker",
+		Location:  input.Location,
 	}
 
-	id, _ := res.LastInsertId()
+	id, _, err := store.UpsertJob(ctx, j)
+	if err != nil {
+		return nil, fmt.Errorf("job_tracker_add: upsert job: %w", err)
+	}
+
+	note := input.Notes
+	if input.Salary != "" {
+		if note != "" {
+			note += "; salary: " + input.Salary
+		} else {
+			note = "salary: " + input.Salary
+		}
+	}
+
+	if err := store.Rate(ctx, hunt.KindJob, id, trackerUser, status, note); err != nil {
+		return nil, fmt.Errorf("job_tracker_add: rate: %w", err)
+	}
+
+	trackerOpsTotal.WithLabelValues("add", "pg").Inc()
+
 	return &JobTrackerResult{
 		ID:      id,
 		Message: fmt.Sprintf("Job '%s' at '%s' saved with status '%s' (id=%d)", input.Title, input.Company, status, id),
@@ -170,71 +177,52 @@ func AddTrackedJob(_ context.Context, input JobTrackerAddInput) (*JobTrackerResu
 }
 
 // ListTrackedJobs returns tracked jobs, optionally filtered by status.
-func ListTrackedJobs(_ context.Context, input JobTrackerListInput) (*JobTrackerListResult, error) {
-	db, err := openTrackerDB()
-	if err != nil {
-		return nil, err
+func ListTrackedJobs(ctx context.Context, input JobTrackerListInput) (*JobTrackerListResult, error) {
+	store := engine.GetHuntStore()
+	if store == nil {
+		return &JobTrackerListResult{Jobs: []TrackedJob{}, Total: 0}, nil
 	}
 
-	limit := input.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-
-	var rows *sql.Rows
+	status := ""
 	if input.Status != "" {
-		status := strings.ToLower(input.Status)
-		if !validStatus(status) {
+		status = strings.ToLower(input.Status)
+		if !validTrackerStatus(status) {
 			return nil, fmt.Errorf("job_tracker_list: invalid status %q", status)
 		}
-		rows, err = db.Query( //nolint:noctx // SQLite file-based tracker, no context
-			`SELECT id, title, company, url, status, notes, salary, location, created_at, updated_at
-			 FROM jobs WHERE status = ? ORDER BY updated_at DESC LIMIT ?`,
-			status, limit,
-		)
-	} else {
-		rows, err = db.Query( //nolint:noctx // SQLite file-based tracker, no context
-			`SELECT id, title, company, url, status, notes, salary, location, created_at, updated_at
-			 FROM jobs ORDER BY updated_at DESC LIMIT ?`,
-			limit,
-		)
 	}
+
+	rows, total, err := store.ListTrackedJobs(ctx, hunt.TrackedFilter{
+		User:  trackerUser,
+		Stage: status,
+		Limit: input.Limit,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("job_tracker_list: query: %w", err)
-	}
-	defer rows.Close()
-
-	var jobs []TrackedJob
-	for rows.Next() {
-		var j TrackedJob
-		var notes, salary, location, url sql.NullString
-		if err := rows.Scan(&j.ID, &j.Title, &j.Company, &url, &j.Status,
-			&notes, &salary, &location, &j.CreatedAt, &j.UpdatedAt); err != nil {
-			continue
-		}
-		j.URL = url.String
-		j.Notes = notes.String
-		j.Salary = salary.String
-		j.Location = location.String
-		jobs = append(jobs, j)
+		return nil, fmt.Errorf("job_tracker_list: %w", err)
 	}
 
-	// Count total matching rows
-	var total int
-	if input.Status != "" {
-		db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = ?`, strings.ToLower(input.Status)).Scan(&total) //nolint:errcheck,noctx
-	} else {
-		db.QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&total) //nolint:errcheck,noctx
+	jobs := make([]TrackedJob, 0, len(rows))
+	for _, r := range rows {
+		jobs = append(jobs, TrackedJob{
+			ID:        r.ID,
+			Title:     r.Title,
+			Company:   r.Company,
+			URL:       r.URL,
+			Status:    JobStatus(r.Stage),
+			Notes:     r.Note,
+			Salary:    formatSalary(r.SalaryMin, r.SalaryMax, r.SalaryCurrency, r.SalaryInterval),
+			Location:  r.Location,
+			CreatedAt: r.FirstSeenAt.UTC().Format(time.RFC3339),
+			UpdatedAt: r.RatingUpdatedAt.UTC().Format(time.RFC3339),
+		})
 	}
 
-	if jobs == nil {
-		jobs = []TrackedJob{}
-	}
+	trackerOpsTotal.WithLabelValues("list", "pg").Inc()
+
 	return &JobTrackerListResult{Jobs: jobs, Total: total}, nil
 }
 
 // UpdateTrackedJob updates the status and/or notes of a tracked job.
-func UpdateTrackedJob(_ context.Context, input JobTrackerUpdateInput) (*JobTrackerResult, error) {
+func UpdateTrackedJob(ctx context.Context, input JobTrackerUpdateInput) (*JobTrackerResult, error) {
 	if input.ID <= 0 {
 		return nil, errors.New("job_tracker_update: id is required")
 	}
@@ -242,36 +230,43 @@ func UpdateTrackedJob(_ context.Context, input JobTrackerUpdateInput) (*JobTrack
 		return nil, errors.New("job_tracker_update: at least one of status or notes must be provided")
 	}
 
-	db, err := openTrackerDB()
-	if err != nil {
-		return nil, err
+	store := engine.GetHuntStore()
+	if store == nil {
+		return nil, errors.New("job_tracker_update: hunt store not available")
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	switch {
-	case input.Status != "" && input.Notes != "":
-		status := strings.ToLower(input.Status)
-		if !validStatus(status) {
-			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
+	current, err := store.GetRating(ctx, hunt.KindJob, input.ID, trackerUser)
+	if err != nil {
+		if errors.Is(err, hunt.ErrNotFound) {
+			if input.Status == "" {
+				return nil, fmt.Errorf("job_tracker_update: job #%d has no rating yet; provide status to create one", input.ID)
+			}
+		} else {
+			return nil, fmt.Errorf("job_tracker_update: get current rating: %w", err)
 		}
-		_, err = db.Exec(`UPDATE jobs SET status=?, notes=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
-			status, input.Notes, now, input.ID)
-	case input.Status != "":
-		status := strings.ToLower(input.Status)
-		if !validStatus(status) {
-			return nil, fmt.Errorf("job_tracker_update: invalid status %q", status)
-		}
-		_, err = db.Exec(`UPDATE jobs SET status=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
-			status, now, input.ID)
-	default:
-		_, err = db.Exec(`UPDATE jobs SET notes=?, updated_at=? WHERE id=?`, //nolint:noctx // SQLite file-based tracker
-			input.Notes, now, input.ID)
 	}
 
-	if err != nil {
+	stage := input.Status
+	note := input.Notes
+	if current != nil {
+		if stage == "" {
+			stage = current.Stage
+		}
+		if note == "" {
+			note = current.Note
+		}
+	}
+
+	stage = strings.ToLower(stage)
+	if stage != "" && !validTrackerStatus(stage) {
+		return nil, fmt.Errorf("job_tracker_update: invalid status %q", stage)
+	}
+
+	if err := store.Rate(ctx, hunt.KindJob, input.ID, trackerUser, stage, note); err != nil {
 		return nil, fmt.Errorf("job_tracker_update: %w", err)
 	}
+
+	trackerOpsTotal.WithLabelValues("update", "pg").Inc()
 
 	return &JobTrackerResult{
 		ID:      input.ID,
