@@ -317,3 +317,30 @@ func TestResumeEditTmpl_RendersWithData(t *testing.T) {
 		}
 	}
 }
+
+// TestResumePersonEditHandler_BadHourlyRate asserts that a non-empty, non-numeric
+// hourly_rate returns HTTP 400 rather than silently writing 0.
+// Red-on-revert: remove the parseErr != nil check → returns 303 (redirect) and writes 0.
+func TestResumePersonEditHandler_BadHourlyRate(t *testing.T) {
+	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	a := buildTestAuth(key)
+	handler := resumePersonEditHandler(a, key)
+
+	tok := csrf.Issue(key, "", csrf.DefaultTTL)
+	form := url.Values{}
+	form.Set(csrf.FormField, tok)
+	form.Set("name", "Alice")        // required field
+	form.Set("hourly_rate", "not-a-number")
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/admin/resume/person", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	// CSRF OK, name present, but hourly_rate is garbage → must 400 before any DB call.
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for invalid hourly_rate, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
