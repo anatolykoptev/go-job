@@ -72,12 +72,22 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 	</html>
 }
 
+// LoginIdentifier describes the login form's identity field, letting one
+// LoginPage serve both the single-user (HMACAuth, username) and multi-user
+// (BcryptTOTPAuth, email) authenticators.
+type LoginIdentifier struct {
+	Label        string // visible label, e.g. "Username" or "Email"
+	Name         string // input id/name, e.g. "username" or "email"
+	Type         string // input type, e.g. "text" or "email"
+	Autocomplete string // autocomplete hint, e.g. "username" or "email"
+}
+
 // LoginPage renders the standalone admin login (no sidebar). It is the framework
 // default rendered by auth.HMACAuth when no LoginTempl override is set, so it
 // carries its own pm7 design tokens and stays visually consistent with the admin
 // chrome (and renders correctly even if pm7.css fails to load). basePath prefixes
 // the static-asset and form-action URLs, e.g. "/admin".
-templ LoginPage(basePath string, errMsg string) {
+templ LoginPage(basePath string, ident LoginIdentifier, errMsg string) {
 	<!DOCTYPE html>
 	<html lang="en" class="dark">
 		<head>
@@ -127,8 +137,8 @@ templ LoginPage(basePath string, errMsg string) {
 						}
 						<form method="POST" action={ templ.SafeURL(basePath + "/login") } class="login-form">
 							<div class="login-field">
-								<label for="username">Username</label>
-								<input id="username" name="username" type="text" autocomplete="username" required autofocus class="pm7-input"/>
+								<label for={ ident.Name }>{ ident.Label }</label>
+								<input id={ ident.Name } name={ ident.Name } type={ ident.Type } autocomplete={ ident.Autocomplete } required autofocus class="pm7-input"/>
 							</div>
 							<div class="login-field">
 								<label for="password">Password</label>
