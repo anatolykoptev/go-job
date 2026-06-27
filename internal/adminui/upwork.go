@@ -34,6 +34,7 @@ type upworkPageData struct {
 	// Edit-form data (Upwork-specific tables).
 	CSRFToken     string
 	UWSkills      []jobs.UpworkSkillRecord
+	UWCatalog     []jobs.UpworkCatalogItem // catalog items from upwork_catalog_items
 	UWPasteBlocks []jobs.UpworkPasteBlock
 	UWMissing     bool
 	UWRate        string   // pre-formatted for edit form: "150.00" or ""
@@ -167,6 +168,7 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 		} else {
 			data.UWMissing = uwProfile.Missing
 			data.UWSkills = uwProfile.Skills
+			data.UWCatalog = uwProfile.Catalog
 			data.UWPasteBlocks = jobs.FormatUpworkPasteBlocks(uwProfile)
 			blocks := data.UWPasteBlocks
 			data.UWCopyBlocks = make([]CopyBlockVM, len(blocks))
@@ -286,11 +288,11 @@ func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 		if !ok {
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		db, personID, ok2 := requireResumeDB(w, r)
 		if !ok2 {
 			return
 		}
-		if err := db.DeleteUpworkSkill(r.Context(), id); err != nil {
+		if err := db.DeleteUpworkSkill(r.Context(), personID, id); err != nil {
 			slog.Error("upworkSkillDeleteHandler: DeleteUpworkSkill", "id", id, "err", err)
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
@@ -303,7 +305,7 @@ func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 const upworkTmplSrc = `<style>
   .uw-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
   .uw-section h3{font-size:.9375rem;font-weight:700;color:var(--text-primary,#f1f5f9);margin-bottom:.5rem}
-  .uw-label{font-size:.8rem;color:var(--text-muted,#64748b);margin-bottom:.25rem}
+  .uw-label{font-size:.8rem;color:var(--text-secondary,#94a3b8);margin-bottom:.25rem}
   .uw-value{font-size:.9375rem;color:var(--text-primary,#f1f5f9)}
   .uw-overview{white-space:pre-wrap;font-size:.9rem;color:var(--text-secondary,#94a3b8);line-height:1.65}
   .uw-skill-chip{display:inline-block;background:var(--bg-deep,#0f172a);border-radius:9999px;padding:.2rem .7rem;margin:.2rem;font-size:.8125rem;color:var(--text-secondary,#94a3b8);border:1px solid var(--border,#334155)}
@@ -317,8 +319,8 @@ const upworkTmplSrc = `<style>
   .uw-form-row{display:flex;gap:.5rem;margin-top:.5rem}
   .uw-input{background:var(--bg-deep,#0f172a);border:1px solid var(--border,#334155);border-radius:.375rem;padding:.35rem .6rem;color:var(--text-primary,#f1f5f9);font-size:.875rem;flex:1}
   .uw-btn{padding:.35rem .75rem;border-radius:.375rem;font-size:.8125rem;cursor:pointer;border:none}
-  .uw-btn-primary{background:var(--accent,#60a5fa);color:#0f172a}
-  .uw-btn-danger{background:#ef4444;color:#fff}
+  .uw-btn-primary{background:var(--accent,#3b82f6);color:#0f172a}
+  .uw-btn-danger{background:#b91c1c;color:#fff}
 </style>
 
 <div class="page-header">
@@ -348,7 +350,7 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Skills <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(Upwork cap: 15)</span></h3>
+  <h3>Skills <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(Upwork cap: 15)</span></h3>
   {{if .SkillsOver}}<div class="uw-warning">&#x26A0; You have {{.SkillCount}} skills — only the first 15 are shown (Upwork limit).</div>{{end}}
   {{if .Skills}}
     {{range .Skills}}<span class="uw-skill-chip">{{.}}</span>{{end}}
@@ -385,13 +387,13 @@ const upworkTmplSrc = `<style>
 
 {{if .UWCopyBlocks}}
 <div class="uw-section">
-  <h3>Paste Blocks <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(copy into Upwork forms)</span></h3>
+  <h3>Paste Blocks <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(copy into Upwork forms)</span></h3>
   {{range .UWCopyBlocks}}{{template "copyBlock" .}}{{end}}
 </div>
 {{end}}
 
 <div class="uw-section">
-  <h3>Upwork Profile Edit <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(stored in upwork_profile table)</span></h3>
+  <h3>Upwork Profile Edit <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(stored in upwork_profile table)</span></h3>
   {{if .UWMissing}}<div class="uw-empty" style="margin-bottom:.75rem">No Upwork profile entry yet — fill in the form below to create one.</div>{{end}}
   <form method="POST" action="/admin/upwork/overview" style="margin-bottom:1rem">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
@@ -415,32 +417,269 @@ const upworkTmplSrc = `<style>
   </form>
   {{if .UWCategories}}
   <div style="margin-top:.75rem">
-    <div class="uw-label">Categories (read-only — seeded via SQL)</div>
+    <div class="uw-label">Categories</div>
     <div>{{range .UWCategories}}<span class="uw-skill-chip">{{.}}</span>{{end}}</div>
   </div>
   {{end}}
 </div>
 
 <div class="uw-section">
-  <h3>Upwork Skills <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(upwork_skills table)</span></h3>
+  <h3>Categories Edit <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(full replace)</span></h3>
+  <form method="POST" action="/admin/upwork/categories">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <div class="uw-label" style="margin-bottom:.5rem">One category per input. Leave blank to remove.</div>
+    {{if .UWCategories}}
+    {{range .UWCategories}}
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" value="{{.}}"></label></div>
+    {{end}}
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="add category..."></label></div>
+    {{else}}
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="e.g. Software Development"></label></div>
+    {{end}}
+    <button type="submit" class="uw-btn uw-btn-primary" style="margin-top:.5rem">Save Categories</button>
+  </form>
+</div>
+
+<div class="uw-section">
+  <h3>Upwork Skills <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(upwork_skills table — drag to reorder)</span></h3>
   {{if .UWSkills}}
-  <div style="margin-bottom:.75rem">
+  <ul class="gd-sortable" data-reorder-url="/admin/upwork/skill/reorder" data-csrf="{{.CSRFToken}}" style="list-style:none;padding:0;margin:0 0 .75rem">
     {{range .UWSkills}}
-    <span class="uw-skill-chip">
-      {{.Name}}
+    <li class="gd-sortable-item re-row" data-id="{{.ID}}">
+      <div class="name">&#9776; {{.Name}}</div>
       <form method="POST" action="/admin/upwork/skill/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
-        <button type="submit" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.75rem;padding:0 0 0 .25rem">✕</button>
+        <button type="submit" class="uw-btn uw-btn-danger" style="padding:.2rem .5rem;font-size:.75rem">Del</button>
       </form>
-    </span>
+    </li>
     {{end}}
-  </div>
+  </ul>
   {{else}}<div class="uw-empty" style="margin-bottom:.75rem">no Upwork skills yet</div>{{end}}
-  <form method="POST" action="/admin/upwork/skill">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <div class="uw-form-row">
-      <input type="text" name="name" class="uw-input" placeholder="Skill name (e.g. Go)">
-      <button type="submit" class="uw-btn uw-btn-primary">Add Skill</button>
-    </div>
-  </form>
+  <div class="re-add-form">
+    <form method="POST" action="/admin/upwork/skill">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="uw-form-row">
+        <input type="text" name="name" class="uw-input re-input" placeholder="Skill name (e.g. Go)">
+        <button type="submit" class="uw-btn uw-btn-primary">Add Skill</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="uw-section">
+  <h3>Catalog Items <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(upwork_catalog_items table — drag to reorder)</span></h3>
+  {{if .UWCatalog}}
+  <ul class="gd-sortable" data-reorder-url="/admin/upwork/catalog/reorder" data-csrf="{{.CSRFToken}}" style="list-style:none;padding:0;margin:0 0 .75rem">
+    {{range .UWCatalog}}
+    <li class="gd-sortable-item re-row" data-id="{{.ID}}">
+      <div class="name">&#9776; {{.Title}}</div>
+      {{if .Description}}<div class="meta">{{.Description}}</div>{{end}}
+      <form method="POST" action="/admin/upwork/catalog/{{.ID}}/delete" style="display:inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+        <button type="submit" class="uw-btn uw-btn-danger" style="padding:.2rem .5rem;font-size:.75rem">Del</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}<div class="uw-empty" style="margin-bottom:.75rem">no catalog items yet</div>{{end}}
+  <div class="re-add-form">
+    <h4 style="font-size:.8rem;color:var(--text-muted,#64748b);margin:0 0 .5rem;font-weight:600">Add catalog item</h4>
+    <form method="POST" action="/admin/upwork/catalog">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div style="margin-bottom:.35rem">
+        <label class="uw-label">Title <abbr title="required">*</abbr></label>
+        <input type="text" name="title" class="uw-input re-input" placeholder="e.g. Go Microservices Platform" required aria-required="true">
+      </div>
+      <div style="margin-bottom:.35rem">
+        <label class="uw-label">Description</label>
+        <input type="text" name="description" class="uw-input re-input" placeholder="Short description for paste block">
+      </div>
+      <button type="submit" class="uw-btn uw-btn-primary">Add Item</button>
+    </form>
+  </div>
 </div>`
+
+// upworkCatalogCreateHandler handles POST /admin/upwork/catalog.
+// Inserts a new catalog item for the current person (person-scoped).
+func upworkCatalogCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !verifyCSRF(w, r, a, csrfKey) {
+			return
+		}
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		title := strings.TrimSpace(r.FormValue("title"))
+		if title == "" {
+			http.Error(w, "title is required", http.StatusBadRequest)
+			return
+		}
+		description := r.FormValue("description")
+		if _, err := db.InsertUpworkCatalogItem(r.Context(), personID, title, description); err != nil {
+			slog.Error("upworkCatalogCreateHandler: InsertUpworkCatalogItem", "err", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+	}
+}
+
+// upworkCatalogDeleteHandler handles POST /admin/upwork/catalog/{id}/delete.
+// Deletes the catalog item identified by {id}, scoped to the current person.
+func upworkCatalogDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !verifyCSRF(w, r, a, csrfKey) {
+			return
+		}
+		id, ok := parseIDParam(w, r)
+		if !ok {
+			return
+		}
+		db, personID, ok2 := requireResumeDB(w, r)
+		if !ok2 {
+			return
+		}
+		if err := db.DeleteUpworkCatalogItem(r.Context(), personID, id); err != nil {
+			slog.Error("upworkCatalogDeleteHandler: DeleteUpworkCatalogItem", "id", id, "err", err)
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+	}
+}
+
+// upworkCatalogReorderHandler handles POST /admin/upwork/catalog/reorder.
+// Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
+// Normalizes upwork_catalog_items positions to contiguous 1..N per person.
+func upworkCatalogReorderHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !verifyCSRF(w, r, a, csrfKey) {
+			return
+		}
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		ids, err := parseOrderedIDs(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(ids) == 0 {
+			http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+			return
+		}
+		if err := db.ReorderUpworkCatalogItems(r.Context(), personID, ids); err != nil {
+			slog.Error("upworkCatalogReorderHandler: ReorderUpworkCatalogItems", "err", err)
+			http.Error(w, "reorder failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+	}
+}
+
+// upworkSkillReorderHandler handles POST /admin/upwork/skill/reorder.
+// Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
+// Normalizes upwork_skills positions to contiguous 1..N per person.
+func upworkSkillReorderHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !verifyCSRF(w, r, a, csrfKey) {
+			return
+		}
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		ids, err := parseOrderedIDs(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(ids) == 0 {
+			http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+			return
+		}
+		if err := db.ReorderUpworkSkills(r.Context(), personID, ids); err != nil {
+			slog.Error("upworkSkillReorderHandler: ReorderUpworkSkills", "err", err)
+			http.Error(w, "reorder failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+	}
+}
+
+// upworkCategoriesEditHandler handles POST /admin/upwork/categories.
+// Read-modify-write: preserves existing title/overview/hourly_rate/availability
+// and does a full-replace of categories from repeated "category" form fields.
+// This is the single source of truth for categories (#118 invariant).
+func upworkCategoriesEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !verifyCSRF(w, r, a, csrfKey) {
+			return
+		}
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+
+		// Read existing profile to preserve title/overview/hourly_rate/availability.
+		existing, err := db.GetUpworkProfile(r.Context(), personID)
+		if err != nil {
+			slog.Error("upworkCategoriesEditHandler: GetUpworkProfile", "err", err)
+			http.Error(w, "load failed", http.StatusInternalServerError)
+			return
+		}
+
+		var title, overview, availability string
+		var hourlyRate int64
+		if !existing.Missing && existing.Profile != nil {
+			title = existing.Profile.Title
+			overview = existing.Profile.Overview
+			hourlyRate = existing.Profile.HourlyRate
+			availability = existing.Profile.Availability
+		}
+
+		// Full-replace categories from repeated "category" form fields.
+		rawCats := r.Form["category"]
+		categories := make([]string, 0, len(rawCats))
+		for _, c := range rawCats {
+			if trimmed := strings.TrimSpace(c); trimmed != "" {
+				categories = append(categories, trimmed)
+			}
+		}
+
+		if err := db.UpsertUpworkProfile(r.Context(), personID, title, overview, hourlyRate, categories, availability); err != nil {
+			slog.Error("upworkCategoriesEditHandler: UpsertUpworkProfile", "err", err)
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
+	}
+}
+
+// parseOrderedIDs parses repeated "id" form values or a comma-separated "order" field
+// into a slice of positive integers. Returns an error on invalid input.
+func parseOrderedIDs(r *http.Request) ([]int, error) {
+	rawIDs := r.Form["id"]
+	if len(rawIDs) == 0 {
+		// Fallback: comma-separated "order" field (e.g., from drag-drop JS).
+		order := r.FormValue("order")
+		if order != "" {
+			rawIDs = strings.Split(order, ",")
+		}
+	}
+	ids := make([]int, 0, len(rawIDs))
+	for _, s := range rawIDs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid id %q: must be a positive integer", s)
+		}
+		ids = append(ids, n)
+	}
+	return ids, nil
+}
