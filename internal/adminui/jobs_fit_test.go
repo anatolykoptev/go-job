@@ -189,7 +189,7 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title/Company, 1=Fit chip, 2=Market chip, 3=Status, 4=Posted, 5=Location, 6=Source.
+	// 0=Title/Company, 1=Fit chip, 2=Market chip, 3=Status, 4=Posted, 5=Location, 6=Source, 7=Resume, 8=Cover.
 	cells := []resource.Cell{
 		{Value: "Some Title · Acme Corp"},                           // 0: title — plain text cell-0
 		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 1: fit chip
@@ -198,6 +198,8 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 		{Value: "2026-06-01"},  // 4: posted
 		{Value: "Remote (US)"}, // 5: location
 		{Value: "linkedin"},    // 6: source
+		{Value: "—"},           // 7: resume (no pack)
+		{Value: "—"},           // 8: cover (no pack)
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -288,7 +290,7 @@ func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
 	}
 
 	// Column count sanity.
-	const expectedCols = 7
+	const expectedCols = 9
 	if len(jobsSpec.Columns) != expectedCols {
 		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
 	}
@@ -412,7 +414,7 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 		Limit:  50,
 		Offset: 0,
 	}
-	rows, total, err := jobsLister(pool)(context.Background(), q)
+	rows, total, err := jobsLister(pool, "")(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}

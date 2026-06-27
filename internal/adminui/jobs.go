@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,8 @@ var jobsSpec = admintable.Spec{
 		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "6rem"},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false, Width: "6rem"},
+		{Key: "resume", Label: "Resume", Sortable: false, Width: "5rem"},
+		{Key: "cover", Label: "Cover", Sortable: false, Width: "5rem"},
 	},
 	DefaultKey: "fit",
 	DefaultDir: admintable.Desc,
@@ -100,7 +103,7 @@ var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
 }}
 
-func jobsResource(pool *pgxpool.Pool) resource.Resource {
+func jobsResource(pool *pgxpool.Pool, applicationsDir string) resource.Resource {
 	return resource.Resource{
 		Name:   "jobs",
 		Title:  "Jobs",
@@ -109,12 +112,12 @@ func jobsResource(pool *pgxpool.Pool) resource.Resource {
 		Sort:   jobsSpec,
 		Filter: jobsFilter,
 		Perms:  resource.ReadAny,
-		Lister: jobsLister(pool),
+		Lister: jobsLister(pool, applicationsDir),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
 
-func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func jobsLister(pool *pgxpool.Pool, applicationsDir string) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		where := "TRUE"
 		if strings.TrimSpace(q.WhereConds) != "" {
@@ -139,6 +142,13 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 		}
 		defer rows.Close()
 
+		// Hoist a single ReadDir so each row can check for PDFs via in-memory entries
+		// instead of N separate ReadDir calls per page.
+		var listDirEntries []os.DirEntry
+		if applicationsDir != "" {
+			listDirEntries, _ = os.ReadDir(applicationsDir)
+		}
+
 		var out []resource.Row
 		for rows.Next() {
 			var (
@@ -157,6 +167,10 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 			if company != "" {
 				titleCompany = title + " · " + company
 			}
+
+			// Derive resume/cover cells from the hoisted directory entries.
+			resumeCell, coverCell := pdfCells(id, company, title, applicationsDir, listDirEntries)
+
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title/Company (plain text — go-panel wraps cell-0 in <a href>,
 			// ignoring cell.HTML; chips at i>0 are rendered with cell.HTML respected).
@@ -172,11 +186,44 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 					{Value: dateStr(posted)},
 					{Value: location},
 					{Value: source},
+					resumeCell,
+					coverCell,
 				},
 			})
 		}
 		return out, total, rows.Err()
 	}
+}
+
+// pdfCells returns the Resume and Cover resource.Cell for one job row.
+// It reuses the pre-hoisted listDirEntries from os.ReadDir (one call per list render)
+// via findApplicationSlugFromEntries to avoid N ReadDir calls per page.
+func pdfCells(id int64, company, title, applicationsDir string, dirEntries []os.DirEntry) (resume, cover resource.Cell) {
+	const dash = "—"
+	resume = resource.Cell{Value: dash}
+	cover = resource.Cell{Value: dash}
+	if applicationsDir == "" || len(dirEntries) == 0 {
+		return
+	}
+	slug, err := findApplicationSlugFromEntries(dirEntries, company, title)
+	if err != nil {
+		return
+	}
+	idStr := strconv.FormatInt(id, 10)
+	slugDir := applicationsDir + string(os.PathSeparator) + slug
+	if findApplicationPDF(slugDir, "resume") != "" {
+		resume = resource.Cell{
+			Value: fmt.Sprintf(`<a class="dl-link" href="/admin/jobs/%s/download/resume">PDF</a>`, idStr),
+			HTML:  true,
+		}
+	}
+	if findApplicationPDF(slugDir, "cover") != "" {
+		cover = resource.Cell{
+			Value: fmt.Sprintf(`<a class="dl-link" href="/admin/jobs/%s/download/cover">PDF</a>`, idStr),
+			HTML:  true,
+		}
+	}
+	return
 }
 
 // fitChipHTML returns XSS-safe HTML for the Fit axis cell.
