@@ -304,6 +304,7 @@ func SearxngResultToHuntJob(r engine.SearxngResult, platform string) hunt.Job {
 	return hunt.Job{
 		DedupHash:   hunt.DedupHash(r.URL),
 		Title:       r.Title,
+		Company:     extractATSCompanyName(r.URL),
 		URL:         r.URL,
 		Source:      platform,
 		Description: r.Content,

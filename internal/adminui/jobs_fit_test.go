@@ -189,16 +189,17 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted, 6=Location, 7=Source.
+	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted, 6=Location, 7=Source, 8=Docs.
 	cells := []resource.Cell{
 		{Value: "Some Title"},                                       // 0: title — plain text cell-0
 		{Value: "Acme Corp"},                                        // 1: company — plain text
 		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 2: fit chip
 		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 3: market chip
-		{Value: "open"},        // 4: status
-		{Value: "2026-06-01"},  // 5: posted
-		{Value: "Remote (US)"}, // 6: location
-		{Value: "linkedin"},    // 7: source
+		{Value: "open"},                                             // 4: status
+		{Value: "2026-06-01"},                                       // 5: posted
+		{Value: "Remote (US)"},                                      // 6: location
+		{Value: "linkedin"},                                         // 7: source
+		{Value: docsChipHTML(1, false, false), HTML: true},          // 8: docs (no resume/cover)
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -219,6 +220,10 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	// Assert market chip is at index 3 (HTML:true, not cell-0).
 	if !cells[3].HTML {
 		t.Errorf("cell[3] (Market Read chip) must have HTML:true")
+	}
+	// Assert docs chip is at index 8 (HTML:true).
+	if !cells[8].HTML {
+		t.Errorf("cell[8] (Docs chip) must have HTML:true")
 	}
 	// Assert column order: Title first, Company second.
 	if jobsSpec.Columns[0].Key != colKeyTitle {
@@ -292,8 +297,8 @@ func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
 		t.Errorf("OrderBy for sort=market should contain 'LONGSHOT', got: %q", orderByMarket)
 	}
 
-	// Column count sanity.
-	const expectedCols = 8
+	// Column count sanity (FIX 3 added Docs column — now 9 total).
+	const expectedCols = 9
 	if len(jobsSpec.Columns) != expectedCols {
 		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
 	}
@@ -417,7 +422,8 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 		Limit:  50,
 		Offset: 0,
 	}
-	rows, total, err := jobsLister(pool)(context.Background(), q)
+	// authority=nil: docs column renders empty chips (no crash).
+	rows, total, err := jobsLister(pool, nil)(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}
