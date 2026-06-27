@@ -189,38 +189,43 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title/Company, 1=Fit chip, 2=Market chip, 3=Status, 4=Posted, 5=Location, 6=Source.
+	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted, 6=Location, 7=Source.
 	cells := []resource.Cell{
-		{Value: "Some Title · Acme Corp"},                           // 0: title — plain text cell-0
-		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 1: fit chip
-		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 2: market chip
-		{Value: "open"},        // 3: status
-		{Value: "2026-06-01"},  // 4: posted
-		{Value: "Remote (US)"}, // 5: location
-		{Value: "linkedin"},    // 6: source
+		{Value: "Some Title"},                                       // 0: title — plain text cell-0
+		{Value: "Acme Corp"},                                        // 1: company — plain text
+		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 2: fit chip
+		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 3: market chip
+		{Value: "open"},        // 4: status
+		{Value: "2026-06-01"},  // 5: posted
+		{Value: "Remote (US)"}, // 6: location
+		{Value: "linkedin"},    // 7: source
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
 			len(cells), len(jobsSpec.Columns))
 	}
-	// Assert cell-0 is plain text (HTML:false).
+	// Assert cell-0 (Title) is plain text (HTML:false).
 	if cells[0].HTML {
-		t.Errorf("cell[0] (Title/Company) must have HTML:false — go-panel template ignores HTML on cell-0 with Href")
+		t.Errorf("cell[0] (Title) must have HTML:false — go-panel template ignores HTML on cell-0 with Href")
 	}
-	// Assert fit chip is at index 1 (HTML:true, not cell-0).
-	if !cells[1].HTML {
-		t.Errorf("cell[1] (Fit chip) must have HTML:true")
+	// Assert company is at index 1 (plain text).
+	if cells[1].HTML {
+		t.Errorf("cell[1] (Company) must have HTML:false")
 	}
-	// Assert market chip is at index 2 (HTML:true, not cell-0).
+	// Assert fit chip is at index 2 (HTML:true, not cell-0).
 	if !cells[2].HTML {
-		t.Errorf("cell[2] (Market Read chip) must have HTML:true")
+		t.Errorf("cell[2] (Fit chip) must have HTML:true")
 	}
-	// Assert column order: Title first, Fit second.
+	// Assert market chip is at index 3 (HTML:true, not cell-0).
+	if !cells[3].HTML {
+		t.Errorf("cell[3] (Market Read chip) must have HTML:true")
+	}
+	// Assert column order: Title first, Company second.
 	if jobsSpec.Columns[0].Key != colKeyTitle {
-		t.Errorf("column[0] must be Title/Company (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
+		t.Errorf("column[0] must be Title (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
 	}
-	if jobsSpec.Columns[1].Key != "fit" {
-		t.Errorf("column[1] must be Fit (key=%q), got key=%q", "fit", jobsSpec.Columns[1].Key)
+	if jobsSpec.Columns[1].Key != "company" {
+		t.Errorf("column[1] must be Company (key=%q), got key=%q", "company", jobsSpec.Columns[1].Key)
 	}
 }
 
@@ -288,7 +293,7 @@ func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
 	}
 
 	// Column count sanity.
-	const expectedCols = 7
+	const expectedCols = 8
 	if len(jobsSpec.Columns) != expectedCols {
 		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
 	}

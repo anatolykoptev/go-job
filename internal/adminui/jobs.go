@@ -83,7 +83,8 @@ const (
 // Fit and Market Read chips are at indices 1 and 2 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title / Company", Sortable: true, SQLExpr: colKeyTitle},
+		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: colKeyTitle},
+		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "company"},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: colWidth8rem},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
@@ -157,19 +158,17 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 				&posted, &recent, &location, &source, &url); err != nil {
 				return nil, 0, fmt.Errorf("adminui: scan job: %w", err)
 			}
-			titleCompany := title
-			if company != "" {
-				titleCompany = title + " · " + company
-			}
 			// Cell order MUST match jobsSpec.Columns order.
-			// Cell-0 = Title/Company (plain text — go-panel wraps cell-0 in <a href>,
-			// ignoring cell.HTML; chips at i>0 are rendered with cell.HTML respected).
+			// Cell-0 = Title (plain text — go-panel wraps cell-0 in <a href>, ignoring
+			// cell.HTML). Company is a separate sortable column at cell-1; chips at i>1
+			// are rendered with cell.HTML respected.
 			// Row.Href → /admin/jobs/{id} (go-panel Detailer, natural URL).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(id, 10),
 				Cells: []resource.Cell{
-					{Value: titleCompany},
+					{Value: title},
+					{Value: company},
 					{Value: fitChipHTML(fit, fitBand), HTML: true},
 					{Value: marketReadHTML(sucBand, ou), HTML: true},
 					{Value: status},
