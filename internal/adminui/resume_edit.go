@@ -16,9 +16,9 @@ import (
 )
 
 // cookieNamer is the optional capability interface for authenticators that bind
-// CSRF tokens to a session cookie. Mirrors resource.sessionCookier (resource/resource.go:174).
-// Both HMACAuth and BcryptTOTPAuth satisfy it; the type-assert is fail-fast at
-// compile time via the blank-identifier check in the test file.
+// CSRF tokens to a session cookie. Mirrors resource.sessionCookier defined at
+// resource/resource.go:174. Both HMACAuth and BcryptTOTPAuth satisfy it;
+// enforcement is fail-closed at adminui.New() via checkAuthCapabilities.
 type cookieNamer interface {
 	SessionCookieName() string
 }
