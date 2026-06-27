@@ -252,38 +252,6 @@ func parseH2Number(heading string) (num, title string) {
 	return candidate, strings.TrimSpace(heading[dot+1:])
 }
 
-// tmplFuncCharClass and tmplFuncCharLabel are template.FuncMap keys shared by
-// linkedin.go and upwork.go. Defined here since charCounterClass/Label live here.
-const (
-	ccAmber           = "cc-amber"
-	tmplFuncCharClass = "charClass"
-	tmplFuncCharLabel = "charLabel"
-)
-
-// charCounterClass returns the CSS class for a char counter chip.
-func charCounterClass(count, limit int) string {
-	if limit == 0 || count == 0 {
-		return "cc-muted"
-	}
-	pct := float64(count) / float64(limit)
-	switch {
-	case pct > 1.0:
-		return "cc-red"
-	case pct >= 0.8:
-		return ccAmber
-	default:
-		return "cc-green"
-	}
-}
-
-// charCounterLabel returns "134 / 220" or "134 chars" when no limit.
-func charCounterLabel(count, limit int) string {
-	if limit == 0 {
-		return fmt.Sprintf("%d chars", count)
-	}
-	return fmt.Sprintf("%d / %d", count, limit)
-}
-
 // linkedinTmplSrc is the HTML content fragment for the LinkedIn update page.
 const linkedinTmplSrc = `<style>
   .li-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
