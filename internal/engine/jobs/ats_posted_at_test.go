@@ -130,3 +130,55 @@ func TestSearxngResultToHuntJob_PostedAt(t *testing.T) {
 		})
 	}
 }
+
+// TestSearxngResultToHuntJob_ExtractsATSCompany is the regression guard for
+// FIX 2: ATS company extraction in the worker ingest path.
+// RED-on-revert: remove Company: extractATSCompanyName(r.URL) from
+// SearxngResultToHuntJob and this test fails (Company == "" for ATS rows).
+func TestSearxngResultToHuntJob_ExtractsATSCompany(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		want    string
+		platform string
+	}{
+		{
+			name:     "greenhouse board slug extracted",
+			url:      "https://boards.greenhouse.io/acmecorp/jobs/12345",
+			want:     "acmecorp",
+			platform: engine.DiscoveryPlatformGreenhouse,
+		},
+		{
+			name:     "lever board slug extracted",
+			url:      "https://jobs.lever.co/widgetinc/abc-123",
+			want:     "widgetinc",
+			platform: engine.DiscoveryPlatformLever,
+		},
+		{
+			name:     "ashby board slug extracted",
+			url:      "https://jobs.ashbyhq.com/bestco/posting-uuid",
+			want:     "bestco",
+			platform: engine.DiscoveryPlatformAshby,
+		},
+		{
+			// extractATSCompanyName falls back to the first URL path segment for
+			// unrecognised hosts; verifies the function does not crash.
+			name:     "non-ATS URL falls back to first path segment (no crash)",
+			url:      "https://example.com/careers/engineer",
+			want:     "careers",
+			platform: "tracker",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := engine.SearxngResult{
+				Title:   "Software Engineer",
+				URL:     tc.url,
+				Content: "snippet",
+			}
+			j := SearxngResultToHuntJob(r, tc.platform)
+			assert.Equal(t, tc.want, j.Company,
+				"company must be extracted from ATS board URL slug")
+		})
+	}
+}

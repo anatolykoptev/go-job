@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -91,6 +93,7 @@ var jobsSpec = admintable.Spec{
 		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "6rem"},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false, Width: "6rem"},
+		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
 	},
 	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
@@ -105,7 +108,7 @@ var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
 }}
 
-func jobsResource(pool *pgxpool.Pool) resource.Resource {
+func jobsResource(pool *pgxpool.Pool, authority *applications.Authority) resource.Resource {
 	return resource.Resource{
 		Name:   "jobs",
 		Title:  "Jobs",
@@ -114,12 +117,12 @@ func jobsResource(pool *pgxpool.Pool) resource.Resource {
 		Sort:   jobsSpec,
 		Filter: jobsFilter,
 		Perms:  resource.ReadAny,
-		Lister: jobsLister(pool),
+		Lister: jobsLister(pool, authority),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
 
-func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		where := "TRUE"
 		if strings.TrimSpace(q.WhereConds) != "" {
@@ -144,6 +147,12 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 		}
 		defer rows.Close()
 
+		// Snapshot legacy-dir entries once per list call to avoid N+1 ReadDir calls.
+		var legacyEntries []os.DirEntry
+		if authority != nil {
+			legacyEntries = authority.LegacyEntries()
+		}
+
 		var out []resource.Row
 		for rows.Next() {
 			var (
@@ -158,6 +167,19 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 				&posted, &recent, &location, &source, &url); err != nil {
 				return nil, 0, fmt.Errorf("adminui: scan job: %w", err)
 			}
+
+			hasResume, hasCover := false, false
+			if authority != nil {
+				hasResume = authority.Exists(id, applications.KindResume)
+				hasCover = authority.Exists(id, applications.KindCover)
+				if !hasResume {
+					hasResume = authority.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindResume)
+				}
+				if !hasCover {
+					hasCover = authority.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindCover)
+				}
+			}
+
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title (plain text — go-panel wraps cell-0 in <a href>, ignoring
 			// cell.HTML). Company is a separate sortable column at cell-1; chips at i>1
@@ -175,6 +197,7 @@ func jobsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([
 					{Value: dateStr(posted)},
 					{Value: location},
 					{Value: source},
+					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},
 				},
 			})
 		}
