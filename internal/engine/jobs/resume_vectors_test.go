@@ -8,8 +8,7 @@ package jobs
 //
 // Falsification guarantee:
 //   - FTS-path tests call AddResumeMemory / SearchResumeMemory / UpdateResumeMemory (public ops).
-//     Reverting resume_memory.go to the MemDB path causes every such test to fail with
-//     "resume DB not configured" (GetResumeDB() is set but GetMemDB() returns nil → MemDB error).
+//     Removing the resume_vectors storage path causes these tests to fail at the DB call.
 //   - Vector-path and dim-mismatch tests call ResumeDB methods directly, bypassing the ops layer
 //     to test the persistence invariants without needing a mock embedder.
 
@@ -23,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // --- Helper unit tests (no DB) ---
@@ -193,16 +194,36 @@ func TestFitness_F3_SingleSourceCubeKey(t *testing.T) {
 
 // testResumeDB connects to the DB and registers cleanup.
 // It purges stale test rows so tests remain idempotent.
+//
+// Safety gate: the function skips unless the DB name ends in "_test" to prevent
+// tests from deleting rows in a production database.  If you have a dedicated
+// test instance, set DATABASE_URL with a name like "gojob_test".
+// Background: UpsertVector always writes source='agent'; the cleanup that follows
+// deletes ALL such rows for resumeVectorUser — on a prod DB this wipes the
+// operator's entire vector store (oxpulse TEST_DATABASE_URL→prod isolation class).
 func testResumeDB(t *testing.T) *ResumeDB {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set — skipping DB-backed test")
 	}
-	ctx := context.Background()
-	db, err := ConnectResumeDB(ctx, dbURL)
+
+	// Parse the DB name and refuse to run against a non-test database.
+	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		t.Fatalf("ConnectResumeDB: %v", err)
+		t.Fatalf("testResumeDB: parse DATABASE_URL: %v", err)
+	}
+	dbName := cfg.ConnConfig.Config.Database
+	if !strings.HasSuffix(dbName, "_test") {
+		t.Skipf("testResumeDB: database %q does not end in \"_test\" — "+
+			"refusing to run destructive tests against a non-test DB. "+
+			"Set DATABASE_URL to a *_test database.", dbName)
+	}
+
+	ctx := context.Background()
+	db, connErr := ConnectResumeDB(ctx, dbURL)
+	if connErr != nil {
+		t.Fatalf("ConnectResumeDB: %v", connErr)
 	}
 	t.Cleanup(func() { db.Close() })
 
@@ -218,8 +239,7 @@ func testResumeDB(t *testing.T) *ResumeDB {
 
 // TestResumeMemory_AddSearch_FTSPath exercises the full add→search round-trip
 // via the public ops API with no embedder (FTS path).
-// Falsification: reverting resume_memory.go to the MemDB path breaks this test
-// because GetMemDB() returns nil → "MemDB not configured" error.
+// Falsification: removing the resume_vectors storage path breaks this test at the DB write.
 func TestResumeMemory_AddSearch_FTSPath(t *testing.T) {
 	db := testResumeDB(t)
 	SetResumeDB(db)
@@ -430,5 +450,86 @@ func TestResumeDB_VectorPath(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("SearchByVector did not return the inserted row (id=%d)", id)
+	}
+}
+
+// TestResumeDB_ClearVectors_Scoped verifies that ClearVectors only removes rows
+// whose mem_type is in the provided list, leaving other mem_types intact.
+//
+// Falsification: reverting ClearVectors to a non-scoped DELETE (or deleting by
+// user_name only) causes the "other_type" row to be wiped, so the final count
+// assertion fails (got 0, want 1).
+func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
+	db := testResumeDB(t)
+	ctx := context.Background()
+
+	// Insert one row with the type to be cleared and one that must survive.
+	if _, err := db.UpsertVector(ctx, "clear target", memTypeResumeExp, nil, nil); err != nil {
+		t.Fatalf("UpsertVector target: %v", err)
+	}
+	if _, err := db.UpsertVector(ctx, "must survive", memTypeEnrichProj, nil, nil); err != nil {
+		t.Fatalf("UpsertVector survivor: %v", err)
+	}
+
+	// Clear only the resume_experience type.
+	if err := db.ClearVectors(ctx, memTypeResumeExp); err != nil {
+		t.Fatalf("ClearVectors: %v", err)
+	}
+
+	// resume_experience row must be gone.
+	var cleared int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='clear target'`,
+		resumeVectorUser,
+	).Scan(&cleared); err != nil {
+		t.Fatalf("query cleared: %v", err)
+	}
+	if cleared != 0 {
+		t.Errorf("ClearVectors: cleared row still present (count=%d)", cleared)
+	}
+
+	// enrich_project row must survive.
+	var survived int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='must survive'`,
+		resumeVectorUser,
+	).Scan(&survived); err != nil {
+		t.Fatalf("query survived: %v", err)
+	}
+	if survived != 1 {
+		t.Errorf("ClearVectors: survivor row missing or duplicated (count=%d, want 1)", survived)
+	}
+}
+
+// TestResumeDB_SearchByTextScoped_MemTypeFilter verifies that SearchByTextScoped
+// only returns rows whose mem_type is in the provided list.
+//
+// Falsification: reverting SearchByTextScoped to an unscoped query (or removing
+// the mem_type filter) causes the "wrong type" row to appear in results, so the
+// assertion that only the matching row was returned fails.
+func TestResumeDB_SearchByTextScoped_MemTypeFilter(t *testing.T) {
+	db := testResumeDB(t)
+	ctx := context.Background()
+
+	// Insert two rows with different mem_types but identical keywords.
+	if _, err := db.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeExp, nil, nil); err != nil {
+		t.Fatalf("UpsertVector resume_experience: %v", err)
+	}
+	if _, err := db.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeAchv, nil, nil); err != nil {
+		t.Fatalf("UpsertVector resume_achievement: %v", err)
+	}
+
+	// Search scoped to resume_experience only.
+	rows, err := db.SearchByTextScoped(ctx, "golang distributed systems", 10, []string{memTypeResumeExp})
+	if err != nil {
+		t.Fatalf("SearchByTextScoped: %v", err)
+	}
+	for _, r := range rows {
+		if r.MemType != memTypeResumeExp {
+			t.Errorf("SearchByTextScoped returned unexpected mem_type %q (want %q)", r.MemType, memTypeResumeExp)
+		}
+	}
+	if len(rows) == 0 {
+		t.Error("SearchByTextScoped: expected at least one result for resume_experience, got 0")
 	}
 }
