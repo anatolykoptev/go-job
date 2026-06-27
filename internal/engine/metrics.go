@@ -800,9 +800,3 @@ func IncrVacancyIngest(result string) {
 	}
 	reg.Incr(MetricVacancyIngest + "{result=" + result + "}")
 }
-
-// IncrVacancyIngestSkipped bumps gojob_vacancy_ingest_total{result=skipped_store}.
-// Called when the hunt store is nil at the time vacancy_ingest tries to persist.
-func IncrVacancyIngestSkipped() {
-	reg.Incr(MetricVacancyIngest + "{result=skipped_store}")
-}

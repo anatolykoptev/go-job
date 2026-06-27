@@ -30,13 +30,25 @@ func FetchVacancy(ctx context.Context, targetURL, sourceHint, companyHint string
 		return engine.JobListing{}, "", fmt.Errorf("fetchone: render %s: %w", targetURL, err)
 	}
 
+	// Extract readable text from the rendered HTML before passing to the LLM.
+	// FetchURLContent uses the same extractorInst.Extract path; we mirror it here
+	// to avoid feeding raw HTML (with <script>, <style>, nav etc.) to the model.
+	// go-engine head-truncates source #0 to ~8KB, so sending raw HTML wastes
+	// the budget on markup rather than JD text.
+	cleanText, extractErr := engine.ExtractHTMLText(ctx, html, targetURL)
+	if extractErr != nil || strings.TrimSpace(cleanText) == "" {
+		// Extraction failed or produced nothing — fall back to raw HTML so the
+		// row is still captured; LLM will see markup but at least we have a row.
+		cleanText = html
+	}
+
 	// Build the minimal SearxngResult and content map that SummarizeJobResults expects.
 	stub := engine.SearxngResult{
 		URL:     targetURL,
 		Title:   targetURL, // placeholder title; LLM will extract the real one
 		Content: "",
 	}
-	contents := map[string]string{targetURL: html}
+	contents := map[string]string{targetURL: cleanText}
 
 	out, err := engine.SummarizeJobResults(ctx, "single vacancy", engine.JobSearchInstruction, contentLimitFetchVacancy, []engine.SearxngResult{stub}, contents)
 	if err != nil {
@@ -48,7 +60,8 @@ func FetchVacancy(ctx context.Context, targetURL, sourceHint, companyHint string
 		job = out.Jobs[0]
 	}
 
-	// Backfill URL — LLM may omit it.
+	// Backfill URL — LLM may omit it. Belt-and-suspenders: SummarizeJobResults
+	// already backfills URL from the stub, but we repeat it here for safety.
 	if job.URL == "" {
 		job.URL = targetURL
 	}
@@ -77,6 +90,11 @@ func FetchVacancy(ctx context.Context, targetURL, sourceHint, companyHint string
 		raw := html
 		if len(raw) > rawHTMLLimit {
 			raw = raw[:rawHTMLLimit]
+			// Walk back to a valid UTF-8 rune boundary so we never split a multi-byte
+			// sequence — Postgres rejects invalid UTF-8 in text columns.
+			for len(raw) > 0 && raw[len(raw)-1]&0xC0 == 0x80 {
+				raw = raw[:len(raw)-1]
+			}
 		}
 		job.Description = raw
 		return job, "weak", nil

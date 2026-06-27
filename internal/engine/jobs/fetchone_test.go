@@ -8,37 +8,35 @@ import (
 )
 
 // TestFF_FetchVacancy_NoDirectNetHTTP is the arch fitness function:
-// fetchone.go must NOT import "net/http" for outbound job-board fetches.
-// It should only call fetchRenderedHTML (the go-wowa render seam).
-// This prevents future drift into a parallel fetch path.
+// fetchone.go and tool_vacancy_ingest.go must NOT import "net/http" directly
+// for outbound job-board fetches. The go-wowa seam (fetchRenderedHTML) owns
+// the HTTP call; bypassing it with http.Get / http.NewRequest is a violation.
+// Catches multiline imports, single-line imports, and aliased imports.
 func TestFF_FetchVacancy_NoDirectNetHTTP(t *testing.T) {
-	f, err := os.Open("fetchone.go")
-	if err != nil {
-		t.Fatalf("cannot open fetchone.go: %v", err)
-	}
-	defer f.Close()
+	for _, filename := range []string{"fetchone.go", "../jobserver/tool_vacancy_ingest.go"} {
+		t.Run(filename, func(t *testing.T) {
+			f, err := os.Open(filename)
+			if err != nil {
+				// tool_vacancy_ingest.go lives in a sibling package; skip if relative path fails
+				if filename != "fetchone.go" {
+					t.Skipf("cannot open %s (sibling package): %v", filename, err)
+				}
+				t.Fatalf("cannot open %s: %v", filename, err)
+			}
+			defer f.Close()
 
-	// Scan all import lines — any "net/http" import in this file is a violation.
-	// The go-wowa seam (fetchRenderedHTML) owns the HTTP call; fetchone.go must
-	// not bypass it with a raw http.Get or http.NewRequest.
-	inImports := false
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "import (" {
-			inImports = true
-			continue
-		}
-		if inImports && line == ")" {
-			inImports = false
-			continue
-		}
-		if inImports && strings.Contains(line, `"net/http"`) {
-			t.Errorf("fetchone.go imports net/http directly -- use fetchRenderedHTML instead; found line: %s", line)
-		}
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				line := scanner.Text()
+				// Catch all forms: `"net/http"`, `http "net/http"`, `_ "net/http"`
+				if strings.Contains(line, `"net/http"`) {
+					t.Errorf("%s imports net/http directly -- use fetchRenderedHTML instead; line: %s", filename, strings.TrimSpace(line))
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scan error in %s: %v", filename, err)
+			}
+			t.Logf("FF_NoDirectNetHTTP PASS: %s does not import net/http", filename)
+		})
 	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan error: %v", err)
-	}
-	t.Log("FF_NoDirectNetHTTP PASS: fetchone.go does not import net/http")
 }

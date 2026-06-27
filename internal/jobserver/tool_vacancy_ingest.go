@@ -13,12 +13,11 @@ import (
 )
 
 // VacancyIngestInput is the input schema for the vacancy_ingest tool.
-// persist is a string enum ("true"/"false") rather than a bool because the
-// go-sdk reflects `bool`-typed fields in output structs as boolean true in the
-// JSON Schema, which the MCP client rejects (TestNoBooleanPropertySchema).
-// For the INPUT schema this is fine with a plain bool, but we use a string here
-// to be consistent with the no-boolean-property pattern and keep the schema
-// self-documenting.
+// persist is a string enum ("true"/"false") rather than a bool because
+// TestNoBooleanPropertySchema scans BOTH input and output schemas; the go-sdk
+// reflects bool-typed fields as boolean true in JSON Schema, which the MCP
+// client rejects. The string-enum pattern is required for both input and output
+// schemas to pass the test.
 type VacancyIngestInput struct {
 	URL     string `json:"url"               jsonschema:"Required. Full URL of the job-posting page to fetch and ingest."`
 	Source  string `json:"source,omitempty"  jsonschema:"Optional source hint (e.g. 'greenhouse', 'lever'). Defaults to URL-derived source."`
@@ -80,7 +79,7 @@ func registerVacancyIngest(server *mcp.Server) {
 		store := engine.GetHuntStore()
 		if store == nil {
 			slog.Warn("vacancy_ingest: hunt store nil, persist skipped", slog.String("url", input.URL))
-			engine.IncrVacancyIngestSkipped()
+			engine.IncrVacancyIngest("skipped_store")
 			result.Outcome = "skipped"
 			return nil, result, nil
 		}
@@ -91,7 +90,10 @@ func registerVacancyIngest(server *mcp.Server) {
 		if upsertErr != nil {
 			slog.Warn("vacancy_ingest: upsert failed", slog.String("url", input.URL), slog.Any("error", upsertErr))
 			result.Outcome = "error"
-			return nil, result, nil
+			// Return non-nil Go error so callers can distinguish persist failure
+			// (hard) from skipped (soft). Outcome="error" carries the human label;
+			// the Go error is the machine signal for retry / dead-letter logic.
+			return nil, result, fmt.Errorf("vacancy_ingest: upsert: %w", upsertErr)
 		}
 
 		result.HuntID = id
