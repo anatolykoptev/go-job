@@ -180,13 +180,15 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 // --- Person CRUD ---
 
 type PersonRecord struct {
-	ID       int               `json:"id"`
-	Name     string            `json:"name"`
-	Email    string            `json:"email"`
-	Phone    string            `json:"phone"`
-	Location string            `json:"location"`
-	Links    map[string]string `json:"links"`
-	Summary  string            `json:"summary"`
+	ID              int               `json:"id"`
+	Name            string            `json:"name"`
+	Email           string            `json:"email"`
+	Phone           string            `json:"phone"`
+	Location        string            `json:"location"`
+	Links           map[string]string `json:"links"`
+	Summary         string            `json:"summary"`
+	Headline        string            `json:"headline,omitempty"`
+	HourlyRateCents int64             `json:"hourly_rate_cents,omitempty"`
 }
 
 func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, error) {
@@ -226,9 +228,10 @@ func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord,
 	var p PersonRecord
 	var linksJSON []byte
 	err := db.pool.QueryRow(ctx,
-		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,'')
+		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,''),
+		        COALESCE(headline,''), COALESCE(hourly_rate,0)
 		 FROM resume_persons WHERE id = $1`, personID,
-	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary)
+	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary, &p.Headline, &p.HourlyRateCents)
 	if err != nil {
 		return nil, err
 	}

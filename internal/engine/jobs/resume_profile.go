@@ -72,6 +72,8 @@ type ResumeProfileResult struct {
 	Links      map[string]string `json:"links,omitempty"`
 	Summary    string            `json:"summary,omitempty"`
 	EnrichedAt string            `json:"enriched_at,omitempty"`
+	Headline        string `json:"headline,omitempty"`
+	HourlyRateCents int64  `json:"hourly_rate_cents,omitempty"`
 
 	Experiences    []ExperienceSummary    `json:"experiences,omitempty"`
 	Skills         []SkillSummary         `json:"skills,omitempty"`
@@ -109,13 +111,15 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 	}
 
 	result := &ResumeProfileResult{
-		PersonID:   person.ID,
-		Name:       person.Name,
-		Email:      person.Email,
-		Location:   person.Location,
-		Links:      person.Links,
-		Summary:    person.Summary,
-		EnrichedAt: db.GetPersonEnrichedAt(ctx, personID),
+		PersonID:        person.ID,
+		Name:            person.Name,
+		Email:           person.Email,
+		Location:        person.Location,
+		Links:           person.Links,
+		Summary:         person.Summary,
+		EnrichedAt:      db.GetPersonEnrichedAt(ctx, personID),
+		Headline:        person.Headline,
+		HourlyRateCents: person.HourlyRateCents,
 	}
 
 	sec := strings.ToLower(strings.TrimSpace(section))

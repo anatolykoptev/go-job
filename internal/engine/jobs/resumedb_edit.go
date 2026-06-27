@@ -131,3 +131,16 @@ func (db *ResumeDB) DeleteCertification(ctx context.Context, certificationID int
 	_, err := db.pool.Exec(ctx, deleteCertificationSQL, certificationID)
 	return err
 }
+
+//nolint:gosec // updatePersonUpworkFieldsSQL is a SQL statement, not a credential
+const updatePersonUpworkFieldsSQL = `
+    UPDATE resume_persons SET headline = $2, hourly_rate = $3 WHERE id = $1
+`
+
+// UpdatePersonUpworkFields updates the Upwork-specific fields (headline and hourly_rate) for a person.
+// NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
+// invariant; if this DB ever becomes multi-person these must be person-scoped.
+func (db *ResumeDB) UpdatePersonUpworkFields(ctx context.Context, personID int, headline string, hourlyRateCents int64) error {
+	_, err := db.pool.Exec(ctx, updatePersonUpworkFieldsSQL, personID, headline, hourlyRateCents)
+	return err
+}

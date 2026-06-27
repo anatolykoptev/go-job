@@ -62,6 +62,14 @@ const resumeEditTmplSrc = `<style>
           <label class="re-label">Summary</label>
           <textarea class="re-textarea" name="summary">{{.Person.Summary}}</textarea>
         </div>
+        <div>
+          <label class="re-label">Upwork Headline (max 70 chars)</label>
+          <input class="re-input" type="text" name="headline" maxlength="70" value="{{.Person.Headline}}">
+        </div>
+        <div>
+          <label class="re-label">Upwork Hourly Rate ($/hr)</label>
+          <input class="re-input" type="number" name="hourly_rate" step="0.01" min="0" value="{{.HourlyRateStr}}">
+        </div>
       </div>
       <div style="margin-top:.75rem">
         <button class="re-btn" type="submit">Save person</button>
