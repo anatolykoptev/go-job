@@ -144,7 +144,10 @@ func copyFile(src, dst string) error {
 
 	// Write to a temp file next to dst, then rename (atomic on Linux).
 	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec
+	// 0644: world-readable so a non-root / cap-dropped container process can
+	// read migrated PDFs. The uploads volume is private + downloads are behind
+	// admin auth, so 0644 is acceptable.
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec
 	if err != nil {
 		return err
 	}
