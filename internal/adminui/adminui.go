@@ -65,7 +65,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	// Shortlist (curated targets) is the primary vacancies view — first in nav.
 	p.AddNav(shell.NavItem{ID: navIDShortlist, Label: "Shortlist", Icon: "⭐", URL: "/admin/shortlist"})
 
-	jr := jobsResource(pool)
+	jr := jobsResource(pool, applicationsDir)
 	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), applicationsDir)
 	resource.Register(p, jr)
 
