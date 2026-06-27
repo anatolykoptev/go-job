@@ -16,7 +16,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,19 +28,26 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
+// ClaimChecker checks whether a bounty is already claimed.
+// Implementations must be safe for concurrent use.
+type ClaimChecker interface {
+	IsClaimed(ctx context.Context, b hunt.Bounty) (claimed bool, err error)
+}
+
 // ProductNotifier wraps a go-kit ProductSink and implements hunt.Notifier.
 // Methods dispatch fire-and-forget goroutines; fan-out and rate limiting are
 // handled by the Pacer inside ProductSink (no semaphore needed here).
-// OnSend, if set, is called with "sent", "failed", "stale", "no_date", or
-// "unscored" after each Notify or recency-gate decision — it bridges into
-// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify. "unscored" is a
-// card-type marker emitted only for a degraded card that PASSES recency (so it
-// never overlaps a terminal "stale"/"no_date" drop).
+// OnSend, if set, is called with "sent", "failed", "stale", "no_date",
+// "unscored", "skipped_claimed", "claim_check_error", or "notified" after
+// each Notify or gate decision — it bridges into gojob_hunt_notify_total{outcome}
+// via engine.IncrHuntNotify. "unscored" is a card-type marker emitted only for a
+// degraded card that PASSES recency (so it never overlaps a terminal "stale"/"no_date" drop).
 type ProductNotifier struct {
-	sink    kitnotify.ProductSink
-	chatIDs []int64              // explicit recipient list; empty = use sink's defaultChatIDs
-	maxAge  time.Duration        // recency gate for NotifyNewJob; 0 means use default (48h)
-	OnSend  func(outcome string) // optional metric hook
+	sink         kitnotify.ProductSink
+	chatIDs      []int64              // explicit recipient list; empty = use sink's defaultChatIDs
+	maxAge       time.Duration        // recency gate for NotifyNewJob; 0 means use default (48h)
+	claimChecker ClaimChecker         // optional; nil = never claimed (fail-open)
+	OnSend       func(outcome string) // optional metric hook
 }
 
 // defaultMaxAge is the recency gate applied when HUNT_NOTIFY_MAX_AGE is not set.
@@ -89,9 +98,23 @@ func NewFromSinkWithMaxAge(sink kitnotify.ProductSink, maxAge time.Duration, cha
 	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge}
 }
 
+// WithClaimChecker returns a copy of the notifier with the given ClaimChecker wired in.
+// A nil checker is accepted (treated as "never claimed").
+func (n *ProductNotifier) WithClaimChecker(cc ClaimChecker) *ProductNotifier {
+	cp := *n
+	cp.claimChecker = cc
+	return &cp
+}
+
 // NotifyNewBounty sends a notification for a new bounty entry (fire-and-forget).
+// Claimed bounties are silently skipped via shouldNotifyBounty.
 func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
-	n.dispatch(formatBountyMsg(b))
+	go func() {
+		if !n.shouldNotifyBounty(context.Background(), b) {
+			return
+		}
+		n.dispatch(formatBountyMsg(b))
+	}()
 }
 
 // NotifyNewJob sends a notification for a new job entry (fire-and-forget).
@@ -138,8 +161,38 @@ func (n *ProductNotifier) NotifyNewFreelance(f hunt.Freelance) {
 }
 
 // NotifyNewSecurity sends a notification for a new security program entry (fire-and-forget).
+// Security programs are NOT gated by the claim checker.
 func (n *ProductNotifier) NotifyNewSecurity(s hunt.Security) {
 	n.dispatch(formatSecurityMsg(s))
+}
+
+// shouldNotifyBounty returns true if the bounty should be dispatched.
+// Fail-open: if claimChecker is nil or returns an error, notify anyway.
+func (n *ProductNotifier) shouldNotifyBounty(ctx context.Context, b hunt.Bounty) bool {
+	if n.claimChecker == nil {
+		return true
+	}
+	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	claimed, err := n.claimChecker.IsClaimed(tctx, b)
+	if err != nil {
+		slog.Info("hunt_notify_outcome", "outcome", "claim_check_error", "title", b.Title, "error", err)
+		n.recordOutcome("claim_check_error")
+		return true // fail-open
+	}
+	if claimed {
+		n.recordOutcome("skipped_claimed")
+		return false
+	}
+	n.recordOutcome("notified")
+	return true
+}
+
+// recordOutcome emits an outcome via OnSend if the hook is set.
+func (n *ProductNotifier) recordOutcome(outcome string) {
+	if n.OnSend != nil {
+		n.OnSend(outcome)
+	}
 }
 
 // dispatch sends msg asynchronously via ProductSink.Notify.
@@ -166,16 +219,50 @@ func (n *ProductNotifier) dispatch(msg string) {
 // Compile-time check: *ProductNotifier satisfies hunt.Notifier.
 var _ hunt.Notifier = (*ProductNotifier)(nil)
 
+// formatBountyMsg renders a clean, scannable Telegram message for a bounty.
+//
+// Format:
+//
+//	💰 $1,500 · AppFox · 2026-01-15
+//	Found SQL injection in auth endpoint
+//	https://github.com/appfox/issues/123
+//
+// Zero guards: AmountCents==0 → no dollar part; empty Org → omitted;
+// zero PostedAt falls back to FirstSeenAt; both zero → date omitted.
 func formatBountyMsg(b hunt.Bounty) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "New Bounty")
+	var parts []string
+
+	// Amount with thousands separator (no $0)
 	if b.AmountCents > 0 {
-		fmt.Fprintf(&sb, " $%d", b.AmountCents/100)
+		dollars := b.AmountCents / 100
+		parts = append(parts, "$"+formatThousands(dollars))
 	}
-	fmt.Fprintf(&sb, "\n%s\n", b.Title)
-	if len(b.Skills) > 0 {
-		fmt.Fprintf(&sb, "Skills: %s\n", strings.Join(b.Skills, ", "))
+
+	// Org
+	if b.Org != "" {
+		parts = append(parts, b.Org)
 	}
+
+	// Date: prefer PostedAt, fall back to FirstSeenAt
+	var dateStr string
+	if b.PostedAt != nil && !b.PostedAt.IsZero() {
+		dateStr = b.PostedAt.Format("2006-01-02")
+	} else if !b.FirstSeenAt.IsZero() {
+		dateStr = b.FirstSeenAt.Format("2006-01-02")
+	}
+	if dateStr != "" {
+		parts = append(parts, dateStr)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("💰")
+	if len(parts) > 0 {
+		sb.WriteString(" ")
+		sb.WriteString(strings.Join(parts, " · "))
+	}
+	sb.WriteByte('\n')
+	sb.WriteString(b.Title)
+	sb.WriteByte('\n')
 	sb.WriteString(b.URL)
 	return sb.String()
 }
@@ -294,11 +381,19 @@ func formatJobMsg(j hunt.Job, score *hunt.ScoreResult) string {
 	return sb.String()
 }
 
+// formatFreelanceMsg renders a Telegram message for a freelance posting.
+//
+// Format:
+//
+//	[source] Title
+//	Budget: $N      (omitted when BudgetMax == 0)
+//	Tags: a, b      (omitted when empty)
+//	https://...
 func formatFreelanceMsg(f hunt.Freelance) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[%s] %s\n", f.Source, f.Title)
 	if f.BudgetMax > 0 {
-		fmt.Fprintf(&sb, "Budget: $%d\n", f.BudgetMax)
+		fmt.Fprintf(&sb, "Budget: $%s\n", formatThousands(int64(f.BudgetMax)))
 	}
 	if len(f.Tags) > 0 {
 		fmt.Fprintf(&sb, "Tags: %s\n", strings.Join(f.Tags, ", "))
@@ -307,19 +402,83 @@ func formatFreelanceMsg(f hunt.Freelance) string {
 	return sb.String()
 }
 
+// formatSecurityMsg renders a clean, scannable Telegram message for a security program.
+//
+// Format:
+//
+//	🛡️ Max $1,500 · AppFox [bugcrowd] · 2026-01-15
+//	Scope: 12 targets (api.appfox.com)
+//	https://bugcrowd.com/appfox
+//
+// Zero guards: MaxBounty==0 → no amount; Targets empty → no scope line;
+// date from FirstSeenAt.
 func formatSecurityMsg(s hunt.Security) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "New Security Program [%s]\n%s\n", s.Platform, s.Name)
+	var parts []string
+
+	// Amount
 	if s.MaxBounty > 0 {
-		fmt.Fprintf(&sb, "Max bounty: $%d\n", s.MaxBounty)
+		parts = append(parts, "Max $"+formatThousands(int64(s.MaxBounty)))
 	}
+
+	// Name [platform]
+	namePlatform := s.Name
+	if s.Platform != "" {
+		namePlatform += " [" + s.Platform + "]"
+	}
+	if namePlatform != "" {
+		parts = append(parts, namePlatform)
+	}
+
+	// Date
+	if !s.FirstSeenAt.IsZero() {
+		parts = append(parts, s.FirstSeenAt.Format("2006-01-02"))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🛡️")
+	if len(parts) > 0 {
+		sb.WriteString(" ")
+		sb.WriteString(strings.Join(parts, " · "))
+	}
+	sb.WriteByte('\n')
+
+	// Scope line
 	if len(s.Targets) > 0 {
-		limit := 3
-		if len(s.Targets) < limit {
-			limit = len(s.Targets)
-		}
-		fmt.Fprintf(&sb, "Scope: %s\n", strings.Join(s.Targets[:limit], ", "))
+		first := extractHost(s.Targets[0])
+		fmt.Fprintf(&sb, "Scope: %d targets (%s)\n", len(s.Targets), first)
 	}
+
 	sb.WriteString(s.URL)
 	return sb.String()
+}
+
+// extractHost returns the hostname from a URL string, or the string as-is if
+// it is not a valid URL (e.g. already a bare domain like "*.example.com").
+func extractHost(target string) string {
+	u, err := url.Parse(target)
+	if err == nil && u.Host != "" {
+		return u.Host
+	}
+	return target
+}
+
+// formatThousands formats an integer with comma thousands separators.
+// e.g. 1500 → "1,500", 1000000 → "1,000,000".
+func formatThousands(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	rem := len(s) % 3
+	if rem > 0 {
+		b.WriteString(s[:rem])
+	}
+	for i := rem; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
