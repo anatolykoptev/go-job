@@ -9,7 +9,7 @@ import (
 )
 
 // resumeProjectCreateHandler handles POST /admin/resume/project.
-func resumeProjectCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeProjectCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -39,7 +39,7 @@ func resumeProjectCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFu
 
 // resumeProjectDeleteHandler handles POST /admin/resume/project/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeProjectDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeProjectDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -62,7 +62,7 @@ func resumeProjectDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFu
 }
 
 // resumeEducationCreateHandler handles POST /admin/resume/education.
-func resumeEducationCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeEducationCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -95,7 +95,7 @@ func resumeEducationCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.Handler
 
 // resumeEducationDeleteHandler handles POST /admin/resume/education/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeEducationDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeEducationDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -120,7 +120,7 @@ func resumeEducationDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.Handler
 // resumeCertificationCreateHandler handles POST /admin/resume/certification.
 //
 //nolint:dupl
-func resumeCertificationCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeCertificationCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -151,7 +151,7 @@ func resumeCertificationCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.Han
 
 // resumeCertificationDeleteHandler handles POST /admin/resume/certification/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeCertificationDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeCertificationDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
