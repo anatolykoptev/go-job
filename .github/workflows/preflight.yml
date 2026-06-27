@@ -1,0 +1,61 @@
+name: preflight
+
+# Pre-merge build/test gate. Runs on the self-hosted runner on krolik — NOT a
+# paid GitHub-hosted runner (operator rule: only self-hosted; free minutes).
+#
+# DB round-trip tests in internal/engine/jobs were previously t.Skip'd when
+# DATABASE_URL is unset. This job stands up an ephemeral postgres container for
+# the duration of the job, exports DATABASE_URL pointing at it, then runs
+# `make preflight` so those tests execute live. The container is torn down
+# automatically when the job exits.
+#
+# NOTE: the go-job self-hosted runner is not yet registered on krolik. Once
+# registered (a separate operator step), this workflow will execute on PR open.
+# Until then it queues but does not execute — the workflow is correct regardless.
+
+on:
+  pull_request:
+
+# One run per ref; cancel in-flight if a new push arrives.
+# Keeps the 4-core prod box free between runs.
+concurrency:
+  group: preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, krolik]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gojob_test
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/gojob_test?sslmode=disable
+        run: |
+          for f in $(ls internal/engine/jobs/schema/*.sql internal/hunt/schema/*.sql | sort); do
+            psql "$DATABASE_URL" -f "$f"
+          done
+
+      - name: make preflight
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/gojob_test?sslmode=disable
+        run: make preflight
