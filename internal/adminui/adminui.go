@@ -120,6 +120,11 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.Handle("POST "+adminBasePath+"/upwork/overview", a.Require(upworkOverviewEditHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/skill", a.Require(upworkSkillCreateHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/skill/{id}/delete", a.Require(upworkSkillDeleteHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/catalog", a.Require(upworkCatalogCreateHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/catalog/{id}/delete", a.Require(upworkCatalogDeleteHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/catalog/reorder", a.Require(upworkCatalogReorderHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/skill/reorder", a.Require(upworkSkillReorderHandler(a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/upwork/categories", a.Require(upworkCategoriesEditHandler(a, []byte(csrfKey))))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }

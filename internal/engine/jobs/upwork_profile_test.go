@@ -272,7 +272,7 @@ func TestInsertDeleteUpworkSkill_RoundTrip(t *testing.T) {
 	}
 
 	// Delete and verify gone.
-	if err := db.DeleteUpworkSkill(ctx, id); err != nil {
+	if err := db.DeleteUpworkSkill(ctx, personID, id); err != nil {
 		t.Fatalf("DeleteUpworkSkill: %v", err)
 	}
 }
