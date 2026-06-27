@@ -11,16 +11,237 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // navIDShortlist is the sidebar nav id for the curated shortlist page.
 const navIDShortlist = "shortlist"
 
+// shortlistActiveStages is the curated set: jobs with a hunt_ratings row in one
+// of these stages appear on the shortlist. Excludes new/discarded/rejected which
+// are noise or terminal-negative.
+var shortlistActiveStages = []string{
+	hunt.StageInteresting,
+	hunt.StageSaved,
+	hunt.StageClaimed,
+	hunt.StageApplied,
+	hunt.StageInterview,
+	hunt.StageOffer,
+}
+
+// ── postgres path ──────────────────────────────────────────────────────────────
+
+// pgShortlistEntry enriches a ShortlistRow with PDF-scan results and pre-rendered
+// HTML chips so the template stays logic-free.
+type pgShortlistEntry struct {
+	hunt.ShortlistRow
+	Slug        string
+	HasResume   bool
+	HasCover    bool
+	PackReady   bool // HasResume && HasCover — derived at render
+	FitChipHTML string
+	MarketHTML  string
+	CompDisplay string
+	StageSlug   string // CSS-safe slug for the stage badge
+}
+
+type pgShortlistView struct {
+	Total     int
+	PackReady int
+	WithDocs  int
+	Saved     int // count of stage=="saved" entries for the filter chip label
+	Filter    string
+	Entries   []pgShortlistEntry
+}
+
+// enrichPGShortlist resolves PDF presence and pre-renders chip HTML for each row,
+// then sorts pack-ready-first, then by fit_score desc (already from DB), then company.
+func enrichPGShortlist(rows []hunt.ShortlistRow, applicationsDir string) []pgShortlistEntry {
+	out := make([]pgShortlistEntry, 0, len(rows))
+	for _, row := range rows {
+		e := pgShortlistEntry{
+			ShortlistRow: row,
+			StageSlug:    slugify(row.Stage),
+			FitChipHTML:  fitChipHTML(row.FitScore, row.FitBand),
+			MarketHTML:   marketReadHTML(row.SuccessBand, row.OverUnder),
+			CompDisplay:  salaryStr(row.SalaryMin, row.SalaryMax),
+		}
+		if e.CompDisplay != "" && row.SalaryCurrency != "" {
+			e.CompDisplay += " " + row.SalaryCurrency
+		}
+		if slug, err := findApplicationSlug(applicationsDir, row.Company, row.Title); err == nil {
+			e.Slug = slug
+			slugDir := filepath.Join(applicationsDir, slug)
+			e.HasResume = findApplicationPDF(slugDir, "resume") != ""
+			e.HasCover = findApplicationPDF(slugDir, "cover") != ""
+		}
+		e.PackReady = e.HasResume && e.HasCover
+		out = append(out, e)
+	}
+	// Sort: pack-ready first, then by fit_score desc (already ordered by DB),
+	// then company. Use SliceStable to preserve DB fit_score order within same tier.
+	sort.SliceStable(out, func(i, k int) bool {
+		if out[i].PackReady != out[k].PackReady {
+			return out[i].PackReady // pack-ready first
+		}
+		return false // preserve DB order (fit_score desc, company)
+	})
+	return out
+}
+
+// pgShortlistTmpl renders the postgres-backed shortlist. Fit/market chips are
+// pre-rendered as HTML strings (FitChipHTML, MarketHTML) — no raw DB text in markup.
+var pgShortlistTmpl = template.Must(template.New("pg_shortlist").Parse(`<style>
+.sl-meta{color:var(--text-muted,#64748b);font-family:var(--font-mono,monospace);font-size:.75rem;margin-bottom:1rem}
+.sl-badge{display:inline-block;padding:.1rem .45rem;border-radius:.25rem;font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sl-interesting{background:#1e3a5f;color:#93c5fd}
+.sl-saved{background:#1e293b;color:#94a3b8}
+.sl-claimed{background:#14532d;color:#6ee7b7}
+.sl-applied{background:#3b1c6b;color:#c4b5fd}
+.sl-interview{background:#0d3a26;color:#6ee7b7}
+.sl-offer{background:#14532d;color:#86efac}
+.sl-rejected{background:#3b1c1c;color:#f87171}
+.sl-comp{font-size:.78rem;color:#94a3b8}
+.sl-dl{display:inline-block;margin-right:.4rem;padding:.2rem .55rem;background:#334155;color:#e2e8f0;border-radius:.3rem;text-decoration:none;font-size:.72rem}
+.sl-dl:hover{background:#475569}
+.sl-none{color:#475569;font-size:.75rem}
+.sl-title a{color:#e2e8f0;text-decoration:none}
+.sl-title a:hover{color:#93c5fd}
+.sl-date{font-size:.75rem;color:#64748b;font-variant-numeric:tabular-nums}
+</style>
+<div class="page-header"><h2>Shortlist</h2><p>Curated target vacancies — rated jobs with resume + cover letter</p></div>
+<div class="filter-bar">
+  <a class="filter-chip{{if eq .Filter ""}} active{{end}}" href="/admin/shortlist">All {{.Total}}</a>
+  <a class="filter-chip{{if eq .Filter "docs"}} active{{end}}" href="/admin/shortlist?status=docs">With docs {{.WithDocs}}</a>
+  <a class="filter-chip{{if eq .Filter "pack-ready"}} active{{end}}" href="/admin/shortlist?status=pack-ready">Pack-ready {{.PackReady}}</a>
+  <a class="filter-chip{{if eq .Filter "saved"}} active{{end}}" href="/admin/shortlist?status=saved">Saved {{.Saved}}</a>
+</div>
+<div class="sl-meta">source: hunt_jobs ⋈ hunt_ratings</div>
+<table class="crm-table">
+  <thead><tr><th>Company</th><th>Role</th><th>Fit</th><th>Market</th><th>Stage</th><th>Posted</th><th>Scored</th><th>Comp</th><th>Documents</th></tr></thead>
+  <tbody>
+  {{range .Entries}}
+    <tr>
+      <td class="row-name">{{.Company}}</td>
+      <td class="sl-title">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Title}}</a>{{else}}{{.Title}}{{end}}<span class="row-sub">{{.Location}}</span></td>
+      <td>{{.FitChipHTML}}</td>
+      <td>{{.MarketHTML}}</td>
+      <td><span class="sl-badge sl-{{.StageSlug}}">{{.Stage}}</span></td>
+      <td class="sl-date">{{.PostedDisplay}}</td>
+      <td class="sl-date">{{.ScoredDisplay}}</td>
+      <td class="sl-comp">{{.CompDisplay}}</td>
+      <td>
+        {{if .HasResume}}<a class="sl-dl" href="/admin/shortlist/{{.Slug}}/download/resume">Resume PDF</a>{{end}}
+        {{if .HasCover}}<a class="sl-dl" href="/admin/shortlist/{{.Slug}}/download/cover">Cover PDF</a>{{end}}
+        {{if and (not .HasResume) (not .HasCover)}}<span class="sl-none">—</span>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>`))
+
+// pgShortlistEntryVM wraps pgShortlistEntry with template-friendly display fields.
+// html/template auto-escapes string fields, but FitChipHTML and MarketHTML are
+// pre-escaped HTML — they must be template.HTML to avoid double-escaping.
+type pgShortlistEntryVM struct {
+	pgShortlistEntry
+	FitChipHTML   template.HTML
+	MarketHTML    template.HTML
+	PostedDisplay string
+	ScoredDisplay string
+}
+
+func renderPGShortlistHTML(entries []pgShortlistEntry, filter string) string {
+	var packReady, withDocs, saved int
+	for _, e := range entries {
+		if e.PackReady {
+			packReady++
+		}
+		if e.HasResume || e.HasCover {
+			withDocs++
+		}
+		if e.Stage == hunt.StageSaved {
+			saved++
+		}
+	}
+
+	shown := entries
+	switch filter {
+	case "pack-ready":
+		shown = nil
+		for _, e := range entries {
+			if e.PackReady {
+				shown = append(shown, e)
+			}
+		}
+	case "saved":
+		shown = nil
+		for _, e := range entries {
+			if e.Stage == hunt.StageSaved {
+				shown = append(shown, e)
+			}
+		}
+	case "docs":
+		shown = nil
+		for _, e := range entries {
+			if e.HasResume || e.HasCover {
+				shown = append(shown, e)
+			}
+		}
+	}
+
+	// Build VM slice with template.HTML chip fields and date strings.
+	vms := make([]pgShortlistEntryVM, 0, len(shown))
+	for _, e := range shown {
+		vm := pgShortlistEntryVM{
+			pgShortlistEntry: e,
+			FitChipHTML:      template.HTML(e.FitChipHTML), //nolint:gosec // pre-rendered by fitChipHTML (closed-enum CSS only)
+			MarketHTML:       template.HTML(e.MarketHTML),   //nolint:gosec // pre-rendered by marketReadHTML (closed-enum CSS only)
+			PostedDisplay:    dateStr(e.PostedAt),
+			ScoredDisplay:    dateStr(e.ScoredAt),
+		}
+		vms = append(vms, vm)
+	}
+
+	vm := pgShortlistView{
+		Total:     len(entries),
+		PackReady: packReady,
+		WithDocs:  withDocs,
+		Saved:     saved,
+		Filter:    filter,
+		Entries:   nil, // not used — vms passed separately
+	}
+
+	type tplData struct {
+		pgShortlistView
+		Entries []pgShortlistEntryVM
+	}
+	data := tplData{pgShortlistView: vm, Entries: vms}
+
+	var buf bytes.Buffer
+	if err := pgShortlistTmpl.Execute(&buf, data); err != nil {
+		return `<div class="page-header"><h2>Shortlist</h2><p>render error</p></div>`
+	}
+	return buf.String()
+}
+
+func shortlistPGEmptyHTML() string {
+	return strings.Join([]string{
+		`<div class="page-header"><h2>Shortlist</h2></div>`,
+		`<div class="sl-meta">No rated jobs found — use the Rate form on a job detail page`,
+		` or run the migrate-tracker command to seed from _tracker.json.</div>`,
+	}, "")
+}
+
+// ── JSON / _tracker.json path (rollback lever, kept through Phase 3) ───────────
+//
 // trackerFile mirrors applications/_tracker.json — the operator's curated
-// shortlist of target vacancies (the "favorites"). It is the live source of
-// truth (not hunt_jobs.recommendation_tier, which is unused).
+// shortlist of target vacancies (the "favorites"). Retained for rollback:
+// set SHORTLIST_SOURCE=json to revert to this path. Removed in Phase 3.
+
 type trackerFile struct {
 	Version int          `json:"version"`
 	Updated string       `json:"updated"`
@@ -202,19 +423,45 @@ func shortlistEmptyHTML() string {
 	return `<div class="page-header"><h2>Shortlist</h2></div><div class="sl-meta">No shortlist found — _tracker.json is missing or unreadable.</div>`
 }
 
-// shortlistHandler renders the curated favorites page from _tracker.json, each
-// entry enriched with resume/cover PDF links (shown only when the file exists).
-func shortlistHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc {
+// ── handler ────────────────────────────────────────────────────────────────────
+
+// shortlistHandler renders the curated favorites page. The data source is
+// controlled by the SHORTLIST_SOURCE env var (read at request time for hot-flip):
+//   - "" or "pg" (default): reads hunt_jobs JOIN hunt_ratings (postgres path)
+//   - "json": reads _tracker.json (rollback lever, removed in Phase 3)
+//
+// The download sub-routes (/admin/shortlist/{slug}/download/{kind}) are unchanged
+// and always use the filesystem scan.
+func shortlistHandler(p *resource.Panel, store *hunt.Store, adminUser, applicationsDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tf, err := loadTracker(applicationsDir)
-		if err != nil {
-			slog.WarnContext(r.Context(), "shortlist: load tracker", "err", err)
-			_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, shortlistEmptyHTML())
+		filter := r.URL.Query().Get("status")
+
+		// SHORTLIST_SOURCE=json → rollback to _tracker.json reader.
+		if os.Getenv("SHORTLIST_SOURCE") == "json" {
+			tf, err := loadTracker(applicationsDir)
+			if err != nil {
+				slog.WarnContext(r.Context(), "shortlist: load tracker (json fallback)", "err", err)
+				_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, shortlistEmptyHTML())
+				return
+			}
+			entries := enrichShortlist(tf.Jobs, applicationsDir)
+			_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, renderShortlistHTML(tf, entries, filter))
 			return
 		}
-		entries := enrichShortlist(tf.Jobs, applicationsDir)
-		filter := r.URL.Query().Get("status")
-		_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, renderShortlistHTML(tf, entries, filter))
+
+		// Default postgres path.
+		rows, err := store.ListShortlist(r.Context(), adminUser, shortlistActiveStages)
+		if err != nil {
+			slog.WarnContext(r.Context(), "shortlist: list from postgres", "err", err)
+			_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, shortlistPGEmptyHTML())
+			return
+		}
+		if len(rows) == 0 {
+			_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, shortlistPGEmptyHTML())
+			return
+		}
+		entries := enrichPGShortlist(rows, applicationsDir)
+		_ = p.RenderPageHTML(w, r, "Shortlist", navIDShortlist, renderPGShortlistHTML(entries, filter))
 	}
 }
 

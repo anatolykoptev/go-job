@@ -798,6 +798,75 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 	return &r, nil
 }
 
+// ShortlistRow is the postgres projection for the /admin/shortlist page.
+// It joins hunt_jobs with hunt_ratings for a given user, filtered to the
+// active-stage set. All nullable DB columns use pointer types.
+type ShortlistRow struct {
+	ID             int64
+	Title          string
+	Company        string
+	URL            string
+	Location       string
+	FitScore       *int
+	FitBand        string
+	SuccessBand    string
+	OverUnder      string
+	SalaryMin      *int
+	SalaryMax      *int
+	SalaryCurrency string
+	SalaryInterval string
+	PostedAt       *time.Time
+	ScoredAt       *time.Time
+	Stage          string
+	Note           string
+	RatedAt        time.Time
+}
+
+// ListShortlist returns hunt_jobs rows that have a hunt_ratings row for the given
+// user whose stage is in the provided slice (the active/curated set). Results are
+// ordered by fit_score DESC NULLS LAST, then company ASC.
+func (s *Store) ListShortlist(ctx context.Context, user string, stages []string) ([]ShortlistRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT j.id,
+		       COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.url,''),
+		       COALESCE(j.location,''),
+		       j.fit_score, COALESCE(j.fit_band,''),
+		       COALESCE(j.success_band,''), COALESCE(j.over_under,''),
+		       j.salary_min, j.salary_max,
+		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
+		       j.posted_at, j.scored_at,
+		       r.stage, COALESCE(r.note,''), r.rated_at
+		  FROM hunt_jobs j
+		  JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id
+		 WHERE r.user_name = $1 AND r.stage = ANY($2)
+		 ORDER BY j.fit_score DESC NULLS LAST, j.company`,
+		user, stages,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("hunt: list shortlist: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ShortlistRow
+	for rows.Next() {
+		var row ShortlistRow
+		if err := rows.Scan(
+			&row.ID, &row.Title, &row.Company, &row.URL,
+			&row.Location,
+			&row.FitScore, &row.FitBand,
+			&row.SuccessBand, &row.OverUnder,
+			&row.SalaryMin, &row.SalaryMax,
+			&row.SalaryCurrency, &row.SalaryInterval,
+			&row.PostedAt, &row.ScoredAt,
+			&row.Stage, &row.Note, &row.RatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("hunt: scan shortlist row: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // GetBountyWithRaw returns a single bounty by id including the Raw JSONB column.
 // Use this for audit/debug scenarios where raw source data is needed.
 func (s *Store) GetBountyWithRaw(ctx context.Context, id int64) (*Bounty, error) {

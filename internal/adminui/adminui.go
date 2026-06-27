@@ -87,7 +87,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, applicationsDir)))
-	mux.HandleFunc("GET "+adminBasePath+"/shortlist", a.Require(shortlistHandler(p, applicationsDir)))
+	mux.HandleFunc("GET "+adminBasePath+"/shortlist", a.Require(shortlistHandler(p, store, adminUser, applicationsDir)))
 	mux.Handle("GET "+adminBasePath+"/shortlist/{slug}/download/{kind}", a.Require(shortlistDownloadHandler(applicationsDir)))
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
 	// Resume editor routes (Part-D)

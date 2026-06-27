@@ -12,12 +12,20 @@ import (
 )
 
 // validHuntStages is the allowlist of accepted stage values for hunt_ratings.
+// Triage stages (kanban) + pipeline stages (application funnel) unified per
+// ADR-go-job-002 / Phase 1 unification arc. No SQL CHECK constraint — Go-validated.
 var validHuntStages = map[string]bool{
+	// Triage / kanban stages.
 	"new":         true,
 	"interesting": true,
 	"saved":       true,
 	"discarded":   true,
 	"claimed":     true,
+	// Application pipeline stages (added Phase 1 unification arc).
+	"applied":   true,
+	"interview": true,
+	"offer":     true,
+	"rejected":  true,
 }
 
 // rateHandler returns an http.HandlerFunc that upserts a hunt_ratings row.

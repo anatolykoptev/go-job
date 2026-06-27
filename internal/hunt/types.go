@@ -11,12 +11,23 @@ import (
 
 // Stage values for hunt_ratings.stage. Checked in Go, not via SQL CHECK constraint
 // to keep the schema flexible for future stages without migrations.
+//
+// Triage stages (kanban):
 const (
 	StageNew         = "new"
 	StageInteresting = "interesting"
 	StageSaved       = "saved"
 	StageDiscarded   = "discarded"
 	StageClaimed     = "claimed"
+)
+
+// Pipeline stages (application funnel) — added in Phase 1 unification arc
+// (ADR-go-job-002). No new columns; stage has no SQL CHECK constraint.
+const (
+	StageApplied   = "applied"
+	StageInterview = "interview"
+	StageOffer     = "offer"
+	StageRejected  = "rejected"
 )
 
 // Status values for hunt entry lifecycle. Default is "open".
