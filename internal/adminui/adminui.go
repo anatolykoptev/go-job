@@ -51,6 +51,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 		SessionTTL: 12 * time.Hour,
 		Secure:     true,
 	})
+	checkAuthCapabilities(a)
 	p := resource.New(resource.Config{
 		Title:    "go-job",
 		BasePath: adminBasePath,
@@ -121,6 +122,16 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.Handle("POST "+adminBasePath+"/upwork/skill/{id}/delete", a.Require(upworkSkillDeleteHandler(a, []byte(csrfKey))))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
+}
+
+// checkAuthCapabilities panics at startup if a does not implement cookieNamer
+// (SessionCookieName). Mirrors go-panel resource/resource.go:377 validateWriterConfig:
+// the bespoke CSRF handlers on this mux perform the same session-cookie binding as
+// go-panel's Writer path, so they need the same fail-closed guarantee at construction.
+func checkAuthCapabilities(a auth.Authenticator) {
+	if _, ok := any(a).(cookieNamer); !ok {
+		panic("adminui: authenticator must implement SessionCookieName() — CSRF session binding fail-closed")
+	}
 }
 
 func envOr(key, def string) string {

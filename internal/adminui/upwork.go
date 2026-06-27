@@ -120,7 +120,7 @@ func parseDollarsToCents(s string) (int64, error) {
 
 // upworkHandler renders the Upwork profile page.
 // It accepts auth + csrfKey so it can issue a CSRF token for the edit sub-forms.
-func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
 		tmplFuncCharClass: charCounterClass,
 		tmplFuncCharLabel: charCounterLabel,
@@ -181,7 +181,7 @@ func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.Han
 		}
 
 		// Issue CSRF token for the edit sub-forms.
-		sessVal := sessionValue(r, a.SessionCookieName())
+		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 		data.CSRFToken = csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
 
 		var buf bytes.Buffer
@@ -202,7 +202,7 @@ func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.Han
 // resume_persons.headline/hourly_rate remain the general resume fields.
 // Categories are read-modify-write: existing values are preserved unless
 // a future categories editor is added.
-func upworkOverviewEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func upworkOverviewEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -238,7 +238,7 @@ func upworkOverviewEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFun
 }
 
 // upworkSkillCreateHandler handles POST /admin/upwork/skill.
-func upworkSkillCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func upworkSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -262,7 +262,7 @@ func upworkSkillCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc
 }
 
 // upworkSkillDeleteHandler handles POST /admin/upwork/skill/{id}/delete.
-func upworkSkillDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
