@@ -1,6 +1,12 @@
 package adminui
 
 // CopyBlockVM is the view-model for the {{define "copyBlock"}} partial.
+//
+// PreID/Content/FieldNum/Label/CharCount/CharLimit are the original Upwork
+// (#127) contract. CopyField/AriaNoun/TitleHint were added by the LinkedIn
+// strangler cutover (Phase 5) so the ONE shared partial reproduces LinkedIn's
+// pre-existing byte-for-byte attributes; all three default to the Upwork
+// values when empty, so Upwork output is unchanged.
 type CopyBlockVM struct {
 	PreID     string
 	Content   string
@@ -8,6 +14,17 @@ type CopyBlockVM struct {
 	Label     string
 	CharCount int
 	CharLimit int
+
+	// CopyField overrides the literal data-copy-field attribute value.
+	// Empty -> FieldNum (Upwork). LinkedIn passes its section number string
+	// (e.g. "3"), where multiple blocks in one section share the section id.
+	CopyField string
+	// AriaNoun is the no-label aria-label noun ("section" for LinkedIn).
+	// Empty -> "field" (Upwork). Only used when Label is empty.
+	AriaNoun string
+	// TitleHint is inserted before "paste" in the button title
+	// ("LinkedIn " for LinkedIn). Empty -> "" (Upwork: "...for paste").
+	TitleHint string
 }
 
 // CharChipVM is the view-model for the {{define "charChip"}} partial.
@@ -17,7 +34,7 @@ type CharChipVM struct {
 }
 
 // sharedPartialsSrc contains reusable Go template defines shared across adminui pages.
-// No page wires these yet (Phase 3 = Upwork, Phase 5 = LinkedIn strangler cutover).
+// Consumed by upwork.go (#127) and linkedin.go (Phase 5 strangler cutover).
 const sharedPartialsSrc = `
 {{define "sharedCSS"}}
   .li-pre{background:var(--bg-deep,#0f172a);border:1px solid var(--border-subtle,#1e293b);border-radius:var(--radius,.375rem);padding:.875rem 1rem;font-family:var(--font-mono,monospace);font-size:.8125rem;color:var(--text-primary,#f1f5f9);white-space:pre-wrap;word-break:break-word;max-height:18rem;overflow-y:auto;line-height:1.6;margin:0}
@@ -38,9 +55,9 @@ const sharedPartialsSrc = `
   <pre class="li-pre" id="{{.PreID}}">{{.Content}}</pre>
   <button class="gd-copy-btn" type="button"
           data-copy-pre="{{.PreID}}"
-          data-copy-field="{{.FieldNum}}"
-          aria-label="Copy {{if .Label}}{{.Label}}{{else}}field {{.FieldNum}}{{end}}"
-          title="Paragraph spacing normalized for paste">Copy</button>
+          data-copy-field="{{if .CopyField}}{{.CopyField}}{{else}}{{.FieldNum}}{{end}}"
+          aria-label="Copy {{if .Label}}{{.Label}}{{else}}{{if .AriaNoun}}{{.AriaNoun}}{{else}}field{{end}} {{if .CopyField}}{{.CopyField}}{{else}}{{.FieldNum}}{{end}}{{end}}"
+          title="Paragraph spacing normalized for {{.TitleHint}}paste">Copy</button>
   {{if gt .CharCount 0}}<span class="{{charClass .CharCount .CharLimit}}">{{charLabel .CharCount .CharLimit}}</span>{{end}}
 </div>
 {{end}}

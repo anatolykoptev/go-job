@@ -35,7 +35,9 @@ const (
 // linkedInItem is one ordered element of a section's content.
 //
 // Kind == liItemProse: only HTML is populated.
-// Kind == liItemCode:  Content / CharCount / CharLimit / PreID / Label populated.
+// Kind == liItemCode:  Content / CharCount / CharLimit / PreID / Label populated,
+//
+//	and CopyVM holds the shared-partial view-model for the copy block.
 type linkedInItem struct {
 	Kind string
 
@@ -48,6 +50,10 @@ type linkedInItem struct {
 	CharCount int
 	CharLimit int
 	PreID     string
+
+	// CopyVM is the shared copyBlock partial view-model for a code item.
+	// Built once in flushFence so the template just calls {{template "copyBlock" .CopyVM}}.
+	CopyVM CopyBlockVM
 }
 
 // linkedInSection is one parsed H2 section from LINKEDIN-UPDATE.md.
@@ -66,10 +72,8 @@ type linkedInPageData struct {
 
 // linkedinHandler serves GET /admin/linkedin.
 func linkedinHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc {
-	tmpl := template.Must(template.New("linkedin").Funcs(template.FuncMap{
-		tmplFuncCharClass: charCounterClass,
-		tmplFuncCharLabel: charCounterLabel,
-	}).Parse(linkedinTmplSrc))
+	tmpl := template.Must(template.New("linkedin").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc))
+	template.Must(tmpl.Parse(linkedinTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		data := buildLinkedInPageData(applicationsDir)
@@ -151,14 +155,31 @@ func parseLinkedInSections(md string) []linkedInSection {
 		}
 		content := strings.TrimSpace(strings.Join(codeLines, "\n"))
 		blockIdx++
-		current.Items = append(current.Items, linkedInItem{
+		preID := fmt.Sprintf("li-code-%s-%d", current.Number, blockIdx)
+		item := linkedInItem{
 			Kind:      liItemCode,
 			Label:     pendingLabel,
 			Content:   content,
 			CharCount: len(content),
 			CharLimit: current.CharLimit,
-			PreID:     fmt.Sprintf("li-code-%s-%d", current.Number, blockIdx),
-		})
+			PreID:     preID,
+		}
+		// Build the shared copyBlock view-model. CopyField/AriaNoun/TitleHint
+		// reproduce LinkedIn's pre-strangler byte-for-byte attributes:
+		// data-copy-field carries the SECTION number (shared by all blocks in a
+		// section), the no-label aria noun is "section", and the title says
+		// "LinkedIn paste".
+		item.CopyVM = CopyBlockVM{
+			PreID:     preID,
+			Content:   content,
+			Label:     pendingLabel,
+			CharCount: item.CharCount,
+			CharLimit: item.CharLimit,
+			CopyField: current.Number,
+			AriaNoun:  "section",
+			TitleHint: "LinkedIn ",
+		}
+		current.Items = append(current.Items, item)
 		pendingLabel = ""
 		codeLines = nil
 	}
@@ -253,16 +274,14 @@ func parseH2Number(heading string) (num, title string) {
 }
 
 // linkedinTmplSrc is the HTML content fragment for the LinkedIn update page.
+// The copy-block + char-chip markup and their CSS (.li-pre/.li-code-wrap/
+// .gd-copy-btn/.cc-*) live in sharedPartialsSrc (partials.go); this template
+// pulls them in via {{template "sharedCSS" .}} + {{template "copyBlock" .CopyVM}}.
 const linkedinTmplSrc = `<style>
   .li-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
   .li-section h3{font-size:.9375rem;font-weight:700;color:var(--text-primary,#f1f5f9);margin-bottom:.5rem;display:flex;align-items:center;gap:.625rem;flex-wrap:wrap}
   .li-section h3 a{color:inherit;text-decoration:none}
   .li-section h3 a:hover{color:var(--accent,#60a5fa)}
-  .li-code-wrap{position:relative;margin-bottom:.75rem}
-  .li-pre{background:var(--bg-deep,#0f172a);border:1px solid var(--border-subtle,#1e293b);border-radius:var(--radius,.375rem);padding:.875rem 1rem;font-family:var(--font-mono,monospace);font-size:.8125rem;color:var(--text-primary,#f1f5f9);white-space:pre-wrap;word-break:break-word;max-height:18rem;overflow-y:auto;line-height:1.6;margin:0}
-  .gd-copy-btn{position:absolute;top:.5rem;right:.5rem;padding:.25rem .625rem;background:var(--bg-elevated,#1e293b);color:var(--text-secondary,#94a3b8);border:1px solid var(--border,#334155);border-radius:var(--radius,.375rem);font-family:var(--font-mono,monospace);font-size:.6875rem;cursor:pointer;transition:color .15s,background-color .15s,border-color .15s;white-space:nowrap}
-  .gd-copy-btn:hover{color:var(--text-primary,#f1f5f9);border-color:var(--text-muted,#64748b)}
-  .gd-copy-btn.copied{color:var(--green,#34d399);border-color:var(--green-dim,#052e16);background:var(--green-dim,#052e16)}
   .li-block-label{font-size:.8125rem;font-weight:600;color:var(--text-primary,#f1f5f9);margin:.5rem 0 .25rem}
   .li-instructions{font-size:.8125rem;color:var(--text-secondary,#94a3b8);line-height:1.65}
   .li-instructions p{margin-bottom:.5rem}
@@ -277,10 +296,7 @@ const linkedinTmplSrc = `<style>
   .li-toc{display:flex;gap:.375rem;flex-wrap:wrap;margin-bottom:1.5rem}
   .li-toc a{padding:.25rem .625rem;border:1px solid var(--border,#334155);border-radius:9999px;color:var(--text-secondary,#94a3b8);font-size:.75rem;font-weight:500;text-decoration:none;transition:all .15s}
   .li-toc a:hover{color:var(--text-primary,#f1f5f9);background:var(--bg-elevated,#1e293b);border-color:var(--text-muted,#64748b)}
-  .cc-muted{font-size:.6875rem;color:var(--text-muted,#64748b);margin-left:.375rem}
-  .cc-green{font-size:.6875rem;color:var(--green,#34d399);margin-left:.375rem}
-  .cc-amber{font-size:.6875rem;color:#f59e0b;margin-left:.375rem}
-  .cc-red{font-size:.6875rem;color:#ef4444;margin-left:.375rem}
+{{template "sharedCSS" .}}
 </style>
 
 <div class="page-header">
@@ -303,7 +319,6 @@ const linkedinTmplSrc = `<style>
 </nav>
 
 {{range .Sections}}
-{{$secNum := .Number}}
 <div class="li-section" id="li-section-{{.Number}}">
   <h3>
     <a href="#li-section-{{.Number}}">#</a>
@@ -314,15 +329,7 @@ const linkedinTmplSrc = `<style>
   {{if eq .Kind "code"}}
   {{if .Content}}
   {{if .Label}}<div class="li-block-label">{{.Label}}</div>{{end}}
-  <div class="li-code-wrap">
-    <pre class="li-pre" id="{{.PreID}}">{{.Content}}</pre>
-    <button class="gd-copy-btn" type="button"
-            data-copy-pre="{{.PreID}}"
-            data-copy-field="{{$secNum}}"
-            aria-label="Copy {{if .Label}}{{.Label}}{{else}}section {{$secNum}}{{end}}"
-            title="Paragraph spacing normalized for LinkedIn paste">Copy</button>
-    {{if gt .CharCount 0}}<span class="{{charClass .CharCount .CharLimit}}">{{charLabel .CharCount .CharLimit}}</span>{{end}}
-  </div>
+  {{template "copyBlock" .CopyVM}}
   {{end}}
   {{else}}
   <div class="li-instructions">{{.HTML}}</div>
