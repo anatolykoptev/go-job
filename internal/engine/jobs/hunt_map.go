@@ -105,7 +105,7 @@ func JobListingToHunt(j engine.JobListing) hunt.Job {
 		salMax = *j.SalaryMax
 	}
 	source := j.Source
-	if source == "" || source == "other" {
+	if source == "" || source == "other" { //nolint:goconst
 		if derived := SourceFromURL(j.URL); derived != "" {
 			source = derived
 		}
