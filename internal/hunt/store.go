@@ -318,7 +318,16 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 			SET last_seen_at = NOW(),
 			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_jobs.status = 'open' THEN EXCLUDED.status ELSE hunt_jobs.status END,
-			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at)
+			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at),
+			    -- Fill-only: promote empty stored fields from a newer ingest but never clobber
+			    -- an already-good value. Fixes weak->ok re-ingest: first weak pass stores
+			    -- empty title + raw HTML blob in description; subsequent ok pass fills them.
+			    -- WHERE title = '' is the queryable proxy for rows needing re-enrichment;
+			    -- no additional migration column is required.
+			    title = CASE WHEN hunt_jobs.title = '' THEN EXCLUDED.title ELSE hunt_jobs.title END,
+			    description = CASE WHEN hunt_jobs.description = '' THEN EXCLUDED.description ELSE hunt_jobs.description END,
+			    company = CASE WHEN hunt_jobs.company IS NULL THEN EXCLUDED.company ELSE hunt_jobs.company END,
+			    skills = CASE WHEN array_length(hunt_jobs.skills, 1) IS NULL THEN EXCLUDED.skills ELSE hunt_jobs.skills END
 		RETURNING id, (xmax = 0) AS created`,
 		j.DedupHash, j.Title, nullStr(j.Company), j.URL, j.Source,
 		nullStr(j.ExternalID), nullStr(j.Location), nullStr(j.Remote),
