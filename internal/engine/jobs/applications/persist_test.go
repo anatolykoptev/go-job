@@ -167,6 +167,65 @@ func TestPersist_WritePDFError(t *testing.T) {
 	}
 }
 
+// TestPersist_FileMode0644 verifies that all artifacts written by Persist are
+// mode 0644 (not 0600). This is the root-cause guard for the prod incident where
+// cap_drop:ALL removes CAP_DAC_OVERRIDE, so a 0600 file written by one uid is
+// unreadable by a different uid — or even the same uid when the process lacks the
+// DAC_OVERRIDE capability. 0644 lets the container process read its own files
+// under any cap_drop profile.
+//
+// The test goes RED if any writeMD/writeMeta call uses 0o600, confirming
+// falsification: revert the 0o600→0o644 change and this test must fail.
+func TestPersist_FileMode0644(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+
+	auth := applications.New(nil, "")
+	if _, err := auth.Persist(context.Background(), 42, "# Resume", "# Cover"); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	for _, name := range []string{"resume.md", "cover.md", "meta.json"} {
+		p := filepath.Join(root, "go-job", "applications", "42", name)
+		info, statErr := os.Stat(p)
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", name, statErr)
+		}
+		if got := info.Mode() & 0o777; got != 0o644 {
+			t.Errorf("%s: mode %04o, want 0644 — files written 0600 are unreadable under cap_drop:ALL", name, got)
+		}
+	}
+}
+
+// TestPersist_PDFMode0644 verifies that PDF artifacts are mode 0644.
+// The stub renderer returns non-empty bytes, triggering the writePDF path.
+// Goes RED if writePDF uses 0o600 in the atomic temp-then-rename write.
+func TestPersist_PDFMode0644(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", root)
+
+	renderer := &stubRenderer{pdf: []byte("%PDF-1.4 stub")}
+	auth := applications.New(renderer, "")
+	res, err := auth.Persist(context.Background(), 43, "# Resume", "# Cover")
+	if err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if !res.PDFRendered {
+		t.Fatal("PDFRendered must be true with stub renderer returning bytes")
+	}
+
+	for _, name := range []string{"resume.md", "cover.md", "meta.json", "resume.pdf", "cover.pdf"} {
+		p := filepath.Join(root, "go-job", "applications", "43", name)
+		info, statErr := os.Stat(p)
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", name, statErr)
+		}
+		if got := info.Mode() & 0o777; got != 0o644 {
+			t.Errorf("%s: mode %04o, want 0644 — files written 0600 are unreadable under cap_drop:ALL", name, got)
+		}
+	}
+}
+
 // TestErrNoBinary_IsWrapped verifies that errors.Is(wrapped, ErrNoBinary)
 // works when the sentinel is wrapped with fmt.Errorf %w — the pattern the
 // pdfrender adapter uses when returning "binary not found" errors.
