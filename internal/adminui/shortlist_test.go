@@ -193,23 +193,48 @@ func TestStageBadgeHTML(t *testing.T) {
 	}
 }
 
-// TestDocsChipHTML verifies the four documentation states produce distinct badges.
-// Red-on-revert: removing docsChipHTML or altering its switch → wrong badge class → fails.
+// TestDocsChipHTML verifies the four documentation states produce download links or a dash.
+// Red-on-revert: removing docsChipHTML or reverting to badge-only → href assertions fail.
 func TestDocsChipHTML(t *testing.T) {
+	const testID int64 = 42
 	cases := []struct {
 		hasResume, hasCover bool
-		wantContains        string
+		wantAll             []string // every string must appear in the output
 	}{
-		{true, true, "badge-green"},
-		{true, false, "Resume"},
-		{false, true, "Cover"},
-		{false, false, "badge-gray"},
+		{
+			hasResume: true, hasCover: true,
+			wantAll: []string{
+				`href="/admin/jobs/42/download/resume"`,
+				`href="/admin/jobs/42/download/cover"`,
+				"badge-green",
+			},
+		},
+		{
+			hasResume: true, hasCover: false,
+			wantAll: []string{
+				`href="/admin/jobs/42/download/resume"`,
+				"Resume",
+			},
+		},
+		{
+			hasResume: false, hasCover: true,
+			wantAll: []string{
+				`href="/admin/jobs/42/download/cover"`,
+				"Cover",
+			},
+		},
+		{
+			hasResume: false, hasCover: false,
+			wantAll: []string{"badge-gray"},
+		},
 	}
 	for _, tc := range cases {
-		got := docsChipHTML(tc.hasResume, tc.hasCover)
-		if !strings.Contains(got, tc.wantContains) {
-			t.Errorf("docsChipHTML(resume=%v, cover=%v): want %q, got %q",
-				tc.hasResume, tc.hasCover, tc.wantContains, got)
+		got := docsChipHTML(testID, tc.hasResume, tc.hasCover)
+		for _, want := range tc.wantAll {
+			if !strings.Contains(got, want) {
+				t.Errorf("docsChipHTML(id=%d, resume=%v, cover=%v): want %q in output, got %q",
+					testID, tc.hasResume, tc.hasCover, want, got)
+			}
 		}
 	}
 }
