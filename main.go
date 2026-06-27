@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	kitembed "github.com/anatolykoptev/go-kit/embed"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
 	linkedin "github.com/anatolykoptev/go-linkedin"
@@ -380,10 +381,19 @@ func initEngine() hunt.Notifier {
 		slog.Info("memdb client initialized", slog.String("url", c.MemDBURL))
 	}
 
-	// Embed client (for embedding-based bounty matching)
+	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).
 	if c.EmbedURL != "" {
-		jobs.SetEmbedClient(jobs.NewEmbedClient(c.EmbedURL))
-		slog.Info("embed client initialized", slog.String("url", c.EmbedURL))
+		embedder, embedErr := kitembed.NewClient(c.EmbedURL,
+			kitembed.WithBackend("http"),
+			kitembed.WithDim(1024),
+			kitembed.WithLogger(slog.Default()),
+		)
+		if embedErr != nil {
+			slog.Error("embed client init failed", slog.Any("error", embedErr))
+		} else {
+			jobs.SetEmbedClient(embedder)
+			slog.Info("embed client initialized", slog.String("url", c.EmbedURL))
+		}
 	}
 
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)

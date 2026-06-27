@@ -167,8 +167,8 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 			return fmt.Errorf("execute %s: %w", entry.Name(), err)
 		}
 
-		// Some migrations (e.g. 002 AGE graph) set search_path to ag_catalog; reset it.
-		if isSoft || strings.Contains(entry.Name(), "002") {
+		// Soft migrations (e.g. 002 AGE graph) set search_path to ag_catalog; reset it.
+		if isSoft {
 			_, _ = conn.Exec(ctx, "SET search_path TO public")
 		}
 

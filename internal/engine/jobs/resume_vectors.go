@@ -109,8 +109,14 @@ func (db *ResumeDB) UpsertVector(
 	return id, err
 }
 
+// minVectorSimilarity is the cosine similarity floor for vector search results.
+// Mirrors the searchRelativity=0.5 that MemDB applied; results below this threshold
+// are not meaningfully related and would inflate the FTS fallback comparison.
+const minVectorSimilarity = 0.5
+
 // SearchByVector performs exact cosine-distance search via pgvector (<=>).
-// Only rows with non-NULL embeddings are scanned.
+// Only rows with non-NULL embeddings are scanned. Results with cosine similarity
+// below minVectorSimilarity are excluded.
 func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int) ([]VectorRow, error) {
 	vec := vectorLiteral(qvec)
 	rows, err := db.pool.Query(ctx, `
@@ -119,9 +125,10 @@ func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int
 		FROM resume_vectors
 		WHERE user_name = $2
 		  AND embedding IS NOT NULL
+		  AND 1.0 - (embedding <=> $1::vector) >= $4
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
-	`, vec, resumeVectorUser, topK)
+	`, vec, resumeVectorUser, topK, minVectorSimilarity)
 	if err != nil {
 		return nil, err
 	}
@@ -212,13 +219,4 @@ func (db *ResumeDB) UpdateVector(
 		return fmt.Errorf("resume_vectors: row %d not found", id)
 	}
 	return nil
-}
-
-// CountVectors returns the total number of resume_vectors rows for this user.
-func (db *ResumeDB) CountVectors(ctx context.Context) (int64, error) {
-	var n int64
-	err := db.pool.QueryRow(ctx, `
-		SELECT count(*) FROM resume_vectors WHERE user_name = $1
-	`, resumeVectorUser).Scan(&n)
-	return n, err
 }

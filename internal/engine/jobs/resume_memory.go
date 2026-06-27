@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strconv"
 )
 
@@ -60,11 +61,19 @@ func SearchResumeMemory(ctx context.Context, query string, topK int) (*ResumeMem
 
 	ec := GetEmbedClient()
 	if ec != nil && db.HasEmbedding() {
-		qvec, err := ec.EmbedQuery(ctx, query)
-		if err != nil {
+		qvec, err := ec.EmbedQuery(ctx, "query: "+query)
+		switch {
+		case err != nil:
 			slog.Warn("resume_memory: embed query failed, using FTS", slog.Any("error", err))
 			resumeEmbedFailuresTotal.Inc()
-		} else if len(qvec) == expectedEmbedDim {
+		case len(qvec) != expectedEmbedDim:
+			slog.Warn("resume_memory: embed query dim mismatch, using FTS",
+				slog.Int("got", len(qvec)), slog.Int("want", expectedEmbedDim))
+			resumeEmbedFailuresTotal.Inc()
+		case containsNonFinite(qvec):
+			slog.Warn("resume_memory: embed returned non-finite query vector, using FTS")
+			resumeEmbedFailuresTotal.Inc()
+		default:
 			rows, err = db.SearchByVector(ctx, qvec, topK)
 			if err != nil {
 				return nil, err
@@ -186,6 +195,18 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 
 // --- Private helpers ---
 
+// containsNonFinite reports whether any component of v is NaN or infinite.
+// pgvector rejects such vectors at INSERT/UPDATE time; we detect them early and
+// fall back to FTS storage instead of propagating a DB error.
+func containsNonFinite(v []float32) bool {
+	for _, f := range v {
+		if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
+			return true
+		}
+	}
+	return false
+}
+
 // embedPassage embeds a single passage text and returns the vector + backend label.
 // Returns (nil, backendFTS) when the embedder is absent, encounters an error, or returns
 // a vector of the wrong dimension; bumps resumeEmbedFailuresTotal on error/mismatch.
@@ -196,21 +217,25 @@ func embedPassage(ctx context.Context, db *ResumeDB, content, op string) ([]floa
 		return nil, backendFTS
 	}
 
-	vecs, err := ec.EmbedPassages(ctx, []string{content})
+	vecs, err := ec.Embed(ctx, []string{"passage: " + content})
 	switch {
 	case err != nil:
 		slog.Warn(op+": embed failed, storing FTS-only", slog.Any("error", err))
 		resumeEmbedFailuresTotal.Inc()
 		return nil, backendFTS
-	case len(vecs) > 0 && len(vecs[0]) == expectedEmbedDim:
-		return vecs[0], backendVector
-	case len(vecs) > 0:
+	case len(vecs) == 0 || len(vecs[0]) == 0:
+		return nil, backendFTS
+	case len(vecs[0]) != expectedEmbedDim:
 		slog.Warn(op+": embed dim mismatch, storing FTS-only",
 			slog.Int("got", len(vecs[0])),
 			slog.Int("want", expectedEmbedDim))
 		resumeEmbedFailuresTotal.Inc()
 		return nil, backendFTS
-	default:
+	case containsNonFinite(vecs[0]):
+		slog.Warn(op+": embed returned non-finite vector, storing FTS-only")
+		resumeEmbedFailuresTotal.Inc()
 		return nil, backendFTS
+	default:
+		return vecs[0], backendVector
 	}
 }

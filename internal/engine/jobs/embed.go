@@ -6,26 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
-	"os"
 	"time"
+
+	kitembed "github.com/anatolykoptev/go-kit/embed"
 )
 
 // EmbedClient calls an OpenAI-compatible embedding server.
+// Used by tests and as a lower-level fallback; production code uses the
+// kitembed.Embedder singleton set by SetEmbedClient.
 type EmbedClient struct {
 	baseURL string
-	token   string // Authorization: Bearer token (from EMBED_TOKEN env)
 	http    *http.Client
 }
 
 // NewEmbedClient creates an embed client for the given base URL.
-// It reads EMBED_TOKEN from the environment and sends it as a Bearer token
-// on every request (required by embed.krolik.tools).
 func NewEmbedClient(baseURL string) *EmbedClient {
 	return &EmbedClient{
 		baseURL: baseURL,
-		token:   os.Getenv("EMBED_TOKEN"),
 		http:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -91,15 +89,12 @@ func (c *EmbedClient) embedRaw(ctx context.Context, texts []string) ([][]float32
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("embed-server returned status %d", resp.StatusCode)
@@ -119,43 +114,13 @@ func (c *EmbedClient) embedRaw(ctx context.Context, texts []string) ([][]float32
 	return vecs, nil
 }
 
-// Healthy checks if embed-server is reachable.
-func (c *EmbedClient) Healthy(ctx context.Context) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
-	if err != nil {
-		return false
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
+// Package-level embed client (go-kit Embedder), set by SetEmbedClient.
+// Production code constructs this via kitembed.NewClient which auto-resolves
+// EMBED_TOKEN from the environment and handles retries/circuit-breaking.
+var embedClient kitembed.Embedder
 
-// CosineSimilarity computes cosine similarity between two vectors.
-func CosineSimilarity(a, b []float32) float32 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	denom := math.Sqrt(normA) * math.Sqrt(normB)
-	if denom == 0 {
-		return 0
-	}
-	return float32(dot / denom)
-}
+// SetEmbedClient sets the package-level embedder.
+func SetEmbedClient(c kitembed.Embedder) { embedClient = c }
 
-// Package-level embed client, set by SetEmbedClient.
-var embedClient *EmbedClient
-
-// SetEmbedClient sets the package-level embed client.
-func SetEmbedClient(c *EmbedClient) { embedClient = c }
-
-// GetEmbedClient returns the package-level embed client (nil if not configured).
-func GetEmbedClient() *EmbedClient { return embedClient }
+// GetEmbedClient returns the package-level embedder (nil if not configured).
+func GetEmbedClient() kitembed.Embedder { return embedClient }
