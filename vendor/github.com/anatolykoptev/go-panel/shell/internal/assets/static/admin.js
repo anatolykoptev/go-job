@@ -6,14 +6,19 @@
     p.type=p.type==='password'?'text':'password';
   });
 
-  // Sidebar toggle
+  // Sidebar toggle — persists to a server-readable cookie (sb-c) so the
+  // server can SSR the collapsed class directly, killing the FOUC.
+  // The server already applies the collapsed class; JS only handles toggling.
   var sb=document.getElementById('sidebar');
   var toggle=document.getElementById('sidebar-toggle');
-  if(sb && localStorage.getItem('sb-c')==='1') sb.classList.add('collapsed');
+  function readSbc(){return (document.cookie.match(/(?:^|;\s*)sb-c=([^;]*)/)||[])[1];}
+  // Safety net: if SSR missed the class (e.g. cached page), apply client-side.
+  if(sb && readSbc()==='1') sb.classList.add('collapsed');
   if(toggle) toggle.addEventListener('click',function(e){
     e.preventDefault();
     sb.classList.toggle('collapsed');
-    localStorage.setItem('sb-c', sb.classList.contains('collapsed')?'1':'0');
+    var v=sb.classList.contains('collapsed')?'1':'0';
+    document.cookie='sb-c='+v+';path=/;max-age=604800;samesite=Lax';
   });
 
   // Sidebar nav active state

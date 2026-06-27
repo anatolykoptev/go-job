@@ -171,7 +171,7 @@ func resumeExperienceCreateHandler(a auth.Authenticator, csrfKey []byte) http.Ha
 			return
 		}
 		title := r.FormValue("title")
-		company := r.FormValue("company")
+		company := r.FormValue(colCompany)
 		if title == "" || company == "" {
 			http.Error(w, "title and company are required", http.StatusBadRequest)
 			return

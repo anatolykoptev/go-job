@@ -1,8 +1,15 @@
 package shell
 
-import "github.com/anatolykoptev/go-panel/shell/internal/assets"
+import (
+	"context"
+
+	"github.com/anatolykoptev/go-panel/shell/internal/assets"
+)
 
 // NavItem is a sidebar navigation entry registered by a Resource.
+//
+// NavItem contains a func field (Badge) and is therefore NOT comparable —
+// do not use == on NavItem values or as map keys.
 type NavItem struct {
 	ID     string
 	Label  string
@@ -10,11 +17,21 @@ type NavItem struct {
 	URL    string
 	Active bool
 	Group  string // non-empty = this item is a group header, not a link
+
+	// Badge is an optional closure returning a short label/count pill shown
+	// next to the nav item (e.g. "12", "new"). Called once per page render —
+	// wrap with shell.CachedBadge to avoid a per-render DB query.
+	// nil = no badge (zero-value safe; existing callers are unaffected).
+	// The returned string is HTML-escaped by templ; do NOT pass templ.Raw.
+	Badge func(ctx context.Context) string
 }
 
 // Layout renders the full admin page chrome: html head, pm7 CSS, sidebar nav,
 // and a content slot. Used for non-htmx (full-page) requests.
 // For htmx requests, render the content component directly (fragment swap).
+//
+// New state (sidebar collapse) is threaded via context.Context so this
+// signature stays frozen: use shell.ContextWithSidebar before calling Render.
 templ Layout(title string, nav []NavItem, content templ.Component) {
 	<!DOCTYPE html>
 	<html lang="en" class="dark">
@@ -28,7 +45,7 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 		</head>
 		<body>
 			<div class="app">
-				<aside class="sidebar" id="sidebar">
+				<aside class={ "sidebar", templ.KV("collapsed", SidebarFromContext(ctx).Collapsed) } id="sidebar">
 					<div class="sidebar-header">
 						<h1>{ title }</h1>
 						<button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
@@ -43,11 +60,19 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 								<a
 									class={ "sidebar-item pm7-sidebar-item", templ.KV("active pm7-sidebar-item--active", item.Active) }
 									href={ templ.SafeURL(item.URL) }
+									if item.Active {
+										aria-current="page"
+									}
 								>
 									if item.Icon != "" {
 										<span class="sidebar-icon">{ item.Icon }</span>
 									}
 									<span class="sidebar-label">{ item.Label }</span>
+									if item.Badge != nil {
+										if b := item.Badge(ctx); b != "" {
+											<span class="sidebar-count">{ b }</span>
+										}
+									}
 								</a>
 							}
 						}
