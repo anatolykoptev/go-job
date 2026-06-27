@@ -31,7 +31,7 @@ var validHuntStages = map[string]bool{
 // rateHandler returns an http.HandlerFunc that upserts a hunt_ratings row.
 // The handler verifies the CSRF token before writing.
 // Wrap with a.Require() before mounting on the mux.
-func rateHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func rateHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -49,7 +49,7 @@ func rateHandler(store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey 
 
 		// CSRF verification: token must be bound to the current session cookie.
 		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.SessionCookieName())
+		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
