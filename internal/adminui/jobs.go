@@ -18,6 +18,7 @@ const (
 	colStatus   = "status"
 	colSource   = "source"
 	colKeyTitle = "title"
+	colKeyFit   = "fit"
 	keyRecent   = "recent"
 	colLastSeen = "last_seen_at"
 	lblStatus   = "Status"
@@ -28,6 +29,9 @@ const (
 	colPlatform = "platform"
 	keyQ        = "q"
 )
+
+// colWidth8rem is the shared column width used for compact chip columns.
+const colWidth8rem = "8rem"
 
 // Fit-band chip constants — CLOSED ENUM. Only these values are interpolated into
 // HTML. Unknown bands fall through to the muted fallback (never raw DB text).
@@ -80,14 +84,14 @@ const (
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: "Title / Company", Sortable: true, SQLExpr: colKeyTitle},
-		{Key: "fit", Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "8rem"},
+		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: colWidth8rem},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
 		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "posted_at", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: "6rem"},
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false, Width: "6rem"},
 	},
-	DefaultKey: "fit",
+	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
 }
 
