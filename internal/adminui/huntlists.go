@@ -59,7 +59,7 @@ func boolStr(b bool) string {
 
 var bountiesSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: colKeyTitle},
+		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: colKeyTitle},
 		{Key: "org", Label: "Org", Sortable: true, SQLExpr: "org", NullsLast: true},
 		{Key: "amount", Label: "Amount", Sortable: true, SQLExpr: "amount_cents", NullsLast: true},
 		{Key: colSource, Label: lblSource, Sortable: false},
@@ -99,7 +99,7 @@ func bountiesResource(pool *pgxpool.Pool) resource.Resource {
 
 var freelanceSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: colKeyTitle},
+		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: colKeyTitle},
 		{Key: colPlatform, Label: lblPlatform, Sortable: true, SQLExpr: colPlatform},
 		{Key: "budget", Label: "Budget", Sortable: true, SQLExpr: "COALESCE(budget_max,0)"},
 		{Key: "location", Label: "Location", Sortable: false},

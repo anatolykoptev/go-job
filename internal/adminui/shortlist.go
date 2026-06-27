@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"html"
 	"strconv"
+	"time"
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -45,8 +47,8 @@ var shortlistActiveStages = []string{
 // Stage/fit/market/docs badges are at i>0 where cell.HTML is respected.
 var shortlistSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: "j.title"},
-		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "j.company"},
+		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: "j.title"},
+		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: "j.company"},
 		{Key: "stage", Label: "Stage", Sortable: true, SQLExpr: "r.stage", Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
 		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
@@ -69,13 +71,20 @@ var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 
 func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority) resource.Resource {
 	return resource.Resource{
-		Name:   navIDShortlist,
-		Title:  "Shortlist",
-		Icon:   "⭐",
-		Group:  grpHunt,
-		Sort:   shortlistSpec,
+		Name:  navIDShortlist,
+		Title: "Shortlist",
+		Icon:  "⭐",
+		Group: grpHunt,
+		Sort:  shortlistSpec,
 		Filter: shortlistFilter,
-		Perms:  resource.ReadAny,
+		Perms: resource.ReadAny,
+		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
+			n := store.CountShortlist(ctx, adminUser, shortlistActiveStages)
+			if n == 0 {
+				return ""
+			}
+			return strconv.Itoa(n)
+		}),
 		Lister: shortlistLister(store, adminUser, authority),
 	}
 }

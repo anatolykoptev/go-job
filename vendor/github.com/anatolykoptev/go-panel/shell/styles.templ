@@ -69,6 +69,21 @@ templ layoutStyles() {
 		.sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-glow)}
 		.sidebar-icon{font-size:.9375rem;width:1.25rem;text-align:center;flex-shrink:0}
 		.sidebar-bottom{margin-top:auto;padding:.5rem 0;border-top:1px solid var(--border-subtle)}
+		/* ── Sidebar collapse (icon-rail 220→56px) ────────────────────────────
+		   CSS ported from go-nerv internal/admin/templates/layout.html:67-86.
+		   cubic-bezier(.4,0,.2,1) = standard material ease-in-out. */
+		.sidebar{transition:width .25s cubic-bezier(.4,0,.2,1)}
+		.sidebar.collapsed{width:56px}
+		.sidebar.collapsed .sidebar-label,
+		.sidebar.collapsed .sidebar-group-label,
+		.sidebar.collapsed .sidebar-header h1{opacity:0;width:0;overflow:hidden;pointer-events:none}
+		.sidebar.collapsed .sidebar-item{justify-content:center;padding-left:0;padding-right:0}
+		.sidebar.collapsed .sidebar-icon{width:100%}
+		/* ── Nav badge pill (.sidebar-count) ──────────────────────────────────
+		   Ported from go-nerv layout.html:85 (re-namespaced sidebar-count).
+		   mono .625rem pill, border-radius 9999px, border+bg-elevated surface. */
+		.sidebar-count{margin-left:auto;font-family:var(--font-mono);font-size:.625rem;font-weight:600;padding:.0625rem .375rem;border-radius:9999px;border:1px solid var(--border);color:var(--text-secondary);background:var(--bg-elevated)}
+		.sidebar.collapsed .sidebar-count{display:none}
 		#content{padding:1.5rem 2rem 2rem}
 		.htmx-indicator{display:none}
 		.htmx-request .htmx-indicator{display:inline-block}
