@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -19,6 +20,7 @@ import (
 type resumeEditData struct {
 	CSRFToken      string
 	Person         *jobs.PersonRecord
+	HourlyRateStr  string // pre-formatted for template: "175.00" or ""
 	Experiences    []jobs.ExperienceRecord
 	Skills         []jobs.SkillRecord
 	Achievements   []jobs.AchievementRecord
@@ -70,9 +72,14 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		certs, _ := db.GetAllCertifications(ctx, personID)
 
 		sessVal := sessionValue(r, a.SessionCookieName())
+		hourlyRateStr := ""
+		if person.HourlyRateCents > 0 {
+			hourlyRateStr = fmt.Sprintf("%.2f", float64(person.HourlyRateCents)/100)
+		}
 		d := resumeEditData{
 			CSRFToken:      csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
 			Person:         person,
+			HourlyRateStr:  hourlyRateStr,
 			Experiences:    exps,
 			Skills:         skills,
 			Achievements:   achs,
@@ -101,6 +108,22 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
 		}
+		// Validate form inputs before any DB call.
+		if r.FormValue("name") == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		headline := r.FormValue("headline")
+		hourlyRateStr := r.FormValue("hourly_rate")
+		var hourlyRateCents int64
+		if hourlyRateStr != "" {
+			rate, parseErr := strconv.ParseFloat(hourlyRateStr, 64)
+			if parseErr != nil {
+				http.Error(w, "invalid hourly_rate: must be a number", http.StatusBadRequest)
+				return
+			}
+			hourlyRateCents = int64(math.Round(rate * 100))
+		}
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -109,10 +132,6 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		person, err := db.GetPerson(r.Context(), personID)
 		if err != nil || person == nil {
 			http.Error(w, "person not found", http.StatusNotFound)
-			return
-		}
-		if r.FormValue("name") == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
 			return
 		}
 		updated := jobs.PersonRecord{
@@ -126,6 +145,12 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		}
 		if err := db.UpdateResumePerson(r.Context(), personID, updated); err != nil {
 			slog.Error("resumePersonEditHandler: UpdateResumePerson", "err", err)
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		// Update Upwork-specific fields.
+		if err := db.UpdatePersonUpworkFields(r.Context(), personID, headline, hourlyRateCents); err != nil {
+			slog.Error("resumePersonEditHandler: UpdatePersonUpworkFields", "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
 		}
