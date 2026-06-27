@@ -152,7 +152,9 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 		result.Methodologies = loadMethodologies(ctx, db, personID)
 	}
 
-	// Count vectors stored in resume_vectors across all resume_memory consumers.
+	// Count structured vectors (experience/project/achievement/enrich_project only).
+	// Does NOT include free-text resume_memory rows (mem_type='note' etc.) — intentional:
+	// VectorsStored reflects SQL-entity-linked vectors, not total row count.
 	if sec == "" {
 		if rdb := GetResumeDB(); rdb != nil {
 			n, err := rdb.CountVectors(ctx,

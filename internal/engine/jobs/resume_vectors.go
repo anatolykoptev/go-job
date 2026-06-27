@@ -114,10 +114,12 @@ func (db *ResumeDB) UpsertVector(
 // Scoped searches use a caller-supplied floor via SearchByVectorScoped.
 const minVectorSimilarity = 0.5
 
-// SearchByVector performs exact cosine-distance search via pgvector (<=>).
-// Only rows with non-NULL embeddings are scanned. Results with cosine similarity
-// below minVectorSimilarity are excluded.
-func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int) ([]VectorRow, error) {
+// SearchByVectorScoped performs exact cosine-distance search via pgvector (<=>).
+// Only rows with non-NULL embeddings are scanned.  Results whose similarity is
+// below minScore are excluded.  When memTypes is nil the filter is skipped and
+// all mem_types are returned.  Pass minVectorSimilarity and nil to get the same
+// behaviour as the old unscoped SearchByVector.
+func (db *ResumeDB) SearchByVectorScoped(ctx context.Context, qvec []float32, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
 	vec := vectorLiteral(qvec)
 	rows, err := db.pool.Query(ctx, `
 		SELECT id, content, mem_type, ref_id,
@@ -125,10 +127,11 @@ func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int
 		FROM resume_vectors
 		WHERE user_name = $2
 		  AND embedding IS NOT NULL
+		  AND ($5::text[] IS NULL OR mem_type = ANY($5::text[]))
 		  AND 1.0 - (embedding <=> $1::vector) >= $4
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
-	`, vec, resumeVectorUser, topK, minVectorSimilarity)
+	`, vec, resumeVectorUser, topK, minScore, memTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -136,22 +139,37 @@ func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int
 	return scanVectorRows(rows)
 }
 
-// SearchByText performs GIN tsvector full-text search (zero external dependency).
-func (db *ResumeDB) SearchByText(ctx context.Context, query string, topK int) ([]VectorRow, error) {
+// SearchByTextScoped performs GIN tsvector full-text search.
+// When memTypes is nil the filter is skipped and all mem_types are returned.
+// Pass nil to get the same behaviour as the old unscoped SearchByText.
+func (db *ResumeDB) SearchByTextScoped(ctx context.Context, query string, topK int, memTypes []string) ([]VectorRow, error) {
 	rows, err := db.pool.Query(ctx, `
 		SELECT id, content, mem_type, ref_id,
 		       ts_rank(tsv, plainto_tsquery('english', $1)) AS score
 		FROM resume_vectors
 		WHERE user_name = $2
+		  AND ($4::text[] IS NULL OR mem_type = ANY($4::text[]))
 		  AND tsv @@ plainto_tsquery('english', $1)
 		ORDER BY score DESC
 		LIMIT $3
-	`, query, resumeVectorUser, topK)
+	`, query, resumeVectorUser, topK, memTypes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanVectorRows(rows)
+}
+
+// SearchByVector is an unscoped convenience wrapper (no mem_type filter, default
+// minVectorSimilarity floor) that delegates to SearchByVectorScoped.
+func (db *ResumeDB) SearchByVector(ctx context.Context, qvec []float32, topK int) ([]VectorRow, error) {
+	return db.SearchByVectorScoped(ctx, qvec, topK, minVectorSimilarity, nil)
+}
+
+// SearchByText is an unscoped convenience wrapper (no mem_type filter) that
+// delegates to SearchByTextScoped.
+func (db *ResumeDB) SearchByText(ctx context.Context, query string, topK int) ([]VectorRow, error) {
+	return db.SearchByTextScoped(ctx, query, topK, nil)
 }
 
 func scanVectorRows(rows pgx.Rows) ([]VectorRow, error) {
@@ -175,47 +193,6 @@ func (db *ResumeDB) FetchVectorMeta(ctx context.Context, id int64) (memType stri
 		WHERE id = $1 AND user_name = $2
 	`, id, resumeVectorUser).Scan(&memType, &refID)
 	return
-}
-
-// SearchByVectorScoped is like SearchByVector but restricted to the given mem_types
-// and with a caller-supplied min-score floor instead of the package-level constant.
-func (db *ResumeDB) SearchByVectorScoped(ctx context.Context, qvec []float32, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
-	vec := vectorLiteral(qvec)
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, content, mem_type, ref_id,
-		       1.0 - (embedding <=> $1::vector) AS score
-		FROM resume_vectors
-		WHERE user_name = $2
-		  AND embedding IS NOT NULL
-		  AND mem_type = ANY($5::text[])
-		  AND 1.0 - (embedding <=> $1::vector) >= $4
-		ORDER BY embedding <=> $1::vector
-		LIMIT $3
-	`, vec, resumeVectorUser, topK, minScore, memTypes)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanVectorRows(rows)
-}
-
-// SearchByTextScoped is like SearchByText but restricted to the given mem_types.
-func (db *ResumeDB) SearchByTextScoped(ctx context.Context, query string, topK int, memTypes []string) ([]VectorRow, error) {
-	rows, err := db.pool.Query(ctx, `
-		SELECT id, content, mem_type, ref_id,
-		       ts_rank(tsv, plainto_tsquery('english', $1)) AS score
-		FROM resume_vectors
-		WHERE user_name = $2
-		  AND mem_type = ANY($4::text[])
-		  AND tsv @@ plainto_tsquery('english', $1)
-		ORDER BY score DESC
-		LIMIT $3
-	`, query, resumeVectorUser, topK, memTypes)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanVectorRows(rows)
 }
 
 // ClearVectors deletes all resume_vectors rows for the current user whose

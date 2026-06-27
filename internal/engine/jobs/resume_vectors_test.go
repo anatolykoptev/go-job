@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // --- Helper unit tests (no DB) ---
@@ -192,16 +194,36 @@ func TestFitness_F3_SingleSourceCubeKey(t *testing.T) {
 
 // testResumeDB connects to the DB and registers cleanup.
 // It purges stale test rows so tests remain idempotent.
+//
+// Safety gate: the function skips unless the DB name ends in "_test" to prevent
+// tests from deleting rows in a production database.  If you have a dedicated
+// test instance, set DATABASE_URL with a name like "gojob_test".
+// Background: UpsertVector always writes source='agent'; the cleanup that follows
+// deletes ALL such rows for resumeVectorUser — on a prod DB this wipes the
+// operator's entire vector store (oxpulse TEST_DATABASE_URL→prod isolation class).
 func testResumeDB(t *testing.T) *ResumeDB {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set — skipping DB-backed test")
 	}
-	ctx := context.Background()
-	db, err := ConnectResumeDB(ctx, dbURL)
+
+	// Parse the DB name and refuse to run against a non-test database.
+	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		t.Fatalf("ConnectResumeDB: %v", err)
+		t.Fatalf("testResumeDB: parse DATABASE_URL: %v", err)
+	}
+	dbName := cfg.ConnConfig.Config.Database
+	if !strings.HasSuffix(dbName, "_test") {
+		t.Skipf("testResumeDB: database %q does not end in \"_test\" — "+
+			"refusing to run destructive tests against a non-test DB. "+
+			"Set DATABASE_URL to a *_test database.", dbName)
+	}
+
+	ctx := context.Background()
+	db, connErr := ConnectResumeDB(ctx, dbURL)
+	if connErr != nil {
+		t.Fatalf("ConnectResumeDB: %v", connErr)
 	}
 	t.Cleanup(func() { db.Close() })
 
