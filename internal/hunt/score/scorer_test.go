@@ -745,3 +745,35 @@ func Test_FitBandFromScore(t *testing.T) {
 		})
 	}
 }
+
+
+// ---------------------------------------------------------------------------
+// Test 11: MaxLLMPerCycle — default and env-override paths
+// ---------------------------------------------------------------------------
+//
+// Calls the REAL MaxLLMPerCycle (not a copy). Two sub-cases:
+//   - default: env unset -> returns defaultMaxLLMPerCycle (50).
+//   - override: HUNT_SCORE_MAX_LLM_PER_CYCLE=3 -> returns 3.
+//
+// RED-on-revert: if MaxLLMPerCycle is deleted this test fails to compile.
+// If the default changes away from 50, the "default" case fails. If env.Int
+// stops reading HUNT_SCORE_MAX_LLM_PER_CYCLE, the override case fails (got==50!=3).
+
+func Test_MaxLLMPerCycle(t *testing.T) {
+	t.Run("default_when_env_unset", func(t *testing.T) {
+		t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "")
+		got := MaxLLMPerCycle()
+		// RED-on-revert: if the default is changed away from 50, this assertion fails.
+		assert.Equal(t, defaultMaxLLMPerCycle, got,
+			"MaxLLMPerCycle() with env unset should return defaultMaxLLMPerCycle (%d)", defaultMaxLLMPerCycle)
+	})
+
+	t.Run("env_override", func(t *testing.T) {
+		t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "3")
+		got := MaxLLMPerCycle()
+		// RED-on-revert: if env.Int stops reading HUNT_SCORE_MAX_LLM_PER_CYCLE,
+		// the override is ignored and got == 50 != 3.
+		assert.Equal(t, 3, got,
+			"MaxLLMPerCycle() with HUNT_SCORE_MAX_LLM_PER_CYCLE=3 should return 3")
+	})
+}

@@ -33,6 +33,11 @@ import (
 // low values on verbose JDs — a threshold of 8 only kills true non-matches.
 const defaultMinJaccard = 8.0
 
+// defaultMaxLLMPerCycle is the circuit-breaker limit on LLM calls per hunt cycle.
+// Matches the default in MaxLLMPerCycle; declared as a named constant for readability
+// and parity with defaultMinJaccard.
+const defaultMaxLLMPerCycle = 50
+
 // percentageRE matches any token of the form [~][digits][.digits]% so we can
 // strip fake precision from LLM text before it is persisted. The leading
 // optional "~" is treated as part of the "approximation" cluster and removed
@@ -486,5 +491,5 @@ func MinJaccard() float64 {
 // MaxLLMPerCycle returns the HUNT_SCORE_MAX_LLM_PER_CYCLE circuit-breaker limit.
 // Exported for use in huntworker.runCycle.
 func MaxLLMPerCycle() int {
-	return env.Int("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
+	return env.Int("HUNT_SCORE_MAX_LLM_PER_CYCLE", defaultMaxLLMPerCycle)
 }
