@@ -275,6 +275,7 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string) resource.De
 	addItem("Experience", rec.Experience)
 	addItem("Source", rec.Source)
 	addTimeItem("Posted", rec.PostedAt)
+	addTimeItem("Scored", rec.ScoredAt)
 	addTimeItem("Last Seen", rec.LastSeenAt)
 
 	// Fit score display.
