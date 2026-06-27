@@ -66,8 +66,11 @@ const (
 	defaultWorkAuth  = "US authorized, no sponsorship"
 )
 
+// sigMarketing is the avoid/noise keyword for marketing-type roles (goconst: 4+ occurrences).
+const sigMarketing = "marketing"
+
 var defaultLocations = []string{"San Francisco Bay Area", "Remote (US)"}
-var defaultAvoidSignals = []string{"sales", "marketing", "event", "management", "recruiting"}
+var defaultAvoidSignals = []string{"sales", sigMarketing, "event", "management", "recruiting"}
 
 // techSkillCategories is the allowlist of resume_skills.category values that
 // count as tech skills for scoring. methodology and soft_skill are excluded
@@ -92,7 +95,7 @@ var noiseDomains = []string{
 	"digital marketing",
 	"event production",
 	"event management",
-	"marketing",
+	sigMarketing,
 }
 
 // LoadProfile loads a ScoringProfile using the following precedence:
@@ -310,7 +313,7 @@ func isNoiseDomain(name string) bool {
 // isNoiseSkillName returns true for skill names that match noise keywords
 // (event, marketing, media) regardless of category. This catches skills like
 // "Event Production" that happen to be in category="other".
-var noiseSkillKeywords = []string{"event", "marketing", "guerrilla", "festival", "media production"}
+var noiseSkillKeywords = []string{"event", sigMarketing, "guerrilla", "festival", "media production"}
 
 func isNoiseSkillName(name string) bool {
 	lower := strings.ToLower(name)

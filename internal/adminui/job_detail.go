@@ -85,11 +85,19 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
     <label>
       <span>Stage</span>
       <select name="stage">
-        <option value="new"{{if and .Rating (eq .Rating.Stage "new")}} selected{{end}}>new</option>
-        <option value="interesting"{{if and .Rating (eq .Rating.Stage "interesting")}} selected{{end}}>interesting</option>
-        <option value="saved"{{if and .Rating (eq .Rating.Stage "saved")}} selected{{end}}>saved</option>
-        <option value="discarded"{{if and .Rating (eq .Rating.Stage "discarded")}} selected{{end}}>discarded</option>
-        <option value="claimed"{{if and .Rating (eq .Rating.Stage "claimed")}} selected{{end}}>claimed</option>
+        <optgroup label="Triage">
+          <option value="new"{{if and .Rating (eq .Rating.Stage "new")}} selected{{end}}>new</option>
+          <option value="interesting"{{if and .Rating (eq .Rating.Stage "interesting")}} selected{{end}}>interesting</option>
+          <option value="saved"{{if and .Rating (eq .Rating.Stage "saved")}} selected{{end}}>saved</option>
+          <option value="discarded"{{if and .Rating (eq .Rating.Stage "discarded")}} selected{{end}}>discarded</option>
+          <option value="claimed"{{if and .Rating (eq .Rating.Stage "claimed")}} selected{{end}}>claimed</option>
+        </optgroup>
+        <optgroup label="Pipeline">
+          <option value="applied"{{if and .Rating (eq .Rating.Stage "applied")}} selected{{end}}>applied</option>
+          <option value="interview"{{if and .Rating (eq .Rating.Stage "interview")}} selected{{end}}>interview</option>
+          <option value="offer"{{if and .Rating (eq .Rating.Stage "offer")}} selected{{end}}>offer</option>
+          <option value="rejected"{{if and .Rating (eq .Rating.Stage "rejected")}} selected{{end}}>rejected</option>
+        </optgroup>
       </select>
     </label>
     <label>

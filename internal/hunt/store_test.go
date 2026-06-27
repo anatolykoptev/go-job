@@ -491,3 +491,45 @@ func TestStore_GetRating_NotFound(t *testing.T) {
 	_, err := s.GetRating(ctx, hunt.KindBounty, 999999999, "nobody")
 	assert.ErrorIs(t, err, hunt.ErrNotFound)
 }
+
+// TestListShortlist_UserIsolation asserts that a rating entered by a DIFFERENT user
+// does not appear in the owner user's shortlist, even when the stage is curated.
+// Red-on-revert: removing the r.user_name = $1 filter from ListShortlist → the
+// foreign-user rating leaks through → assert.Empty fails.
+func TestListShortlist_UserIsolation(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+
+	const ownerUser = "test_sl_iso"
+	const otherUser = "test_sl_iso_other"
+
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM hunt_ratings WHERE user_name IN ($1, $2)", ownerUser, otherUser)
+		_, _ = pool.Exec(ctx, "DELETE FROM hunt_jobs WHERE source = 'test_sl_iso'")
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+
+	// Insert one hunt_jobs row.
+	h := hunt.DedupHash("https://test.example/iso/job1")
+	var jobID int64
+	require.NoError(t, pool.QueryRow(ctx, `
+		INSERT INTO hunt_jobs (dedup_hash, title, company, url, source)
+		VALUES ($1, 'Iso Role', 'Iso Corp', 'https://test.example/iso/job1', 'test_sl_iso')
+		ON CONFLICT (dedup_hash) DO UPDATE SET source='test_sl_iso'
+		RETURNING id`, h).Scan(&jobID))
+
+	// Rate the job under the OTHER user with a curated stage.
+	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, ""))
+
+	// The owner user must see zero rows — foreign rater's row must be excluded.
+	rows, _, err := s.ListShortlist(ctx, hunt.ShortlistQuery{
+		User:   ownerUser,
+		Stages: []string{hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, rows, "rating entered by a different user must not appear in the owner's shortlist")
+}

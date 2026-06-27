@@ -807,6 +807,140 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 	return &r, nil
 }
 
+// ShortlistRow is the postgres projection for the /admin/shortlist page.
+// It joins hunt_jobs with hunt_ratings for a given user, filtered to the
+// active-stage set. All nullable DB columns use pointer types.
+type ShortlistRow struct {
+	ID             int64
+	Title          string
+	Company        string
+	URL            string
+	Location       string
+	FitScore       *int
+	FitBand        string
+	SuccessBand    string
+	OverUnder      string
+	SalaryMin      *int
+	SalaryMax      *int
+	SalaryCurrency string
+	SalaryInterval string
+	PostedAt       *time.Time
+	ScoredAt       *time.Time
+	Stage          string
+	Note           string
+	RatedAt        time.Time
+}
+
+// ShortlistQuery is the parameter bag for Store.ListShortlist.
+//
+// The caller renders FilterSpec → WhereConds/WhereArgs (admintable.FilterSpec.Where)
+// and Spec.OrderBy → OrderBy (admintable.Spec.OrderBy) before calling. This keeps
+// the hunt package free of admintable imports while allowing the lister and tests to
+// share a single query path — so the isolation test guards the live code path.
+type ShortlistQuery struct {
+	User   string
+	Stages []string
+	// WhereConds is the pre-rendered SQL boolean expression from admintable.FilterSpec.Where.
+	// Bind arguments are in WhereArgs ($1…$N). Empty → treated as "TRUE".
+	WhereConds string
+	WhereArgs  []any
+	// OrderBy is the pre-rendered ORDER BY clause (column list, no keyword) from
+	// admintable.Spec.OrderBy. Empty → default: "j.fit_score DESC NULLS LAST, j.company".
+	OrderBy string
+	// Limit and Offset control pagination. Limit=0 → fetch all (no LIMIT clause).
+	Limit  int
+	Offset int
+}
+
+// shortlistJoin is the FROM + JOIN shared by count and select queries.
+const shortlistJoin = `FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id`
+
+// shortlistDefaultOrder is the fallback ORDER BY when ShortlistQuery.OrderBy is empty.
+const shortlistDefaultOrder = "j.fit_score DESC NULLS LAST, j.company"
+
+// ListShortlist returns hunt_jobs rows that have a hunt_ratings row for the given
+// user (q.User) whose stage is in q.Stages, applying optional FilterSpec conditions
+// and pagination. Returns the matching rows and the pre-pagination total count.
+//
+// The security-critical user_name and stage isolation guards live here (not in the
+// caller), so that both the live lister and the isolation test exercise the same code.
+func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]ShortlistRow, int, error) {
+	// Build the full WHERE clause.
+	// q.WhereConds ($1…$N) from FilterSpec precedes the isolation guards at $N+1/$N+2.
+	filter := "TRUE"
+	if strings.TrimSpace(q.WhereConds) != "" {
+		filter = q.WhereConds
+	}
+	n := len(q.WhereArgs)
+	//nolint:gosec // filter = q.WhereConds (author-controlled FilterSpec SQLExpr/SQLExprs + literal operators); all URL values are bind args; isolation guards are literal templates.
+	fullWhere := fmt.Sprintf(
+		"%s AND r.user_name = $%d AND r.stage = ANY($%d::text[])",
+		filter, n+1, n+2,
+	)
+	baseArgs := append(append([]any{}, q.WhereArgs...), q.User, q.Stages)
+
+	// COUNT — total matching rows before pagination.
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) "+shortlistJoin+" WHERE "+fullWhere,
+		baseArgs...,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("hunt: count shortlist: %w", err)
+	}
+
+	orderBy := shortlistDefaultOrder
+	if q.OrderBy != "" {
+		orderBy = q.OrderBy
+	}
+
+	const selectCols = `SELECT j.id,
+		       COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.url,''),
+		       COALESCE(j.location,''),
+		       j.fit_score, COALESCE(j.fit_band,''),
+		       COALESCE(j.success_band,''), COALESCE(j.over_under,''),
+		       j.salary_min, j.salary_max,
+		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
+		       j.posted_at, j.scored_at,
+		       r.stage, COALESCE(r.note,''), r.rated_at `
+
+	var query string
+	queryArgs := append([]any{}, baseArgs...)
+	if q.Limit > 0 {
+		//nolint:gosec // orderBy from admintable.Spec.OrderBy (author-declared SQLExpr + ASC/DESC/NULLS LAST); pagination clause = literal template; no URL input.
+		query = selectCols + shortlistJoin + " WHERE " + fullWhere +
+			fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, n+3, n+4)
+		queryArgs = append(queryArgs, q.Limit, q.Offset)
+	} else {
+		//nolint:gosec
+		query = selectCols + shortlistJoin + " WHERE " + fullWhere + " ORDER BY " + orderBy
+	}
+
+	rows, err := s.pool.Query(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("hunt: list shortlist: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ShortlistRow
+	for rows.Next() {
+		var row ShortlistRow
+		if err := rows.Scan(
+			&row.ID, &row.Title, &row.Company, &row.URL,
+			&row.Location,
+			&row.FitScore, &row.FitBand,
+			&row.SuccessBand, &row.OverUnder,
+			&row.SalaryMin, &row.SalaryMax,
+			&row.SalaryCurrency, &row.SalaryInterval,
+			&row.PostedAt, &row.ScoredAt,
+			&row.Stage, &row.Note, &row.RatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("hunt: scan shortlist row: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, total, rows.Err()
+}
+
 // GetBountyWithRaw returns a single bounty by id including the Raw JSONB column.
 // Use this for audit/debug scenarios where raw source data is needed.
 func (s *Store) GetBountyWithRaw(ctx context.Context, id int64) (*Bounty, error) {
