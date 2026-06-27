@@ -22,32 +22,26 @@ import (
 	"strings"
 	"time"
 
+	kit "github.com/anatolykoptev/go-kit/telegram"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// ClaimChecker checks whether a bounty is already claimed.
-// Implementations must be safe for concurrent use.
-type ClaimChecker interface {
-	IsClaimed(ctx context.Context, b hunt.Bounty) (claimed bool, err error)
-}
-
 // ProductNotifier wraps a go-kit ProductSink and implements hunt.Notifier.
 // Methods dispatch fire-and-forget goroutines; fan-out and rate limiting are
 // handled by the Pacer inside ProductSink (no semaphore needed here).
-// OnSend, if set, is called with "sent", "failed", "stale", "no_date",
-// "unscored", "skipped_claimed", "claim_check_error", or "notified" after
-// each Notify or gate decision — it bridges into gojob_hunt_notify_total{outcome}
-// via engine.IncrHuntNotify. "unscored" is a card-type marker emitted only for a
-// degraded card that PASSES recency (so it never overlaps a terminal "stale"/"no_date" drop).
+// OnSend, if set, is called with "sent", "failed", "stale", "no_date", or
+// "unscored" after each Notify or gate decision — it bridges into
+// gojob_hunt_notify_total{outcome} via engine.IncrHuntNotify.
+// "unscored" is a card-type marker emitted only for a degraded card that
+// PASSES recency (so it never overlaps a terminal "stale"/"no_date" drop).
 type ProductNotifier struct {
-	sink         kitnotify.ProductSink
-	chatIDs      []int64              // explicit recipient list; empty = use sink's defaultChatIDs
-	maxAge       time.Duration        // recency gate for NotifyNewJob; 0 means use default (48h)
-	claimChecker ClaimChecker         // optional; nil = never claimed (fail-open)
-	OnSend       func(outcome string) // optional metric hook
+	sink    kitnotify.ProductSink
+	chatIDs []int64       // explicit recipient list; empty = use sink's defaultChatIDs
+	maxAge  time.Duration // recency gate for NotifyNewJob; 0 means use default (48h)
+	OnSend  func(outcome string) // optional metric hook
 }
 
 // defaultMaxAge is the recency gate applied when HUNT_NOTIFY_MAX_AGE is not set.
@@ -98,23 +92,9 @@ func NewFromSinkWithMaxAge(sink kitnotify.ProductSink, maxAge time.Duration, cha
 	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge}
 }
 
-// WithClaimChecker returns a copy of the notifier with the given ClaimChecker wired in.
-// A nil checker is accepted (treated as "never claimed").
-func (n *ProductNotifier) WithClaimChecker(cc ClaimChecker) *ProductNotifier {
-	cp := *n
-	cp.claimChecker = cc
-	return &cp
-}
-
 // NotifyNewBounty sends a notification for a new bounty entry (fire-and-forget).
-// Claimed bounties are silently skipped via shouldNotifyBounty.
 func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
-	go func() {
-		if !n.shouldNotifyBounty(context.Background(), b) {
-			return
-		}
-		n.dispatch(formatBountyMsg(b))
-	}()
+	n.dispatch(formatBountyMsg(b))
 }
 
 // NotifyNewJob sends a notification for a new job entry (fire-and-forget).
@@ -161,38 +141,8 @@ func (n *ProductNotifier) NotifyNewFreelance(f hunt.Freelance) {
 }
 
 // NotifyNewSecurity sends a notification for a new security program entry (fire-and-forget).
-// Security programs are NOT gated by the claim checker.
 func (n *ProductNotifier) NotifyNewSecurity(s hunt.Security) {
 	n.dispatch(formatSecurityMsg(s))
-}
-
-// shouldNotifyBounty returns true if the bounty should be dispatched.
-// Fail-open: if claimChecker is nil or returns an error, notify anyway.
-func (n *ProductNotifier) shouldNotifyBounty(ctx context.Context, b hunt.Bounty) bool {
-	if n.claimChecker == nil {
-		return true
-	}
-	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	claimed, err := n.claimChecker.IsClaimed(tctx, b)
-	if err != nil {
-		slog.Info("hunt_notify_outcome", "outcome", "claim_check_error", "title", b.Title, "error", err)
-		n.recordOutcome("claim_check_error")
-		return true // fail-open
-	}
-	if claimed {
-		n.recordOutcome("skipped_claimed")
-		return false
-	}
-	n.recordOutcome("notified")
-	return true
-}
-
-// recordOutcome emits an outcome via OnSend if the hook is set.
-func (n *ProductNotifier) recordOutcome(outcome string) {
-	if n.OnSend != nil {
-		n.OnSend(outcome)
-	}
 }
 
 // dispatch sends msg asynchronously via ProductSink.Notify.
@@ -219,28 +169,34 @@ func (n *ProductNotifier) dispatch(msg string) {
 // Compile-time check: *ProductNotifier satisfies hunt.Notifier.
 var _ hunt.Notifier = (*ProductNotifier)(nil)
 
-// formatBountyMsg renders a clean, scannable Telegram message for a bounty.
+// formatBountyMsg renders an HTML Telegram message for a bounty.
 //
 // Format:
 //
-//	💰 $1,500 · AppFox · 2026-01-15
-//	Found SQL injection in auth endpoint
-//	https://github.com/appfox/issues/123
+//	💰 <b>$1,500</b> · AppFox · 2026-01-15
+//	<a href="https://github.com/appfox/issues/123">Found SQL injection in auth endpoint</a>
 //
 // Zero guards: AmountCents==0 → no dollar part; empty Org → omitted;
 // zero PostedAt falls back to FirstSeenAt; both zero → date omitted.
+// HTML special chars in Org and Title are escaped via kit.EscapeHTML.
+// PrepareForTelegram in the sink detects HTML tags and routes through
+// SanitizeHTML → RepairHTMLNesting automatically.
 func formatBountyMsg(b hunt.Bounty) string {
 	var parts []string
 
 	// Amount with thousands separator (no $0)
 	if b.AmountCents > 0 {
 		dollars := b.AmountCents / 100
-		parts = append(parts, "$"+formatThousands(dollars))
+		amountStr := "$" + formatThousands(dollars)
+		if b.Currency != "" && b.Currency != "USD" {
+			amountStr += " " + b.Currency
+		}
+		parts = append(parts, "<b>"+amountStr+"</b>")
 	}
 
-	// Org
+	// Org (HTML-escaped)
 	if b.Org != "" {
-		parts = append(parts, b.Org)
+		parts = append(parts, kit.EscapeHTML(b.Org))
 	}
 
 	// Date: prefer PostedAt, fall back to FirstSeenAt
@@ -261,9 +217,16 @@ func formatBountyMsg(b hunt.Bounty) string {
 		sb.WriteString(strings.Join(parts, " · "))
 	}
 	sb.WriteByte('\n')
-	sb.WriteString(b.Title)
-	sb.WriteByte('\n')
-	sb.WriteString(b.URL)
+
+	// Clickable link: <a href="URL">Title</a>
+	escapedURL := kit.EscapeHTML(b.URL)
+	escapedTitle := kit.EscapeHTML(b.Title)
+	sb.WriteString(`<a href="`)
+	sb.WriteString(escapedURL)
+	sb.WriteString(`">`)
+	sb.WriteString(escapedTitle)
+	sb.WriteString(`</a>`)
+
 	return sb.String()
 }
 
@@ -402,28 +365,31 @@ func formatFreelanceMsg(f hunt.Freelance) string {
 	return sb.String()
 }
 
-// formatSecurityMsg renders a clean, scannable Telegram message for a security program.
+// formatSecurityMsg renders an HTML Telegram message for a security program.
 //
 // Format:
 //
-//	🛡️ Max $1,500 · AppFox [bugcrowd] · 2026-01-15
+//	🛡️ Max <b>$1,500</b> · AppFox [bugcrowd] · 2026-01-15
 //	Scope: 12 targets (api.appfox.com)
-//	https://bugcrowd.com/appfox
+//	<a href="https://bugcrowd.com/appfox">AppFox [bugcrowd]</a>
 //
 // Zero guards: MaxBounty==0 → no amount; Targets empty → no scope line;
 // date from FirstSeenAt.
+// HTML special chars in Name and Platform are escaped via kit.EscapeHTML.
 func formatSecurityMsg(s hunt.Security) string {
 	var parts []string
 
 	// Amount
 	if s.MaxBounty > 0 {
-		parts = append(parts, "Max $"+formatThousands(int64(s.MaxBounty)))
+		parts = append(parts, "Max <b>$"+formatThousands(int64(s.MaxBounty))+"</b>")
 	}
 
-	// Name [platform]
-	namePlatform := s.Name
-	if s.Platform != "" {
-		namePlatform += " [" + s.Platform + "]"
+	// Name [platform] — both HTML-escaped
+	escapedName := kit.EscapeHTML(s.Name)
+	escapedPlatform := kit.EscapeHTML(s.Platform)
+	namePlatform := escapedName
+	if escapedPlatform != "" {
+		namePlatform += " [" + escapedPlatform + "]"
 	}
 	if namePlatform != "" {
 		parts = append(parts, namePlatform)
@@ -444,11 +410,18 @@ func formatSecurityMsg(s hunt.Security) string {
 
 	// Scope line
 	if len(s.Targets) > 0 {
-		first := extractHost(s.Targets[0])
+		first := kit.EscapeHTML(kit.Truncate(extractHost(s.Targets[0]), 40))
 		fmt.Fprintf(&sb, "Scope: %d targets (%s)\n", len(s.Targets), first)
 	}
 
-	sb.WriteString(s.URL)
+	// Clickable link: <a href="URL">Name [platform]</a>
+	escapedURL := kit.EscapeHTML(s.URL)
+	sb.WriteString(`<a href="`)
+	sb.WriteString(escapedURL)
+	sb.WriteString(`">`)
+	sb.WriteString(namePlatform)
+	sb.WriteString(`</a>`)
+
 	return sb.String()
 }
 
