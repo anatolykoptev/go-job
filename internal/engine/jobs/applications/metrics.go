@@ -21,11 +21,7 @@ var appRenderDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 
 var appPersistTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "gojob_application_persist_total",
-	Help: "Total Persist calls by outcome: ok_with_pdf | ok_md_only | error_md.",
+	Help: "Total Persist calls by outcome: ok_with_pdf | ok_md_only | error_md | error_pdf_write.",
 }, []string{"outcome"})
-
-// AppMigrateTotal is exported so the migration cmd can increment it.
-var AppMigrateTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Name: "gojob_application_migrate_total",
-	Help: "One-shot cp-migration outcome per source PDF.",
-}, []string{"outcome"}) // ok | ambiguous | unmatched | skip_exists
+// Note: the one-shot cmd/migrate-application-pdfs uses slog summary counters
+// (ok/skipped/unmatched/errors) as its observable surface — no scrape target.

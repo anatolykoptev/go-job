@@ -63,8 +63,14 @@ func main() {
 
 	// Compose the application PDF authority.
 	// TypstAdapter wraps pandoc+typst; gracefully degrades when binaries absent.
+	adapter := pdfrender.New()
 	legacyDir := env.Str("APPLICATIONS_DIR", "/data/applications")
-	authority := applications.New(pdfrender.New(), legacyDir)
+	authority := applications.New(adapter, legacyDir)
+	// Probe binary availability at startup: sets gojob_pdf_renderer_available
+	// gauge (1=present, 0=absent) so post-deploy verification is unambiguous.
+	if !adapter.Ready() {
+		slog.Warn("PDF renderer binaries absent — application_persist will degrade to md-only")
+	}
 
 	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
 	if hs := engine.GetHuntStore(); hs != nil {
@@ -77,7 +83,7 @@ func main() {
 	}, nil)
 
 	jobserver.RegisterTools(server, authority)
-	slog.Info("tools registered", slog.Int("count", 43))
+	slog.Info("tools registered", slog.Int("count", 44))
 
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {

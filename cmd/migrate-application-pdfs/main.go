@@ -28,7 +28,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/anatolykoptev/go-kit/uploads"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -86,10 +85,8 @@ func run(ctx context.Context, dryRun bool) error {
 			continue
 		}
 		for _, kind := range []string{applications.KindResume, applications.KindCover} {
-			src := ""
-			if len(legacyEntries) > 0 {
-				src = auth.LegacyResolve(company, title, kind)
-			}
+			// Use the pre-loaded entries snapshot — avoids N+1 os.ReadDir calls.
+			src := auth.LegacyResolveFromEntries(legacyEntries, company, title, kind)
 			if src == "" {
 				unmatched++
 				slog.Debug("no legacy PDF", "id", id, "kind", kind, "company", company)
@@ -115,10 +112,6 @@ func run(ctx context.Context, dryRun bool) error {
 				ok++
 				continue
 			}
-
-			// Ensure uploads bucket exists (uploads.Path already called MkdirAll,
-			// but confirm the root is initialised before writing).
-			_ = uploads.Root()
 
 			if copyErr := copyFile(src, dst); copyErr != nil {
 				slog.Error("copy", "src", src, "dst", dst, "err", copyErr)
