@@ -1659,6 +1659,28 @@ func nullSlice(ss []string) any {
 	return ss
 }
 
+// CountOpenJobs returns the number of hunt_jobs rows with status='open'.
+// Errors are silently swallowed (returns 0) — callers use this for low-stakes
+// nav badge counts where a DB error should not break page rendering.
+func (s *Store) CountOpenJobs(ctx context.Context) int {
+	var n int
+	_ = s.pool.QueryRow(ctx, "SELECT count(*) FROM hunt_jobs WHERE status = 'open'").Scan(&n)
+	return n
+}
+
+// CountShortlist returns the number of hunt_jobs rows with a hunt_ratings row
+// for the given user whose stage is in the provided stages slice.
+// Uses the same shortlistJoin constant as ListShortlist so both paths stay in sync.
+// Errors are silently swallowed (returns 0).
+func (s *Store) CountShortlist(ctx context.Context, user string, stages []string) int {
+	var n int
+	_ = s.pool.QueryRow(ctx,
+		"SELECT count(*) "+shortlistJoin+" WHERE r.user_name = $1 AND r.stage = ANY($2::text[])",
+		user, stages,
+	).Scan(&n)
+	return n
+}
+
 func nullRaw(raw []byte) any {
 	if len(raw) == 0 {
 		return nil

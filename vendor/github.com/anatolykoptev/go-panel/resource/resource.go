@@ -151,6 +151,13 @@ type Resource struct {
 	// Writer enables create/edit forms. Nil = read-only (Phase 1 behaviour, default).
 	// When non-nil, CSRFKey must be set in Config (panic at Register if missing or < 32 bytes — fail-closed).
 	Writer *Writer
+
+	// Badge is an optional closure returning a short live count or label displayed
+	// as a pill next to the nav item (e.g. "12", "new"). Called once per page render —
+	// wrap with shell.CachedBadge to avoid a per-render DB query (footgun: a raw
+	// DB COUNT per render balloons admin-page latency under many resources).
+	// nil = no badge (zero-value safe; existing callers are unaffected).
+	Badge func(ctx context.Context) string
 }
 
 // Panel is the minimal composition root go-panel provides.
@@ -336,6 +343,7 @@ func Register(p *Panel, r Resource) {
 		Label: r.Title,
 		Icon:  r.Icon,
 		URL:   p.basePath + "/" + r.Name,
+		Badge: r.Badge,
 	})
 
 	listPath := p.basePath + "/" + r.Name
@@ -429,7 +437,8 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 		}
 		content := detailPageContent(d)
 		layoutComp := shell.Layout(p.title, nav, content)
-		if err := layoutComp.Render(req.Context(), w); err != nil {
+		renderCtx := shell.ContextWithSidebar(req.Context(), sidebarStateFrom(req))
+		if err := layoutComp.Render(renderCtx, w); err != nil {
 			slog.Error("resource: render detail page", "resource", r.Name, "id", id, "err", err)
 			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
@@ -505,7 +514,7 @@ func newFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			ActiveLocale: p.locales.Default,
 		}
 		layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-		if err := layoutComp.Render(ctx, w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
 			slog.Error("resource: render new form", "resource", r.Name, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
@@ -553,7 +562,7 @@ func editFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			ActiveLocale: loc,
 		}
 		layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-		if err := layoutComp.Render(ctx, w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
 			slog.Error("resource: render edit form", "resource", r.Name, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
@@ -672,7 +681,7 @@ func renderValidationErrors(w http.ResponseWriter, req *http.Request, p *Panel, 
 		ActiveLocale: loc,
 	}
 	layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-	if err := layoutComp.Render(req.Context(), w); err != nil {
+	if err := layoutComp.Render(shell.ContextWithSidebar(req.Context(), sidebarStateFrom(req)), w); err != nil {
 		slog.Error("resource: render validation errors", "resource", r.Name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
@@ -768,7 +777,7 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 
 		content := listPageContent(data)
 		layoutComp := shell.Layout(p.title, nav, content)
-		if err := layoutComp.Render(ctx, w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
