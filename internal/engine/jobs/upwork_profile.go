@@ -150,15 +150,20 @@ func (db *ResumeDB) UpsertUpworkProfile(ctx context.Context, personID int, title
 	return err
 }
 
-// InsertUpworkSkill adds a skill to upwork_skills. Returns (0, nil) on duplicate (no-op).
+// InsertUpworkSkill adds a skill to upwork_skills.
+// Returns (0, nil) when the skill already exists (ON CONFLICT DO NOTHING — no row returned).
+// Any other error (FK violation, dead pool, context cancellation) is propagated.
 // NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
 // invariant; if this DB ever becomes multi-person these must be person-scoped.
 func (db *ResumeDB) InsertUpworkSkill(ctx context.Context, personID int, name string) (int, error) {
 	var id int
 	err := db.pool.QueryRow(ctx, insertUpworkSkillSQL, personID, name).Scan(&id)
 	if err != nil {
-		// ON CONFLICT DO NOTHING means no row returned — treat as success.
-		return 0, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Genuine ON CONFLICT DO NOTHING — duplicate skill, treat as success.
+			return 0, nil
+		}
+		return 0, fmt.Errorf("insert upwork skill: %w", err)
 	}
 	return id, nil
 }
