@@ -8,6 +8,7 @@ package score
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -638,4 +639,109 @@ func TestScoreForce_BypassesRecencyAndJaccard(t *testing.T) {
 		assert.Equal(t, hunt.FitBandUnscored, result.FitBand,
 			"nil profile must return unscored — Stage 0 guard still applies")
 	})
+}
+
+
+// ---------------------------------------------------------------------------
+// Test 9: stripMarkdownFences — table-driven unit tests
+// ---------------------------------------------------------------------------
+//
+// Pure deterministic helper; tests CALL the real function (not a copy).
+// RED-on-revert: if stripMarkdownFences is deleted or returns its input
+// unchanged, the fenced cases fail. If TrimSpace is removed, the whitespace
+// cases fail.
+
+func Test_StripMarkdownFences(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "no_fences_returned_unchanged",
+			raw:  `{"fit_score":80}`,
+			want: `{"fit_score":80}`,
+		},
+		{
+			name: "json_tagged_fence_stripped",
+			raw:  "```json\n{\"fit_score\":80}\n```",
+			want: `{"fit_score":80}`,
+		},
+		{
+			name: "plain_fence_stripped",
+			raw:  "```\n{\"fit_score\":80}\n```",
+			want: `{"fit_score":80}`,
+		},
+		{
+			name: "surrounding_whitespace_trimmed",
+			raw:  "  \n  {\"fit_score\":80}  \n  ",
+			want: `{"fit_score":80}`,
+		},
+		{
+			name: "json_fence_with_leading_trailing_spaces",
+			raw:  "  ```json\n  {\"fit_score\":42}  \n```  ",
+			want: `{"fit_score":42}`,
+		},
+		{
+			name: "plain_fence_with_whitespace_inside",
+			raw:  "```\n  {\"key\":\"val\"}  \n```",
+			want: `{"key":"val"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripMarkdownFences(tc.raw)
+			// RED-on-revert: if stripMarkdownFences is reverted to return raw unchanged,
+			// all fenced cases fail immediately (fenced raw != stripped content).
+			assert.Equal(t, tc.want, got,
+				"stripMarkdownFences(%q) = %q; want %q", tc.raw, got, tc.want)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: fitBandFromScore — table-driven unit tests
+// ---------------------------------------------------------------------------
+//
+// Pure deterministic function; tests CALL the real fitBandFromScore (not a copy).
+// Covers every band plus the boundary scores for each.
+// RED-on-revert: if fitBandFromScore is deleted or thresholds changed, the
+// boundary assertions fail.
+
+func Test_FitBandFromScore(t *testing.T) {
+	tests := []struct {
+		score int
+		want  string
+	}{
+		// "strong" band: score >= 75
+		{score: 75, want: "strong"},  // lower boundary
+		{score: 100, want: "strong"}, // upper boundary
+		{score: 90, want: "strong"},  // mid-band
+
+		// "moderate" band: 50 <= score < 75
+		{score: 74, want: "moderate"}, // just below strong boundary
+		{score: 50, want: "moderate"}, // lower boundary
+		{score: 62, want: "moderate"}, // mid-band
+
+		// "weak" band: 25 <= score < 50
+		{score: 49, want: "weak"}, // just below moderate boundary
+		{score: 25, want: "weak"}, // lower boundary
+		{score: 37, want: "weak"}, // mid-band
+
+		// "low" band: score < 25
+		{score: 24, want: "low"}, // just below weak boundary
+		{score: 0, want: "low"},  // zero
+		{score: -1, want: "low"}, // below zero (default branch)
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("score_%d_band_%s", tc.score, tc.want), func(t *testing.T) {
+			got := fitBandFromScore(tc.score)
+			// RED-on-revert: if fitBandFromScore is reverted to return "" for all inputs,
+			// every assertion here fails (no band string equals "").
+			assert.Equal(t, tc.want, got,
+				"fitBandFromScore(%d) = %q; want %q", tc.score, got, tc.want)
+		})
+	}
 }
