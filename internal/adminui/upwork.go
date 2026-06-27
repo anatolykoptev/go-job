@@ -39,6 +39,7 @@ type upworkPageData struct {
 	UWRate        string   // pre-formatted for edit form: "150.00" or ""
 	UWAvailability string  // pre-filled availability from upwork_profile
 	UWCategories  []string // current categories from upwork_profile (read-only display)
+	UWCopyBlocks  []CopyBlockVM // Phase 3: paste blocks rendered via shared copyBlock partial
 }
 
 type upworkEmploymentItem struct {
@@ -125,10 +126,10 @@ func parseDollarsToCents(s string) (int64, error) {
 // upworkHandler renders the Upwork profile page.
 // It accepts auth + csrfKey so it can issue a CSRF token for the edit sub-forms.
 func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
-	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
-		tmplFuncCharClass: charCounterClass,
-		tmplFuncCharLabel: charCounterLabel,
-	}).Parse(upworkTmplSrc))
+	tmpl := template.Must(
+		template.New("upwork").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc),
+	)
+	template.Must(tmpl.Parse(upworkTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		db := jobs.GetResumeDB()
@@ -167,6 +168,16 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 			data.UWMissing = uwProfile.Missing
 			data.UWSkills = uwProfile.Skills
 			data.UWPasteBlocks = jobs.FormatUpworkPasteBlocks(uwProfile)
+			blocks := data.UWPasteBlocks
+			data.UWCopyBlocks = make([]CopyBlockVM, len(blocks))
+			for i, b := range blocks {
+				data.UWCopyBlocks[i] = CopyBlockVM{
+					PreID:    fmt.Sprintf("uw-paste-%d", i),
+					FieldNum: i,
+					Content:  b.Content,
+					Label:    b.Label,
+				}
+			}
 			if !uwProfile.Missing {
 				// upwork_profile is authoritative for Upwork-specific display.
 				if uwProfile.Profile.HourlyRate > 0 {
@@ -301,10 +312,7 @@ const upworkTmplSrc = `<style>
   .uw-table th{text-align:left;padding:.4rem .6rem;color:var(--text-muted,#64748b);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border,#334155)}
   .uw-table td{padding:.5rem .6rem;color:var(--text-secondary,#94a3b8);border-bottom:1px solid var(--border-subtle,#1e293b)}
   .uw-empty{color:var(--text-muted,#64748b);font-style:italic;font-size:.875rem}
-  .cc-muted{font-size:.6875rem;color:var(--text-muted,#64748b);margin-left:.375rem}
-  .cc-green{font-size:.6875rem;color:var(--green,#34d399);margin-left:.375rem}
-  .cc-amber{font-size:.6875rem;color:#f59e0b;margin-left:.375rem}
-  .cc-red{font-size:.6875rem;color:#ef4444;margin-left:.375rem}
+{{template "sharedCSS" .}}
   .uw-textarea{width:100%;background:var(--bg-deep,#0f172a);border:1px solid var(--border,#334155);border-radius:.375rem;padding:.5rem .75rem;color:var(--text-secondary,#94a3b8);font-family:monospace;font-size:.85rem;resize:vertical;min-height:4rem}
   .uw-form-row{display:flex;gap:.5rem;margin-top:.5rem}
   .uw-input{background:var(--bg-deep,#0f172a);border:1px solid var(--border,#334155);border-radius:.375rem;padding:.35rem .6rem;color:var(--text-primary,#f1f5f9);font-size:.875rem;flex:1}
@@ -375,15 +383,10 @@ const upworkTmplSrc = `<style>
   {{else}}<div class="uw-empty">no portfolio entries</div>{{end}}
 </div>
 
-{{if .UWPasteBlocks}}
+{{if .UWCopyBlocks}}
 <div class="uw-section">
   <h3>Paste Blocks <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(copy into Upwork forms)</span></h3>
-  {{range .UWPasteBlocks}}
-  <div style="margin-bottom:1rem">
-    <div class="uw-label">{{.Label}}</div>
-    <textarea class="uw-textarea" readonly rows="4">{{.Content}}</textarea>
-  </div>
-  {{end}}
+  {{range .UWCopyBlocks}}{{template "copyBlock" .}}{{end}}
 </div>
 {{end}}
 

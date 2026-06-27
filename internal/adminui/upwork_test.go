@@ -104,10 +104,9 @@ func TestUpworkFitnessFunction_NoTemplateHTML(t *testing.T) {
 // for both title and overview when those fields are populated.
 // Red-on-revert: remove {{charClass .TitleLen 70}} from upworkTmplSrc → "cc-" absent.
 func TestUpworkTmpl_CharChips(t *testing.T) {
-	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
-		"charClass": charCounterClass,
-		"charLabel": charCounterLabel,
-	}).Parse(upworkTmplSrc))
+	// Wire sharedPartialsSrc so {{template "copyBlock" .}} resolves (Phase 3 idiom).
+	tmpl := template.Must(template.New("upwork").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc))
+	template.Must(tmpl.Parse(upworkTmplSrc))
 
 	profile := &jobs.ResumeProfileResult{
 		Headline: "Staff Software Engineer",
@@ -140,10 +139,9 @@ func TestUpworkTmpl_CharChips(t *testing.T) {
 // TestUpworkTmpl_Portfolio asserts that Projects are rendered in the Portfolio section.
 // Red-on-revert: remove Portfolio mapping from buildUpworkPageData → portfolio rows absent.
 func TestUpworkTmpl_Portfolio(t *testing.T) {
-	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
-		"charClass": charCounterClass,
-		"charLabel": charCounterLabel,
-	}).Parse(upworkTmplSrc))
+	// Wire sharedPartialsSrc so {{template "copyBlock" .}} resolves (Phase 3 idiom).
+	tmpl := template.Must(template.New("upwork").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc))
+	template.Must(tmpl.Parse(upworkTmplSrc))
 
 	profile := &jobs.ResumeProfileResult{
 		Projects: []jobs.ProjectSummary{
@@ -192,17 +190,90 @@ func TestCentsToDollars(t *testing.T) {
 }
 
 // TestUpworkTmpl_TemplateSourceSafety asserts the template source string uses
-// plain text rendering (not template.HTML) and that the paste-block textarea
-// has the readonly attribute so content is never interactively edited.
-// Red-on-revert: remove <textarea or readonly → test fails.
+// plain text rendering (not template.HTML). Paste blocks now render via the
+// shared copyBlock partial (Phase 3); the overview edit form still uses <textarea>.
+// Red-on-revert: reintroduce template.HTML cast → test fails.
 func TestUpworkTmpl_TemplateSourceSafety(t *testing.T) {
 	if strings.Contains(upworkTmplSrc, "template.HTML") {
 		t.Error("upworkTmplSrc must not use template.HTML (content goes through auto-escape)")
 	}
+	// The edit form's overview <textarea> must still be present.
 	if !strings.Contains(upworkTmplSrc, "<textarea") {
-		t.Error("upworkTmplSrc must contain <textarea for paste blocks")
+		t.Error("upworkTmplSrc must contain <textarea for the overview edit form")
 	}
-	if !strings.Contains(upworkTmplSrc, "readonly") {
-		t.Error("upworkTmplSrc paste textarea must have readonly attribute")
+	// Paste blocks now use copyBlock partial — readonly textarea is gone.
+	// The copyBlock template in sharedPartialsSrc renders a <pre> + button instead.
+	if strings.Contains(upworkTmplSrc, `<textarea class="uw-textarea" readonly`) {
+		t.Error(`paste block textarea should have been replaced with {{template "copyBlock" .}}`)
+	}
+}
+
+
+// TestUpworkTmpl_CopyBlocks asserts that paste blocks are rendered via the shared
+// copyBlock partial, emitting .gd-copy-btn markup with data-copy-pre / data-copy-field
+// attributes and that sharedCSS is included. Content must be HTML-escaped (never raw HTML).
+//
+// RED before Phase 3: UWCopyBlocks field does not exist on upworkPageData yet.
+// GREEN after: sharedPartialsSrc wired in, CopyBlockVMs built, {{template "copyBlock" .}} emitted.
+func TestUpworkTmpl_CopyBlocks(t *testing.T) {
+	// Synthetic paste blocks — one with angle-bracket content to verify HTML escaping.
+	pasteBlocks := []jobs.UpworkPasteBlock{
+		{Label: "Test Label", Content: "<script>alert(x)</script>"},
+		{Label: "Second Block", Content: "plain text content"},
+	}
+
+	// Build CopyBlockVMs the same way the handler will after Phase 3.
+	copyVMs := make([]CopyBlockVM, len(pasteBlocks))
+	for i, b := range pasteBlocks {
+		copyVMs[i] = CopyBlockVM{
+			PreID:    fmt.Sprintf("uw-paste-%d", i),
+			FieldNum: i,
+			Content:  b.Content,
+			Label:    b.Label,
+		}
+	}
+
+	data := upworkPageData{
+		NavID:         navIDUpwork,
+		UWPasteBlocks: pasteBlocks,
+		UWCopyBlocks:  copyVMs, // Phase 3 field — does not exist yet (RED).
+	}
+
+	// Build template with shared partials (Phase 3 idiom).
+	tmpl := template.Must(
+		template.New("upwork").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc),
+	)
+	if _, err := tmpl.Parse(upworkTmplSrc); err != nil {
+		t.Fatalf("parse upworkTmplSrc: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	out := buf.String()
+
+	// 1. copyBlock partial must emit .gd-copy-btn
+	if !strings.Contains(out, `class="gd-copy-btn"`) {
+		t.Error(`expected class="gd-copy-btn" in rendered output (copyBlock partial)`)
+	}
+	// 2. PreID for index 0
+	if !strings.Contains(out, `data-copy-pre="uw-paste-0"`) {
+		t.Error(`expected data-copy-pre="uw-paste-0" for first paste block`)
+	}
+	// 3. data-copy-field for index 0
+	if !strings.Contains(out, `data-copy-field="0"`) {
+		t.Error(`expected data-copy-field="0" for first paste block`)
+	}
+	// 4. sharedCSS must be present: .gd-copy-btn{ CSS rule
+	if !strings.Contains(out, ".gd-copy-btn{") {
+		t.Error("expected .gd-copy-btn{ CSS rule from sharedCSS partial")
+	}
+	// 5. Content must be HTML-escaped (angle brackets -> &lt; &gt;)
+	if strings.Contains(out, "<script>") {
+		t.Error("content must be HTML-escaped: raw <script> must not appear in output")
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Error("expected &lt;script&gt; in output (HTML-escaped content)")
 	}
 }
