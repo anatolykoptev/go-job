@@ -52,9 +52,24 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
         run: |
+          # Soft-aware + strict. Migrations whose first line is "-- soft" are
+          # extension-gated (002 = Apache AGE, 005 = pgvector); the ephemeral
+          # postgres image may lack the extension and the app degrades cleanly
+          # (e.g. FTS instead of vector search), so tolerate their failure —
+          # mirrors ConnectResumeDB. Any HARD migration failure is a real schema
+          # break and MUST fail the gate (no silent error-swallowing).
+          set -uo pipefail
+          fail=0
           for f in $(ls internal/engine/jobs/schema/*.sql internal/hunt/schema/*.sql | sort); do
-            psql "$DATABASE_URL" -f "$f"
+            if head -1 "$f" | grep -q "^-- soft"; then
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1 \
+                || echo "soft migration skipped (extension absent): $f"
+            else
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" \
+                || { echo "::error::hard migration failed: $f"; fail=1; }
+            fi
           done
+          [ "$fail" -eq 0 ] || { echo "::error::one or more hard migrations failed"; exit 1; }
 
       - name: make preflight
         env:
