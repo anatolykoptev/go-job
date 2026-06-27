@@ -51,12 +51,8 @@ const (
 // Tone options.
 const toneConcise = "concise"
 
-// MemDB user identity for go-job.
-const memdbUserID = "gojob"
-
-// resumeVectorUser is the single-source cube key for all resume_vectors rows.
-// Matches memdbUserID so the Phase-A migration can use the same value when pulling
-// from MemDB (cmd/migrate-resume-memory). Single place per fitness function F3.
+// resumeVectorUser is the single-source user key for all resume_vectors rows.
+// Single place per fitness function F3.
 const resumeVectorUser = "gojob"
 
 // Craigslist city slug.
@@ -72,11 +68,16 @@ const (
 // Craigslist city slugs.
 const craigslistCitySFBay = "sfbay"
 
-// MemDB metadata keys.
+// Metadata key used by job-source connectors (inspira, undp) in SearxngResult.Metadata.
+const keySource = "source"
+
+// mem_type discriminators for resume_vectors rows (one per consumer so ClearVectors
+// and scoped searches cannot cross-contaminate between consumers).
 const (
-	memdbKeyUserID = "user_id"
-	memdbKeyType   = "type"
-	memdbKeySource = "source"
+	memTypeResumeExp  = "resume_experience"
+	memTypeResumeProj = "resume_project"
+	memTypeResumeAchv = "resume_achievement"
+	memTypeEnrichProj = "enrich_project"
 )
 
 // Tone options (additional).

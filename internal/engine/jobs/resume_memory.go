@@ -56,38 +56,12 @@ func SearchResumeMemory(ctx context.Context, query string, topK int) (*ResumeMem
 		topK = maxTopK
 	}
 
-	var rows []VectorRow
-	backend := backendFTS
-
-	ec := GetEmbedClient()
-	if ec != nil && db.HasEmbedding() {
-		qvec, err := ec.EmbedQuery(ctx, "query: "+query)
-		switch {
-		case err != nil:
-			slog.Warn("resume_memory: embed query failed, using FTS", slog.Any("error", err))
-			resumeEmbedFailuresTotal.Inc()
-		case len(qvec) != expectedEmbedDim:
-			slog.Warn("resume_memory: embed query dim mismatch, using FTS",
-				slog.Int("got", len(qvec)), slog.Int("want", expectedEmbedDim))
-			resumeEmbedFailuresTotal.Inc()
-		case containsNonFinite(qvec):
-			slog.Warn("resume_memory: embed returned non-finite query vector, using FTS")
-			resumeEmbedFailuresTotal.Inc()
-		default:
-			rows, err = db.SearchByVector(ctx, qvec, topK)
-			if err != nil {
-				return nil, err
-			}
-			backend = backendVector
-		}
-	}
-
-	if backend == backendFTS {
-		var err error
-		rows, err = db.SearchByText(ctx, query, topK)
-		if err != nil {
-			return nil, err
-		}
+	rows, backend, err := embedOrFTS(ctx, db, query, "resume_memory",
+		func(qvec []float32) ([]VectorRow, error) { return db.SearchByVector(ctx, qvec, topK) },
+		func() ([]VectorRow, error) { return db.SearchByText(ctx, query, topK) },
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	resumeMemoryOpsTotal.WithLabelValues("search", backend).Inc()
@@ -158,7 +132,7 @@ type ResumeMemoryUpdateResult struct {
 }
 
 // UpdateResumeMemory replaces the content (and re-embeds) an existing memory by its row id.
-// Unlike the old MemDB delete+re-add, this is an atomic UPDATE preserving the row id —
+// This is an atomic UPDATE preserving the row id —
 // so a cached memory_id stays valid after the update.
 func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeMemoryUpdateResult, error) {
 	db := GetResumeDB()
@@ -193,7 +167,64 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 	}, nil
 }
 
+// --- Scoped search (for consumers that need type-filtered results) ---
+
+// searchVectorsScoped searches resume_vectors for rows whose mem_type is in
+// memTypes, using vector search when the embedder is available and falling back
+// to FTS otherwise.  minScore is the cosine-similarity floor applied to the
+// vector path only; the FTS fallback intentionally ignores it because ts_rank
+// is not numerically comparable to cosine similarity.
+func searchVectorsScoped(ctx context.Context, db *ResumeDB, query string, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
+	rows, _, err := embedOrFTS(ctx, db, query, "resume_vectors_scoped",
+		func(qvec []float32) ([]VectorRow, error) {
+			return db.SearchByVectorScoped(ctx, qvec, topK, minScore, memTypes)
+		},
+		func() ([]VectorRow, error) {
+			// minScore not applied on the FTS path: ts_rank and cosine similarity
+			// are incomparable scales, so a numeric floor here would be misleading.
+			return db.SearchByTextScoped(ctx, query, topK, memTypes)
+		},
+	)
+	return rows, err
+}
+
 // --- Private helpers ---
+
+// embedOrFTS embeds query and dispatches to vecFn (vector path) or txtFn (FTS fallback).
+// It centralises the embed guard (absent embedder, HasEmbedding false, dim mismatch,
+// non-finite vector) and bumps resumeEmbedFailuresTotal on every failure before falling
+// back to FTS.  op is the caller name used in warning log messages.
+// Returns the chosen backend label (backendVector or backendFTS) so callers can
+// record per-backend metrics when needed.
+func embedOrFTS(
+	ctx context.Context,
+	db *ResumeDB,
+	query, op string,
+	vecFn func(qvec []float32) ([]VectorRow, error),
+	txtFn func() ([]VectorRow, error),
+) ([]VectorRow, string, error) {
+	ec := GetEmbedClient()
+	if ec != nil && db.HasEmbedding() {
+		qvec, err := ec.EmbedQuery(ctx, "query: "+query)
+		switch {
+		case err != nil:
+			slog.Warn(op+": embed query failed, using FTS", slog.Any("error", err))
+			resumeEmbedFailuresTotal.Inc()
+		case len(qvec) != expectedEmbedDim:
+			slog.Warn(op+": embed dim mismatch, using FTS",
+				slog.Int("got", len(qvec)), slog.Int("want", expectedEmbedDim))
+			resumeEmbedFailuresTotal.Inc()
+		case containsNonFinite(qvec):
+			slog.Warn(op+": embed returned non-finite vector, using FTS")
+			resumeEmbedFailuresTotal.Inc()
+		default:
+			rows, err := vecFn(qvec)
+			return rows, backendVector, err
+		}
+	}
+	rows, err := txtFn()
+	return rows, backendFTS, err
+}
 
 // containsNonFinite reports whether any component of v is NaN or infinite.
 // pgvector rejects such vectors at INSERT/UPDATE time; we detect them early and

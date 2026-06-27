@@ -188,7 +188,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 	}
 
 	applied := 0
-	mdb := GetMemDB()
+	rdb := GetResumeDB()
 
 	for _, updateRaw := range parsed.Updates {
 		var base struct {
@@ -280,11 +280,13 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 						slog.Debug("graph edge upsert failed", slog.Any("error", err))
 					}
 				}
-				// Add to MemDB
-				if mdb != nil {
+				// Add enriched project to resume_vectors.
+				if rdb != nil {
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
-					if _, err := mdb.Add(ctx, text, map[string]any{memdbKeyType: graphTypeProject, "id": float64(projID)}); err != nil {
-						slog.Debug("memdb add project failed", slog.Any("error", err))
+					refID := int64(projID)
+					embedding, _ := embedPassage(ctx, rdb, text, "resume_enrich add")
+					if _, err := rdb.UpsertVector(ctx, text, memTypeEnrichProj, &refID, embedding); err != nil {
+						slog.Debug("resume_vectors add project failed", slog.Any("error", err))
 					}
 				}
 				applied++

@@ -212,7 +212,7 @@ func inspiraJobToResult(j inspiraJob) engine.SearxngResult {
 		URL:     fmt.Sprintf(inspiraJobURLFormat, j.JobID),
 		Score:   0.9,
 		Metadata: map[string]string{
-			memdbKeySource:   sourceInspira,
+			keySource:        sourceInspira,
 			"org":      j.Dept.Name,
 			"category": j.JC.Name,
 			"level":    j.JL.Name,

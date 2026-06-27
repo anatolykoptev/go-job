@@ -27,22 +27,13 @@ var schemaFS embed.FS
 const ageSetup = `SET search_path TO ag_catalog, "$user", public`
 
 // Package-level singletons, set from main.go.
-var (
-	resumeDB *ResumeDB
-	memDB    *MemDBClient
-)
+var resumeDB *ResumeDB
 
 // SetResumeDB sets the package-level resume DB instance.
 func SetResumeDB(db *ResumeDB) { resumeDB = db }
 
 // GetResumeDB returns the package-level resume DB instance (may be nil).
 func GetResumeDB() *ResumeDB { return resumeDB }
-
-// SetMemDB sets the package-level MemDB client instance.
-func SetMemDB(c *MemDBClient) { memDB = c }
-
-// GetMemDB returns the package-level MemDB client instance (may be nil).
-func GetMemDB() *MemDBClient { return memDB }
 
 // ResumeDB holds the pgx connection pool for resume storage.
 type ResumeDB struct {
@@ -63,8 +54,8 @@ func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error)
 	config.MinConns = 1
 
 	// Force search_path to public for all pool connections.
-	// The memos role has ag_catalog first in search_path (for MemDB graph),
-	// which causes CREATE TABLE / INSERT to resolve to ag_catalog instead of public.
+	// Some Postgres roles have ag_catalog first in search_path, which causes
+	// CREATE TABLE / INSERT to resolve to ag_catalog instead of public.
 	// AGE graph queries explicitly set their own search_path via ageSetup.
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		_, err := conn.Exec(ctx, "SET search_path TO public")

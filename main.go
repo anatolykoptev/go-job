@@ -234,8 +234,6 @@ func initEngine() hunt.Notifier {
 		CacheCleanupInterval: env.Duration("CACHE_CLEANUP_INTERVAL", 300*time.Second),
 		IndeedAPIKey:         env.Str("INDEED_API_KEY", ""),
 		DatabaseURL:          env.Str("DATABASE_URL", ""),
-		MemDBURL:             env.Str("MEMDB_URL", ""),
-		MemDBServiceSecret:   env.Str("INTERNAL_SERVICE_SECRET", ""),
 		EmbedURL:             env.Str("EMBED_URL", ""),
 		OxBrowserURL:         env.Str("OX_BROWSER_URL", ""),
 		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
@@ -386,12 +384,6 @@ func initEngine() hunt.Notifier {
 		)
 	} else {
 		slog.Info("ATS discovery: GO_SEARCH_URL unset — using local SearchDirect fallback")
-	}
-
-	// MemDB vector client
-	if c.MemDBURL != "" && c.MemDBServiceSecret != "" {
-		jobs.SetMemDB(jobs.NewMemDBClient(c.MemDBURL, c.MemDBServiceSecret))
-		slog.Info("memdb client initialized", slog.String("url", c.MemDBURL))
 	}
 
 	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).

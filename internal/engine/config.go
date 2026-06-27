@@ -57,8 +57,6 @@ type Config struct {
 	SocialClient       *social.Client   // nil = go-social disabled, use local twitter
 	LinkedInClient     *linkedin.Client // nil = LinkedIn tools disabled
 	DatabaseURL        string           // DATABASE_URL for PostgreSQL (resume graph)
-	MemDBURL           string           // MEMDB_URL for vector search
-	MemDBServiceSecret string           // INTERNAL_SERVICE_SECRET for MemDB auth
 	EmbedURL           string           // EMBED_URL for direct embedding server
 
 	// OxBrowserURL is the base URL of the self-hosted ox-browser solver
