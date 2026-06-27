@@ -109,9 +109,9 @@ func (db *ResumeDB) UpsertVector(
 	return id, err
 }
 
-// minVectorSimilarity is the cosine similarity floor for vector search results.
-// Mirrors the searchRelativity=0.5 that MemDB applied; results below this threshold
-// are not meaningfully related and would inflate the FTS fallback comparison.
+// minVectorSimilarity is the default cosine similarity floor for unscoped vector search.
+// Results below this threshold are not meaningfully related and would inflate the FTS comparison.
+// Scoped searches use a caller-supplied floor via SearchByVectorScoped.
 const minVectorSimilarity = 0.5
 
 // SearchByVector performs exact cosine-distance search via pgvector (<=>).
@@ -175,6 +175,69 @@ func (db *ResumeDB) FetchVectorMeta(ctx context.Context, id int64) (memType stri
 		WHERE id = $1 AND user_name = $2
 	`, id, resumeVectorUser).Scan(&memType, &refID)
 	return
+}
+
+// SearchByVectorScoped is like SearchByVector but restricted to the given mem_types
+// and with a caller-supplied min-score floor instead of the package-level constant.
+func (db *ResumeDB) SearchByVectorScoped(ctx context.Context, qvec []float32, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
+	vec := vectorLiteral(qvec)
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, content, mem_type, ref_id,
+		       1.0 - (embedding <=> $1::vector) AS score
+		FROM resume_vectors
+		WHERE user_name = $2
+		  AND embedding IS NOT NULL
+		  AND mem_type = ANY($5::text[])
+		  AND 1.0 - (embedding <=> $1::vector) >= $4
+		ORDER BY embedding <=> $1::vector
+		LIMIT $3
+	`, vec, resumeVectorUser, topK, minScore, memTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVectorRows(rows)
+}
+
+// SearchByTextScoped is like SearchByText but restricted to the given mem_types.
+func (db *ResumeDB) SearchByTextScoped(ctx context.Context, query string, topK int, memTypes []string) ([]VectorRow, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, content, mem_type, ref_id,
+		       ts_rank(tsv, plainto_tsquery('english', $1)) AS score
+		FROM resume_vectors
+		WHERE user_name = $2
+		  AND mem_type = ANY($4::text[])
+		  AND tsv @@ plainto_tsquery('english', $1)
+		ORDER BY score DESC
+		LIMIT $3
+	`, query, resumeVectorUser, topK, memTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVectorRows(rows)
+}
+
+// ClearVectors deletes all resume_vectors rows for the current user whose
+// mem_type matches any of the provided values. Only the caller's own mem_types
+// are affected; other consumers' rows (including resume_memory "note" rows) are untouched.
+func (db *ResumeDB) ClearVectors(ctx context.Context, memTypes ...string) error {
+	_, err := db.pool.Exec(ctx, `
+		DELETE FROM resume_vectors
+		WHERE user_name = $1 AND mem_type = ANY($2::text[])
+	`, resumeVectorUser, memTypes)
+	return err
+}
+
+// CountVectors returns the number of resume_vectors rows for the current user
+// whose mem_type matches any of the provided values.
+func (db *ResumeDB) CountVectors(ctx context.Context, memTypes ...string) (int, error) {
+	var n int
+	err := db.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM resume_vectors
+		WHERE user_name = $1 AND mem_type = ANY($2::text[])
+	`, resumeVectorUser, memTypes).Scan(&n)
+	return n, err
 }
 
 // UpdateVector atomically updates content, content_hash, and embedding for a row.

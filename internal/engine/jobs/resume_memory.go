@@ -158,7 +158,7 @@ type ResumeMemoryUpdateResult struct {
 }
 
 // UpdateResumeMemory replaces the content (and re-embeds) an existing memory by its row id.
-// Unlike the old MemDB delete+re-add, this is an atomic UPDATE preserving the row id —
+// This is an atomic UPDATE preserving the row id —
 // so a cached memory_id stays valid after the update.
 func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeMemoryUpdateResult, error) {
 	db := GetResumeDB()
@@ -191,6 +191,34 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 		MemoryID: memoryID,
 		Updated:  true,
 	}, nil
+}
+
+// --- Scoped search (for consumers that need type-filtered results) ---
+
+// searchVectorsScoped searches resume_vectors for rows whose mem_type is in
+// memTypes, using vector search when the embedder is available and falling back
+// to FTS otherwise. minScore is the cosine-similarity floor (applied only to the
+// vector path; FTS uses ts_rank which has a different scale).
+func searchVectorsScoped(ctx context.Context, db *ResumeDB, query string, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
+	ec := GetEmbedClient()
+	if ec != nil && db.HasEmbedding() {
+		qvec, err := ec.EmbedQuery(ctx, "query: "+query)
+		switch {
+		case err != nil:
+			slog.Warn("searchVectorsScoped: embed query failed, using FTS", slog.Any("error", err))
+			resumeEmbedFailuresTotal.Inc()
+		case len(qvec) != expectedEmbedDim:
+			slog.Warn("searchVectorsScoped: embed dim mismatch, using FTS",
+				slog.Int("got", len(qvec)), slog.Int("want", expectedEmbedDim))
+			resumeEmbedFailuresTotal.Inc()
+		case containsNonFinite(qvec):
+			slog.Warn("searchVectorsScoped: embed returned non-finite vector, using FTS")
+			resumeEmbedFailuresTotal.Inc()
+		default:
+			return db.SearchByVectorScoped(ctx, qvec, topK, minScore, memTypes)
+		}
+	}
+	return db.SearchByTextScoped(ctx, query, topK, memTypes)
 }
 
 // --- Private helpers ---

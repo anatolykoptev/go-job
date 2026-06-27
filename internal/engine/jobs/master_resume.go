@@ -260,7 +260,7 @@ Do NOT duplicate items already in the parsed data.
 
 Return ONLY the JSON object, no markdown, no explanation.`
 
-// BuildMasterResume parses resume text into SQL tables + AGE graph + MemDB vectors.
+// BuildMasterResume parses resume text into SQL tables, AGE graph, and resume_vectors.
 func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBuildResult, error) { //nolint:funlen
 	db := GetResumeDB()
 	if db == nil {
@@ -317,12 +317,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		return nil, fmt.Errorf("clear graph failed before rebuild: %w", err)
 	}
 
-	// Clear MemDB vectors
-	mdb := GetMemDB()
-	if mdb != nil {
-		if err := mdb.ClearAll(ctx); err != nil {
-			slog.Error("memdb clear failed before rebuild", slog.Any("error", err))
-			return nil, fmt.Errorf("clear memdb failed before rebuild: %w", err)
+	// Clear resume_vectors rows owned by master_resume (preserves resume_memory and enrich_project rows).
+	if rdb := GetResumeDB(); rdb != nil {
+		if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+			slog.Error("clear resume vectors failed before rebuild", slog.Any("error", err))
+			return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 		}
 	}
 
@@ -472,17 +471,21 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			}
 
 			text := formatProjectText(sp.Name, sp.Description, sp.Tech, sp.Highlights)
+			spIDi64 := int64(spID)
 			vectorTexts = append(vectorTexts, vectorEntry{
 				content: text,
-				info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(spID)},
+				memType: memTypeResumeProj,
+				refID:   &spIDi64,
 			})
 		}
 
 		// Vector: experience text (with domain context)
 		text := formatExperienceTextExtended(exp.Title, exp.Company, exp.StartDate, exp.EndDate, exp.Description, exp.Highlights, exp.Domain)
+		expIDi64 := int64(expID)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{memdbKeyType: "experience", "id": float64(expID)},
+			memType: memTypeResumeExp,
+			refID:   &expIDi64,
 		})
 	}
 
@@ -518,9 +521,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 
 		text := formatProjectText(proj.Name, proj.Description, proj.Tech, proj.Highlights)
+		projIDi64 := int64(projID)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(projID)},
+			memType: memTypeResumeProj,
+			refID:   &projIDi64,
 		})
 	}
 
@@ -549,9 +554,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			linkAchievementToParent(ctx, db, achv.Context, achvID, personID)
 		}
 
+		achvIDi64 := int64(achvID)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: achv.Text,
-			info:    map[string]any{memdbKeyType: "achievement", "id": float64(achvID)},
+			memType: memTypeResumeAchv,
+			refID:   &achvIDi64,
 		})
 	}
 
@@ -690,9 +697,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 
 		text := formatProjectText(sp.Name, sp.Description, sp.Tech, sp.Highlights)
+		spIDi64e := int64(spID)
 		vectorTexts = append(vectorTexts, vectorEntry{
 			content: text,
-			info:    map[string]any{memdbKeyType: graphTypeProject, "id": float64(spID)},
+			memType: memTypeResumeProj,
+			refID:   &spIDi64e,
 		})
 	}
 
@@ -746,11 +755,12 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		result.GraphEdges = edges
 	}
 
-	// 19. Sync to MemDB
-	if mdb != nil {
+	// 19. Sync to resume_vectors
+	if rdb := GetResumeDB(); rdb != nil {
 		for _, ve := range vectorTexts {
-			if _, err := mdb.Add(ctx, ve.content, ve.info); err != nil {
-				slog.Debug("memdb add failed", slog.Any("error", err))
+			embedding, _ := embedPassage(ctx, rdb, ve.content, "master_resume add")
+			if _, err := rdb.UpsertVector(ctx, ve.content, ve.memType, ve.refID, embedding); err != nil {
+				slog.Debug("resume_vectors add failed", slog.Any("error", err))
 				continue
 			}
 			result.VectorsStored++
@@ -842,7 +852,8 @@ func linkImplicitSkillToSource(ctx context.Context, db *ResumeDB, sourceHint str
 
 type vectorEntry struct {
 	content string
-	info    map[string]any
+	memType string
+	refID   *int64
 }
 
 func formatExperienceTextExtended(title, company, startDate, endDate, description string, highlights []string, domain string) string {
