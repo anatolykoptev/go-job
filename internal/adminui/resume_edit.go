@@ -19,6 +19,7 @@ import (
 type resumeEditData struct {
 	CSRFToken      string
 	Person         *jobs.PersonRecord
+	HourlyRateStr  string // pre-formatted for template: "175.00" or ""
 	Experiences    []jobs.ExperienceRecord
 	Skills         []jobs.SkillRecord
 	Achievements   []jobs.AchievementRecord
@@ -70,9 +71,14 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		certs, _ := db.GetAllCertifications(ctx, personID)
 
 		sessVal := sessionValue(r, a.SessionCookieName())
+		hourlyRateStr := ""
+		if person.HourlyRateCents > 0 {
+			hourlyRateStr = fmt.Sprintf("%.2f", float64(person.HourlyRateCents)/100)
+		}
 		d := resumeEditData{
 			CSRFToken:      csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL),
 			Person:         person,
+			HourlyRateStr:  hourlyRateStr,
 			Experiences:    exps,
 			Skills:         skills,
 			Achievements:   achs,
@@ -126,6 +132,20 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		}
 		if err := db.UpdateResumePerson(r.Context(), personID, updated); err != nil {
 			slog.Error("resumePersonEditHandler: UpdateResumePerson", "err", err)
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		// Update Upwork-specific fields.
+		headline := r.FormValue("headline")
+		hourlyRateStr := r.FormValue("hourly_rate")
+		var hourlyRateCents int64
+		if hourlyRateStr != "" {
+			if rate, parseErr := strconv.ParseFloat(hourlyRateStr, 64); parseErr == nil {
+				hourlyRateCents = int64(rate * 100)
+			}
+		}
+		if err := db.UpdatePersonUpworkFields(r.Context(), personID, headline, hourlyRateCents); err != nil {
+			slog.Error("resumePersonEditHandler: UpdatePersonUpworkFields", "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
 		}

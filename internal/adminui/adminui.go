@@ -79,6 +79,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
+	p.AddNav(shell.NavItem{ID: navIDUpwork, Label: "Upwork", Icon: "🟢", URL: "/admin/upwork"})
 
 	// Outer mux: bespoke 4-/5-segment routes first, panel catch-all last.
 	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
@@ -111,6 +112,7 @@ func New(store *hunt.Store) (http.Handler, bool) {
 	mux.Handle("POST "+adminBasePath+"/resume/certification", a.Require(resumeCertificationCreateHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/resume/certification/{id}/delete", a.Require(resumeCertificationDeleteHandler(a, []byte(csrfKey))))
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, applicationsDir)))
+	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p)))
 	mux.Handle(adminBasePath+"/", p.Handler())
 	return mux, true
 }
