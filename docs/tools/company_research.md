@@ -1,5 +1,7 @@
-# Tool: `company_research`
+# Tool: `research` (subject=company)
 
+> **Note:** `company_research` was consolidated into the `research` tool. Use `research` with `subject=company`.
+>
 > **Category:** Research | **Source:** `internal/engine/jobs/research.go`
 
 Research a company before applying or interviewing. Returns size, funding, tech stack, culture notes, Glassdoor rating, and recent news — aggregated via SearXNG + LLM synthesis.

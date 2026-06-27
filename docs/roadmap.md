@@ -1,13 +1,13 @@
-# go_job + vaelor-jobs — Career Assistant Roadmap
+# go_job — Career Assistant Roadmap
 
-> AIHawk-level career assistant through vaelor-jobs agent + go_job MCP server.
-> Last updated: 2026-02-28
+> AIHawk-level career assistant through a Claude Code / MCP agent + go_job MCP server.
+> Last updated: 2026-06-26
 
 ---
 
 ## Vision
 
-Full career pipeline through a single AI agent (vaelor-jobs):
+Full career pipeline through a single AI agent:
 
 ```
 Find Jobs → Research → Prepare Application → Interview Prep → Track Pipeline → Negotiate Offer
@@ -22,15 +22,12 @@ No browser automation. No credentials. Pure API + LLM.
 ### Phase 1 — Job Search (go_job v1.0)
 | Tool | Sources | Status |
 |------|---------|--------|
-| `job_search` | LinkedIn Guest API, Greenhouse, Lever, YC, HN, Indeed, Хабр Карьера, **Twitter/X** | ✅ |
-| `remote_work_search` | RemoteOK API, WeWorkRemotely RSS, Remotive API | ✅ |
-| `freelance_search` | Freelancer.com REST API, Upwork SearXNG | ✅ |
-| `twitter_job_search` | Twitter/X GraphQL via go-twitter (raw tweets, no LLM) | ✅ |
+| `job_search` | LinkedIn Guest API, Greenhouse, Lever, YC, HN, Indeed, Хабр Карьера, Twitter/X (platform=twitter), Google Jobs (platform=google) | ✅ |
 | `job_match_score` | Jaccard keyword overlap: resume vs job listings (0-100) | ✅ |
 
-**Filters:** experience, job_type, remote, time_range, salary (LinkedIn f_SB2), platform (incl. twitter), location
+**Filters:** experience, job_type, remote, time_range, salary (LinkedIn f_SB2), platform, location, limit, offset, blacklist
 
-**Sources (12):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs
+**Sources (15+):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs, Inspira (UN), UNDP, Freelancer.com
 
 ### Phase 2 — Resume & Cover Letter (go_job v1.1)
 | Tool | Description | Status |
@@ -42,18 +39,14 @@ No browser automation. No credentials. Pure API + LLM.
 ### Phase 3 — Research (go_job v1.1)
 | Tool | Description | Status |
 |------|-------------|--------|
-| `salary_research` | p25/median/p75 from levels.fyi, Glassdoor, hh.ru, Хабр | ✅ |
-| `company_research` | Size, funding, tech stack, culture, Glassdoor rating, news | ✅ |
-| `person_research` | Hiring manager background from LinkedIn, GitHub, Twitter, Habr, web | ✅ |
+| `research` | Single consolidated tool. subject=salary — p25/median/p75; subject=company — size, funding, tech stack, culture; subject=person — hiring manager background | ✅ |
 
 ### Phase 4 — Job Tracker (go_job v1.1)
 | Tool | Description | Status |
 |------|-------------|--------|
-| `job_tracker_add` | Save job to local SQLite (~/.go_job/tracker.db) | ✅ |
-| `job_tracker_list` | List by status: saved/applied/interview/offer/rejected | ✅ |
-| `job_tracker_update` | Update status and notes by ID | ✅ |
+| `job_tracker` | Single tool: action=add (save job), action=list (filter by status), action=update (update status/notes by ID). Storage: $UPLOADS_ROOT/go-job/tracker/tracker.db (SQLite) | ✅ |
 
-### Phase 5 — vaelor-jobs Agent Skills
+### Phase 5 — Agent Skills
 | Skill | Description | Status |
 |-------|-------------|--------|
 | `job-search` | Job/remote/freelance search strategies | ✅ |
@@ -88,14 +81,12 @@ No browser automation. No credentials. Pure API + LLM.
 | `results_limit` | `limit` param on `job_search` (default 15, max 50) | ✅ |
 | `pagination` | `offset` param — skip N results for pagination | ✅ |
 | `blacklist` | Comma-separated company/keyword exclusion filter | ✅ |
-| `google_jobs` | Google Jobs source via SearXNG (`site:careers.google.com`) | ✅ |
-| `user_profile` | `~/.go_job/profile.json` — default platform, limit, location, remote, blacklist | ✅ |
+| `google_jobs` | Google Jobs source via SearXNG (platform=google) | ✅ |
+| `user_profile` | Default platform, limit, location, remote, blacklist stored at $UPLOADS_ROOT/go-job/profile/profile.json | ✅ |
 
-**Filters (updated):** experience, job_type, remote, time_range, salary, platform (incl. twitter, google), location, **limit, offset, blacklist**
+**Filters (updated):** experience, job_type, remote, time_range, salary, platform (incl. twitter, google, inspira, undp, un), location, limit, offset, blacklist
 
-**Sources (12):** LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, **Google Jobs**
-
-**Total: 25 MCP tools, 12 job sources, 6 vaelor skills/workflows**
+**Total: 28 MCP tools, 15+ job sources**
 
 ---
 
@@ -103,9 +94,9 @@ No browser automation. No credentials. Pure API + LLM.
 
 ### vs AIHawk (29k★)
 
-| Feature | AIHawk | go_job + vaelor-jobs |
-|---------|--------|---------------------|
-| Job search | LinkedIn + Indeed (Selenium) | 12 sources, no browser |
+| Feature | AIHawk | go_job |
+|---------|--------|--------|
+| Job search | LinkedIn + Indeed (Selenium) | 15+ sources, no browser |
 | Resume tailoring | ✅ | ✅ |
 | Cover letter | ✅ AI-generated | ✅ AI-generated |
 | ATS analysis | ❌ | ✅ score + keywords + gaps |
@@ -125,26 +116,6 @@ No browser automation. No credentials. Pure API + LLM.
 | Caching | ❌ | ✅ L1+L2 Redis |
 | Language | Python | Go |
 
-**go_job advantages:** no browser, no credentials, MCP-native, caching, 12 sources, salary+company+person research, ATS scoring, Twitter/X, pagination, blacklist
-
-**AIHawk advantage:** auto-apply (EasyApply) — intentionally not implemented (ToS violation risk)
-
-### vs Commercial Tools
-
-| Feature | JobCopilot ($29/mo) | AIApply | FinalRound AI | go_job |
-|---------|---------------------|---------|---------------|--------|
-| Job search | ✅ | ✅ | ❌ | ✅ 12 sources |
-| Auto-apply | ✅ | ✅ | ❌ | ❌ by design |
-| Resume builder | ✅ | ✅ ATS-optimized | ❌ | ✅ analyze+tailor |
-| Cover letter | ✅ | ✅ | ❌ | ✅ 3 tones |
-| Interview prep | ❌ | ❌ | ✅ mock interviews | ✅ Q&A + pitches + STAR |
-| Offer negotiation | ❌ | ❌ | ❌ | ✅ scripts + BATNA |
-| Live interview coaching | ❌ | ✅ Interview Buddy | ✅ | 🔜 Phase 9 |
-| Company research | ❌ | ❌ | ❌ | ✅ |
-| Salary research | ❌ | ❌ | ❌ | ✅ |
-| Self-hosted | ❌ | ❌ | ❌ | ✅ |
-| Price | $29/mo | paid | paid | free |
-
 ---
 
 ## Roadmap — Next Steps
@@ -155,9 +126,9 @@ No browser automation. No credentials. Pure API + LLM.
 
 | Feature | Tool/Skill | Effort | Notes |
 |---------|------------|--------|-------|
-| **Mock interview session** | vaelor skill | High | Multi-turn conversation simulating real interview. Interviewer persona based on person_research of actual hiring manager. Feedback after each answer (clarity, depth, STAR compliance). |
-| **System design practice** | vaelor skill | High | Interactive system design session: interviewer asks, candidate draws (text-based), interviewer probes. Tailored to company's tech stack (from company_research). |
-| **Live interview companion** | vaelor skill | Medium | Real-time answer suggestions during actual interview. User sends question text → instant structured answer with talking points from their projects. Like AIApply's "Interview Buddy". |
+| **Mock interview session** | Claude Code skill | High | Multi-turn conversation simulating real interview. Interviewer persona based on person_research of actual hiring manager. Feedback after each answer (clarity, depth, STAR compliance). |
+| **System design practice** | Claude Code skill | High | Interactive system design session: interviewer asks, candidate draws (text-based), interviewer probes. Tailored to company's tech stack (from company_research). |
+| **Live interview companion** | Claude Code skill | Medium | Real-time answer suggestions during actual interview. User sends question text → instant structured answer with talking points from their projects. Like AIApply's "Interview Buddy". |
 
 ### Phase 10b — More Sources & UX (remaining)
 
@@ -175,55 +146,44 @@ No browser automation. No credentials. Pure API + LLM.
 
 ```
 User (Telegram / Claude Code / API)
-        │
-        ▼
-vaelor-orchestrator (port 18790)
-        │ A2A
-        ▼
-vaelor-jobs (port 18796)
-  ├── SOUL.md — Career Assistant identity
-  ├── skills/
-  │   ├── job-search/SKILL.md
-  │   ├── resume-assistant/SKILL.md
-  │   ├── job-tracker/SKILL.md
-  │   ├── career-research/SKILL.md
-  │   ├── interview-prep/SKILL.md        ← Phase 7
-  │   └── mock-interview/SKILL.md        ← Phase 9
-  └── workflows/
-      ├── job-application-prep.json
-      ├── resume-audit.json
-      └── full-application-package.json   ← Phase 8
-        │ MCP
-        ▼
-go_job MCP server (port 8891, 25 tools)
-  ├── job_search            (12 sources incl. Twitter/X, Google Jobs; limit/offset/blacklist)
-  ├── remote_work_search    (RemoteOK, WWR, Remotive)
-  ├── freelance_search      (Upwork, Freelancer)
-  ├── twitter_job_search    (raw tweets via go-twitter)
-  ├── job_match_score       (Jaccard resume↔job)
-  ├── resume_analyze        (LLM + ATS scoring)
-  ├── cover_letter_generate (LLM, 3 tones)
-  ├── resume_tailor         (LLM + keyword diff)
-  ├── salary_research       (SearXNG + LLM)
-  ├── company_research      (SearXNG + LLM)
-  ├── person_research       (LinkedIn + GitHub + Twitter + web)
-  ├── job_tracker_add       (SQLite)
-  ├── job_tracker_list      (SQLite)
-  ├── job_tracker_update    (SQLite)
-  ├── interview_prep        (LLM + company enrichment)
-  ├── project_showcase      (LLM, STAR format)
-  ├── pitch_generate        (LLM + company enrichment)
-  ├── skill_gap             (keyword matching + LLM)
-  ├── application_prep      (parallel: analyze + cover + interview + company)
-  ├── offer_compare         (LLM, scoring 0-100)
-  ├── negotiation_prep      (LLM + salary research)
-  ├── master_resume_build   (LLM, master profile)
-  ├── resume_generate       (LLM from master profile)
-  ├── resume_enrich         (LLM, Q&A enrichment)
-  ├── resume_profile        (master profile viewer)
-  ├── resume_memory_search  (semantic search)
-  ├── resume_memory_add     (memory store)
-  └── resume_memory_update  (memory update)
+        |
+        v
+go_job MCP server (port 8891, 28 tools)
+  +-- job_search            (15+ sources: LinkedIn, Greenhouse, Lever, YC, HN,
+  |                          Indeed, Habr, RemoteOK, WWR, Remotive, Twitter/X,
+  |                          Google Jobs, Inspira, UNDP, Freelancer; limit/offset/blacklist)
+  +-- job_match_score       (Jaccard resume <-> job)
+  +-- opportunity_search    (cross-type: jobs + freelance + bounty)
+  +-- opportunity_analyze
+  +-- opportunity_claim
+  +-- ats                   (direct ATS board fetch)
+  +-- resume_analyze        (LLM + ATS scoring)
+  +-- cover_letter_generate (LLM, 3 tones)
+  +-- resume_tailor         (LLM + keyword diff)
+  +-- master_resume_build
+  +-- resume_generate
+  +-- resume_enrich
+  +-- resume_profile
+  +-- resume_memory
+  +-- research              (subject=salary|company|person; SearXNG + LLM)
+  +-- interview_prep        (LLM + company enrichment)
+  +-- project_showcase      (LLM, STAR format)
+  +-- pitch_generate        (LLM + company enrichment)
+  +-- skill_gap             (keyword matching + LLM)
+  +-- application_prep      (parallel: analyze + cover + interview + company)
+  +-- offer_compare         (LLM, scoring 0-100)
+  +-- negotiation_prep      (LLM + salary research)
+  +-- linkedin
+  +-- linkedin_profile_ingest
+  +-- job_tracker           (action=add|list|update; SQLite at UPLOADS_ROOT)
+  +-- algora_job_ingest
+  +-- hunt_list
+  +-- oversize
+        |
+        v Telegram notifications
+internal/hunt/notify/telegram.go
+  (go-kit ProductSink, own bot, rate-limited fan-out)
+  Requires: TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID
 ```
 
 ---
@@ -232,10 +192,10 @@ go_job MCP server (port 8891, 25 tools)
 
 | Store | Location | Purpose |
 |-------|----------|---------|
-| Job tracker | `~/.go_job/tracker.db` | SQLite, persists across restarts |
+| Job tracker | `$UPLOADS_ROOT/go-job/tracker/tracker.db` (default `$HOME/uploads/go-job/tracker/tracker.db`) | SQLite, persists across restarts |
+| User profile | `$UPLOADS_ROOT/go-job/profile/profile.json` (default `$HOME/uploads/go-job/profile/profile.json`) | Default platform, limit, location, remote, blacklist |
 | L1 cache | in-memory (sync.Map) | Fast, lost on restart |
 | L2 cache | Redis (optional) | Persistent, shared across instances |
-| User profile | `~/.go_job/profile.json` | Default platform, limit, location, remote, blacklist |
 
 ---
 

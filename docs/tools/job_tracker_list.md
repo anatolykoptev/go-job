@@ -78,6 +78,6 @@ job_tracker_update (id=42, status=offer) → move to next stage
 ## Implementation
 
 - **File:** `internal/engine/jobs/tracker.go` — `ListTrackedJobs()`
-- **DB:** `~/.go_job/tracker.db` (SQLite)
+- **DB:** `$UPLOADS_ROOT/go-job/tracker/tracker.db (default $HOME/uploads/go-job/tracker/tracker.db)` (SQLite)
 - **Registration:** `internal/jobserver/register.go`
 - **Tests:** `internal/engine/jobs/tracker_test.go`
