@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -107,6 +108,22 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
 		}
+		// Validate form inputs before any DB call.
+		if r.FormValue("name") == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		headline := r.FormValue("headline")
+		hourlyRateStr := r.FormValue("hourly_rate")
+		var hourlyRateCents int64
+		if hourlyRateStr != "" {
+			rate, parseErr := strconv.ParseFloat(hourlyRateStr, 64)
+			if parseErr != nil {
+				http.Error(w, "invalid hourly_rate: must be a number", http.StatusBadRequest)
+				return
+			}
+			hourlyRateCents = int64(math.Round(rate * 100))
+		}
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -115,10 +132,6 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 		person, err := db.GetPerson(r.Context(), personID)
 		if err != nil || person == nil {
 			http.Error(w, "person not found", http.StatusNotFound)
-			return
-		}
-		if r.FormValue("name") == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
 			return
 		}
 		updated := jobs.PersonRecord{
@@ -136,14 +149,6 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 			return
 		}
 		// Update Upwork-specific fields.
-		headline := r.FormValue("headline")
-		hourlyRateStr := r.FormValue("hourly_rate")
-		var hourlyRateCents int64
-		if hourlyRateStr != "" {
-			if rate, parseErr := strconv.ParseFloat(hourlyRateStr, 64); parseErr == nil {
-				hourlyRateCents = int64(rate * 100)
-			}
-		}
 		if err := db.UpdatePersonUpworkFields(r.Context(), personID, headline, hourlyRateCents); err != nil {
 			slog.Error("resumePersonEditHandler: UpdatePersonUpworkFields", "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)

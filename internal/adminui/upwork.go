@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -16,12 +17,15 @@ const navIDUpwork = "upwork"
 type upworkPageData struct {
 	NavID      string
 	Title      string
+	TitleLen   int
 	Overview   string
+	OverviewLen int
 	Rate       string
 	Skills     []string
 	SkillsOver bool
 	SkillCount int
 	Employment []upworkEmploymentItem
+	Portfolio  []upworkPortfolioItem
 }
 
 type upworkEmploymentItem struct {
@@ -31,11 +35,19 @@ type upworkEmploymentItem struct {
 	EndDate   string
 }
 
+type upworkPortfolioItem struct {
+	Name string
+	Tech string
+	URL  string
+}
+
 func buildUpworkPageData(profile *jobs.ResumeProfileResult) upworkPageData {
 	d := upworkPageData{
-		NavID:    navIDUpwork,
-		Title:    profile.Headline,
-		Overview: profile.Summary,
+		NavID:       navIDUpwork,
+		Title:       profile.Headline,
+		TitleLen:    len([]rune(profile.Headline)),
+		Overview:    profile.Summary,
+		OverviewLen: len([]rune(profile.Summary)),
 	}
 	if profile.HourlyRateCents > 0 {
 		d.Rate = fmt.Sprintf("$%.2f/hr", float64(profile.HourlyRateCents)/100)
@@ -56,6 +68,13 @@ func buildUpworkPageData(profile *jobs.ResumeProfileResult) upworkPageData {
 			Company:   e.Company,
 			StartDate: e.StartDate,
 			EndDate:   e.EndDate,
+		})
+	}
+	for _, p := range profile.Projects {
+		d.Portfolio = append(d.Portfolio, upworkPortfolioItem{
+			Name: p.Name,
+			Tech: strings.Join(p.Tech, ", "),
+			URL:  p.URL,
 		})
 	}
 	return d
@@ -116,6 +135,10 @@ const upworkTmplSrc = `<style>
   .uw-table th{text-align:left;padding:.4rem .6rem;color:var(--text-muted,#64748b);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border,#334155)}
   .uw-table td{padding:.5rem .6rem;color:var(--text-secondary,#94a3b8);border-bottom:1px solid var(--border-subtle,#1e293b)}
   .uw-empty{color:var(--text-muted,#64748b);font-style:italic;font-size:.875rem}
+  .cc-muted{font-size:.6875rem;color:var(--text-muted,#64748b);margin-left:.375rem}
+  .cc-green{font-size:.6875rem;color:var(--green,#34d399);margin-left:.375rem}
+  .cc-amber{font-size:.6875rem;color:#f59e0b;margin-left:.375rem}
+  .cc-red{font-size:.6875rem;color:#ef4444;margin-left:.375rem}
 </style>
 
 <div class="page-header">
@@ -124,7 +147,9 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Title / Headline</h3>
+  <h3>Title / Headline
+    {{if gt .TitleLen 0}}<span class="{{charClass .TitleLen 70}}">{{charLabel .TitleLen 70}}</span>{{end}}
+  </h3>
   <div class="uw-label">Upwork profile title (max 70 chars)</div>
   <div class="uw-value">{{if .Title}}{{.Title}}{{else}}<span class="uw-empty">not set — add via Resume Edit &gt; Upwork Headline</span>{{end}}</div>
 </div>
@@ -135,7 +160,9 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Professional Overview</h3>
+  <h3>Professional Overview
+    {{if gt .OverviewLen 0}}<span class="{{charClass .OverviewLen 5000}}">{{charLabel .OverviewLen 5000}}</span>{{end}}
+  </h3>
   <div class="uw-overview">{{if .Overview}}{{.Overview}}{{else}}<span class="uw-empty">no summary set</span>{{end}}</div>
 </div>
 
@@ -159,4 +186,18 @@ const upworkTmplSrc = `<style>
     </tbody>
   </table>
   {{else}}<div class="uw-empty">no employment entries</div>{{end}}
+</div>
+
+<div class="uw-section">
+  <h3>Portfolio</h3>
+  {{if .Portfolio}}
+  <table class="uw-table">
+    <thead><tr><th>Name</th><th>Tech</th><th>URL</th></tr></thead>
+    <tbody>
+    {{range .Portfolio}}
+    <tr><td>{{.Name}}</td><td>{{.Tech}}</td><td>{{if .URL}}<a href="{{.URL}}" style="color:var(--accent,#60a5fa)">{{.URL}}</a>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<div class="uw-empty">no portfolio entries</div>{{end}}
 </div>`

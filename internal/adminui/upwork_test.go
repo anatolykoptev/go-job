@@ -1,6 +1,9 @@
 package adminui
 
 import (
+	"bytes"
+	"fmt"
+	"html/template"
 	"os"
 	"strings"
 	"testing"
@@ -94,5 +97,75 @@ func TestUpworkFitnessFunction_NoTemplateHTML(t *testing.T) {
 	}
 	if strings.Contains(string(src), "template.HTML") {
 		t.Error("upwork.go must not use template.HTML (DB strings must go through auto-escape)")
+	}
+}
+
+// TestUpworkTmpl_CharChips asserts that the template renders charClass/charLabel chips
+// for both title and overview when those fields are populated.
+// Red-on-revert: remove {{charClass .TitleLen 70}} from upworkTmplSrc → "cc-" absent.
+func TestUpworkTmpl_CharChips(t *testing.T) {
+	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
+		"charClass": charCounterClass,
+		"charLabel": charCounterLabel,
+	}).Parse(upworkTmplSrc))
+
+	profile := &jobs.ResumeProfileResult{
+		Headline: "Staff Software Engineer",
+		Summary:  "Experienced in distributed systems.",
+	}
+	d := buildUpworkPageData(profile)
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, d); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	out := buf.String()
+
+	// Both title and overview must emit a cc-* chip span.
+	if !strings.Contains(out, "cc-") {
+		t.Error("expected cc-* chip span in rendered output for title and overview")
+	}
+	// charLabel for title: "23 / 70" (len("Staff Software Engineer") == 23)
+	if !strings.Contains(out, "23 / 70") {
+		t.Errorf("expected title char label %q in output", "23 / 70")
+	}
+	// charLabel for overview: length / 5000
+	overviewLen := len([]rune("Experienced in distributed systems."))
+	overviewLabel := fmt.Sprintf("%d / 5000", overviewLen)
+	if !strings.Contains(out, overviewLabel) {
+		t.Errorf("expected overview char label %q in output", overviewLabel)
+	}
+}
+
+// TestUpworkTmpl_Portfolio asserts that Projects are rendered in the Portfolio section.
+// Red-on-revert: remove Portfolio mapping from buildUpworkPageData → portfolio rows absent.
+func TestUpworkTmpl_Portfolio(t *testing.T) {
+	tmpl := template.Must(template.New("upwork").Funcs(template.FuncMap{
+		"charClass": charCounterClass,
+		"charLabel": charCounterLabel,
+	}).Parse(upworkTmplSrc))
+
+	profile := &jobs.ResumeProfileResult{
+		Projects: []jobs.ProjectSummary{
+			{Name: "go-relay", Tech: []string{"Go", "WebRTC"}, URL: "https://github.com/example/go-relay"},
+			{Name: "svelte-ui", Tech: []string{"Svelte"}, URL: ""},
+		},
+	}
+	d := buildUpworkPageData(profile)
+
+	if len(d.Portfolio) != 2 {
+		t.Fatalf("Portfolio len: got %d want 2", len(d.Portfolio))
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, d); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{"go-relay", "Go, WebRTC", "https://github.com/example/go-relay", "svelte-ui", "Svelte"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in portfolio output", want)
+		}
 	}
 }

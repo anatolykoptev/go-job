@@ -240,12 +240,3 @@ func (db *ResumeDB) GetPersonEnrichedAt(ctx context.Context, personID int) strin
 	}
 	return *enrichedAt
 }
-
-// GetPersonUpworkFields returns the Upwork-specific fields for a person.
-func (db *ResumeDB) GetPersonUpworkFields(ctx context.Context, personID int) (headline string, hourlyRate int64, err error) {
-	err = db.pool.QueryRow(ctx,
-		`SELECT COALESCE(headline,''), COALESCE(hourly_rate,0) FROM resume_persons WHERE id = $1`,
-		personID,
-	).Scan(&headline, &hourlyRate)
-	return
-}
