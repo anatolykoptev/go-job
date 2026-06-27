@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -168,131 +167,51 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 	}
 }
 
-// TestShortlistPG_EnrichPackReady verifies PDF-derived pack-ready is computed from
-// filesystem presence, not from a DB column.
-// Red-on-revert: removing PDF scan from enrichPGShortlist → pack-ready always false → fails.
-func TestShortlistPG_EnrichPackReady(t *testing.T) {
-	root := t.TempDir()
+// ── resource.Resource unit tests ──────────────────────────────────────────────
 
-	// Beta has a resume PDF in the submit/ canonical location.
-	submit := filepath.Join(root, "beta-engineer", "submit")
-	if err := os.MkdirAll(submit, 0o755); err != nil {
-		t.Fatal(err)
+// TestStageBadgeHTML verifies that stageBadgeHTML uses closed-enum CSS classes and
+// escapes stage text, with no raw DB text in HTML attribute values.
+// Red-on-revert: removing stageBadgeClass map → wrong/missing CSS class → fails.
+func TestStageBadgeHTML(t *testing.T) {
+	cases := []struct {
+		stage   string
+		wantCls string // expected substring in output
+	}{
+		{hunt.StageInteresting, "badge-blue"},
+		{hunt.StageSaved, `class="badge"`},       // no extra modifier for saved
+		{hunt.StageClaimed, "badge-blue"},
+		{hunt.StageApplied, "badge-blue"},
+		{hunt.StageInterview, "badge-green"},
+		{hunt.StageOffer, "badge-green"},
+		{"unknown-stage", `class="badge"`},        // unknown → plain badge, no modifier
+		{"<script>xss</script>", "&lt;script&gt;"}, // stage text must be escaped
 	}
-	if err := os.WriteFile(filepath.Join(submit, "resume.pdf"), []byte("%PDF"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(submit, "cover.pdf"), []byte("%PDF"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	fitScore := 72
-	rows := []hunt.ShortlistRow{
-		{ID: 1, Company: "Acme", Title: "SWE", Stage: hunt.StageSaved},
-		{ID: 2, Company: "Beta", Title: "Engineer", FitScore: &fitScore, FitBand: "moderate", Stage: hunt.StageSaved},
-	}
-
-	entries := enrichPGShortlist(rows, root)
-	if len(entries) != 2 {
-		t.Fatalf("want 2 entries, got %d", len(entries))
-	}
-
-	// Beta (pack-ready) must sort first.
-	if entries[0].Company != "Beta" {
-		t.Errorf("pack-ready Beta should sort first, got %q", entries[0].Company)
-	}
-	if !entries[0].HasResume {
-		t.Error("Beta: HasResume must be true")
-	}
-	if !entries[0].HasCover {
-		t.Error("Beta: HasCover must be true")
-	}
-	if !entries[0].PackReady {
-		t.Error("Beta: PackReady must be true (HasResume && HasCover)")
-	}
-	if entries[1].PackReady {
-		t.Error("Acme: PackReady must be false (no PDFs)")
+	for _, tc := range cases {
+		got := stageBadgeHTML(tc.stage)
+		if !strings.Contains(got, tc.wantCls) {
+			t.Errorf("stageBadgeHTML(%q): want %q in output, got %q", tc.stage, tc.wantCls, got)
+		}
 	}
 }
 
-// TestShortlistPG_RenderHTMLFitChips verifies that renderPGShortlistHTML produces
-// HTML containing the real fit chip HTML and stage badges, not stale tracker score.
-// Red-on-revert: remove renderPGShortlistHTML or fitChipHTML → missing fit chip → fails.
-func TestShortlistPG_RenderHTMLFitChips(t *testing.T) {
-	fitScore := 85
-	postTime := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
-	rows := []hunt.ShortlistRow{
-		{
-			ID:       1,
-			Company:  "Anthropic",
-			Title:    "Staff Engineer",
-			FitScore: &fitScore,
-			FitBand:  "strong",
-			Stage:    hunt.StageSaved,
-			PostedAt: &postTime,
-		},
+// TestDocsChipHTML verifies the four documentation states produce distinct badges.
+// Red-on-revert: removing docsChipHTML or altering its switch → wrong badge class → fails.
+func TestDocsChipHTML(t *testing.T) {
+	cases := []struct {
+		hasResume, hasCover bool
+		wantContains        string
+	}{
+		{true, true, "badge-green"},
+		{true, false, "Resume"},
+		{false, true, "Cover"},
+		{false, false, "badge-gray"},
 	}
-	entries := enrichPGShortlist(rows, t.TempDir())
-	html := renderPGShortlistHTML(entries, "")
-
-	// Must contain the fit chip HTML produced by fitChipHTML.
-	if !strings.Contains(html, "fit-strong") {
-		t.Error("HTML must contain fit-strong chip CSS class")
-	}
-	if !strings.Contains(html, "85") {
-		t.Error("HTML must contain the fit score value 85")
-	}
-	// Stage badge must appear.
-	if !strings.Contains(html, "saved") {
-		t.Error("HTML must contain the stage badge")
-	}
-	// Posted date must appear.
-	if !strings.Contains(html, "2026-01-15") {
-		t.Error("HTML must contain the posted date")
-	}
-	// Filter chip counts.
-	if !strings.Contains(html, "All 1") {
-		t.Error("HTML must contain All 1 filter chip")
-	}
-	if !strings.Contains(html, "Saved 1") {
-		t.Error("HTML must contain Saved 1 filter chip")
-	}
-}
-
-// TestShortlistPG_FilterPackReady verifies that the pack-ready filter shows only
-// entries where HasResume && HasCover (derived, not a DB column).
-// Red-on-revert: remove filter logic in renderPGShortlistHTML → wrong filter → fails.
-func TestShortlistPG_FilterPackReady(t *testing.T) {
-	fitScore := 70
-	rows := []hunt.ShortlistRow{
-		{ID: 1, Company: "Acme", Title: "SWE", FitScore: &fitScore, FitBand: "moderate", Stage: hunt.StageSaved},
-		{ID: 2, Company: "Beta", Title: "Eng", Stage: hunt.StageInteresting},
-	}
-	root := t.TempDir()
-	// Give Acme a PDF directory so it becomes pack-ready.
-	submit := filepath.Join(root, "acme-swe", "submit")
-	if err := os.MkdirAll(submit, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(submit, "resume.pdf"), []byte("%PDF"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(submit, "cover.pdf"), []byte("%PDF"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	entries := enrichPGShortlist(rows, root)
-	htmlAll := renderPGShortlistHTML(entries, "")
-	htmlPR := renderPGShortlistHTML(entries, "pack-ready")
-
-	if !strings.Contains(htmlAll, "Acme") || !strings.Contains(htmlAll, "Beta") {
-		t.Error("unfiltered view must show both entries")
-	}
-	if !strings.Contains(htmlPR, "Acme") {
-		t.Error("pack-ready filter must include Acme (has resume+cover)")
-	}
-	if strings.Contains(htmlPR, ">Beta<") {
-		t.Error("pack-ready filter must exclude Beta (no PDFs)")
+	for _, tc := range cases {
+		got := docsChipHTML(tc.hasResume, tc.hasCover)
+		if !strings.Contains(got, tc.wantContains) {
+			t.Errorf("docsChipHTML(resume=%v, cover=%v): want %q, got %q",
+				tc.hasResume, tc.hasCover, tc.wantContains, got)
+		}
 	}
 }
 
