@@ -67,8 +67,8 @@ type linkedInPageData struct {
 // linkedinHandler serves GET /admin/linkedin.
 func linkedinHandler(p *resource.Panel, applicationsDir string) http.HandlerFunc {
 	tmpl := template.Must(template.New("linkedin").Funcs(template.FuncMap{
-		"charClass": charCounterClass,
-		"charLabel": charCounterLabel,
+		tmplFuncCharClass: charCounterClass,
+		tmplFuncCharLabel: charCounterLabel,
 	}).Parse(linkedinTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -252,7 +252,13 @@ func parseH2Number(heading string) (num, title string) {
 	return candidate, strings.TrimSpace(heading[dot+1:])
 }
 
-const ccAmber = "cc-amber"
+// tmplFuncCharClass and tmplFuncCharLabel are template.FuncMap keys shared by
+// linkedin.go and upwork.go. Defined here since charCounterClass/Label live here.
+const (
+	ccAmber           = "cc-amber"
+	tmplFuncCharClass = "charClass"
+	tmplFuncCharLabel = "charLabel"
+)
 
 // charCounterClass returns the CSS class for a char counter chip.
 func charCounterClass(count, limit int) string {

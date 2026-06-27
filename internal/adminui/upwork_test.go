@@ -169,3 +169,40 @@ func TestUpworkTmpl_Portfolio(t *testing.T) {
 		}
 	}
 }
+
+// TestCentsToDollars verifies the centsToDollars helper across key boundary values.
+// Red-on-revert: remove centsToDollars → compile failure; change formatting → table fails.
+func TestCentsToDollars(t *testing.T) {
+	cases := []struct {
+		cents int64
+		want  string
+	}{
+		{0, ""},
+		{15000, "$150.00"},
+		{100, "$1.00"},
+		{1, "$0.01"},
+		{9999, "$99.99"},
+	}
+	for _, tc := range cases {
+		got := centsToDollars(tc.cents)
+		if got != tc.want {
+			t.Errorf("centsToDollars(%d) = %q, want %q", tc.cents, got, tc.want)
+		}
+	}
+}
+
+// TestUpworkTmpl_TemplateSourceSafety asserts the template source string uses
+// plain text rendering (not template.HTML) and that the paste-block textarea
+// has the readonly attribute so content is never interactively edited.
+// Red-on-revert: remove <textarea or readonly → test fails.
+func TestUpworkTmpl_TemplateSourceSafety(t *testing.T) {
+	if strings.Contains(upworkTmplSrc, "template.HTML") {
+		t.Error("upworkTmplSrc must not use template.HTML (content goes through auto-escape)")
+	}
+	if !strings.Contains(upworkTmplSrc, "<textarea") {
+		t.Error("upworkTmplSrc must contain <textarea for paste blocks")
+	}
+	if !strings.Contains(upworkTmplSrc, "readonly") {
+		t.Error("upworkTmplSrc paste textarea must have readonly attribute")
+	}
+}

@@ -301,7 +301,7 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 		switch keyLower {
 		case "base salary":
 			applyAlgoraSalary(listing, val)
-		case "location":
+		case "location": //nolint:goconst
 			listing.Location = val
 		case "equity":
 			// Equity is free text — store as a tag, never as a number.

@@ -103,11 +103,12 @@ func formatSalary(min, max *int, currency, interval string) string {
 		return ""
 	}
 	var sb strings.Builder
-	if min != nil && max != nil && *min > 0 && *max > 0 {
+	switch {
+	case min != nil && max != nil && *min > 0 && *max > 0:
 		fmt.Fprintf(&sb, "%d–%d", *min, *max)
-	} else if min != nil && *min > 0 {
+	case min != nil && *min > 0:
 		fmt.Fprintf(&sb, "%d+", *min)
-	} else if max != nil && *max > 0 {
+	case max != nil && *max > 0:
 		fmt.Fprintf(&sb, "up to %d", *max)
 	}
 	if sb.Len() == 0 {

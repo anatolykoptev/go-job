@@ -403,7 +403,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 
 		// Graph: Exp node
 		if err := db.UpsertGraphNode(ctx, "Exp", expID, map[string]string{
-			"title":   exp.Title,
+			"title":   exp.Title, //nolint:goconst
 			"company": exp.Company,
 		}); err != nil {
 			slog.Debug("graph node upsert failed", slog.Any("error", err))

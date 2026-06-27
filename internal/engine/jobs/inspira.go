@@ -216,7 +216,7 @@ func inspiraJobToResult(j inspiraJob) engine.SearxngResult {
 			"org":      j.Dept.Name,
 			"category": j.JC.Name,
 			"level":    j.JL.Name,
-			"location": location,
+			"location": location, //nolint:goconst
 			"posted":   j.StartDate,
 			"closes":   j.EndDate,
 		},

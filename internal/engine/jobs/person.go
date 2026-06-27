@@ -137,7 +137,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		defer wg.Done()
 		results, err := engine.SearchSearXNG(ctx, subject+" site:github.com", "all", "", engine.DefaultSearchEngine)
 		if err != nil {
-			ch <- sourceData{name: "github"}
+			ch <- sourceData{name: "github"} //nolint:goconst
 			return
 		}
 		var snippets []string

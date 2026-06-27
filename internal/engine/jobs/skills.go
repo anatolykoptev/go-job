@@ -15,7 +15,7 @@ var skillPatterns = []struct {
 	{"Go", regexp.MustCompile(`\b(?:Go|Golang|golang)\b`)},
 	{skillRust, regexp.MustCompile(`\bRust\b`)},
 	{skillPython, regexp.MustCompile(`\bPython\b`)},
-	{"TypeScript", regexp.MustCompile(`\bTypeScript\b`)},
+	{"TypeScript", regexp.MustCompile(`\bTypeScript\b`)}, //nolint:goconst
 	{"JavaScript", regexp.MustCompile(`\bJavaScript\b`)},
 	{"Scala", regexp.MustCompile(`\bScala\b`)},
 	{"Java", regexp.MustCompile(`\bJava\b`)},

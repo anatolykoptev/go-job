@@ -61,7 +61,8 @@ func main() {
 		"SELECT id, title, company, COALESCE(url,''), COALESCE(status,'saved'), COALESCE(notes,''), COALESCE(salary,''), COALESCE(location,''), created_at, updated_at FROM tracked_jobs ORDER BY id")
 	if err != nil {
 		slog.Error("query sqlite", "err", err)
-		os.Exit(1)
+		_ = sqliteDB.Close() // close before os.Exit so defer does not skip cleanup
+		os.Exit(1)           //nolint:gocritic // explicit close above
 	}
 	defer rows.Close()
 
