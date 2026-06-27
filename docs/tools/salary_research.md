@@ -1,5 +1,7 @@
-# Tool: `salary_research`
+# Tool: `research` (subject=salary)
 
+> **Note:** `salary_research` was consolidated into the `research` tool. Use `research` with `subject=salary`.
+>
 > **Category:** Research | **Source:** `internal/engine/jobs/research.go`
 
 Research salary ranges for a role and location. Aggregates data from levels.fyi, Glassdoor, LinkedIn, hh.ru, Хабр Карьера via SearXNG search + LLM synthesis.

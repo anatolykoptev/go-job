@@ -134,8 +134,8 @@ All scrapers follow the same pattern:
 5. Return typed slice
 
 Monitors follow `bounty_monitor.go` pattern:
-1. Check `VaelorNotifyURL` at startup
+1. Notification handler registered at startup (go-kit ProductSink in internal/hunt/notify/telegram.go)
 2. Initial delayed run (30-60s)
 3. Ticker loop (15-30 min)
 4. Seen-set in cache for dedup
-5. Telegram notifications via vaelor
+5. Telegram notifications via go-kit ProductSink (internal/hunt/notify/telegram.go, own bot)

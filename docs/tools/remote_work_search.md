@@ -1,6 +1,8 @@
 # Tool: `remote_work_search`
 
 > **Category:** Search | **Source:** `internal/engine/jobs/remotejobs.go`
+>
+> **Note:** `remote_work_search` is now part of `job_search`. Use `job_search` with `platform=remoteok`, `platform=weworkremotely`, or `platform=remotive`.
 
 Search for remote-first job listings on RemoteOK, WeWorkRemotely, Remotive, and via SearXNG.
 
