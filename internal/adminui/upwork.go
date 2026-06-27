@@ -63,7 +63,7 @@ func buildUpworkPageData(profile *jobs.ResumeProfileResult) upworkPageData {
 		OverviewLen: len([]rune(profile.Summary)),
 	}
 	if profile.HourlyRateCents > 0 {
-		d.Rate = fmt.Sprintf("$%.2f/hr", float64(profile.HourlyRateCents)/100)
+		d.Rate = centsToDollars(profile.HourlyRateCents) + "/hr"
 	}
 	const maxSkills = 15
 	d.SkillCount = len(profile.Skills)
@@ -103,10 +103,14 @@ func centsToDollars(cents int64) string {
 	return fmt.Sprintf("$%.2f", float64(cents)/100)
 }
 
-// parseDollarsToCents parses a dollar amount string (e.g. "150" or "150.50")
-// and returns the value in cents, rounding to the nearest cent.
+// parseDollarsToCents parses a plain-number transport-input string (e.g. "150" or "150.50")
+// from an HTML form into integer cents, rounding to the nearest cent.
 // Returns (0, nil) for empty string (rate not set).
 // Returns an error for invalid or negative values.
+//
+// This is the internal/adminui transport-input validator. It is distinct from
+// engine/jobs parseDollarCents (hunt_map.go) and ParseAmountCents (algora_github.go),
+// which handle ingest k/M abbreviation semantics. Do not consolidate across that boundary.
 func parseDollarsToCents(s string) (int64, error) {
 	if s == "" {
 		return 0, nil
