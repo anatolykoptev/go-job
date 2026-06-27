@@ -82,7 +82,7 @@ func rescoreJob(
 // On transient LLM fail-open: prior score preserved, operator redirected back.
 //
 // Wrap with a.Require() before mounting on the mux.
-func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -100,7 +100,7 @@ func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter, a *auth.HMACAuth, 
 
 		// CSRF verification: token must be bound to the current session cookie.
 		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.SessionCookieName())
+		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
