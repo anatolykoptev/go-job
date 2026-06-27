@@ -152,12 +152,15 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 		result.Methodologies = loadMethodologies(ctx, db, personID)
 	}
 
-	// Approximate vector count via MemDB search (no dedicated count API).
+	// Count structured vectors (experience/project/achievement/enrich_project only).
+	// Does NOT include free-text resume_memory rows (mem_type='note' etc.) — intentional:
+	// VectorsStored reflects SQL-entity-linked vectors, not total row count.
 	if sec == "" {
-		if mdb := GetMemDB(); mdb != nil {
-			all, err := mdb.Search(ctx, "resume experience project skill achievement", 100, 0.0)
+		if rdb := GetResumeDB(); rdb != nil {
+			n, err := rdb.CountVectors(ctx,
+				memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv, memTypeEnrichProj)
 			if err == nil {
-				result.Stats.VectorsStored = len(all)
+				result.Stats.VectorsStored = n
 			}
 		}
 	}

@@ -168,26 +168,27 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		}
 	}
 
-	// 3. Vector search for semantic matches (MemDB)
-	mdb := GetMemDB()
-	if mdb != nil {
-		results, err := mdb.Search(ctx, jdTrunc, 15, 0.6)
+	// 3. Vector search for semantic matches (resume_vectors)
+	if rdb := GetResumeDB(); rdb != nil {
+		scoped := []string{memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv, memTypeEnrichProj}
+		results, err := searchVectorsScoped(ctx, rdb, jdTrunc, 15, 0.6, scoped)
 		if err != nil {
-			slog.Debug("memdb search failed", slog.Any("error", err))
+			slog.Debug("resume_vectors search failed", slog.Any("error", err))
 		} else {
 			for _, r := range results {
-				itemType, _ := r.Info["type"].(string)
-				itemID, _ := r.Info["id"].(float64)
-				id := int(itemID)
+				if r.RefID == nil {
+					continue
+				}
+				id := int(*r.RefID)
 				if id == 0 {
 					continue
 				}
-				switch itemType {
-				case "experience":
+				switch r.MemType {
+				case memTypeResumeExp:
 					expIDSet[id] = true
-				case graphTypeProject:
+				case memTypeResumeProj, memTypeEnrichProj:
 					projIDSet[id] = true
-				case "achievement":
+				case memTypeResumeAchv:
 					achvIDSet[id] = true
 				}
 			}
