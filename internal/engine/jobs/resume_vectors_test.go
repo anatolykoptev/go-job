@@ -213,7 +213,7 @@ func testResumeDB(t *testing.T) *ResumeDB {
 	if err != nil {
 		t.Fatalf("testResumeDB: parse DATABASE_URL: %v", err)
 	}
-	dbName := cfg.ConnConfig.Config.Database
+	dbName := cfg.ConnConfig.Database
 	if !strings.HasSuffix(dbName, "_test") {
 		t.Skipf("testResumeDB: database %q does not end in \"_test\" — "+
 			"refusing to run destructive tests against a non-test DB. "+

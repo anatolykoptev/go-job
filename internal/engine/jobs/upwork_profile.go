@@ -90,17 +90,18 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 		Scan(&profile.Title, &profile.Overview, &profile.HourlyRate, &categories, &profile.Availability)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// No row = profile not set up yet; return Missing=true with empty data.
+			// No upwork_profile row yet. Skills and catalog items can exist
+			// independently of the profile row, so mark Missing and fall through
+			// to load them rather than returning early with empty lists.
 			result.Missing = true
 			result.Profile = profile
-			result.Skills = []UpworkSkillRecord{}
-			result.Catalog = []UpworkCatalogItem{}
-			return result, nil
+		} else {
+			return nil, fmt.Errorf("get upwork profile: %w", err)
 		}
-		return nil, fmt.Errorf("get upwork profile: %w", err)
+	} else {
+		profile.Categories = categories
+		result.Profile = profile
 	}
-	profile.Categories = categories
-	result.Profile = profile
 
 	// Load skills ordered by position.
 	rows, err := db.pool.Query(ctx, getUpworkSkillsSQL, personID)

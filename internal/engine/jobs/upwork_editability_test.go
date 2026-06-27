@@ -474,3 +474,35 @@ func TestReorderUpworkSkills_SubsetNormalization(t *testing.T) {
 		seen[s.Position] = true
 	}
 }
+
+// TestGetUpworkProfile_LoadsSkillsCatalogWithoutProfileRow is the regression
+// guard for the #118 early-return bug: GetUpworkProfile must load skills and
+// catalog items even when NO upwork_profile row exists (Missing=true), because
+// they exist independently of the profile row. Red-on-revert: restore the early
+// "return result, nil" in the pgx.ErrNoRows branch -> this fails with 0 skills/catalog.
+func TestGetUpworkProfile_LoadsSkillsCatalogWithoutProfileRow(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	personID := insertTestPerson(t, db, "Acme NoProfile", "acme-noprofile@example.com")
+
+	if _, err := db.InsertUpworkSkill(ctx, personID, "Go"); err != nil {
+		t.Fatalf("InsertUpworkSkill: %v", err)
+	}
+	if _, err := db.InsertUpworkCatalogItem(ctx, personID, "Backend API", "gRPC service"); err != nil {
+		t.Fatalf("InsertUpworkCatalogItem: %v", err)
+	}
+
+	result, err := db.GetUpworkProfile(ctx, personID)
+	if err != nil {
+		t.Fatalf("GetUpworkProfile: %v", err)
+	}
+	if !result.Missing {
+		t.Errorf("expected Missing=true (no profile row), got false")
+	}
+	if len(result.Skills) != 1 {
+		t.Errorf("expected 1 skill loaded despite no profile row, got %d", len(result.Skills))
+	}
+	if len(result.Catalog) != 1 {
+		t.Errorf("expected 1 catalog item loaded despite no profile row, got %d", len(result.Catalog))
+	}
+}
