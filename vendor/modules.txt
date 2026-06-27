@@ -43,6 +43,7 @@ github.com/anatolykoptev/go-engine/webtext
 github.com/anatolykoptev/go-kit/admintable
 github.com/anatolykoptev/go-kit/breaker
 github.com/anatolykoptev/go-kit/cache
+github.com/anatolykoptev/go-kit/embed
 github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics

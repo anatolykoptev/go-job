@@ -21,7 +21,7 @@ type resumeMemoryInput struct {
 func registerResumeMemory(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "resume_memory",
-		Description: "Manage resume memory in MemDB. op=search finds relevant experiences/projects/skills by query; op=add stores a new note/goal/preference; op=update replaces an existing memory by memory_id.",
+		Description: "Manage resume memory in postgres (pgvector + FTS). op=search finds relevant experiences/projects/skills by query; op=add stores a new note/goal/preference; op=update replaces an existing memory by memory_id.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input resumeMemoryInput) (*mcp.CallToolResult, any, error) {
 		switch input.Op {
 		case "search":

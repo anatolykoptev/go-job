@@ -48,13 +48,14 @@ func SearchAlgoraWithEmbeddings(ctx context.Context, limit int) ([]BountyWithVec
 		return result, nil
 	}
 
-	// Build texts for embedding: org + title.
+	// Build passage-prefixed texts for embedding: org + title.
+	// "passage: " prefix is required for e5-large retrieval mode.
 	texts := make([]string, len(bounties))
 	for i, b := range bounties {
-		texts[i] = b.Org + ": " + b.Title
+		texts[i] = "passage: " + b.Org + ": " + b.Title
 	}
 
-	vecs, err := client.EmbedPassages(ctx, texts)
+	vecs, err := client.Embed(ctx, texts)
 	if err != nil {
 		slog.Warn("algora: embedding failed, returning without vectors", slog.Any("error", err))
 		result := make([]BountyWithVector, len(bounties))
@@ -143,16 +144,18 @@ func SearchAlgoraEnriched(ctx context.Context, limit int) ([]BountyWithVector, e
 		return result, nil
 	}
 
+	// Build passage-prefixed texts for embedding: org + title + skills.
+	// "passage: " prefix is required for e5-large retrieval mode.
 	texts := make([]string, len(enriched))
 	for i, b := range enriched {
-		t := b.Org + ": " + b.Title
+		t := "passage: " + b.Org + ": " + b.Title
 		if len(b.Skills) > 0 {
 			t += " [" + strings.Join(b.Skills, ", ") + "]"
 		}
 		texts[i] = t
 	}
 
-	vecs, err := client.EmbedPassages(ctx, texts)
+	vecs, err := client.Embed(ctx, texts)
 	if err != nil {
 		slog.Warn("algora: embedding failed during enrichment, returning without vectors", slog.Any("error", err))
 		result := make([]BountyWithVector, len(enriched))
