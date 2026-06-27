@@ -15,19 +15,25 @@ import (
 
 // TestValidHuntStages_Allowlist is a fast table check; no DB needed.
 // Red-on-revert: remove validHuntStages or change entries → mismatches here.
+// Phase 1 unification arc widened the allowlist with pipeline stages per Decision 2.
 func TestValidHuntStages_Allowlist(t *testing.T) {
 	cases := []struct {
 		stage string
 		want  bool
 	}{
+		// Triage / kanban stages.
 		{"new", true},
 		{"interesting", true},
 		{"saved", true},
 		{"discarded", true},
 		{"claimed", true},
+		// Pipeline stages added in Phase 1 unification arc.
+		{"applied", true},
+		{"interview", true},
+		{"offer", true},
+		{"rejected", true},
+		// Must never be accepted.
 		{"hacked", false},
-		{"applied", false},
-		{"offer", false},
 		{"", false},
 		{"NEW", false},
 	}
