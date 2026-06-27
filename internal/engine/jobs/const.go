@@ -34,7 +34,6 @@ const currencyUSD = "USD"
 const graphPropName = "name"
 
 // Graph node type tags.
-const graphTypeProject = "project"
 
 // Language alias keys (used in search alias maps).
 const (
