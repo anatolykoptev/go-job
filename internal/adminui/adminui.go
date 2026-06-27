@@ -68,7 +68,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
-	jr := jobsResource(pool)
+	jr := jobsResource(pool, authority)
 	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority)
 	resource.Register(p, jr)
 
