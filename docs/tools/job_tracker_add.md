@@ -2,7 +2,7 @@
 
 > **Category:** Tracker | **Source:** `internal/engine/jobs/tracker.go`
 
-Save a job to the local SQLite tracker (`~/.go_job/tracker.db`). The DB is created automatically on first use.
+Save a job to the local SQLite tracker (`$UPLOADS_ROOT/go-job/tracker/tracker.db (default $HOME/uploads/go-job/tracker/tracker.db)`). The DB is created automatically on first use.
 
 ---
 
@@ -58,7 +58,7 @@ saved → applied → interview → offer
 
 ## Notes
 
-- DB file: `~/.go_job/tracker.db` — created automatically, persists across server restarts.
+- DB file: `$UPLOADS_ROOT/go-job/tracker/tracker.db (default $HOME/uploads/go-job/tracker/tracker.db)` — created automatically, persists across server restarts.
 - `title` and `company` are required; all other fields are optional.
 - `status` defaults to `saved` if omitted or empty.
 - Invalid `status` values return an error.

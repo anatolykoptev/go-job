@@ -1,6 +1,6 @@
 # go_job vs Competitors — Detailed Comparison
 
-> Last updated: 2026-02-19
+> Last updated: 2026-06-26
 
 ---
 
@@ -37,7 +37,7 @@
 | **Хабр Карьера** | ✅ JSON API | ❌ | ❌ | ❌ | ❌ |
 | **Glassdoor** | ❌ | ✅ | ❌ | ❌ | ✅ |
 | **ZipRecruiter** | ❌ | ✅ | ❌ | ❌ | ✅ |
-| **Google Jobs** | ❌ | ✅ | ❌ | ❌ | ✅ |
+| **Google Jobs** | ✅ SearXNG | ✅ | ❌ | ❌ | ✅ |
 | **Bayt / Naukri** | ❌ | ✅ | ❌ | ❌ | ✅ |
 
 > **JobSpy** (`speedyapply/JobSpy`, 2786★) — Python library (not MCP), wraps LinkedIn/Indeed/Glassdoor/ZipRecruiter/Google. Used by jobspy-mcp-server under the hood.
@@ -54,8 +54,8 @@
 | Time range (day/week/month) | ✅ | ✅ (`hours_old`) | ✅ | ❌ |
 | Salary filter | ✅ LinkedIn `f_SB2` | ❌ | ✅ (`40k+`…`200k+`) | ❌ |
 | Platform / source filter | ✅ | ✅ (`site_names`) | ❌ | ❌ |
-| Pagination (offset) | ❌ | ❌ | ✅ | ✅ |
-| Results count limit | ❌ (fixed ~15) | ✅ | ✅ | ✅ |
+| Pagination (offset) | ✅ | ❌ | ✅ | ✅ |
+| Results count limit | ✅ (default 15, max 50) | ✅ | ✅ | ✅ |
 
 ### Technical
 
@@ -118,21 +118,15 @@
 |---------|--------|-------|
 | **Glassdoor** | Medium | Salary data + company reviews — critical for compensation research |
 | **ZipRecruiter** | Medium | Large US market, many exclusive postings |
-| **Google Jobs** | Low | Aggregator — broad coverage via SearXNG `site:jobs.google.com` |
-| **Pagination / offset** | Low | LinkedIn Guest API supports `start=N`; add `offset` param |
-| **`results_limit` param** | Low | Currently fixed at ~15 per source |
 
-### Medium Priority — Resume & Career Tools (New MCP Tools)
+### Medium Priority — Additional Sources
 
-These would make go_job a **complete career assistant**, not just a job finder:
+These sources are not yet integrated:
 
-| Tool | Description | Implementation |
-|------|-------------|---------------|
-| **`resume_analyze`** | Compare resume text vs job description → gap analysis, ATS score, missing keywords | LLM prompt + cosine similarity |
-| **`cover_letter_generate`** | Generate tailored cover letter from resume + JD | LLM with structured prompt |
-| **`resume_tailor`** | Rewrite resume sections to match specific JD keywords | LLM + diff output |
-| **`salary_research`** | Aggregate salary data for role+location from multiple sources | Glassdoor SearXNG + levels.fyi scrape |
-| **`company_research`** | Company overview: size, funding, reviews, tech stack, recent news | Crunchbase/LinkedIn/HN scrape |
+| Source | Effort | Notes |
+|--------|--------|-------|
+| **Glassdoor** | Medium | Salary data + company reviews |
+| **ZipRecruiter** | Medium | Large US market, many exclusive postings |
 
 ### Low Priority — Automation
 
@@ -148,7 +142,7 @@ These would make go_job a **complete career assistant**, not just a job finder:
 
 ```
 Job Search ──────────────────────────────────────────────────────────────
-  go_job (this)    ← MCP, 10+ sources, LLM summary, Go, no auth
+  go_job (this)    ← MCP, 15+ sources, 28 tools, LLM summary, Go, no auth
   jobspy-mcp       ← MCP, wraps JobSpy, 7 sources incl. Glassdoor
   linkedin-mcp-server ← MCP, Playwright, 899★, LinkedIn only
   AIHawk           ← Bot, 29k★, auto-apply, LinkedIn+Indeed

@@ -1,15 +1,66 @@
 # go_job
 
-Job, Remote & Freelance Search MCP server. Exposes 4 MCP tools for structured job discovery across major platforms.
+Job search, resume optimization, career research, and application tracking — a Go MCP server exposing **28 tools** across LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Twitter/X, Google Jobs, and more.
 
 ## MCP Tools
 
-| Tool | Sources | Description |
-|------|---------|-------------|
-| `job_search` | LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Habr | Structured job search with filters (experience, type, remote, salary, Easy Apply). Returns up to 15 deduplicated jobs with salary, skills, description. |
-| `remote_work_search` | RemoteOK, WeWorkRemotely, Remotive, SearXNG | Remote-first job search. Returns structured listings with salary, tags, source. |
-| `freelance_search` | Freelancer.com (direct API), Upwork (SearXNG) | Freelance project search. Freelancer API returns budgets, skills, bids directly. |
-| `job_match_score` | LinkedIn, Indeed, YC, HN | Score job listings against a resume using Jaccard keyword overlap (0–100). Returns jobs sorted by match score with matching/missing keywords. |
+### Search
+
+| Tool | Description |
+|------|-------------|
+| `job_search` | Unified search: LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs. `platform=` selects source; `limit` (default 15, max 50) + `offset` for pagination. |
+| `job_match_score` | Score job listings against a resume using Jaccard keyword overlap (0–100). |
+| `opportunity_search` | Cross-type opportunity search (jobs + freelance + bounty). |
+| `opportunity_analyze` | Deep analyze a single opportunity URL. |
+| `opportunity_claim` | Initiate a claim action on a matched opportunity. |
+
+### Resume
+
+| Tool | Description |
+|------|-------------|
+| `resume_analyze` | ATS score (0–100), missing keywords, gaps, recommendations. |
+| `cover_letter_generate` | Tailored cover letter (3 tones: professional / friendly / concise). |
+| `resume_tailor` | Rewrite resume sections to match JD, keyword diff. |
+| `master_resume_build` | Build a master resume profile from raw experience. |
+| `resume_generate` | Generate a targeted resume from the master profile. |
+| `resume_enrich` | Enrich master profile via Q&A. |
+| `resume_profile` | View the stored master profile. |
+| `resume_memory` | Semantic search/add/update over resume memory store. |
+
+### Research
+
+| Tool | Description |
+|------|-------------|
+| `research` | Research salary, company, or person. `subject=salary\|company\|person`. |
+| `ats` | Direct ATS board fetch (Greenhouse, Lever, Ashby). |
+
+### Interview & Career Prep
+
+| Tool | Description |
+|------|-------------|
+| `interview_prep` | Personalized Q&A (behavioral + technical + system design) with model answers. |
+| `project_showcase` | STAR-format project narratives with impact and talking points. |
+| `pitch_generate` | 30-sec & 2-min elevator pitches, "why this company" answer. |
+| `skill_gap` | Resume vs JD gap: match score, missing skills, learning plan. |
+
+### Application Workflow
+
+| Tool | Description |
+|------|-------------|
+| `application_prep` | One-call combo: resume analysis + cover letter + interview prep + company research. |
+| `offer_compare` | Side-by-side offer comparison with scoring (0–100). |
+| `negotiation_prep` | Salary negotiation playbook: scripts, counters, BATNA. |
+| `linkedin` | LinkedIn profile operations. |
+| `linkedin_profile_ingest` | Ingest a LinkedIn profile for local analysis. |
+
+### Tracker & Utilities
+
+| Tool | Description |
+|------|-------------|
+| `job_tracker` | Track job applications. `action=add\|list\|update`. |
+| `algora_job_ingest` | Ingest Algora bounty/job listings into the hunt store. |
+| `hunt_list` | List hunt entries from the local store (triggers lazy enrichment). |
+| `oversize` | Retrieve / list / purge oversized MCP responses from the spillover store. |
 
 ## Filters (job_search)
 
@@ -21,7 +72,10 @@ Job, Remote & Freelance Search MCP server. Exposes 4 MCP tools for structured jo
 | `time_range` | day, week, month |
 | `salary` | 40k+, 60k+, 80k+, 100k+, 120k+, 140k+, 160k+, 180k+, 200k+ |
 | `easy_apply` | true (LinkedIn Easy Apply only) |
-| `platform` | linkedin, greenhouse, lever, ats, yc, hn, indeed, habr, startup, all (default) |
+| `platform` | linkedin, greenhouse, lever, ats, yc, hn, indeed, habr, remoteok, weworkremotely, remotive, twitter, google, un, inspira, undp, all (default) |
+| `limit` | 1–50 (default 15) |
+| `offset` | skip N results for pagination |
+| `blacklist` | comma-separated company/keyword exclusion |
 
 ## Architecture
 
@@ -31,72 +85,77 @@ go_job/
 ├── internal/
 │   ├── engine/
 │   │   ├── config.go          # Config struct + Init()
-│   │   ├── types_jobs.go      # Input/output types for all 4 tools
-│   │   ├── prompt.go          # LLM instructions (JobSearchInstruction, etc.)
-│   │   ├── llm.go             # LLM calls + SummarizeJobResults
-│   │   ├── textutil.go        # CanonicalJobKey, TruncateRunes, user agents
+│   │   ├── bridge.go          # Source bridge wiring
+│   │   ├── bridge_jobs.go     # Job-specific bridge helpers
+│   │   ├── bridge_llm.go      # LLM bridge
 │   │   ├── cache.go           # 2-tier cache: L1 in-memory + L2 Redis
 │   │   ├── search.go          # SearchSearXNG, DedupByDomain
-│   │   ├── fetch.go           # FetchURLContent (readability + html→markdown)
-│   │   ├── httpclient.go      # BrowserClient (Chrome TLS fingerprint via bogdanfinn)
-│   │   ├── retry.go           # RetryHTTP, RetryDo (exponential backoff)
-│   │   └── jobs/
+│   │   ├── metrics.go         # Prometheus counters/histograms
+│   │   ├── pipeline.go        # Fan-out pipeline helpers
+│   │   ├── types_jobs.go      # Input/output types
+│   │   ├── prompt.go          # LLM instructions (shared)
+│   │   ├── prompt_jobs.go     # Job-specific LLM prompts
+│   │   └── jobs/              # Job source + career tool implementations
 │   │       ├── linkedin.go    # LinkedIn Guest API + JSON-LD + geo_id + pagination
 │   │       ├── indeed.go      # Indeed iOS GraphQL API + SearXNG fallback
 │   │       ├── remotejobs.go  # RemoteOK + WeWorkRemotely + Remotive APIs
 │   │       ├── habr.go        # Habr Карьера scraper
 │   │       ├── hnjobs.go      # HN Who is Hiring (Algolia)
 │   │       ├── ycjobs.go      # YC workatastartup.com
-│   │       ├── ats.go         # Greenhouse + Lever ATSes
+│   │       ├── ats.go         # Greenhouse + Lever + Ashby ATSes
 │   │       ├── match.go       # Jaccard keyword scoring (job_match_score)
 │   │       ├── resume.go      # resume_analyze, cover_letter_generate, resume_tailor
-│   │       ├── research.go    # company_research
-│   │       └── tracker.go     # Job application tracker (SQLite)
+│   │       ├── research.go    # research tool (salary / company / person)
+│   │       ├── tracker.go     # Job application tracker (SQLite)
+│   │       ├── profile.go     # User profile persistence
+│   │       └── ...            # algora, twitter, linkedin, bounty, opportunity, etc.
+│   │   └── sources/           # Pluggable source connectors
+│   │       ├── freelancer.go  # Freelancer.com REST API
+│   │       ├── github.go      # GitHub jobs / PRs
+│   │       ├── hackernews.go  # HN source
+│   │       └── ...
 │   ├── jobserver/
-│   │   └── register.go        # Tool registrations (all 4 MCP tools)
+│   │   ├── register.go        # Tool registrations (28 MCP tools)
+│   │   └── tool_*.go          # Per-tool handler files
+│   └── hunt/                  # Hunt store + notifications
+│       ├── notify/
+│       │   └── telegram.go    # Telegram notifications via go-kit ProductSink
+│       └── ...
 └── deploy/
-    └── go_job.service         # systemd unit (port 8891)
+    └── go_job.service         # systemd unit (MCP :8891, metrics :9891)
 ```
 
 ## Key Implementation Details
 
-### LinkedIn
-- **Guest API** — no auth, Chrome TLS fingerprint via `bogdanfinn/tls-client`
-- **Pagination** — 25-result pages, up to `maxResults=50`
-- **geo_id** — 42 known locations (cities + countries) → precise LinkedIn geoId filter
-- **Easy Apply** — `f_JIYN=true` param, exposed as `easy_apply` input field
-- **JSON-LD** — fetches `schema.org/JobPosting` from top 8 jobs for full descriptions
+### job_search
+- **Unified platform**: `remote_work_search` and `freelance_search` and `twitter_job_search` are folded into `job_search` via `platform=remoteok|weworkremotely|remotive|twitter`. Use `raw=true` with `platform=twitter` to skip LLM processing.
+- **LinkedIn**: no auth, Chrome TLS fingerprint via `bogdanfinn/tls-client`; pagination with `offset`; 42 geo locations.
+- **Google Jobs**: `platform=google` via SearXNG.
+- **UN sources**: `platform=inspira` (careers.un.org) / `platform=undp` / `platform=un` (fan-out both). Not included in `platform=all`.
 
-### Indeed
-- **GraphQL API** — internal iOS app endpoint (`apis.indeed.com/graphql`)
-- **Key** — loaded from `INDEED_API_KEY` env (no hardcode)
-- **Salary** — structured from `baseSalary` or `estimated.baseSalary` range
-- **Fallback** — SearXNG `site:indeed.com/viewjob` if GraphQL fails
+### research tool
+- Replaces three separate tools (`salary_research`, `company_research`, `person_research`).
+- `subject=salary` (role required), `subject=company` (company required), `subject=person` (name required).
 
-### Remotive
-- **Free public API** — `remotive.com/api/remote-jobs?search=...`, no auth
-- Added to `remote_work_search` alongside RemoteOK + WeWorkRemotely
+### job_tracker
+- Single tool replaces `job_tracker_add`, `job_tracker_list`, `job_tracker_update`.
+- `action=add` (title+company required), `action=list`, `action=update` (id required).
 
-### Deduplication
-1. URL dedup (exact match)
-2. Canonical key dedup — normalizes title (strips "at CompanyName"), collapses non-alphanumeric
+### Data Storage
+- **Job tracker DB**: `$UPLOADS_ROOT/go-job/tracker/tracker.db` (SQLite, table `jobs`). Default path: `$HOME/uploads/go-job/tracker/tracker.db`. Override via `UPLOADS_ROOT`.
+- **User profile**: `$UPLOADS_ROOT/go-job/profile/profile.json`. Default: `$HOME/uploads/go-job/profile/profile.json`.
+- **L1 cache**: in-memory (`sync.Map`), lost on restart.
+- **L2 cache**: Redis (optional), persistent.
 
-### Structured Salary (JobListing)
-```json
-{
-  "salary": "$80k–120k USD/yr",
-  "salary_min": 80000,
-  "salary_max": 120000,
-  "salary_currency": "USD",
-  "salary_interval": "year"
-}
-```
+### Notifications
+- New hunt entries trigger Telegram notifications via `internal/hunt/notify/telegram.go` using go-kit `ProductSink` (own bot, rate-limited fan-out).
+- Requires `TELEGRAM_BOT_TOKEN` + `HUNT_NOTIFY_CHAT_ID` env vars.
 
 ## Running
 
 ```bash
-# HTTP mode (default port 8891)
-MCP_PORT=8891 LLM_API_KEY=... INDEED_API_KEY=... ./bin/go_job
+# HTTP mode (default MCP port 8891, metrics port 9891)
+MCP_PORT=8891 PROM_PORT=9891 LLM_API_KEY=... ./bin/go_job
 
 # stdio mode
 ./bin/go_job --stdio
@@ -117,12 +176,15 @@ make restart  # restart only
 | `SEARXNG_URL` | `http://127.0.0.1:8888` | SearXNG instance |
 | `LLM_API_KEY` | (required) | Gemini/OpenAI-compatible API key |
 | `LLM_API_BASE` | Gemini endpoint | OpenAI-compatible base URL |
-| `LLM_MODEL` | `gemini-2.5-flash` | Model name |
-| `MCP_PORT` | `8891` | HTTP server port |
-| `INDEED_API_KEY` | (required for Indeed) | iOS app key — set in `.env` |
+| `LLM_MODEL` | `gemini-3.1-flash-lite-preview` | Model name |
+| `MCP_PORT` | `8891` | MCP HTTP server port |
+| `PROM_PORT` | `9891` | Prometheus metrics port |
 | `REDIS_URL` | (optional) | Redis for L2 cache |
 | `CACHE_TTL` | `900` | Cache TTL in seconds |
-| `FETCH_TIMEOUT` | `15` | URL fetch timeout in seconds |
+| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for tracker DB + user profile |
+| `DATABASE_URL` | (optional) | Postgres for oversized payload spillover |
+| `TELEGRAM_BOT_TOKEN` | (required for notifications) | Telegram bot token |
+| `HUNT_NOTIFY_CHAT_ID` | (required for notifications) | Notification recipient chat ID |
 
 ## Health check
 
@@ -131,38 +193,16 @@ curl http://localhost:8891/health
 # {"status":"ok","service":"go_job","version":"1.0.0"}
 ```
 
-## Spillover store
+## Metrics
 
-Large MCP responses (security_bounty_search, opportunity_search, etc.) can
-exceed the MCP envelope limit (~25KB). To preserve full data without
-truncation, go-job spills oversized payloads to a Postgres table
-`oversize_responses` (auto-migrated on startup).
-
-When a tool's response exceeds `GO_JOB_OVERSIZE_THRESHOLD_BYTES` (default
-24576), the client receives a small envelope:
-
-```json
-{
-  "oversize_id": 42,
-  "tool_name": "security_bounty_search",
-  "size_bytes": 57397,
-  "sha256": "abc...",
-  "item_count": 1500,
-  "sample": [first 3 items],
-  "retrieve_via": "oversize_get",
-  "hint": "payload spilled to oversize store; call oversize_get with id=42"
-}
+```bash
+curl http://localhost:9891/metrics
 ```
 
-Three management tools:
-- `oversize_get(id)` — fetch full payload by id
-- `oversize_list(tool?, since?, limit?)` — list recent spills with metadata
-- `oversize_purge(older_than_days)` — clean up old entries
+## Spillover store
 
-Metrics:
-- `gojob_oversize_spill_total{tool}` — counter of spills per tool
-- `gojob_oversize_bytes` — histogram of payload sizes
+Large MCP responses can exceed the MCP envelope limit (~25KB). go-job spills oversized payloads to a Postgres table `oversize_responses` (auto-migrated on startup).
 
-Env:
-- `DATABASE_URL` — required for spillover (graceful fallback to direct response if unset)
-- `GO_JOB_OVERSIZE_THRESHOLD_BYTES` — override default 24KB
+When a tool response exceeds `GO_JOB_OVERSIZE_THRESHOLD_BYTES` (default 24576), the client receives a small envelope with `oversize_id` and a `sample`. Use the `oversize` tool to retrieve the full payload.
+
+Requires `DATABASE_URL`. Gracefully falls back to direct response if unset.

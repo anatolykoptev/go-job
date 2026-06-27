@@ -69,6 +69,6 @@ job_tracker_update (id=42, status=rejected, notes="Rejected after final round. F
 ## Implementation
 
 - **File:** `internal/engine/jobs/tracker.go` — `UpdateTrackedJob()`
-- **DB:** `~/.go_job/tracker.db` (SQLite)
+- **DB:** `$UPLOADS_ROOT/go-job/tracker/tracker.db (default $HOME/uploads/go-job/tracker/tracker.db)` (SQLite)
 - **Registration:** `internal/jobserver/register.go`
 - **Tests:** `internal/engine/jobs/tracker_test.go`
