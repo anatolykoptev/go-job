@@ -11,7 +11,9 @@ import (
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,7 +25,9 @@ const (
 	colKeyFit   = "fit"
 	keyRecent   = "recent"
 	colLastSeen = "last_seen_at"
+	colCompany  = "company"
 	lblStatus   = "Status"
+	lblTitle    = "Title"
 	lblRecent   = "Recent"
 	lblSource   = "Source"
 	lblPlatform = "Platform"
@@ -85,8 +89,8 @@ const (
 // Fit and Market Read chips are at indices 1 and 2 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: colKeyTitle},
-		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "company"},
+		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: colKeyTitle},
+		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: colCompany},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "fit_score", NullsLast: true, TieBreakSQLExpr: "last_seen_at DESC", Width: colWidth8rem},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: colStatus},
@@ -103,20 +107,28 @@ var jobsSpec = admintable.Spec{
 // request values reach SQL only as bind args (never concatenated). Allowed sets are
 // safe-degrade (an unknown value drops the filter, never an error).
 var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
-	{Key: keyQ, SQLExprs: []string{colKeyTitle, "company"}, Match: admintable.ILike},
+	{Key: keyQ, SQLExprs: []string{colKeyTitle, colCompany}, Match: admintable.ILike},
 	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{statusOpen, "applied", "interviewing", "rejected", "offer", statusClosed}},
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
 }}
 
-func jobsResource(pool *pgxpool.Pool, authority *applications.Authority) resource.Resource {
+func jobsResource(store *hunt.Store, authority *applications.Authority) resource.Resource {
+	pool := store.Pool()
 	return resource.Resource{
-		Name:   "jobs",
-		Title:  "Jobs",
-		Icon:   "\U0001F4BC",
-		Group:  "Hunt",
-		Sort:   jobsSpec,
+		Name:  "jobs",
+		Title: "Jobs",
+		Icon:  "\U0001F4BC",
+		Group: grpHunt,
+		Sort:  jobsSpec,
 		Filter: jobsFilter,
-		Perms:  resource.ReadAny,
+		Perms: resource.ReadAny,
+		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
+			n := store.CountOpenJobs(ctx)
+			if n == 0 {
+				return ""
+			}
+			return strconv.Itoa(n)
+		}),
 		Lister: jobsLister(pool, authority),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}

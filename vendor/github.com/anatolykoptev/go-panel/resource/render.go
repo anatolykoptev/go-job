@@ -16,7 +16,18 @@ import (
 func (p *Panel) RenderPage(w http.ResponseWriter, r *http.Request, title, activeID string, content templ.Component) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	shell.SecurityHeaders(w)
-	return shell.Layout(title, p.NavItemsActive(activeID), content).Render(r.Context(), w)
+	ctx := shell.ContextWithSidebar(r.Context(), sidebarStateFrom(r))
+	return shell.Layout(title, p.NavItemsActive(activeID), content).Render(ctx, w)
+}
+
+// sidebarStateFrom reads the collapse cookie from the request.
+// Cookie "sb-c"="1" → Collapsed=true; absent or any other value → Collapsed=false.
+// Lives in the resource layer (not shell) so shell stays net/http-free.
+func sidebarStateFrom(r *http.Request) shell.SidebarState {
+	if c, err := r.Cookie(shell.SidebarCookie); err == nil && c.Value == "1" {
+		return shell.SidebarState{Collapsed: true}
+	}
+	return shell.SidebarState{}
 }
 
 // RenderPageHTML is RenderPage for callers holding already-rendered,
