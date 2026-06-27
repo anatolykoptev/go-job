@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 
@@ -122,15 +121,10 @@ func resumePersonEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerF
 			return
 		}
 		headline := r.FormValue("headline")
-		hourlyRateStr := r.FormValue("hourly_rate")
-		var hourlyRateCents int64
-		if hourlyRateStr != "" {
-			rate, parseErr := strconv.ParseFloat(hourlyRateStr, 64)
-			if parseErr != nil {
-				http.Error(w, "invalid hourly_rate: must be a number", http.StatusBadRequest)
-				return
-			}
-			hourlyRateCents = int64(math.Round(rate * 100))
+		hourlyRateCents, rateErr := parseDollarsToCents(r.FormValue("hourly_rate"))
+		if rateErr != nil {
+			http.Error(w, rateErr.Error(), http.StatusBadRequest)
+			return
 		}
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
