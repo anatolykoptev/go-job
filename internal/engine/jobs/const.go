@@ -54,6 +54,11 @@ const toneConcise = "concise"
 // MemDB user identity for go-job.
 const memdbUserID = "gojob"
 
+// resumeVectorUser is the single-source cube key for all resume_vectors rows.
+// Matches memdbUserID so the Phase-A migration can use the same value when pulling
+// from MemDB (cmd/migrate-resume-memory). Single place per fitness function F3.
+const resumeVectorUser = "gojob"
+
 // Craigslist city slug.
 const craigslistCityNewYork = "newyork"
 
@@ -73,9 +78,6 @@ const (
 	memdbKeyType   = "type"
 	memdbKeySource = "source"
 )
-
-// MemDB metadata values.
-const memdbSourceAgent = "agent"
 
 // Tone options (additional).
 const toneFriendly = "friendly"

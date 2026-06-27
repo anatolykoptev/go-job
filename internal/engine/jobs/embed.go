@@ -8,19 +8,24 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"time"
 )
 
 // EmbedClient calls an OpenAI-compatible embedding server.
 type EmbedClient struct {
 	baseURL string
+	token   string // Authorization: Bearer token (from EMBED_TOKEN env)
 	http    *http.Client
 }
 
 // NewEmbedClient creates an embed client for the given base URL.
+// It reads EMBED_TOKEN from the environment and sends it as a Bearer token
+// on every request (required by embed.krolik.tools).
 func NewEmbedClient(baseURL string) *EmbedClient {
 	return &EmbedClient{
 		baseURL: baseURL,
+		token:   os.Getenv("EMBED_TOKEN"),
 		http:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -86,6 +91,9 @@ func (c *EmbedClient) embedRaw(ctx context.Context, texts []string) ([][]float32
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

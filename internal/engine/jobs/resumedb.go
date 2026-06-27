@@ -100,6 +100,13 @@ func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error)
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
+	// Detect whether migration 005 created the embedding column (soft — may be absent).
+	if err := db.DetectEmbeddingColumn(ctx); err != nil {
+		slog.Warn("could not detect embedding column", slog.Any("error", err))
+	} else {
+		slog.Info("resume_vectors embedding column", slog.Bool("present", db.HasEmbedding()))
+	}
+
 	slog.Info("resume postgres connected", slog.String("addr", config.ConnConfig.Host))
 	return db, nil
 }
@@ -145,20 +152,23 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 			return fmt.Errorf("read %s: %w", entry.Name(), err)
 		}
 
+		// Detect soft migrations: first line is "-- soft".
+		// Soft migrations warn-and-continue on failure (same pattern as the 002 AGE migration).
+		isSoft := strings.HasPrefix(strings.TrimSpace(string(data)), "-- soft")
+
 		if _, err := conn.Exec(ctx, string(data)); err != nil {
-			if strings.Contains(entry.Name(), "002") {
-				slog.Warn("AGE migration failed (Apache AGE may not be installed)",
+			if isSoft {
+				slog.Warn("optional migration failed (extension may not be installed)",
 					slog.String("file", entry.Name()),
 					slog.Any("error", err))
-				// Reset search_path after AGE migration (it sets search_path to ag_catalog)
 				_, _ = conn.Exec(ctx, "SET search_path TO public")
 				continue
 			}
 			return fmt.Errorf("execute %s: %w", entry.Name(), err)
 		}
 
-		// 002_resume_graph.sql sets search_path to ag_catalog; reset it for subsequent migrations
-		if strings.Contains(entry.Name(), "002") {
+		// Some migrations (e.g. 002 AGE graph) set search_path to ag_catalog; reset it.
+		if isSoft || strings.Contains(entry.Name(), "002") {
 			_, _ = conn.Exec(ctx, "SET search_path TO public")
 		}
 
