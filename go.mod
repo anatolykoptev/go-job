@@ -6,7 +6,7 @@ require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
 	github.com/anatolykoptev/go-engine v1.42.0
-	github.com/anatolykoptev/go-kit v0.91.1
+	github.com/anatolykoptev/go-kit v0.92.1
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.15.0
 	github.com/anatolykoptev/go-panel v0.8.1-0.20260626205830-363288ad6ba2

@@ -17,6 +17,7 @@ import (
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/render"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,7 +150,7 @@ type currentRating struct {
 //  4. Market Read — RawHTML market card
 //  5. Description — RawHTML rendered markdown
 //  6. Application — RawHTML rate form + download links
-func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte, applicationsDir string) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
+func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *auth.HMACAuth, csrfKey []byte, authority *applications.Authority) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 	return func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 		id64, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
@@ -224,7 +225,16 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a *aut
 			slog.WarnContext(ctx, "jobDetailer: fetch hunt_ratings", "id", id64, "err", ratingErr)
 		}
 
-		hasResume, hasCover := scanJobPDFs(applicationsDir, rec.Company, rec.Title)
+		// Uploads-first: canonical path by hunt_jobs.id.
+		hasResume := authority.Exists(id64, applications.KindResume)
+		hasCover := authority.Exists(id64, applications.KindCover)
+		// Legacy fallback: fuzzy slug under APPLICATIONS_DIR.
+		if !hasResume {
+			hasResume = authority.LegacyResolve(rec.Company, rec.Title, applications.KindResume) != ""
+		}
+		if !hasCover {
+			hasCover = authority.LegacyResolve(rec.Company, rec.Title, applications.KindCover) != ""
+		}
 		appHTML, err := buildApplicationSectionHTML(id64, csrfTok, rating, hasResume, hasCover)
 		if err != nil {
 			return nil, fmt.Errorf("jobDetailer: build application section: %w", err)

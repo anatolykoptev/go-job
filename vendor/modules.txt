@@ -38,17 +38,20 @@ github.com/anatolykoptev/go-engine/sources
 github.com/anatolykoptev/go-engine/text
 github.com/anatolykoptev/go-engine/websearch
 github.com/anatolykoptev/go-engine/webtext
-# github.com/anatolykoptev/go-kit v0.91.1
+# github.com/anatolykoptev/go-kit v0.92.1
 ## explicit; go 1.26
 github.com/anatolykoptev/go-kit/admintable
 github.com/anatolykoptev/go-kit/breaker
 github.com/anatolykoptev/go-kit/cache
 github.com/anatolykoptev/go-kit/embed
 github.com/anatolykoptev/go-kit/env
+github.com/anatolykoptev/go-kit/fileopt
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/metrics/mcpmw
 github.com/anatolykoptev/go-kit/ratelimit
+github.com/anatolykoptev/go-kit/render
+github.com/anatolykoptev/go-kit/render/typst
 github.com/anatolykoptev/go-kit/retry
 github.com/anatolykoptev/go-kit/telegram
 github.com/anatolykoptev/go-kit/telegram/broadcast
