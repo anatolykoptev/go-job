@@ -45,7 +45,8 @@ var shortlistActiveStages = []string{
 // Stage/fit/market/docs badges are at i>0 where cell.HTML is respected.
 var shortlistSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: "Title / Company", Sortable: true, SQLExpr: "j.title"},
+		{Key: colKeyTitle, Label: "Title", Sortable: true, SQLExpr: "j.title"},
+		{Key: "company", Label: "Company", Sortable: true, SQLExpr: "j.company"},
 		{Key: "stage", Label: "Stage", Sortable: true, SQLExpr: "r.stage", Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
 		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
@@ -118,24 +119,21 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 				hasCover = authority.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindCover)
 			}
 
-			titleCompany := row.Title
-			if row.Company != "" {
-				titleCompany = row.Title + " · " + row.Company
-			}
-
 			// Cell order MUST match shortlistSpec.Columns order.
-			// Cell-0 = plain text (go-panel wraps in <a href>; cell.HTML ignored at i=0).
+			// Cell-0 = plain text Title (go-panel wraps in <a href>; cell.HTML ignored
+			// at i=0). Company is a separate sortable column at cell-1.
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(row.ID, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(row.ID, 10),
 				Cells: []resource.Cell{
-					{Value: titleCompany},                                                                         // [0] Title · Company
-					{Value: stageBadgeHTML(row.Stage), HTML: true},                                               // [1] Stage
-					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                  // [2] Fit
-					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                          // [3] Market
-					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [4] Comp
-					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                             // [5] Docs
-					{Value: row.RatedAt.Format("2006-01-02")},                                                    // [6] Rated
+					{Value: row.Title},                                                                            // [0] Title
+					{Value: row.Company},                                                                          // [1] Company
+					{Value: stageBadgeHTML(row.Stage), HTML: true},                                               // [2] Stage
+					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                  // [3] Fit
+					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                          // [4] Market
+					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [5] Comp
+					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                             // [6] Docs
+					{Value: row.RatedAt.Format("2006-01-02")},                                                    // [7] Rated
 				},
 			})
 		}
