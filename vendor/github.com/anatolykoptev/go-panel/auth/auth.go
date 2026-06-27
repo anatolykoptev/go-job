@@ -259,7 +259,7 @@ func (a *HMACAuth) renderLogin(ctx context.Context, w http.ResponseWriter, errMs
 	// Default: the pm7 design-system login page. Keeping it in the framework
 	// means every consumer gets a styled, standards-consistent login without
 	// wiring LoginTempl. Override via cfg.LoginTempl for a custom page.
-	if err := shell.LoginPage(a.basePath, errMsg).Render(ctx, w); err != nil {
+	if err := shell.LoginPage(a.basePath, shell.LoginIdentifier{Label: "Username", Name: "username", Type: "text", Autocomplete: "username"}, errMsg).Render(ctx, w); err != nil {
 		slog.Error("auth: failed to render login page", "err", err)
 	}
 }
