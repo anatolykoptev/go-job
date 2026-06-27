@@ -154,8 +154,10 @@ func TestInsertUpworkSkillSQL_Structure(t *testing.T) {
 }
 
 // TestGetUpworkProfile_RoundTrip verifies that UpsertUpworkProfile persists
-// profile + GetUpworkProfile reads it back including Missing=false state.
+// profile + GetUpworkProfile reads it back: Missing state, title, overview,
+// hourly_rate, categories, and availability all survive the write→read cycle.
 // Requires DATABASE_URL to be set; skips otherwise.
+// Red-on-revert: break getUpworkProfileSQL COALESCE or error discrimination → test fails.
 func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -178,7 +180,7 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
 
-	// Before upsert: Missing=true.
+	// Before upsert: Missing=true with no error.
 	before, err := db.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile (before): %v", err)
@@ -190,10 +192,11 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 	// Upsert and read back.
 	const wantTitle = "Staff SWE | Go + Rust"
 	const wantOverview = "Builds high-performance distributed systems."
+	const wantAvailability = "30+ hrs/week"
 	const wantRate int64 = 15000
 	wantCategories := []string{"Software Development", "Backend"}
 
-	if err := db.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, wantCategories, "30+ hrs/week"); err != nil {
+	if err := db.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, wantCategories, wantAvailability); err != nil {
 		t.Fatalf("UpsertUpworkProfile: %v", err)
 	}
 
@@ -208,10 +211,22 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 		t.Errorf("Title: got %q want %q", after.Profile.Title, wantTitle)
 	}
 	if after.Profile.Overview != wantOverview {
-		t.Errorf("Overview: got %q", after.Profile.Overview)
+		t.Errorf("Overview: got %q want %q", after.Profile.Overview, wantOverview)
 	}
 	if after.Profile.HourlyRate != wantRate {
 		t.Errorf("HourlyRate: got %d want %d", after.Profile.HourlyRate, wantRate)
+	}
+	if after.Profile.Availability != wantAvailability {
+		t.Errorf("Availability: got %q want %q", after.Profile.Availability, wantAvailability)
+	}
+	if len(after.Profile.Categories) != len(wantCategories) {
+		t.Errorf("Categories len: got %d want %d: %v", len(after.Profile.Categories), len(wantCategories), after.Profile.Categories)
+	} else {
+		for i, cat := range wantCategories {
+			if after.Profile.Categories[i] != cat {
+				t.Errorf("Categories[%d]: got %q want %q", i, after.Profile.Categories[i], cat)
+			}
+		}
 	}
 }
 

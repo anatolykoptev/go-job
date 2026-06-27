@@ -90,6 +90,15 @@ func buildUpworkPageData(profile *jobs.ResumeProfileResult) upworkPageData {
 	return d
 }
 
+// centsToDollars converts an int64 cent amount to a dollar string (e.g. 15000 -> $150.00).
+// Returns empty string for zero, safe to use with template {{if .Rate}} guards.
+func centsToDollars(cents int64) string {
+	if cents == 0 {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", float64(cents)/100)
+}
+
 // upworkHandler renders the Upwork profile page.
 // It accepts auth + csrfKey so it can issue a CSRF token for the edit sub-forms.
 func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {

@@ -2,7 +2,12 @@ package jobs
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Package-level SQL constants for upwork_profile operations.
@@ -19,8 +24,8 @@ const (
 		    availability = EXCLUDED.availability, updated_at = now()`
 
 	getUpworkProfileSQL = `
-		SELECT COALESCE(title,), COALESCE(overview,),
-		       COALESCE(hourly_rate,0), COALESCE(categories,{}), COALESCE(availability,)
+		SELECT COALESCE(title,''), COALESCE(overview,''),
+		       COALESCE(hourly_rate,0), COALESCE(categories,'{}'), COALESCE(availability,'')
 		FROM upwork_profile WHERE person_id = $1`
 
 	insertUpworkSkillSQL = `
@@ -36,7 +41,7 @@ const (
 		WHERE person_id = $1 ORDER BY position, id`
 
 	getUpworkCatalogItemsSQL = `
-		SELECT id, title, COALESCE(description,), position FROM upwork_catalog_items
+		SELECT id, title, COALESCE(description,''), position FROM upwork_catalog_items
 		WHERE person_id = $1 ORDER BY position, id`
 )
 
@@ -75,6 +80,8 @@ type UpworkProfileResult struct {
 
 // GetUpworkProfile loads the full Upwork profile from the upwork_* tables.
 // Missing=true is returned (not an error) when no upwork_profile row exists yet.
+// Any real query error (syntax, connection, schema) is returned as an error so
+// callers can distinguish "no data yet" from "something broke".
 func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*UpworkProfileResult, error) {
 	result := &UpworkProfileResult{}
 
@@ -83,19 +90,24 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 	err := db.pool.QueryRow(ctx, getUpworkProfileSQL, personID).
 		Scan(&profile.Title, &profile.Overview, &profile.HourlyRate, &categories, &profile.Availability)
 	if err != nil {
-		// No row = profile not set up yet; return Missing=true with empty data.
-		result.Missing = true
-		result.Profile = profile
-		result.Skills = []UpworkSkillRecord{}
-		result.Catalog = []UpworkCatalogItem{}
-		return result, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No row = profile not set up yet; return Missing=true with empty data.
+			result.Missing = true
+			result.Profile = profile
+			result.Skills = []UpworkSkillRecord{}
+			result.Catalog = []UpworkCatalogItem{}
+			return result, nil
+		}
+		return nil, fmt.Errorf("get upwork profile: %w", err)
 	}
 	profile.Categories = categories
 	result.Profile = profile
 
 	// Load skills ordered by position.
 	rows, err := db.pool.Query(ctx, getUpworkSkillsSQL, personID)
-	if err == nil {
+	if err != nil {
+		slog.Warn("GetUpworkProfile: query skills", "person_id", personID, "err", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
 			var s UpworkSkillRecord
@@ -110,7 +122,9 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 
 	// Load catalog items ordered by position.
 	catRows, err := db.pool.Query(ctx, getUpworkCatalogItemsSQL, personID)
-	if err == nil {
+	if err != nil {
+		slog.Warn("GetUpworkProfile: query catalog", "person_id", personID, "err", err)
+	} else {
 		defer catRows.Close()
 		for catRows.Next() {
 			var c UpworkCatalogItem
