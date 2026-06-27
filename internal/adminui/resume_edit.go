@@ -15,6 +15,14 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
+// cookieNamer is the optional capability interface for authenticators that bind
+// CSRF tokens to a session cookie. Mirrors resource.sessionCookier (resource/resource.go:174).
+// Both HMACAuth and BcryptTOTPAuth satisfy it; the type-assert is fail-fast at
+// compile time via the blank-identifier check in the test file.
+type cookieNamer interface {
+	SessionCookieName() string
+}
+
 // resumeEditData is the template context for the resume editor page.
 // All string fields come from the DB and are auto-escaped by html/template.
 type resumeEditData struct {
@@ -32,7 +40,7 @@ type resumeEditData struct {
 }
 
 // resumeEditHandler renders the full resume editor page (GET /admin/resume/edit).
-func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	tmpl := template.Must(template.New("resume_edit").Parse(resumeEditTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +79,7 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 		edus, _ := db.GetAllEducations(ctx, personID)
 		certs, _ := db.GetAllCertifications(ctx, personID)
 
-		sessVal := sessionValue(r, a.SessionCookieName())
+		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 		hourlyRateStr := ""
 		if person.HourlyRateCents > 0 {
 			hourlyRateStr = fmt.Sprintf("%.2f", float64(person.HourlyRateCents)/100)
@@ -103,7 +111,7 @@ func resumeEditHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http
 }
 
 // resumePersonEditHandler handles POST /admin/resume/person.
-func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumePersonEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -159,7 +167,7 @@ func resumePersonEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 }
 
 // resumeExperienceCreateHandler handles POST /admin/resume/experience.
-func resumeExperienceCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeExperienceCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -193,7 +201,7 @@ func resumeExperienceCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.Handle
 
 // resumeExperienceDeleteHandler handles POST /admin/resume/experience/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeExperienceDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeExperienceDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -216,7 +224,7 @@ func resumeExperienceDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.Handle
 }
 
 // resumeSkillCreateHandler handles POST /admin/resume/skill.
-func resumeSkillCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -250,7 +258,7 @@ func resumeSkillCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc
 
 // resumeSkillDeleteHandler handles POST /admin/resume/skill/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeSkillDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -274,7 +282,7 @@ func resumeSkillDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc
 
 // resumeSkillLevelHandler handles POST /admin/resume/skill/{id}/level.
 // parseIDParam + level validation run BEFORE requireResumeDB for early rejection.
-func resumeSkillLevelHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeSkillLevelHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -304,7 +312,7 @@ func resumeSkillLevelHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc 
 // resumeAchievementCreateHandler handles POST /admin/resume/achievement.
 //
 //nolint:dupl
-func resumeAchievementCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeAchievementCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -334,7 +342,7 @@ func resumeAchievementCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.Handl
 }
 
 // resumeAchievementDeleteHandler handles POST /admin/resume/achievement/{id}/delete.
-func resumeAchievementDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeAchievementDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -357,7 +365,7 @@ func resumeAchievementDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.Handl
 }
 
 // resumeDomainCreateHandler handles POST /admin/resume/domain.
-func resumeDomainCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeDomainCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -381,7 +389,7 @@ func resumeDomainCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFun
 }
 
 // resumeDomainDeleteHandler handles POST /admin/resume/domain/{id}/delete.
-func resumeDomainDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeDomainDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -404,7 +412,7 @@ func resumeDomainDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFun
 }
 
 // resumeMethodologyCreateHandler handles POST /admin/resume/methodology.
-func resumeMethodologyCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeMethodologyCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -428,7 +436,7 @@ func resumeMethodologyCreateHandler(a *auth.HMACAuth, csrfKey []byte) http.Handl
 }
 
 // resumeMethodologyDeleteHandler handles POST /admin/resume/methodology/{id}/delete.
-func resumeMethodologyDeleteHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
+func resumeMethodologyDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
 			return
@@ -470,7 +478,7 @@ func requireResumeDB(w http.ResponseWriter, r *http.Request) (*jobs.ResumeDB, in
 
 // verifyCSRF parses the request form, verifies the CSRF token, and writes
 // the appropriate error response on failure. Returns false when invalid.
-func verifyCSRF(w http.ResponseWriter, r *http.Request, a *auth.HMACAuth, csrfKey []byte) bool {
+func verifyCSRF(w http.ResponseWriter, r *http.Request, a auth.Authenticator, csrfKey []byte) bool {
 	const maxBody = 8192
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	if err := r.ParseForm(); err != nil {
@@ -478,7 +486,7 @@ func verifyCSRF(w http.ResponseWriter, r *http.Request, a *auth.HMACAuth, csrfKe
 		return false
 	}
 	tok := r.FormValue(csrf.FormField)
-	sessVal := sessionValue(r, a.SessionCookieName())
+	sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 	if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return false
