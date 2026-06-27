@@ -228,6 +228,15 @@ const (
 	// llm_error: LLM call itself failed (fail-open → unscored).
 	// Pre-touch all four in FormatMetrics so rate()-floor alerts see 0 before first LLM call.
 	MetricHuntScoreLLM = "hunt_score_llm_total"
+
+	// MetricHuntPersistEnabled is the startup gauge gojob_hunt_persist_enabled.
+	// Set to 1 when hunt store is wired and migrations succeed; 0 otherwise.
+	// No labels -- cardinality guard.
+	MetricHuntPersistEnabled = "hunt_persist_enabled"
+
+	// MetricVacancyIngest is the labelled counter gojob_vacancy_ingest_total{result}.
+	// result bounded: ok, weak, skipped_store.
+	MetricVacancyIngest = "vacancy_ingest_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -376,6 +385,11 @@ func FormatMetrics() string {
 	// rate()-floor alerts see 0 before the first LLM call. 4 results = 4 series.
 	for _, result := range []string{scoreLLMOk, scoreLLMEnumClamp, scoreLLMParseFail, scoreLLMError} {
 		keys = append(keys, MetricHuntScoreLLM+"{result="+result+"}")
+	}
+	// vacancy_ingest_total{result} pre-touched so rate()-floor alerts see 0
+	// before the first operator call. 3 results = 3 series (bounded enum).
+	for _, result := range []string{"ok", "weak", "skipped_store"} {
+		keys = append(keys, MetricVacancyIngest+"{result="+result+"}")
 	}
 
 	var sb strings.Builder
@@ -753,4 +767,42 @@ func ObserveSourceDuration(platform string, seconds float64) {
 		return
 	}
 	reg.Observe(MetricSourceDuration+"{platform="+platform+"}", seconds)
+}
+
+// validVacancyIngestResults bounds the result label for vacancy_ingest_total.
+var validVacancyIngestResults = map[string]bool{
+	"ok":            true,
+	"weak":          true,
+	"skipped_store": true,
+}
+
+// SetHuntPersistEnabled sets gojob_hunt_persist_enabled to 1 (enabled) or 0 (disabled).
+// Called from main.go after SetHuntStore (enabled) or in each fail-soft nil-store branch (disabled).
+// No-op before engine.Init() (reg is nil; Gauge is nil-safe).
+func SetHuntPersistEnabled(on bool) {
+	if reg == nil {
+		return
+	}
+	v := 0.0
+	if on {
+		v = 1.0
+	}
+	reg.Gauge(MetricHuntPersistEnabled).Set(v)
+}
+
+// IncrVacancyIngest bumps gojob_vacancy_ingest_total{result=<r>}.
+// result ∈ {"ok","weak","skipped_store"} — bounded enum.
+// Called once per vacancy_ingest call that reaches the extract step.
+// Unknown values are silently dropped (cardinality guard).
+func IncrVacancyIngest(result string) {
+	if !validVacancyIngestResults[result] {
+		return
+	}
+	reg.Incr(MetricVacancyIngest + "{result=" + result + "}")
+}
+
+// IncrVacancyIngestSkipped bumps gojob_vacancy_ingest_total{result=skipped_store}.
+// Called when the hunt store is nil at the time vacancy_ingest tries to persist.
+func IncrVacancyIngestSkipped() {
+	reg.Incr(MetricVacancyIngest + "{result=skipped_store}")
 }

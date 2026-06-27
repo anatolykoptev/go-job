@@ -1,0 +1,86 @@
+package jobs
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
+)
+
+// contentLimitFetchVacancy is the max characters passed to SummarizeJobResults
+// for a single vacancy page. 8000 chars gives the LLM enough JD text without
+// blowing the token budget.
+const contentLimitFetchVacancy = 8000
+
+// FetchVacancy fetches a single vacancy page via the go-wowa render seam,
+// extracts a JobListing via the shared LLM extractor, and backfills URL/source/JobID.
+//
+// On partial-failure (rendered HTML OK but LLM returns empty title+description),
+// extract_quality is "weak" and the raw HTML is stored in the listing's description
+// so the row is never silently dropped.
+//
+// Returns (listing, extractQuality, error):
+//   - extractQuality == "ok"   — title and description populated by LLM
+//   - extractQuality == "weak" — render succeeded but LLM extraction thin; raw HTML stored
+//   - error non-nil            — render itself failed (network, go-wowa down, etc.)
+func FetchVacancy(ctx context.Context, targetURL, sourceHint, companyHint string) (engine.JobListing, string, error) {
+	html, err := fetchRenderedHTML(ctx, targetURL)
+	if err != nil {
+		return engine.JobListing{}, "", fmt.Errorf("fetchone: render %s: %w", targetURL, err)
+	}
+
+	// Build the minimal SearxngResult and content map that SummarizeJobResults expects.
+	stub := engine.SearxngResult{
+		URL:     targetURL,
+		Title:   targetURL, // placeholder title; LLM will extract the real one
+		Content: "",
+	}
+	contents := map[string]string{targetURL: html}
+
+	out, err := engine.SummarizeJobResults(ctx, "single vacancy", engine.JobSearchInstruction, contentLimitFetchVacancy, []engine.SearxngResult{stub}, contents)
+	if err != nil {
+		return engine.JobListing{}, "", fmt.Errorf("fetchone: LLM extract %s: %w", targetURL, err)
+	}
+
+	var job engine.JobListing
+	if len(out.Jobs) > 0 {
+		job = out.Jobs[0]
+	}
+
+	// Backfill URL — LLM may omit it.
+	if job.URL == "" {
+		job.URL = targetURL
+	}
+	// Backfill Source from URL when unset, then allow caller hint to override.
+	if job.Source == "" {
+		job.Source = SourceFromURL(targetURL)
+	}
+	if sourceHint != "" {
+		job.Source = sourceHint
+	}
+	// Backfill Company from caller hint when LLM returned nothing.
+	if companyHint != "" && job.Company == "" {
+		job.Company = companyHint
+	}
+	// Backfill JobID from URL when unset.
+	if job.JobID == "" {
+		job.JobID = ExtractJobID(targetURL)
+	}
+
+	// Partial-failure path: render succeeded but LLM produced no meaningful output.
+	// Store raw HTML in description so the row is captured for later enrichment.
+	if strings.TrimSpace(job.Title) == "" && strings.TrimSpace(job.Description) == "" {
+		// Truncate HTML to avoid DB column overflow (description is text, unlimited, but
+		// keep it reasonable — 16 KB is enough to represent a typical JD page).
+		const rawHTMLLimit = 16384
+		raw := html
+		if len(raw) > rawHTMLLimit {
+			raw = raw[:rawHTMLLimit]
+		}
+		job.Description = raw
+		return job, "weak", nil
+	}
+
+	return job, "ok", nil
+}
