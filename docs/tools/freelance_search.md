@@ -1,6 +1,8 @@
 # Tool: `freelance_search`
 
 > **Category:** Search | **Source:** `internal/engine/sources/freelancer.go`
+>
+> **Note:** `freelance_search` is now part of `job_search`. Use `job_search` with `platform=freelancer`.
 
 Search for freelance projects on Upwork and Freelancer.com.
 
