@@ -474,9 +474,9 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, ""))
 
 	// The owner user must see zero rows — foreign rater's row must be excluded.
-	rows, err := s.ListShortlist(ctx, ownerUser, []string{
-		hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed,
-		hunt.StageApplied, hunt.StageInterview, hunt.StageOffer,
+	rows, _, err := s.ListShortlist(ctx, hunt.ShortlistQuery{
+		User:   ownerUser,
+		Stages: []string{hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
 	})
 	require.NoError(t, err)
 	assert.Empty(t, rows, "rating entered by a different user must not appear in the owner's shortlist")
