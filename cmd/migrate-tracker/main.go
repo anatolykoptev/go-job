@@ -47,54 +47,55 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-
-	// Open SQLite
-	sqliteDB, err := sql.Open("sqlite", *dbPath)
-	if err != nil {
-		slog.Error("open sqlite", "err", err)
+	if err := run(context.Background(), *dbPath, *dsn, *dryRun); err != nil {
+		slog.Error("migration failed", "err", err)
 		os.Exit(1)
 	}
-	defer sqliteDB.Close()
+}
+
+// run is extracted so defer statements execute on all exit paths.
+// main() calls os.Exit based on the returned error.
+func run(ctx context.Context, dbPath, dsn string, dryRun bool) error {
+	// Open SQLite
+	sqliteDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("open sqlite: %w", err)
+	}
+	defer sqliteDB.Close() //nolint:errcheck
 
 	rows, err := sqliteDB.QueryContext(ctx,
 		"SELECT id, title, company, COALESCE(url,''), COALESCE(status,'saved'), COALESCE(notes,''), COALESCE(salary,''), COALESCE(location,''), created_at, updated_at FROM tracked_jobs ORDER BY id")
 	if err != nil {
-		slog.Error("query sqlite", "err", err)
-		_ = sqliteDB.Close() // close before os.Exit so defer does not skip cleanup
-		os.Exit(1)           //nolint:gocritic // explicit close above
+		return fmt.Errorf("query sqlite: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var jobs []sqliteJob
 	for rows.Next() {
 		var j sqliteJob
-		if err := rows.Scan(&j.id, &j.title, &j.company, &j.url, &j.status, &j.notes, &j.salary, &j.location, &j.createdAt, &j.updatedAt); err != nil {
-			slog.Error("scan row", "err", err)
-			os.Exit(1)
+		if scanErr := rows.Scan(&j.id, &j.title, &j.company, &j.url, &j.status, &j.notes, &j.salary, &j.location, &j.createdAt, &j.updatedAt); scanErr != nil {
+			return fmt.Errorf("scan row: %w", scanErr)
 		}
 		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("rows err", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("rows err: %w", err)
 	}
 
 	slog.Info("found SQLite rows", "count", len(jobs))
 
-	if *dryRun {
+	if dryRun {
 		for _, j := range jobs {
 			fmt.Printf("[dry-run] id=%d title=%q company=%q url=%q status=%q\n",
 				j.id, j.title, j.company, j.url, j.status)
 		}
-		return
+		return nil
 	}
 
 	// Open postgres
-	pool, err := pgxpool.New(ctx, *dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		slog.Error("connect postgres", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("connect postgres: %w", err)
 	}
 	defer pool.Close()
 
@@ -156,4 +157,5 @@ func main() {
 		"skipped", skipped,
 		"total", len(jobs),
 		"elapsed", time.Since(start))
+	return nil
 }

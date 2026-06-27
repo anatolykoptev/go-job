@@ -12,6 +12,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -55,7 +56,7 @@ func TestJobDetailer_Smoke(t *testing.T) {
 	csrfKey := []byte("00000000000000000000000000000000")
 	hs := hunt.NewStore(pool)
 	a := testDetailAuth()
-	detailer := jobDetailer(pool, hs, "admin", a, csrfKey, t.TempDir())
+	detailer := jobDetailer(pool, hs, "admin", a, csrfKey, applications.New(nil, t.TempDir()))
 
 	t.Run("existing_id_section_shapes", func(t *testing.T) {
 		var id int64

@@ -14,6 +14,7 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -107,7 +108,7 @@ func TestNoGodTool(t *testing.T) {
 func TestNoBooleanPropertySchema(t *testing.T) {
 	// Build the server exactly as main.go does.
 	srv := mcp.NewServer(&mcp.Implementation{Name: "go_job-test", Version: "test"}, nil)
-	RegisterTools(srv)
+	RegisterTools(srv, applications.New(nil, ""))
 
 	// Connect via in-memory transport.
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

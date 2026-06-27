@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
@@ -67,7 +66,7 @@ var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: "stage", SQLExpr: "r.stage", Match: admintable.Eq, Allowed: shortlistActiveStages},
 }}
 
-func shortlistResource(store *hunt.Store, adminUser, applicationsDir string) resource.Resource {
+func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority) resource.Resource {
 	return resource.Resource{
 		Name:   navIDShortlist,
 		Title:  "Shortlist",
@@ -76,7 +75,7 @@ func shortlistResource(store *hunt.Store, adminUser, applicationsDir string) res
 		Sort:   shortlistSpec,
 		Filter: shortlistFilter,
 		Perms:  resource.ReadAny,
-		Lister: shortlistLister(store, adminUser, applicationsDir),
+		Lister: shortlistLister(store, adminUser, authority),
 	}
 }
 
@@ -86,7 +85,7 @@ func shortlistResource(store *hunt.Store, adminUser, applicationsDir string) res
 // unit test exercise the same query — no decoy gap. PDF-derived filter chips
 // (pack-ready, with-docs) cannot be expressed as SQL; they surface as Docs
 // badges per row instead.
-func shortlistLister(store *hunt.Store, adminUser, applicationsDir string) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		storeRows, total, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
 			User:       adminUser,
@@ -101,23 +100,22 @@ func shortlistLister(store *hunt.Store, adminUser, applicationsDir string) func(
 			return nil, 0, err
 		}
 
-		// FIX 4: one ReadDir snapshot for the whole result set — avoids N+1 syscalls.
-		// If the dir is unset or unreadable, rows appear with no Docs badges; the
-		// lister never fails for a missing or empty applicationsDir.
-		var appEntries []os.DirEntry
-		if applicationsDir != "" {
-			appEntries, _ = os.ReadDir(applicationsDir)
-		}
+		// One legacy-dir snapshot for the whole result set — avoids N+1 ReadDir syscalls.
+		// Authority.LegacyEntries returns nil when legacyDir is empty or unreadable;
+		// rows then show no Docs badges without failing.
+		legacyEntries := authority.LegacyEntries()
 
 		out := make([]resource.Row, 0, len(storeRows))
 		for _, row := range storeRows {
-			var hasResume, hasCover bool
-			if len(appEntries) > 0 {
-				if slug, slugErr := findApplicationSlugFromEntries(appEntries, row.Company, row.Title); slugErr == nil {
-					slugDir := filepath.Join(applicationsDir, slug)
-					hasResume = findApplicationPDF(slugDir, "resume") != ""
-					hasCover = findApplicationPDF(slugDir, "cover") != ""
-				}
+			// Uploads-first: canonical path per hunt_jobs.id.
+			hasResume := authority.Exists(row.ID, applications.KindResume)
+			hasCover := authority.Exists(row.ID, applications.KindCover)
+			// Legacy fallback: fuzzy slug under APPLICATIONS_DIR.
+			if !hasResume {
+				hasResume = authority.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindResume)
+			}
+			if !hasCover {
+				hasCover = authority.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindCover)
 			}
 
 			titleCompany := row.Title
