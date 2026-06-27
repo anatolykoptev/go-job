@@ -136,7 +136,7 @@ func shortlistLister(store *hunt.Store, adminUser, applicationsDir string) func(
 					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                  // [2] Fit
 					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                          // [3] Market
 					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [4] Comp
-					{Value: docsChipHTML(hasResume, hasCover), HTML: true},                                       // [5] Docs
+					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                             // [5] Docs
 					{Value: row.RatedAt.Format("2006-01-02")},                                                    // [6] Rated
 				},
 			})
@@ -169,16 +169,24 @@ func stageBadgeHTML(stage string) string {
 }
 
 // docsChipHTML returns XSS-safe HTML for the Docs cell.
-// Input is fs-derived bool flags (not raw DB text) — closed-enum CSS only.
-func docsChipHTML(hasResume, hasCover bool) string {
-	switch {
-	case hasResume && hasCover:
-		return `<span class="badge badge-green">Pack-ready</span>`
-	case hasResume:
-		return `<span class="badge">Resume</span>`
-	case hasCover:
-		return `<span class="badge">Cover</span>`
-	default:
+// When a PDF exists it renders a clickable download link pointing at the existing
+// GET /admin/jobs/{id}/download/{kind} route (downloadHandler). id is an int64
+// primary key — no user text, no escaping required. CSS class badge-green is a
+// go-panel built-in available on all admin pages.
+func docsChipHTML(id int64, hasResume, hasCover bool) string {
+	if !hasResume && !hasCover {
 		return `<span class="badge badge-gray">—</span>`
 	}
+	base := "/admin/jobs/" + strconv.FormatInt(id, 10) + "/download/"
+	out := ""
+	if hasResume {
+		out += `<a class="badge badge-green" href="` + base + `resume">Resume</a>`
+	}
+	if hasResume && hasCover {
+		out += " "
+	}
+	if hasCover {
+		out += `<a class="badge badge-green" href="` + base + `cover">Cover</a>`
+	}
+	return out
 }
