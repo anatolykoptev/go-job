@@ -301,7 +301,7 @@ func writeMD(id int64, kind, content string) error {
 	// 0644: world-readable so a non-root / cap-dropped container process
 	// (uid 1001, cap_drop:ALL) can read its own files. The uploads volume is
 	// private and downloads are behind admin auth, so 0644 is acceptable.
-	return os.WriteFile(p, []byte(content), 0o644)
+	return os.WriteFile(p, []byte(content), 0o644) //nolint:gosec // intentional 0644: cap_drop:ALL removes DAC_OVERRIDE; 0600 is unreadable under non-root
 }
 
 // writePDF writes data atomically: write to a .tmp file then os.Rename so a
@@ -312,8 +312,7 @@ func writePDF(id int64, kind string, data []byte) (string, error) {
 		return "", err
 	}
 	tmp := p + ".tmp"
-	// 0644: see writeMD — non-root / cap-dropped process must read its own artifacts.
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // intentional 0644: cap_drop:ALL removes DAC_OVERRIDE; 0600 is unreadable under non-root
 		return "", err
 	}
 	if err := os.Rename(tmp, p); err != nil {
@@ -332,6 +331,5 @@ func writeMeta(id int64, m Meta) error {
 	if err != nil {
 		return err
 	}
-	// 0644: see writeMD — non-root / cap-dropped process must read its own artifacts.
-	return os.WriteFile(p, data, 0o644)
+	return os.WriteFile(p, data, 0o644) //nolint:gosec // intentional 0644: cap_drop:ALL removes DAC_OVERRIDE; 0600 is unreadable under non-root
 }
