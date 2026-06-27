@@ -2,6 +2,7 @@ package adminui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -31,11 +32,13 @@ type upworkPageData struct {
 	Employment  []upworkEmploymentItem
 	Portfolio   []upworkPortfolioItem
 	// Edit-form data (Upwork-specific tables).
-	CSRFToken    string
-	UWSkills     []jobs.UpworkSkillRecord
+	CSRFToken     string
+	UWSkills      []jobs.UpworkSkillRecord
 	UWPasteBlocks []jobs.UpworkPasteBlock
-	UWMissing    bool
-	UWRate       string // pre-formatted for edit form: "150.00" or ""
+	UWMissing     bool
+	UWRate        string   // pre-formatted for edit form: "150.00" or ""
+	UWAvailability string  // pre-filled availability from upwork_profile
+	UWCategories  []string // current categories from upwork_profile (read-only display)
 }
 
 type upworkEmploymentItem struct {
@@ -90,13 +93,29 @@ func buildUpworkPageData(profile *jobs.ResumeProfileResult) upworkPageData {
 	return d
 }
 
-// centsToDollars converts an int64 cent amount to a dollar string (e.g. 15000 -> $150.00).
+// centsToDollars converts an int64 cent amount to a dollar string (e.g. 15000 -> "$150.00").
 // Returns empty string for zero, safe to use with template {{if .Rate}} guards.
+// This is the single render site for upwork_profile.hourly_rate display in the edit form.
 func centsToDollars(cents int64) string {
 	if cents == 0 {
 		return ""
 	}
 	return fmt.Sprintf("$%.2f", float64(cents)/100)
+}
+
+// parseDollarsToCents parses a dollar amount string (e.g. "150" or "150.50")
+// and returns the value in cents, rounding to the nearest cent.
+// Returns (0, nil) for empty string (rate not set).
+// Returns an error for invalid or negative values.
+func parseDollarsToCents(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	rate, err := strconv.ParseFloat(s, 64)
+	if err != nil || rate < 0 {
+		return 0, errors.New("invalid hourly_rate: must be a number")
+	}
+	return int64(math.Round(rate * 100)), nil
 }
 
 // upworkHandler renders the Upwork profile page.
@@ -133,6 +152,10 @@ func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.Han
 		data := buildUpworkPageData(profile)
 
 		// Load Upwork-specific profile from upwork_profile tables.
+		// upwork_profile is the single source of truth for Upwork title, rate,
+		// availability, and categories. The read-only preview (Title/Rate sections)
+		// also draws from upwork_profile when a row exists, overriding the
+		// resume_persons fields shown before the Upwork profile is created.
 		uwProfile, uwErr := db.GetUpworkProfile(r.Context(), personID)
 		if uwErr != nil {
 			slog.Warn("upworkHandler: GetUpworkProfile", "err", uwErr)
@@ -140,8 +163,20 @@ func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.Han
 			data.UWMissing = uwProfile.Missing
 			data.UWSkills = uwProfile.Skills
 			data.UWPasteBlocks = jobs.FormatUpworkPasteBlocks(uwProfile)
-			if !uwProfile.Missing && uwProfile.Profile.HourlyRate > 0 {
-				data.UWRate = fmt.Sprintf("%.2f", float64(uwProfile.Profile.HourlyRate)/100)
+			if !uwProfile.Missing {
+				// upwork_profile is authoritative for Upwork-specific display.
+				if uwProfile.Profile.HourlyRate > 0 {
+					data.UWRate = fmt.Sprintf("%.2f", float64(uwProfile.Profile.HourlyRate)/100)
+					// Override the resume_persons-derived Rate display with upwork_profile value.
+					data.Rate = centsToDollars(uwProfile.Profile.HourlyRate) + "/hr"
+				}
+				if uwProfile.Profile.Title != "" {
+					// Override title display with upwork_profile.title (Upwork-specific).
+					data.Title = uwProfile.Profile.Title
+					data.TitleLen = len([]rune(uwProfile.Profile.Title))
+				}
+				data.UWAvailability = uwProfile.Profile.Availability
+				data.UWCategories = uwProfile.Profile.Categories
 			}
 		}
 
@@ -162,7 +197,11 @@ func upworkHandler(p *resource.Panel, a *auth.HMACAuth, csrfKey []byte) http.Han
 }
 
 // upworkOverviewEditHandler handles POST /admin/upwork/overview.
-// Saves title, overview, and hourly_rate to upwork_profile (separate from resume_persons).
+// Saves title, overview, hourly_rate, and availability to upwork_profile.
+// upwork_profile is the single source of truth for Upwork-specific fields;
+// resume_persons.headline/hourly_rate remain the general resume fields.
+// Categories are read-modify-write: existing values are preserved unless
+// a future categories editor is added.
 func upworkOverviewEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !verifyCSRF(w, r, a, csrfKey) {
@@ -175,17 +214,21 @@ func upworkOverviewEditHandler(a *auth.HMACAuth, csrfKey []byte) http.HandlerFun
 		title := r.FormValue("title")
 		overview := r.FormValue("overview")
 		availability := r.FormValue("availability")
-		rateStr := r.FormValue("hourly_rate")
-		var rateCents int64
-		if rateStr != "" {
-			rate, parseErr := strconv.ParseFloat(rateStr, 64)
-			if parseErr != nil {
-				http.Error(w, "invalid hourly_rate: must be a number", http.StatusBadRequest)
-				return
-			}
-			rateCents = int64(math.Round(rate * 100))
+		rateCents, rateErr := parseDollarsToCents(r.FormValue("hourly_rate"))
+		if rateErr != nil {
+			http.Error(w, rateErr.Error(), http.StatusBadRequest)
+			return
 		}
-		if err := db.UpsertUpworkProfile(r.Context(), personID, title, overview, rateCents, nil, availability); err != nil {
+
+		// Read-modify-write: preserve existing categories so a re-save of
+		// title/overview/rate does not wipe categories set by a future editor.
+		var categories []string
+		existing, getErr := db.GetUpworkProfile(r.Context(), personID)
+		if getErr == nil && !existing.Missing {
+			categories = existing.Profile.Categories
+		}
+
+		if err := db.UpsertUpworkProfile(r.Context(), personID, title, overview, rateCents, categories, availability); err != nil {
 			slog.Error("upworkOverviewEditHandler: UpsertUpworkProfile", "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
@@ -268,20 +311,21 @@ const upworkTmplSrc = `<style>
 
 <div class="page-header">
   <h2>&#x1F7E2; Upwork Profile</h2>
-  <p>Read-only preview of how your profile fields will appear on Upwork. Edit via <a href="/admin/resume/edit" style="color:var(--accent,#60a5fa)">Resume Edit</a>.</p>
+  <p>Upwork-specific data from <code>upwork_profile</code> table. General resume fields editable via <a href="/admin/resume/edit" style="color:var(--accent,#60a5fa)">Resume Edit</a>.</p>
 </div>
 
 <div class="uw-section">
   <h3>Title / Headline
     {{if gt .TitleLen 0}}<span class="{{charClass .TitleLen 70}}">{{charLabel .TitleLen 70}}</span>{{end}}
   </h3>
-  <div class="uw-label">Upwork profile title (max 70 chars)</div>
-  <div class="uw-value">{{if .Title}}{{.Title}}{{else}}<span class="uw-empty">not set — add via Resume Edit &gt; Upwork Headline</span>{{end}}</div>
+  <div class="uw-label">Upwork profile title (max 70 chars) — from upwork_profile</div>
+  <div class="uw-value">{{if .Title}}{{.Title}}{{else}}<span class="uw-empty">not set — fill in the form below</span>{{end}}</div>
 </div>
 
 <div class="uw-section">
   <h3>Hourly Rate</h3>
-  <div class="uw-value">{{if .Rate}}{{.Rate}}{{else}}<span class="uw-empty">not set — add via Resume Edit &gt; Upwork Hourly Rate</span>{{end}}</div>
+  <div class="uw-label">From upwork_profile — single source of truth for Upwork rate</div>
+  <div class="uw-value">{{if .Rate}}{{.Rate}}{{else}}<span class="uw-empty">not set — fill in the form below</span>{{end}}</div>
 </div>
 
 <div class="uw-section">
@@ -346,8 +390,7 @@ const upworkTmplSrc = `<style>
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div style="margin-bottom:.5rem">
       <label class="uw-label">Title (max 70 chars)</label>
-      {{if and (not .UWMissing) .Title}}<input type="text" name="title" class="uw-input" value="{{.Title}}" maxlength="70">
-      {{else}}<input type="text" name="title" class="uw-input" maxlength="70">{{end}}
+      <input type="text" name="title" class="uw-input" value="{{.Title}}" maxlength="70">
     </div>
     <div style="margin-bottom:.5rem">
       <label class="uw-label">Hourly Rate (USD, e.g. 150.00)</label>
@@ -355,7 +398,7 @@ const upworkTmplSrc = `<style>
     </div>
     <div style="margin-bottom:.5rem">
       <label class="uw-label">Availability</label>
-      <input type="text" name="availability" class="uw-input" placeholder="30+ hrs/week">
+      <input type="text" name="availability" class="uw-input" value="{{.UWAvailability}}" placeholder="30+ hrs/week">
     </div>
     <div style="margin-bottom:.5rem">
       <label class="uw-label">Professional Overview (max 5000 chars)</label>
@@ -363,6 +406,12 @@ const upworkTmplSrc = `<style>
     </div>
     <button type="submit" class="uw-btn uw-btn-primary">Save Overview</button>
   </form>
+  {{if .UWCategories}}
+  <div style="margin-top:.75rem">
+    <div class="uw-label">Categories (read-only — seeded via SQL)</div>
+    <div>{{range .UWCategories}}<span class="uw-skill-chip">{{.}}</span>{{end}}</div>
+  </div>
+  {{end}}
 </div>
 
 <div class="uw-section">
