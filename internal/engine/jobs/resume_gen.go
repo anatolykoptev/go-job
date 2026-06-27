@@ -390,7 +390,7 @@ func formatCandidateData(
 		for _, s := range skills {
 			cat := s.Category
 			if cat == "" {
-				cat = "other"
+				cat = "other" //nolint:goconst
 			}
 			label := s.Name
 			if s.IsImplicit {
