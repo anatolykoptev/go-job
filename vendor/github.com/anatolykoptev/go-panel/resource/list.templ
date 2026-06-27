@@ -2,6 +2,7 @@ package resource
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 
 	"github.com/anatolykoptev/go-kit/admintable"
@@ -215,11 +216,20 @@ func sortArrow(st admintable.State, key string) string {
 }
 
 func pageURL(d listPageData, page int) string {
-	base := fmt.Sprintf("%s/%s/rows?page=%d", d.BasePath, d.Resource.Name, page)
+	// Preserve ALL incoming query params (filters, search, etc.) and only
+	// override page + sort/dir so clicking Prev/Next on a filtered list
+	// does not silently drop the filter.
+	vals, _ := url.ParseQuery(d.QueryString)
+	vals.Set("page", strconv.Itoa(page))
 	if d.SortState.Key != "" {
-		base += fmt.Sprintf("&sort=%s&dir=%s", d.SortState.Key, string(d.SortState.Dir))
+		vals.Set("sort", d.SortState.Key)
+		vals.Set("dir", string(d.SortState.Dir))
+	} else {
+		// No active sort — remove any stale sort params from the query string.
+		vals.Del("sort")
+		vals.Del("dir")
 	}
-	return base
+	return fmt.Sprintf("%s/%s/rows?%s", d.BasePath, d.Resource.Name, vals.Encode())
 }
 
 // colHeaderStyle builds the inline style for a <th> element from Column.Width and Column.Align.
