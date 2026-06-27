@@ -376,3 +376,101 @@ func TestNewSQLConstants_Structure(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteUpworkSkill_CrossPersonIsolation verifies that person B's delete
+// attempt on person A's skill (using A's skill ID but B's personID) is a no-op.
+// Red-on-revert: remove AND person_id from deleteUpworkSkillPersonSQL -> A's skill deleted.
+func TestDeleteUpworkSkill_CrossPersonIsolation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	personA := insertTestPerson(t, db, "Skill Iso A", "skill-iso-a@example.com")
+	personB := insertTestPerson(t, db, "Skill Iso B", "skill-iso-b@example.com")
+
+	// Insert a skill for person A.
+	idA, err := db.InsertUpworkSkill(ctx, personA, "Go")
+	if err != nil || idA == 0 {
+		t.Fatalf("InsertUpworkSkill for A: %v id=%d", err, idA)
+	}
+
+	// Person B attempts to delete person A's skill using A's skill ID but B's personID.
+	// Should be a no-op (WHERE id = $1 AND person_id = $2 filters it out).
+	if err := db.DeleteUpworkSkill(ctx, personB, idA); err != nil {
+		t.Fatalf("DeleteUpworkSkill (B on A's id): %v", err)
+	}
+
+	// A's skill must still exist.
+	resultA, err := db.GetUpworkProfile(ctx, personA)
+	if err != nil {
+		t.Fatalf("GetUpworkProfile A: %v", err)
+	}
+	if len(resultA.Skills) != 1 {
+		t.Errorf("A's skills should have 1 item after B's attempted delete, got %d", len(resultA.Skills))
+	}
+	if len(resultA.Skills) == 1 && resultA.Skills[0].ID != idA {
+		t.Errorf("A's skill ID: got %d want %d", resultA.Skills[0].ID, idA)
+	}
+}
+
+// TestReorderUpworkSkills_SubsetNormalization verifies that posting a subset of skill IDs
+// to ReorderUpworkSkills places the supplied IDs first (in supplied order) and appends
+// the omitted ID at the end — no gaps, no duplicates across the full set.
+// Red-on-revert: remove full-set fetch logic -> omitted skill gets position 0 or gap.
+func TestReorderUpworkSkills_SubsetNormalization(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	personID := insertTestPerson(t, db, "Subset Reorder Test", "subset-reorder-test@example.com")
+
+	id1, err := db.InsertUpworkSkill(ctx, personID, "Go")
+	if err != nil || id1 == 0 {
+		t.Fatalf("InsertUpworkSkill Go: %v id=%d", err, id1)
+	}
+	id2, err := db.InsertUpworkSkill(ctx, personID, "Rust")
+	if err != nil || id2 == 0 {
+		t.Fatalf("InsertUpworkSkill Rust: %v id=%d", err, id2)
+	}
+	id3, err := db.InsertUpworkSkill(ctx, personID, "TypeScript")
+	if err != nil || id3 == 0 {
+		t.Fatalf("InsertUpworkSkill TypeScript: %v id=%d", err, id3)
+	}
+
+	// Reorder with only [id2, id1] — omitting id3.
+	// Expected: id2=pos1, id1=pos2, id3=pos3 (appended stable by old position).
+	if err := db.ReorderUpworkSkills(ctx, personID, []int{id2, id1}); err != nil {
+		t.Fatalf("ReorderUpworkSkills subset: %v", err)
+	}
+
+	result, err := db.GetUpworkProfile(ctx, personID)
+	if err != nil {
+		t.Fatalf("GetUpworkProfile after subset reorder: %v", err)
+	}
+	if len(result.Skills) != 3 {
+		t.Fatalf("expected 3 skills after subset reorder, got %d", len(result.Skills))
+	}
+
+	// Collect positions by id.
+	posOf := make(map[int]int, 3)
+	for _, s := range result.Skills {
+		posOf[s.ID] = s.Position
+	}
+
+	if posOf[id2] != 1 {
+		t.Errorf("id2 (Rust) position: got %d want 1", posOf[id2])
+	}
+	if posOf[id1] != 2 {
+		t.Errorf("id1 (Go) position: got %d want 2", posOf[id1])
+	}
+	if posOf[id3] != 3 {
+		t.Errorf("id3 (TypeScript) position: got %d want 3", posOf[id3])
+	}
+
+	// Assert no duplicate positions in full set.
+	seen := make(map[int]bool, 3)
+	for _, s := range result.Skills {
+		if seen[s.Position] {
+			t.Errorf("duplicate position %d in skill set", s.Position)
+		}
+		seen[s.Position] = true
+	}
+}

@@ -34,7 +34,6 @@ const (
 		ON CONFLICT (person_id, name) DO NOTHING
 		RETURNING id`
 
-	deleteUpworkSkillSQL = `DELETE FROM upwork_skills WHERE id = $1`
 
 	getUpworkSkillsSQL = `
 		SELECT id, name, position FROM upwork_skills
@@ -168,11 +167,10 @@ func (db *ResumeDB) InsertUpworkSkill(ctx context.Context, personID int, name st
 	return id, nil
 }
 
-// DeleteUpworkSkill removes an upwork_skills row by primary key.
-// NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
-// invariant; if this DB ever becomes multi-person these must be person-scoped.
-func (db *ResumeDB) DeleteUpworkSkill(ctx context.Context, skillID int) error {
-	_, err := db.pool.Exec(ctx, deleteUpworkSkillSQL, skillID)
+// DeleteUpworkSkill removes an upwork_skills row by primary key, scoped to the given person.
+// The WHERE clause includes person_id to prevent cross-person deletion.
+func (db *ResumeDB) DeleteUpworkSkill(ctx context.Context, personID, id int) error {
+	_, err := db.pool.Exec(ctx, deleteUpworkSkillPersonSQL, id, personID)
 	return err
 }
 
@@ -263,9 +261,11 @@ func (db *ResumeDB) DeleteUpworkCatalogItem(ctx context.Context, personID, id in
 }
 
 // ReorderUpworkCatalogItems normalizes positions to contiguous 1..N for the given person.
-// orderedIDs must list catalog item IDs in desired display order.
-// Rows not owned by personID are silently skipped (WHERE ... AND person_id = $personID handles this).
-// A transaction ensures all positions land atomically.
+// orderedIDs lists catalog item IDs in desired display order. Any item not in orderedIDs
+// is appended after the supplied subset (stable by old position, id), ensuring the
+// full set has contiguous positions with no gaps or duplicates.
+//
+//nolint:dupl // intentional parallel: same algorithm, different table/column/error-string
 func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int, orderedIDs []int) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -273,7 +273,39 @@ func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	for i, id := range orderedIDs {
+	// Fetch the full current set ordered by old position, id.
+	rows, err := tx.Query(ctx, `SELECT id FROM upwork_catalog_items WHERE person_id = $1 ORDER BY position, id`, personID)
+	if err != nil {
+		return fmt.Errorf("reorder catalog items fetch current: %w", err)
+	}
+	var allIDs []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("reorder catalog items scan: %w", err)
+		}
+		allIDs = append(allIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reorder catalog items rows: %w", err)
+	}
+
+	// Build final order: supplied IDs first, then remaining IDs not in supplied list.
+	supplied := make(map[int]struct{}, len(orderedIDs))
+	for _, id := range orderedIDs {
+		supplied[id] = struct{}{}
+	}
+	finalOrder := make([]int, 0, len(allIDs))
+	finalOrder = append(finalOrder, orderedIDs...)
+	for _, id := range allIDs {
+		if _, ok := supplied[id]; !ok {
+			finalOrder = append(finalOrder, id)
+		}
+	}
+
+	for i, id := range finalOrder {
 		if _, execErr := tx.Exec(ctx,
 			`UPDATE upwork_catalog_items SET position = $1 WHERE id = $2 AND person_id = $3`,
 			i+1, id, personID,
@@ -288,8 +320,11 @@ func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int,
 }
 
 // ReorderUpworkSkills normalizes positions to contiguous 1..N for the given person.
-// orderedIDs must list skill IDs in desired display order.
-// Rows not owned by personID are silently skipped via AND person_id = $3.
+// orderedIDs lists skill IDs in desired display order. Any skill not in orderedIDs
+// is appended after the supplied subset (stable by old position, id), ensuring the
+// full set has contiguous positions with no gaps or duplicates.
+//
+//nolint:dupl // intentional parallel: same algorithm, different table/column/error-string
 func (db *ResumeDB) ReorderUpworkSkills(ctx context.Context, personID int, orderedIDs []int) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -297,7 +332,39 @@ func (db *ResumeDB) ReorderUpworkSkills(ctx context.Context, personID int, order
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	for i, id := range orderedIDs {
+	// Fetch the full current set ordered by old position, id.
+	rows, err := tx.Query(ctx, `SELECT id FROM upwork_skills WHERE person_id = $1 ORDER BY position, id`, personID)
+	if err != nil {
+		return fmt.Errorf("reorder skills fetch current: %w", err)
+	}
+	var allIDs []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("reorder skills scan: %w", err)
+		}
+		allIDs = append(allIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reorder skills rows: %w", err)
+	}
+
+	// Build final order: supplied IDs first, then remaining IDs not in supplied list.
+	supplied := make(map[int]struct{}, len(orderedIDs))
+	for _, id := range orderedIDs {
+		supplied[id] = struct{}{}
+	}
+	finalOrder := make([]int, 0, len(allIDs))
+	finalOrder = append(finalOrder, orderedIDs...)
+	for _, id := range allIDs {
+		if _, ok := supplied[id]; !ok {
+			finalOrder = append(finalOrder, id)
+		}
+	}
+
+	for i, id := range finalOrder {
 		if _, execErr := tx.Exec(ctx,
 			`UPDATE upwork_skills SET position = $1 WHERE id = $2 AND person_id = $3`,
 			i+1, id, personID,

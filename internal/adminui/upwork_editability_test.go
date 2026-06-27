@@ -55,7 +55,8 @@ func TestParseOrderedIDs_InvalidReturnsError(t *testing.T) {
 }
 
 // TestUpworkTmpl_DraggableMarkup verifies that the upworkTmplSrc template
-// contains the required draggable markup for P4b drag-drop JS integration.
+// contains the required sortable markup for drag-drop JS integration.
+// draggable="true" is intentionally omitted at this stage (P4b will re-enable via JS).
 // Red-on-revert: remove gd-sortable or gd-sortable-item → test fails.
 func TestUpworkTmpl_DraggableMarkup(t *testing.T) {
 	src := upworkTmplSrc
@@ -65,12 +66,15 @@ func TestUpworkTmpl_DraggableMarkup(t *testing.T) {
 		`data-reorder-url=`,
 		`data-csrf=`,
 		`class="gd-sortable-item`,
-		`draggable="true"`,
 		`data-id=`,
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("upworkTmplSrc missing draggable markup: %q", want)
+			t.Errorf("upworkTmplSrc missing sortable markup: %q", want)
 		}
+	}
+	// Assert draggable="true" is NOT present (removed in P4; P4b re-enables via JS).
+	if strings.Contains(src, `draggable="true"`) {
+		t.Error("upworkTmplSrc must not have draggable=\"true\" at this stage (P4b enables it via JS)")
 	}
 }
 

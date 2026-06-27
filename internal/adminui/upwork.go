@@ -288,11 +288,11 @@ func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 		if !ok {
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		db, personID, ok2 := requireResumeDB(w, r)
 		if !ok2 {
 			return
 		}
-		if err := db.DeleteUpworkSkill(r.Context(), id); err != nil {
+		if err := db.DeleteUpworkSkill(r.Context(), personID, id); err != nil {
 			slog.Error("upworkSkillDeleteHandler: DeleteUpworkSkill", "id", id, "err", err)
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
@@ -305,7 +305,7 @@ func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 const upworkTmplSrc = `<style>
   .uw-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
   .uw-section h3{font-size:.9375rem;font-weight:700;color:var(--text-primary,#f1f5f9);margin-bottom:.5rem}
-  .uw-label{font-size:.8rem;color:var(--text-muted,#64748b);margin-bottom:.25rem}
+  .uw-label{font-size:.8rem;color:var(--text-secondary,#94a3b8);margin-bottom:.25rem}
   .uw-value{font-size:.9375rem;color:var(--text-primary,#f1f5f9)}
   .uw-overview{white-space:pre-wrap;font-size:.9rem;color:var(--text-secondary,#94a3b8);line-height:1.65}
   .uw-skill-chip{display:inline-block;background:var(--bg-deep,#0f172a);border-radius:9999px;padding:.2rem .7rem;margin:.2rem;font-size:.8125rem;color:var(--text-secondary,#94a3b8);border:1px solid var(--border,#334155)}
@@ -319,8 +319,8 @@ const upworkTmplSrc = `<style>
   .uw-form-row{display:flex;gap:.5rem;margin-top:.5rem}
   .uw-input{background:var(--bg-deep,#0f172a);border:1px solid var(--border,#334155);border-radius:.375rem;padding:.35rem .6rem;color:var(--text-primary,#f1f5f9);font-size:.875rem;flex:1}
   .uw-btn{padding:.35rem .75rem;border-radius:.375rem;font-size:.8125rem;cursor:pointer;border:none}
-  .uw-btn-primary{background:var(--accent,#60a5fa);color:#0f172a}
-  .uw-btn-danger{background:#ef4444;color:#fff}
+  .uw-btn-primary{background:var(--accent,#3b82f6);color:#0f172a}
+  .uw-btn-danger{background:#b91c1c;color:#fff}
 </style>
 
 <div class="page-header">
@@ -350,7 +350,7 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Skills <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(Upwork cap: 15)</span></h3>
+  <h3>Skills <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(Upwork cap: 15)</span></h3>
   {{if .SkillsOver}}<div class="uw-warning">&#x26A0; You have {{.SkillCount}} skills — only the first 15 are shown (Upwork limit).</div>{{end}}
   {{if .Skills}}
     {{range .Skills}}<span class="uw-skill-chip">{{.}}</span>{{end}}
@@ -387,13 +387,13 @@ const upworkTmplSrc = `<style>
 
 {{if .UWCopyBlocks}}
 <div class="uw-section">
-  <h3>Paste Blocks <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(copy into Upwork forms)</span></h3>
+  <h3>Paste Blocks <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(copy into Upwork forms)</span></h3>
   {{range .UWCopyBlocks}}{{template "copyBlock" .}}{{end}}
 </div>
 {{end}}
 
 <div class="uw-section">
-  <h3>Upwork Profile Edit <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(stored in upwork_profile table)</span></h3>
+  <h3>Upwork Profile Edit <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(stored in upwork_profile table)</span></h3>
   {{if .UWMissing}}<div class="uw-empty" style="margin-bottom:.75rem">No Upwork profile entry yet — fill in the form below to create one.</div>{{end}}
   <form method="POST" action="/admin/upwork/overview" style="margin-bottom:1rem">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
@@ -424,28 +424,28 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Categories Edit <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(full replace)</span></h3>
+  <h3>Categories Edit <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(full replace)</span></h3>
   <form method="POST" action="/admin/upwork/categories">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div class="uw-label" style="margin-bottom:.5rem">One category per input. Leave blank to remove.</div>
     {{if .UWCategories}}
     {{range .UWCategories}}
-    <div class="re-row"><input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" value="{{.}}"></div>
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" value="{{.}}"></label></div>
     {{end}}
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="add category..."></label></div>
     {{else}}
-    <div class="re-row"><input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="e.g. Software Development"></div>
-    <div class="re-row"><input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="e.g. Backend"></div>
+    <div class="re-row"><label class="uw-label">Category <input type="text" name="category" class="uw-input" style="margin-bottom:.35rem" placeholder="e.g. Software Development"></label></div>
     {{end}}
     <button type="submit" class="uw-btn uw-btn-primary" style="margin-top:.5rem">Save Categories</button>
   </form>
 </div>
 
 <div class="uw-section">
-  <h3>Upwork Skills <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(upwork_skills table — drag to reorder)</span></h3>
+  <h3>Upwork Skills <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(upwork_skills table — drag to reorder)</span></h3>
   {{if .UWSkills}}
   <ul class="gd-sortable" data-reorder-url="/admin/upwork/skill/reorder" data-csrf="{{.CSRFToken}}" style="list-style:none;padding:0;margin:0 0 .75rem">
     {{range .UWSkills}}
-    <li class="gd-sortable-item re-row" draggable="true" data-id="{{.ID}}" style="cursor:grab">
+    <li class="gd-sortable-item re-row" data-id="{{.ID}}">
       <div class="name">&#9776; {{.Name}}</div>
       <form method="POST" action="/admin/upwork/skill/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
@@ -467,12 +467,12 @@ const upworkTmplSrc = `<style>
 </div>
 
 <div class="uw-section">
-  <h3>Catalog Items <span style="font-size:.8rem;color:var(--text-muted,#64748b);font-weight:400">(upwork_catalog_items table — drag to reorder)</span></h3>
+  <h3>Catalog Items <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(upwork_catalog_items table — drag to reorder)</span></h3>
   {{if .UWCatalog}}
   <ul class="gd-sortable" data-reorder-url="/admin/upwork/catalog/reorder" data-csrf="{{.CSRFToken}}" style="list-style:none;padding:0;margin:0 0 .75rem">
     {{range .UWCatalog}}
-    <li class="gd-sortable-item re-row" draggable="true" data-id="{{.ID}}">
-      <div class="name" style="cursor:grab">&#9776; {{.Title}}</div>
+    <li class="gd-sortable-item re-row" data-id="{{.ID}}">
+      <div class="name">&#9776; {{.Title}}</div>
       {{if .Description}}<div class="meta">{{.Description}}</div>{{end}}
       <form method="POST" action="/admin/upwork/catalog/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
@@ -487,8 +487,8 @@ const upworkTmplSrc = `<style>
     <form method="POST" action="/admin/upwork/catalog">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div style="margin-bottom:.35rem">
-        <label class="uw-label">Title *</label>
-        <input type="text" name="title" class="uw-input re-input" placeholder="e.g. Go Microservices Platform" required>
+        <label class="uw-label">Title <abbr title="required">*</abbr></label>
+        <input type="text" name="title" class="uw-input re-input" placeholder="e.g. Go Microservices Platform" required aria-required="true">
       </div>
       <div style="margin-bottom:.35rem">
         <label class="uw-label">Description</label>
