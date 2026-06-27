@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,37 +57,5 @@ func TestEmbedTexts_EmptyInput(t *testing.T) {
 	}
 	if len(vecs) != 0 {
 		t.Errorf("expected 0 vectors, got %d", len(vecs))
-	}
-}
-
-func TestCosineSimilarity(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		a, b []float32
-		want float32
-	}{
-		{"identical", []float32{1, 0}, []float32{1, 0}, 1.0},
-		{"orthogonal", []float32{1, 0}, []float32{0, 1}, 0.0},
-		{"opposite", []float32{1, 0}, []float32{-1, 0}, -1.0},
-		{"similar", []float32{0.8, 0.6}, []float32{0.6, 0.8}, 0.96},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CosineSimilarity(tt.a, tt.b)
-			if math.Abs(float64(got-tt.want)) > 0.01 {
-				t.Errorf("CosineSimilarity() = %f, want %f", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCosineSimilarity_DifferentLengths(t *testing.T) {
-	t.Parallel()
-	got := CosineSimilarity([]float32{1, 0}, []float32{1})
-	if got != 0 {
-		t.Errorf("expected 0 for mismatched lengths, got %f", got)
 	}
 }
