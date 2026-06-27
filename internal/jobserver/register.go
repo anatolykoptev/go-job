@@ -22,6 +22,8 @@ func RegisterTools(server *mcp.Server) {
 
 	// Algora jobs
 	registerAlgoraJobIngest(server)
+	// Single-vacancy fetch + ingest by URL
+	registerVacancyIngest(server)
 	// Interview & Career Prep
 	registerInterviewPrep(server)
 	registerProjectShowcase(server)

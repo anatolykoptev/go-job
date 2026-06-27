@@ -333,6 +333,58 @@ func TestStore_UpsertSecurity_Merged(t *testing.T) {
 	assert.Equal(t, hunt.OutcomeMerged, outcome2)
 }
 
+// TestStore_UpsertJob_WeakThenOk verifies that a weak ingest followed by an ok
+// re-ingest of the same URL promotes the stored title/description/company/skills
+// (fill-only CASE WHEN logic in UpsertJob ON CONFLICT). The test goes RED if
+// the CASE WHEN guards are removed and DO UPDATE reverts to overwriting blindly.
+func TestStore_UpsertJob_WeakThenOk(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	url := "https://jobs.example.com/sre-vacancy"
+	hash := hunt.DedupHash(url)
+
+	// Step 1: weak ingest — LLM returned nothing; raw HTML blob in description, title empty.
+	weak := hunt.Job{
+		DedupHash:   hash,
+		Title:       "", // empty — the hallmark of a weak ingest
+		Company:     "",
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "<html><body>raw html blob</body></html>",
+	}
+	_, outcome1, err := s.UpsertJob(ctx, weak)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeCreated, outcome1, "weak ingest should create the row")
+
+	// Step 2: ok re-ingest — same URL, now LLM extracted good data.
+	ok := hunt.Job{
+		DedupHash:   hash,
+		Title:       "Senior SRE",
+		Company:     "ACME",
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "Manages oncall rotation and reliability improvements.",
+		Skills:      []string{"go", "k8s"},
+	}
+	_, outcome2, err := s.UpsertJob(ctx, ok)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeMerged, outcome2, "re-ingest of same URL should merge")
+
+	// Verify the row now carries the good data from the ok ingest.
+	jobs, err := s.ListJobs(ctx, hunt.JobFilter{Source: "vacancy_ingest", IncludeClosed: true, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	got := jobs[0]
+	assert.Equal(t, "Senior SRE", got.Title, "title must be promoted from ok ingest")
+	assert.Equal(t, "Manages oncall rotation and reliability improvements.", got.Description, "description must be promoted from ok ingest")
+	assert.Equal(t, "ACME", got.Company, "company must be promoted from ok ingest")
+	assert.Equal(t, []string{"go", "k8s"}, got.Skills, "skills must be promoted from ok ingest")
+}
+
 // --- AuditContest ---
 
 func truncateAuditContests(t *testing.T, pool *pgxpool.Pool) {

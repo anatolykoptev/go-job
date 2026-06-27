@@ -180,3 +180,21 @@ func ParallelFetch(ctx context.Context, urls []string, fetchFn func(ctx context.
 func ExtractJSONAnswer(raw string) string {
 	return llm.ExtractJSONAnswer(raw)
 }
+
+// ExtractHTMLText extracts main readable text from an already-fetched HTML body.
+// pageURL is the origin URL used as a readability hint; pass "" for unknown origin.
+// Returns the extracted content string. Falls back through extraction tiers
+// (trafilatura -> goquery -> regex). Follows the same path as [FetchURLContent]
+// without the network fetch step.
+func ExtractHTMLText(ctx context.Context, htmlBody string, pageURL string) (string, error) {
+	parsedURL, _ := url.Parse(pageURL)
+	result, err := extractorInst.Extract(ctx, []byte(htmlBody), parsedURL)
+	if err != nil {
+		return "", err
+	}
+	txt := strings.TrimSpace(result.Content)
+	if cfg.MaxContentChars > 0 && len(txt) > cfg.MaxContentChars {
+		txt = txt[:cfg.MaxContentChars] + "..."
+	}
+	return txt, nil
+}

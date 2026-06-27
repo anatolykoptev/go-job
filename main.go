@@ -306,10 +306,15 @@ func initEngine() hunt.Notifier {
 	var huntNotifier hunt.Notifier
 
 	// Resume DB (PostgreSQL + AGE graph)
+	if c.DatabaseURL == "" {
+		slog.Warn("hunt persist DISABLED", slog.String("reason", "DATABASE_URL unset"))
+		engine.SetHuntPersistEnabled(false)
+	}
 	if c.DatabaseURL != "" {
 		rdb, err := jobs.ConnectResumeDB(context.Background(), c.DatabaseURL)
 		if err != nil {
 			slog.Warn("resume DB init failed", slog.Any("error", err))
+			engine.SetHuntPersistEnabled(false)
 		} else {
 			jobs.SetResumeDB(rdb)
 			slog.Info("resume DB initialized")
@@ -328,8 +333,10 @@ func initEngine() hunt.Notifier {
 			hStore := hunt.NewStore(rdb.Pool())
 			if err := hStore.Migrate(context.Background()); err != nil {
 				slog.Error("hunt migrate failed", slog.Any("error", err))
+				engine.SetHuntPersistEnabled(false)
 			} else {
 				engine.SetHuntStore(hStore)
+				engine.SetHuntPersistEnabled(true)
 
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.
