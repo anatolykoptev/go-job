@@ -385,6 +385,59 @@ func TestStore_UpsertJob_WeakThenOk(t *testing.T) {
 	assert.Equal(t, []string{"go", "k8s"}, got.Skills, "skills must be promoted from ok ingest")
 }
 
+// TestStore_UpsertJob_NoDowngrade verifies that a weak re-ingest (title='') over an
+// already-good row NEVER overwrites the good fields. Locks the invariant: the fill-only
+// guards in UpsertJob ON CONFLICT must never downgrade good->weak/empty.
+// RED signal: remove EXCLUDED.description <> '' guard -> description overwrites with HTML blob.
+func TestStore_UpsertJob_NoDowngrade(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	url := "https://jobs.example.com/nodowngrade-vacancy"
+	hash := hunt.DedupHash(url)
+
+	// Step 1: good ingest — complete data from LLM.
+	good := hunt.Job{
+		DedupHash:   hash,
+		Title:       "Principal SRE",
+		Company:     "GoodCorp",
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "Own reliability for 99.99% uptime across 50 services.",
+		Skills:      []string{"go", "prometheus", "k8s"},
+	}
+	_, outcome1, err := s.UpsertJob(ctx, good)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeCreated, outcome1, "good ingest should create the row")
+
+	// Step 2: weak re-ingest of the same URL — LLM returned nothing.
+	weak := hunt.Job{
+		DedupHash:   hash,
+		Title:       "", // empty — hallmark of weak ingest
+		Company:     "",
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "<html><body>raw html blob</body></html>",
+		Skills:      nil,
+	}
+	_, outcome2, err := s.UpsertJob(ctx, weak)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeMerged, outcome2, "weak re-ingest should merge")
+
+	// Good fields must be preserved — weak re-ingest must NOT downgrade them.
+	jobs, err := s.ListJobs(ctx, hunt.JobFilter{Source: "vacancy_ingest", IncludeClosed: true, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	got := jobs[0]
+	assert.Equal(t, "Principal SRE", got.Title, "good title must survive weak re-ingest")
+	assert.Equal(t, "Own reliability for 99.99% uptime across 50 services.", got.Description, "good description must not be overwritten by HTML blob")
+	assert.Equal(t, "GoodCorp", got.Company, "good company must survive empty re-ingest")
+	assert.Equal(t, []string{"go", "prometheus", "k8s"}, got.Skills, "good skills must not be cleared by nil re-ingest")
+}
+
 // --- AuditContest ---
 
 func truncateAuditContests(t *testing.T, pool *pgxpool.Pool) {

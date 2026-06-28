@@ -319,15 +319,14 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_jobs.status = 'open' THEN EXCLUDED.status ELSE hunt_jobs.status END,
 			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at),
-			    -- Fill-only: promote empty stored fields from a newer ingest but never clobber
-			    -- an already-good value. Fixes weak->ok re-ingest: first weak pass stores
-			    -- empty title + raw HTML blob in description; subsequent ok pass fills them.
-			    -- WHERE title = '' is the queryable proxy for rows needing re-enrichment;
-			    -- no additional migration column is required.
-			    title = CASE WHEN hunt_jobs.title = '' THEN EXCLUDED.title ELSE hunt_jobs.title END,
-			    description = CASE WHEN hunt_jobs.description = '' THEN EXCLUDED.description ELSE hunt_jobs.description END,
-			    company = CASE WHEN hunt_jobs.company IS NULL THEN EXCLUDED.company ELSE hunt_jobs.company END,
-			    skills = CASE WHEN array_length(hunt_jobs.skills, 1) IS NULL THEN EXCLUDED.skills ELSE hunt_jobs.skills END
+			    -- Fill-only: promote empty/weak-row fields from a newer ingest but never clobber
+			    -- an already-good value. title='' is the proxy for a weak-ingest row (LLM
+			    -- returned nothing); content fields also promote when their own stored value is
+			    -- empty/NULL and the incoming value is non-empty. Never downgrades good->weak.
+			    title       = CASE WHEN hunt_jobs.title = '' THEN EXCLUDED.title ELSE hunt_jobs.title END,
+			    description = CASE WHEN (hunt_jobs.title = '' OR hunt_jobs.description IS NULL OR hunt_jobs.description = '') AND EXCLUDED.description IS NOT NULL AND EXCLUDED.description <> '' THEN EXCLUDED.description ELSE hunt_jobs.description END,
+			    company     = CASE WHEN (hunt_jobs.title = '' OR hunt_jobs.company IS NULL OR hunt_jobs.company = '') AND EXCLUDED.company IS NOT NULL AND EXCLUDED.company <> '' THEN EXCLUDED.company ELSE hunt_jobs.company END,
+			    skills      = CASE WHEN (hunt_jobs.title = '' OR array_length(hunt_jobs.skills, 1) IS NULL) AND array_length(EXCLUDED.skills, 1) IS NOT NULL THEN EXCLUDED.skills ELSE hunt_jobs.skills END
 		RETURNING id, (xmax = 0) AS created`,
 		j.DedupHash, j.Title, nullStr(j.Company), j.URL, j.Source,
 		nullStr(j.ExternalID), nullStr(j.Location), nullStr(j.Remote),
