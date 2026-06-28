@@ -3,8 +3,6 @@ package huntworker
 import (
 	"context"
 	"log/slog"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
@@ -20,9 +18,9 @@ import (
 // Interval: HUNT_OPP_INGEST_INTERVAL (default 12h).
 //
 // On each cycle it calls the unlimited-fetch helpers in engine/jobs:
-//   - fetchAllSecurityUnlimited → persistSecurity
-//   - fetchAllBountiesUnlimited → persistBounties
-//   - fetchAllFreelanceUnlimited → persistFreelanceJobs
+//   - FetchAllSecurityUnlimited → PersistSecurity
+//   - FetchAllBountiesUnlimited → PersistBounties
+//   - FetchAllFreelanceUnlimited → PersistFreelanceJobs
 //
 // The persist functions own the notify policy (backfill guard + isUrgent gate)
 // so both the scheduled and on-demand paths share identical behaviour.
@@ -60,40 +58,59 @@ func (w *OppWorker) Run(ctx context.Context) {
 }
 
 // runCycle executes one full ingest cycle for all three opportunity kinds.
-// Each kind is fetched and persisted sequentially to limit peak memory on the
-// 4-core krolik box; these are I/O-bound ops and do not need parallelism.
+// Each kind runs in its own closure with a defer-recover so a panic in one
+// source (e.g. a malformed parser response) cannot abort the remaining kinds
+// or prevent the next scheduled cycle. Mirrors the per-platform panic isolation
+// in the ATS Worker.
 func (w *OppWorker) runCycle(ctx context.Context) {
 	start := time.Now()
 	slog.Info("opp worker: cycle start")
 
 	// Security programs (BTD 5 sources + Immunefi + Sherlock + Cantina + Code4rena)
-	secPrograms := jobs.FetchAllSecurityUnlimited(ctx)
-	jobs.PersistSecurity(ctx, secPrograms)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("opp worker: recovered panic",
+					slog.String("kind", "security"),
+					slog.Any("panic", r),
+				)
+			}
+		}()
+		secPrograms := jobs.FetchAllSecurityUnlimited(ctx)
+		jobs.PersistSecurity(ctx, secPrograms)
+	}()
 
 	// Bounties (Algora + Opire + BountyHub + Boss + Lightning + Collaborators)
-	bounties := jobs.FetchAllBountiesUnlimited(ctx)
-	jobs.PersistBounties(ctx, bounties)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("opp worker: recovered panic",
+					slog.String("kind", "bounty"),
+					slog.Any("panic", r),
+				)
+			}
+		}()
+		bounties := jobs.FetchAllBountiesUnlimited(ctx)
+		jobs.PersistBounties(ctx, bounties)
+	}()
 
 	// Freelance (RemoteOK + Himalayas)
-	freelance := jobs.FetchAllFreelanceUnlimited(ctx)
-	jobs.PersistFreelanceJobs(ctx, freelance)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("opp worker: recovered panic",
+					slog.String("kind", "freelance"),
+					slog.Any("panic", r),
+				)
+			}
+		}()
+		freelance := jobs.FetchAllFreelanceUnlimited(ctx)
+		jobs.PersistFreelanceJobs(ctx, freelance)
+	}()
 
 	slog.Info("opp worker: cycle complete",
 		slog.Duration("elapsed", time.Since(start)),
-		slog.Int("security", len(secPrograms)),
-		slog.Int("bounties", len(bounties)),
-		slog.Int("freelance", len(freelance)),
 	)
-}
-
-// huntOppIngestEnabled reads the HUNT_OPP_INGEST_ENABLED env flag.
-// Defaults to true — operator wants it on.
-func huntOppIngestEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("HUNT_OPP_INGEST_ENABLED"))
-	if v == "" {
-		return true // default on
-	}
-	return strings.EqualFold(v, "true")
 }
 
 // StartOpportunityWorker starts the opportunity ingest worker in a background
@@ -101,7 +118,7 @@ func huntOppIngestEnabled() bool {
 // store is available (non-nil — DB configured). Noop otherwise.
 // Must be called after engine.SetHuntStore.
 func StartOpportunityWorker(ctx context.Context, store *hunt.Store) {
-	if !huntOppIngestEnabled() {
+	if !env.Bool("HUNT_OPP_INGEST_ENABLED", true) {
 		slog.Debug("opp worker: disabled (HUNT_OPP_INGEST_ENABLED=false)")
 		return
 	}

@@ -231,10 +231,11 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 	return all
 }
 
-// persistBounties writes BountyListings into the hunt store and applies the
+// PersistBounties writes BountyListings into the hunt store and applies the
 // backfill-guard notify policy (best-effort, non-blocking on nil store).
 // Notify logic lives here (not in UpsertBounty) so both the scheduled and
 // on-demand paths share one policy, and the initial seed does not flood.
+//
 //nolint:dupl
 func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 	store := engine.GetHuntStore()
@@ -242,8 +243,7 @@ func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 		return
 	}
 	var created []hunt.Bounty
-	var fetched, notified, suppressed int
-	fetched = len(bounties)
+	fetched := len(bounties)
 	for _, b := range bounties {
 		hb := BountyListingToHunt(b)
 		_, outcome, err := store.UpsertBounty(ctx, hb)
@@ -256,18 +256,7 @@ func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 			created = append(created, hb)
 		}
 	}
-	applyBountyNotifyPolicy(store.Notifier(), created)
-	if len(created) > notifyBackfillThreshold() {
-		suppressed = len(created)
-	} else {
-		for _, b := range created {
-			if isUrgentBounty(b) {
-				notified++
-			} else {
-				suppressed++
-			}
-		}
-	}
+	notified, suppressed := applyBountyNotifyPolicy(store.Notifier(), created)
 	slog.Info("hunt: persist bounties",
 		slog.Int("fetched", fetched),
 		slog.Int("created", len(created)),
@@ -276,8 +265,9 @@ func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 	)
 }
 
-// persistSecurity writes SecurityPrograms into the hunt store and applies the
+// PersistSecurity writes SecurityPrograms into the hunt store and applies the
 // backfill-guard notify policy.
+//
 //nolint:dupl
 func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 	store := engine.GetHuntStore()
@@ -285,8 +275,7 @@ func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 		return
 	}
 	var created []hunt.Security
-	var fetched, notified, suppressed int
-	fetched = len(programs)
+	fetched := len(programs)
 	for _, sp := range programs {
 		hs := SecurityProgramToHunt(sp)
 		_, outcome, err := store.UpsertSecurity(ctx, hs)
@@ -299,18 +288,7 @@ func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 			created = append(created, hs)
 		}
 	}
-	applySecurityNotifyPolicy(store.Notifier(), created)
-	if len(created) > notifyBackfillThreshold() {
-		suppressed = len(created)
-	} else {
-		for _, s := range created {
-			if isUrgentSecurity(s) {
-				notified++
-			} else {
-				suppressed++
-			}
-		}
-	}
+	notified, suppressed := applySecurityNotifyPolicy(store.Notifier(), created)
 	slog.Info("hunt: persist security",
 		slog.Int("fetched", fetched),
 		slog.Int("created", len(created)),
@@ -319,8 +297,9 @@ func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 	)
 }
 
-// persistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store
+// PersistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store
 // and applies the backfill-guard notify policy.
+//
 //nolint:dupl
 func PersistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
 	store := engine.GetHuntStore()
@@ -328,8 +307,7 @@ func PersistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJ
 		return
 	}
 	var created []hunt.Freelance
-	var fetched, notified, suppressed int
-	fetched = len(freelanceJobs)
+	fetched := len(freelanceJobs)
 	for _, f := range freelanceJobs {
 		hf := FreelanceJobToHunt(f)
 		_, outcome, err := store.UpsertFreelance(ctx, hf)
@@ -342,18 +320,7 @@ func PersistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJ
 			created = append(created, hf)
 		}
 	}
-	applyFreelanceNotifyPolicy(store.Notifier(), created)
-	if len(created) > notifyBackfillThreshold() {
-		suppressed = len(created)
-	} else {
-		for _, f := range created {
-			if isUrgentFreelance(f) {
-				notified++
-			} else {
-				suppressed++
-			}
-		}
-	}
+	notified, suppressed := applyFreelanceNotifyPolicy(store.Notifier(), created)
 	slog.Info("hunt: persist freelance",
 		slog.Int("fetched", fetched),
 		slog.Int("created", len(created)),

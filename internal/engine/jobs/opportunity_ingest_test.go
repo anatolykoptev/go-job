@@ -19,10 +19,26 @@ type fakeNotifier struct {
 	jobs      []hunt.Job
 }
 
-func (f *fakeNotifier) NotifyNewBounty(b hunt.Bounty)            { f.mu.Lock(); defer f.mu.Unlock(); f.bounties = append(f.bounties, b) }
-func (f *fakeNotifier) NotifyNewSecurity(s hunt.Security)        { f.mu.Lock(); defer f.mu.Unlock(); f.security = append(f.security, s) }
-func (f *fakeNotifier) NotifyNewFreelance(fr hunt.Freelance)     { f.mu.Lock(); defer f.mu.Unlock(); f.freelance = append(f.freelance, fr) }
-func (f *fakeNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult) { f.mu.Lock(); defer f.mu.Unlock(); f.jobs = append(f.jobs, j) }
+func (f *fakeNotifier) NotifyNewBounty(b hunt.Bounty) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bounties = append(f.bounties, b)
+}
+func (f *fakeNotifier) NotifyNewSecurity(s hunt.Security) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.security = append(f.security, s)
+}
+func (f *fakeNotifier) NotifyNewFreelance(fr hunt.Freelance) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.freelance = append(f.freelance, fr)
+}
+func (f *fakeNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobs = append(f.jobs, j)
+}
 
 // --- isUrgent threshold tests ---
 
@@ -45,9 +61,9 @@ func TestIsUrgentBounty_BelowThreshold(t *testing.T) {
 }
 
 func TestIsUrgentBounty_ZeroAmount(t *testing.T) {
-	t.Setenv("HUNT_NOTIFY_MIN_BOUNTY_USD", "250")
+	t.Setenv("HUNT_NOTIFY_MIN_BOUNTY_USD", "0") // gate open — everything else would be urgent
 	b := hunt.Bounty{AmountCents: 0}
-	assert.False(t, isUrgentBounty(b), "zero-amount bounty must not be urgent")
+	assert.False(t, isUrgentBounty(b), "zero-amount bounty must never be urgent regardless of threshold")
 }
 
 func TestIsUrgentSecurity_AboveThreshold(t *testing.T) {
@@ -60,6 +76,12 @@ func TestIsUrgentSecurity_BelowThreshold(t *testing.T) {
 	t.Setenv("HUNT_NOTIFY_MIN_SECURITY_USD", "5000")
 	s := hunt.Security{MaxBounty: 4999}
 	assert.False(t, isUrgentSecurity(s), "security at $4999 must not be urgent")
+}
+
+func TestIsUrgentSecurity_ZeroMaxBounty(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_MIN_SECURITY_USD", "0") // gate open — everything else would be urgent
+	s := hunt.Security{MaxBounty: 0}
+	assert.False(t, isUrgentSecurity(s), "zero-MaxBounty security must never be urgent regardless of threshold")
 }
 
 func TestIsUrgentFreelance_AboveThreshold(t *testing.T) {
@@ -93,11 +115,13 @@ func TestApplyBountyNotifyPolicy_Backfill_OneSummary(t *testing.T) {
 		created[i] = hunt.Bounty{AmountCents: 50000, Title: "Big Bug"}
 	}
 
-	applyBountyNotifyPolicy(n, created)
+	notified, suppressed := applyBountyNotifyPolicy(n, created)
 
 	require.Len(t, n.bounties, 1, "backfill: exactly ONE summary card must fire (not individual cards)")
 	assert.Contains(t, n.bounties[0].Title, "6", "summary title must mention count")
 	assert.Contains(t, n.bounties[0].Title, "bounty", "summary title must mention kind")
+	assert.Equal(t, 0, notified, "backfill: notified tally must be 0 (summary replaces individual cards)")
+	assert.Equal(t, 6, suppressed, "backfill: suppressed tally must equal len(created)")
 }
 
 func TestApplySecurityNotifyPolicy_Backfill_OneSummary(t *testing.T) {
@@ -110,10 +134,12 @@ func TestApplySecurityNotifyPolicy_Backfill_OneSummary(t *testing.T) {
 		created[i] = hunt.Security{MaxBounty: 50000, Name: "BigProgram"}
 	}
 
-	applySecurityNotifyPolicy(n, created)
+	notified, suppressed := applySecurityNotifyPolicy(n, created)
 
 	require.Len(t, n.security, 1, "backfill: exactly ONE summary card must fire")
 	assert.Contains(t, n.security[0].Name, "4", "summary title must mention count")
+	assert.Equal(t, 0, notified)
+	assert.Equal(t, 4, suppressed)
 }
 
 func TestApplyFreelanceNotifyPolicy_Backfill_OneSummary(t *testing.T) {
@@ -126,9 +152,75 @@ func TestApplyFreelanceNotifyPolicy_Backfill_OneSummary(t *testing.T) {
 		created[i] = hunt.Freelance{BudgetMax: 5000, Title: "BigProject"}
 	}
 
-	applyFreelanceNotifyPolicy(n, created)
+	notified, suppressed := applyFreelanceNotifyPolicy(n, created)
 
 	require.Len(t, n.freelance, 1, "backfill: exactly ONE summary card must fire")
+	assert.Equal(t, 0, notified)
+	assert.Equal(t, 3, suppressed)
+}
+
+// --- ==threshold boundary: exactly threshold items → individual cards, NOT summary ---
+
+// TestApplyBountyNotifyPolicy_AtThreshold_IndividualCards verifies the boundary condition:
+// len(created) == threshold sends individual cards (not a summary).
+// Only len(created) > threshold triggers the backfill summary.
+//
+// Revert-red: changing the guard from `> threshold` to `>= threshold` would send a
+// summary for this case, making len(n.bounties)==1 != urgentCount → test FAILS.
+func TestApplyBountyNotifyPolicy_AtThreshold_IndividualCards(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_BACKFILL_THRESHOLD", "5")
+	t.Setenv("HUNT_NOTIFY_MIN_BOUNTY_USD", "250")
+	n := &fakeNotifier{}
+
+	// Exactly 5 items == threshold(5) → must NOT trigger summary; individual cards for urgent.
+	created := make([]hunt.Bounty, 5)
+	for i := range created {
+		created[i] = hunt.Bounty{AmountCents: 50000, Title: "BigBounty"}
+	}
+
+	notified, suppressed := applyBountyNotifyPolicy(n, created)
+
+	// All 5 are urgent (50000 cents = $500 > $250); expect 5 individual cards.
+	assert.Equal(t, 5, notified, "at-threshold: all urgent items must get individual cards")
+	assert.Equal(t, 0, suppressed)
+	assert.Len(t, n.bounties, 5, "at-threshold: 5 individual cards, not a summary")
+}
+
+func TestApplySecurityNotifyPolicy_AtThreshold_IndividualCards(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_BACKFILL_THRESHOLD", "3")
+	t.Setenv("HUNT_NOTIFY_MIN_SECURITY_USD", "1000")
+	n := &fakeNotifier{}
+
+	// Exactly 3 items == threshold(3) → individual cards.
+	created := []hunt.Security{
+		{MaxBounty: 5000, Name: "A"},
+		{MaxBounty: 5000, Name: "B"},
+		{MaxBounty: 5000, Name: "C"},
+	}
+
+	notified, suppressed := applySecurityNotifyPolicy(n, created)
+
+	assert.Equal(t, 3, notified)
+	assert.Equal(t, 0, suppressed)
+	assert.Len(t, n.security, 3, "at-threshold: individual cards, not summary")
+}
+
+func TestApplyFreelanceNotifyPolicy_AtThreshold_IndividualCards(t *testing.T) {
+	t.Setenv("HUNT_NOTIFY_BACKFILL_THRESHOLD", "2")
+	t.Setenv("HUNT_NOTIFY_MIN_FREELANCE_USD", "500")
+	n := &fakeNotifier{}
+
+	// Exactly 2 items == threshold(2) → individual cards.
+	created := []hunt.Freelance{
+		{BudgetMax: 2000, Title: "Gig1"},
+		{BudgetMax: 2000, Title: "Gig2"},
+	}
+
+	notified, suppressed := applyFreelanceNotifyPolicy(n, created)
+
+	assert.Equal(t, 2, notified)
+	assert.Equal(t, 0, suppressed)
+	assert.Len(t, n.freelance, 2, "at-threshold: individual cards, not summary")
 }
 
 // --- Normal cycle: only urgent items get individual cards ---
@@ -144,7 +236,7 @@ func TestApplyBountyNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
 		{AmountCents: 25000, Title: "Exact"}, // $250 — urgent (at threshold)
 	}
 
-	applyBountyNotifyPolicy(n, created)
+	notified, suppressed := applyBountyNotifyPolicy(n, created)
 
 	// Only 2 urgent items should fire; 1 below threshold suppressed.
 	require.Len(t, n.bounties, 2, "only urgent bounties must get individual cards")
@@ -152,6 +244,8 @@ func TestApplyBountyNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
 	assert.Contains(t, titles, "High")
 	assert.Contains(t, titles, "Exact")
 	assert.NotContains(t, titles, "Low", "below-threshold bounty must not notify")
+	assert.Equal(t, 2, notified)
+	assert.Equal(t, 1, suppressed)
 }
 
 func TestApplySecurityNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
@@ -164,10 +258,12 @@ func TestApplySecurityNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
 		{MaxBounty: 1000, Name: "LVP"},  // not urgent
 	}
 
-	applySecurityNotifyPolicy(n, created)
+	notified, suppressed := applySecurityNotifyPolicy(n, created)
 
 	require.Len(t, n.security, 1, "only urgent security programs must notify")
 	assert.Equal(t, "HVP", n.security[0].Name)
+	assert.Equal(t, 1, notified)
+	assert.Equal(t, 1, suppressed)
 }
 
 func TestApplyFreelanceNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
@@ -176,15 +272,17 @@ func TestApplyFreelanceNotifyPolicy_NormalCycle_OnlyUrgent(t *testing.T) {
 	n := &fakeNotifier{}
 
 	created := []hunt.Freelance{
-		{BudgetMax: 5000, Title: "BigGig"},   // urgent
-		{BudgetMax: 500, Title: "SmallGig"},  // not urgent
-		{BudgetMax: 0, Title: "ZeroGig"},     // zero budget — never urgent
+		{BudgetMax: 5000, Title: "BigGig"},  // urgent
+		{BudgetMax: 500, Title: "SmallGig"}, // not urgent
+		{BudgetMax: 0, Title: "ZeroGig"},    // zero budget — never urgent
 	}
 
-	applyFreelanceNotifyPolicy(n, created)
+	notified, suppressed := applyFreelanceNotifyPolicy(n, created)
 
 	require.Len(t, n.freelance, 1, "only urgent freelance items must notify")
 	assert.Equal(t, "BigGig", n.freelance[0].Title)
+	assert.Equal(t, 1, notified)
+	assert.Equal(t, 2, suppressed)
 }
 
 // --- Non-created (merged) items must not trigger any notify ---
@@ -196,8 +294,10 @@ func TestApplyBountyNotifyPolicy_NilNotifier_NoPanic(t *testing.T) {
 
 func TestApplyBountyNotifyPolicy_EmptyCreated_NoNotify(t *testing.T) {
 	n := &fakeNotifier{}
-	applyBountyNotifyPolicy(n, nil)
+	notified, suppressed := applyBountyNotifyPolicy(n, nil)
 	assert.Empty(t, n.bounties, "empty created list must not notify")
+	assert.Equal(t, 0, notified)
+	assert.Equal(t, 0, suppressed)
 }
 
 // --- Guard: if backfill fires, individual cards are ZERO (not double-send) ---

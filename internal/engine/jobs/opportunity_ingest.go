@@ -20,8 +20,11 @@ const (
 )
 
 // isUrgentBounty returns true if the bounty warrants an individual Telegram card.
-// Items without an amount (AmountCents==0) are never urgent.
+// Items without an amount (AmountCents==0) are never urgent regardless of the threshold.
 func isUrgentBounty(b hunt.Bounty) bool {
+	if b.AmountCents == 0 {
+		return false
+	}
 	minCents := int64(env.Int("HUNT_NOTIFY_MIN_BOUNTY_USD", defaultNotifyMinBountyUSD)) * 100
 	if minCents <= 0 {
 		return true
@@ -30,7 +33,15 @@ func isUrgentBounty(b hunt.Bounty) bool {
 }
 
 // isUrgentSecurity returns true if the security program warrants an individual Telegram card.
+// Programs with no/zero max bounty are never urgent regardless of the threshold.
+// Note: federacy programs carry no bounty-amount fields (only offers_awards flag) so
+// their MaxBounty is always 0 after parsing — they never pass this gate and surface
+// only via the DB + backfill summary card. This is an upstream-data limitation, not a
+// defect; gating all bug_bounty programs as urgent would bypass the flood control.
 func isUrgentSecurity(s hunt.Security) bool {
+	if s.MaxBounty == 0 {
+		return false
+	}
 	minUSD := env.Int("HUNT_NOTIFY_MIN_SECURITY_USD", defaultNotifyMinSecurityUSD)
 	if minUSD <= 0 {
 		return true
@@ -58,15 +69,18 @@ func notifyBackfillThreshold() int {
 }
 
 // applyBountyNotifyPolicy implements the shared notify policy for one ingest cycle
-// over a set of created (genuinely-new, open) bounties. Called by persistBounties.
+// over a set of created (genuinely-new, open) bounties. Called by PersistBounties.
 //
 // Policy:
 //   - len(created) > threshold → one summary card, no individual cards.
 //   - else → individual card for each urgent created item (isUrgentBounty).
 //   - Non-urgent created items are silently persisted (DB/UI); no card.
-func applyBountyNotifyPolicy(notifier hunt.Notifier, created []hunt.Bounty) {
+//
+// Returns (notified, suppressed) counts as the single source of truth for the
+// caller's log line; avoids re-deriving the policy a second time in PersistBounties.
+func applyBountyNotifyPolicy(notifier hunt.Notifier, created []hunt.Bounty) (notified, suppressed int) {
 	if notifier == nil || len(created) == 0 {
-		return
+		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
 	if len(created) > threshold {
@@ -76,19 +90,24 @@ func applyBountyNotifyPolicy(notifier hunt.Notifier, created []hunt.Bounty) {
 			Source: "ingest-summary",
 		})
 		slog.Info("hunt: bounty notify suppressed (backfill)", slog.Int("created", len(created)), slog.Int("threshold", threshold))
-		return
+		return 0, len(created)
 	}
 	for _, b := range created {
 		if isUrgentBounty(b) {
 			notifier.NotifyNewBounty(b)
+			notified++
+		} else {
+			suppressed++
 		}
 	}
+	return notified, suppressed
 }
 
 // applySecurityNotifyPolicy implements the shared notify policy for security programs.
-func applySecurityNotifyPolicy(notifier hunt.Notifier, created []hunt.Security) {
+// Returns (notified, suppressed) counts.
+func applySecurityNotifyPolicy(notifier hunt.Notifier, created []hunt.Security) (notified, suppressed int) {
 	if notifier == nil || len(created) == 0 {
-		return
+		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
 	if len(created) > threshold {
@@ -102,19 +121,24 @@ func applySecurityNotifyPolicy(notifier hunt.Notifier, created []hunt.Security) 
 			Platform: "multi",
 		})
 		slog.Info("hunt: security notify suppressed (backfill)", slog.Int("created", len(created)), slog.Int("threshold", threshold))
-		return
+		return 0, len(created)
 	}
 	for _, s := range created {
 		if isUrgentSecurity(s) {
 			notifier.NotifyNewSecurity(s)
+			notified++
+		} else {
+			suppressed++
 		}
 	}
+	return notified, suppressed
 }
 
 // applyFreelanceNotifyPolicy implements the shared notify policy for freelance projects.
-func applyFreelanceNotifyPolicy(notifier hunt.Notifier, created []hunt.Freelance) {
+// Returns (notified, suppressed) counts.
+func applyFreelanceNotifyPolicy(notifier hunt.Notifier, created []hunt.Freelance) (notified, suppressed int) {
 	if notifier == nil || len(created) == 0 {
-		return
+		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
 	if len(created) > threshold {
@@ -129,13 +153,17 @@ func applyFreelanceNotifyPolicy(notifier hunt.Notifier, created []hunt.Freelance
 			Source:   "ingest-summary",
 		})
 		slog.Info("hunt: freelance notify suppressed (backfill)", slog.Int("created", len(created)), slog.Int("threshold", threshold))
-		return
+		return 0, len(created)
 	}
 	for _, f := range created {
 		if isUrgentFreelance(f) {
 			notifier.NotifyNewFreelance(f)
+			notified++
+		} else {
+			suppressed++
 		}
 	}
+	return notified, suppressed
 }
 
 // summaryTitle builds a one-line summary title for backfill summary cards.
