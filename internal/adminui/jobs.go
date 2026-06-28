@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/admintable"
+	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
@@ -87,6 +88,9 @@ const (
 // The template wraps cell-0 in <a href=…>{EscapeString(value)}</a> and ignores
 // cell.HTML for that index. Therefore cell-0 MUST be plain text (Title/Company).
 // Fit and Market Read chips are at indices 1 and 2 (i>0 → cell.HTML respected).
+// colKeyShortlisted is the column/filter key for the star toggle.
+const colKeyShortlisted = "shortlisted"
+
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: colKeyTitle},
@@ -98,6 +102,9 @@ var jobsSpec = admintable.Spec{
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false, Width: "6rem"},
 		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
+		// Star toggle: last column so cell-0 (title) is unaffected. Width keeps it compact.
+		// Cell value is raw HTML (<form> with CSRF) — rendered with HTML: true.
+		{Key: colKeyShortlisted, Label: "★", Sortable: true, SQLExpr: colKeyShortlisted, Width: "3rem"},
 	},
 	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
@@ -110,18 +117,21 @@ var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{colKeyTitle, colCompany}, Match: admintable.ILike},
 	{Key: colStatus, SQLExpr: colStatus, Match: admintable.Eq, Allowed: []string{statusOpen, "applied", "interviewing", "rejected", "offer", statusClosed}},
 	{Key: colSource, SQLExpr: colSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
+	// shortlisted=true → /admin/jobs?shortlisted=true shortlist view.
+	// Eq match against boolean SQL column; Allowed keeps unknown values safe-dropped.
+	{Key: colKeyShortlisted, SQLExpr: colKeyShortlisted, Match: admintable.Eq, Allowed: []string{"true", "false"}},
 }}
 
-func jobsResource(store *hunt.Store, authority *applications.Authority) resource.Resource {
+func jobsResource(store *hunt.Store, authority *applications.Authority, csrfKey []byte) resource.Resource {
 	pool := store.Pool()
 	return resource.Resource{
-		Name:  "jobs",
-		Title: "Jobs",
-		Icon:  "\U0001F4BC",
-		Group: grpHunt,
-		Sort:  jobsSpec,
+		Name:   "jobs",
+		Title:  "Jobs",
+		Icon:   "\U0001F4BC",
+		Group:  grpHunt,
+		Sort:   jobsSpec,
 		Filter: jobsFilter,
-		Perms: resource.ReadAny,
+		Perms:  resource.ReadAny,
 		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
 			n := store.CountOpenJobs(ctx)
 			if n == 0 {
@@ -129,12 +139,12 @@ func jobsResource(store *hunt.Store, authority *applications.Authority) resource
 			}
 			return strconv.Itoa(n)
 		}),
-		Lister: jobsLister(pool, authority),
+		Lister: jobsLister(pool, authority, csrfKey),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
 
-func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func jobsLister(pool *pgxpool.Pool, authority *applications.Authority, csrfKey []byte) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		where := "TRUE"
 		if strings.TrimSpace(q.WhereConds) != "" {
@@ -150,7 +160,8 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(cont
 			SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(status,''),
 			       fit_score, COALESCE(fit_band,''), COALESCE(success_band,''), COALESCE(over_under,''),
 			       posted_at, last_seen_at,
-			       COALESCE(location,''), COALESCE(source,''), COALESCE(url,'')
+			       COALESCE(location,''), COALESCE(source,''), COALESCE(url,''),
+			       shortlisted
 			  FROM hunt_jobs WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d`,
 			where, jobsSpec.OrderBy(q.Sort), n+1, n+2)
 		rows, err := pool.Query(ctx, query, args...)
@@ -165,6 +176,12 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(cont
 			legacyEntries = authority.LegacyEntries()
 		}
 
+		// Mint a single CSRF token for all star-toggle forms on this page.
+		// The token is bound to the session cookie value injected by
+		// withSessionCookieContext (see star.go). Token is valid for csrf.DefaultTTL.
+		sessVal := sessionCookieFrom(ctx)
+		csrfTok := csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
+
 		var out []resource.Row
 		for rows.Next() {
 			var (
@@ -174,9 +191,10 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(cont
 				location, source, url  string
 				fit                    *int
 				posted, recent         *time.Time
+				shortlisted            bool
 			)
 			if err := rows.Scan(&id, &title, &company, &status, &fit, &fitBand, &sucBand, &ou,
-				&posted, &recent, &location, &source, &url); err != nil {
+				&posted, &recent, &location, &source, &url, &shortlisted); err != nil {
 				return nil, 0, fmt.Errorf("adminui: scan job: %w", err)
 			}
 
@@ -210,6 +228,9 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority) func(cont
 					{Value: location},
 					{Value: source},
 					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},
+					// Star toggle — MUST stay last to preserve 0-based column indices above.
+					// HTML: true is safe: starToggleHTML uses only closed-enum glyphs + id int64 + csrf.Issue output.
+					{Value: starToggleHTML(id, shortlisted, csrfTok), HTML: true},
 				},
 			})
 		}

@@ -34,7 +34,8 @@ func TestJobsLister_Smoke(t *testing.T) {
 		Offset: 0,
 	}
 	// authority=nil: docs column renders empty chips (no crash).
-	rows, total, err := jobsLister(pool, nil)(context.Background(), q)
+	// csrfKey=nil: star toggle renders ☆ with an empty (but valid-format) token.
+	rows, total, err := jobsLister(pool, nil, nil)(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestJobsLister_OffsetReturnsDistinctWindow(t *testing.T) {
 		t.Skipf("not enough rows (%d) to test pagination (need ≥%d)", total, pageSize+1)
 	}
 
-	lister := jobsLister(pool, nil)
+	lister := jobsLister(pool, nil, nil)
 	sort := jobsSpec.Resolve("fit", "desc")
 
 	page1, _, err := lister(context.Background(), resource.ListQuery{Sort: sort, Limit: pageSize, Offset: 0})

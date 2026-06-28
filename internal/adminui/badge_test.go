@@ -34,7 +34,7 @@ func openBadgeTestStore(t *testing.T) *hunt.Store {
 // "jobs resource Badge must be non-nil".
 func TestJobsResource_BadgeClosureNonNil(t *testing.T) {
 	store := openBadgeTestStore(t)
-	r := jobsResource(store, nil)
+	r := jobsResource(store, nil, nil)
 	if r.Badge == nil {
 		t.Fatal("jobs resource Badge must be non-nil")
 	}
