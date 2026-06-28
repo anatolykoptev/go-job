@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -190,13 +191,12 @@ func TestIdempotency_JSON(t *testing.T) {
 
 // ── integration tests (require DATABASE_URL) ──────────────────────────────────
 
-// openMigratePool opens a pgxpool for integration tests; skips if DATABASE_URL unset.
+// openMigratePool opens a pgxpool for integration tests; skips if DATABASE_URL unset;
+// fatals if it points at a non-_test database.
 func openMigratePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping migrate-tracker-json integration tests")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	require.NoError(t, err, "pgxpool.New")
 	t.Cleanup(func() { pool.Close() })

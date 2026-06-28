@@ -12,6 +12,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,13 +41,11 @@ func testDetailPanel() *resource.Panel {
 }
 
 // TestJobDetailer_Smoke runs jobDetailer against DATABASE_URL.
-// Skips when DATABASE_URL is unset (CI-safe). Fetches the first job's id and
-// verifies the Detailer returns the expected sections.
+// Skips when DATABASE_URL is unset (CI-safe); fatals if it points at a non-_test database.
+// Fetches the first job's id and verifies the Detailer returns the expected sections.
 func TestJobDetailer_Smoke(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping job detailer integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)

@@ -5,19 +5,20 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 )
 
 // TestUpdatePersonUpworkFields_RoundTrip verifies that UpdatePersonUpworkFields
 // persists headline and hourly_rate, and GetPerson reads them back.
-// Requires DATABASE_URL to be set; skips otherwise.
+// Requires DATABASE_URL to be set; skips otherwise; fatals if it points at a
+// non-_test database.
 //
 // Red-on-revert: remove UpdatePersonUpworkFields or drop the DB columns →
 // either the call fails or the values read back as zero/empty.
 func TestUpdatePersonUpworkFields_RoundTrip(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping DB integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 
 	ctx := context.Background()
 	db, err := ConnectResumeDB(ctx, dsn)
