@@ -69,11 +69,13 @@ func starToggleHTML(id int64, shortlisted bool, csrfTok string) string {
 	)
 }
 
-// shortlistHandler returns an http.HandlerFunc that atomically flips
-// hunt_jobs.shortlisted for the given {id}. CSRF-protected (same pattern as
-// rateHandler). Redirects to Referer on success to preserve filter state, with
-// /admin/jobs as the safe fallback.
-func shortlistHandler(store *hunt.Store, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+// shortlistHandler returns an http.HandlerFunc that toggles a job's shortlist
+// membership via hunt_ratings (rating-backed star). CSRF-protected (same pattern
+// as rateHandler). Redirects to Referer on success to preserve filter state.
+//
+// Toggle semantics (see Store.ToggleShortlistStar): stage ∈ activeStages → demote
+// to StageNew (star off); otherwise → upsert StageSaved (star on). Note preserved.
+func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -97,14 +99,13 @@ func shortlistHandler(store *hunt.Store, a auth.Authenticator, csrfKey []byte) h
 			return
 		}
 
-		if _, err := store.ToggleShortlist(r.Context(), id64); err != nil {
-			slog.Error("shortlistHandler: toggle", "id", id64, "err", err)
+		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistActiveStages); err != nil {
+			slog.Error("shortlistHandler: toggle star", "id", id64, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Redirect back to Referer to preserve the current filter state
-		// (e.g., /admin/jobs?shortlisted=true returns to the shortlist view).
+		// Redirect back to Referer to preserve the current filter/sort state.
 		// Validate: accept only same-origin paths that start with /admin/ to
 		// prevent open redirect (gosec G710). Fallback to /admin/jobs.
 		http.Redirect(w, r, safeAdminReferer(r.Header.Get("Referer")), http.StatusSeeOther) //nolint:gosec // G710: safeAdminReferer validates Referer: rejects absolute URLs (non-empty Host/Scheme), restricts path to /admin/* only.
