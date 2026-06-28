@@ -16,6 +16,7 @@ templ layoutStyles() {
 			--text-primary:#e8edf5;
 			--text-secondary:#7b8ba8;
 			--text-muted:#4a5b78;
+			--text-label:#5d6f90;
 			--accent:#3b82f6;
 			--accent-glow:rgba(59,130,246,.15);
 			--accent-dim:#1e3a6e;
@@ -64,7 +65,7 @@ templ layoutStyles() {
 		.sidebar-nav{flex:1;padding:.25rem 0;overflow-y:auto}
 		.sidebar-group{margin-top:.75rem}
 		/* button reset + existing visual styles; cursor:pointer for toggle affordance */
-		.sidebar-group-label{padding:.5rem 1.25rem .25rem;font-family:var(--font-mono);font-size:.5625rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.1em;display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;text-align:left;cursor:pointer}
+		.sidebar-group-label{padding:.5rem 1.25rem .25rem;font-family:var(--font-mono);font-size:.5625rem;font-weight:600;color:var(--text-label);text-transform:uppercase;letter-spacing:.1em;display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;text-align:left;cursor:pointer}
 		/* ── Nav group collapse (click-to-collapse groups, pm7-borrowed transition) ──
 		   Caret rotate ported from pm7.css:4845-4848, re-namespaced.
 		   Collapse transition (max-height:0→1000px) ported from pm7.css:4849-4856, re-namespaced. */
