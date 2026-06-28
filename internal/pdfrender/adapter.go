@@ -82,8 +82,15 @@ func (a *TypstAdapter) Ready() bool {
 // (wrapped) so the caller can use errors.Is(err, applications.ErrNoBinary) to
 // distinguish "binary absent" (soft skip) from real render failures.
 func (a *TypstAdapter) PDF(ctx context.Context, md string) ([]byte, error) {
+	// Normalize any pandoc title block before prepending ligaPreamble.
+	// Pandoc only recognises lines starting with "% " as a title block when
+	// they appear at the very top of the document. Prepending ligaPreamble
+	// displaces them, so pandoc passes "%" through literally. Converting to
+	// standard markdown (heading + paragraph) makes them position-independent.
+	mdNorm := normalizeTitleBlock(md)
+
 	// Inject ATS-safe liga suppression as a pandoc raw-typst block.
-	mdWithPreamble := ligaPreamble + md
+	mdWithPreamble := ligaPreamble + mdNorm
 
 	raw, err := a.r.Render(ctx, mdWithPreamble, "markdown", render.Options{
 		// "report" theme: professional A4 layout with IBM Plex Sans.
@@ -108,6 +115,106 @@ func (a *TypstAdapter) PDF(ctx context.Context, md string) ([]byte, error) {
 		return raw, nil
 	}
 	return out, nil
+}
+
+// normalizeTitleBlock converts a pandoc title block at the top of md into
+// standard markdown so that it renders correctly regardless of what is
+// prepended before the document.
+//
+// A pandoc title block consists of up to 3 consecutive lines at the start of
+// the document (after any leading blank lines) that each begin with "% " or
+// are exactly "%" (empty field). Pandoc only recognises this block when those
+// lines are the very first non-blank content it sees. Because ligaPreamble is
+// prepended to md before rendering, the title block is displaced and pandoc
+// passes the literal "%" characters through to the PDF unchanged.
+//
+// Conversion rules:
+//   - The first "% …" line becomes a level-1 heading: "# <content>".
+//   - Subsequent "% …" lines (author, date) become paragraph lines, separated
+//     from the heading by a single blank line.
+//   - Leading blank lines before the title block are preserved.
+//   - A blank line between the converted block and the rest of the document is
+//     inserted when absent.
+//   - If no title block is present at the top, md is returned unchanged
+//     (byte-identical — this is the common path).
+//   - "%" characters that appear mid-document or mid-line are left untouched;
+//     only the leading consecutive block is converted.
+//   - CRLF line endings are detected and preserved.
+func normalizeTitleBlock(md string) string {
+	// Normalize line endings for processing; restore CRLF at the end.
+	crlf := strings.Contains(md, "\r\n")
+	s := strings.ReplaceAll(md, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+
+	// Skip leading blank lines.
+	leadingBlanks := 0
+	for leadingBlanks < len(lines) && lines[leadingBlanks] == "" {
+		leadingBlanks++
+	}
+
+	// Collect consecutive title-block lines (at most 3).
+	const maxTitleLines = 3
+	end := leadingBlanks
+	for end < len(lines) && end-leadingBlanks < maxTitleLines {
+		line := lines[end]
+		if line == "%" || strings.HasPrefix(line, "% ") {
+			end++
+		} else {
+			break
+		}
+	}
+
+	titleCount := end - leadingBlanks
+	if titleCount == 0 {
+		return md // no title block — byte-identical
+	}
+
+	titleLines := lines[leadingBlanks:end]
+	restLines := lines[end:]
+
+	var sb strings.Builder
+
+	// Re-emit leading blank lines.
+	for k := 0; k < leadingBlanks; k++ {
+		sb.WriteByte('\n')
+	}
+
+	// First title line → level-1 heading.
+	first := titleLines[0]
+	var firstContent string
+	if strings.HasPrefix(first, "% ") {
+		firstContent = first[2:]
+	}
+	sb.WriteString("# ")
+	sb.WriteString(firstContent)
+	sb.WriteByte('\n')
+
+	// Subsequent title lines (author, date) → paragraph, preceded by a blank line.
+	if len(titleLines) > 1 {
+		sb.WriteByte('\n')
+		for _, tl := range titleLines[1:] {
+			var content string
+			if strings.HasPrefix(tl, "% ") {
+				content = tl[2:]
+			}
+			sb.WriteString(content)
+			sb.WriteByte('\n')
+		}
+	}
+
+	// Rest of the document, with a blank separator when the next line is non-empty.
+	if len(restLines) > 0 {
+		if restLines[0] != "" {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(strings.Join(restLines, "\n"))
+	}
+
+	result := sb.String()
+	if crlf {
+		result = strings.ReplaceAll(result, "\n", "\r\n")
+	}
+	return result
 }
 
 // isNoBinaryErr reports whether err from render/typst indicates a missing
