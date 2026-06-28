@@ -1,0 +1,96 @@
+package components
+
+// Trend is the direction indicator shown next to a StatCard delta value.
+type Trend int
+
+const (
+	// TrendNone means no delta span is rendered.
+	TrendNone Trend = iota
+	// TrendUp renders delta-up (green) styling.
+	TrendUp
+	// TrendDown renders delta-down (red) styling.
+	TrendDown
+	// TrendFlat renders delta-flat (muted) styling.
+	TrendFlat
+	// TrendNew renders delta-new (accent) styling.
+	TrendNew
+)
+
+// trendClass maps a Trend to the CSS modifier class used alongside .delta.
+// Returns an empty string for TrendNone (no delta span rendered).
+func trendClass(t Trend) string {
+	switch t {
+	case TrendUp:
+		return "delta-up"
+	case TrendDown:
+		return "delta-down"
+	case TrendFlat:
+		return "delta-flat"
+	case TrendNew:
+		return "delta-new"
+	default:
+		return ""
+	}
+}
+
+// trendGlyph returns a Unicode direction glyph for the given Trend, matching
+// the repo's shape-glyph a11y convention (WCAG 1.4.1 — direction is not
+// conveyed by colour alone). Rendered visibly inside the delta span so screen
+// readers announce it without a separate sr-only element.
+func trendGlyph(t Trend) string {
+	switch t {
+	case TrendUp:
+		return "↑"
+	case TrendDown:
+		return "↓"
+	case TrendFlat:
+		return "→"
+	case TrendNew:
+		return "✦"
+	default:
+		return ""
+	}
+}
+
+// StatCard is the data model for a single metric tile.
+//
+// Label, Value, and Delta are HTML-escaped by templ; never pass templ.Raw.
+// Spark is the mini-sparkline data series (oldest → newest) rendered by
+// Sparkline when non-empty. Pass nil or an empty slice to suppress the chart.
+type StatCard struct {
+	Label string
+	Value string
+	Delta string
+	Trend Trend
+	Spark []int
+}
+
+// StatCardView renders a single .stat-card metric tile.
+//
+// Structure:
+//
+//	<div class="stat-card">
+//	  <div class="stat-label">{ c.Label }</div>    ← auto-escaped
+//	  <div class="stat-value">
+//	    { c.Value }
+//	    <span class="delta delta-{trend}">{ c.Delta }</span>  ← only when Trend != TrendNone
+//	  </div>
+//	  @Sparkline(c.Spark)  ← only when len(c.Spark) > 0
+//	</div>
+//
+// CSS classes .stat-card / .stat-label / .stat-value / .delta / .delta-* /
+// .sparkline / .sparkline-line / .sparkline-zero are defined in shell/styles.templ.
+templ StatCardView(c StatCard) {
+	<div class="stat-card">
+		<div class="stat-label">{ c.Label }</div>
+		<div class="stat-value">
+			{ c.Value }
+			if c.Trend != TrendNone && c.Delta != "" {
+				<span class={ "delta", trendClass(c.Trend) }>{ trendGlyph(c.Trend) }{ c.Delta }</span>
+			}
+		</div>
+		if len(c.Spark) > 0 {
+			@Sparkline(c.Spark)
+		}
+	</div>
+}

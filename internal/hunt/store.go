@@ -1676,6 +1676,37 @@ func (s *Store) CountShortlist(ctx context.Context, user string, stages []string
 	return n
 }
 
+// CountScored returns the number of open hunt_jobs rows that have been LLM-scored
+// (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
+func (s *Store) CountScored(ctx context.Context) int {
+	var n int
+	_ = s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM hunt_jobs WHERE status = 'open' AND scored_at IS NOT NULL",
+	).Scan(&n)
+	return n
+}
+
+// CountBySource returns the open job count per source ordered descending by count.
+// Errors and empty results both return nil.
+func (s *Store) CountBySource(ctx context.Context) []SourceCount {
+	rows, err := s.pool.Query(ctx,
+		"SELECT source, count(*) FROM hunt_jobs WHERE status = 'open' GROUP BY source ORDER BY 2 DESC",
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var result []SourceCount
+	for rows.Next() {
+		var sc SourceCount
+		if err := rows.Scan(&sc.Source, &sc.N); err != nil {
+			continue
+		}
+		result = append(result, sc)
+	}
+	return result
+}
+
 func nullRaw(raw []byte) any {
 	if len(raw) == 0 {
 		return nil
