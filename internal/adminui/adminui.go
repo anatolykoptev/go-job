@@ -68,7 +68,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
-	jr := jobsResource(store, authority)
+	jr := jobsResource(store, authority, []byte(csrfKey))
 	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority)
 	resource.Register(p, jr)
 
@@ -93,6 +93,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser)))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/shortlist", a.Require(shortlistHandler(store, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
 	// /admin/shortlist (list + htmx rows) is handled by go-panel via resource.Register above.
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;
@@ -128,7 +129,10 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.Handle("POST "+adminBasePath+"/upwork/catalog/reorder", a.Require(upworkCatalogReorderHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/skill/reorder", a.Require(upworkSkillReorderHandler(a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/upwork/categories", a.Require(upworkCategoriesEditHandler(a, []byte(csrfKey))))
-	mux.Handle(adminBasePath+"/", p.Handler())
+	// Wrap the go-panel catch-all with withSessionCookieContext so the
+	// jobsLister closure can generate per-request CSRF tokens for the
+	// star-toggle inline forms without needing the *http.Request.
+	mux.Handle(adminBasePath+"/", withSessionCookieContext(a.SessionCookieName(), p.Handler()))
 	return mux, true
 }
 
