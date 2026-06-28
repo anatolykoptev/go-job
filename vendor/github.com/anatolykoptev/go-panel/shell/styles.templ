@@ -63,12 +63,35 @@ templ layoutStyles() {
 		.sidebar-toggle:hover{color:var(--text-primary)}
 		.sidebar-nav{flex:1;padding:.25rem 0;overflow-y:auto}
 		.sidebar-group{margin-top:.75rem}
-		.sidebar-group-label{padding:.5rem 1.25rem .25rem;font-family:var(--font-mono);font-size:.5625rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.1em}
+		/* button reset + existing visual styles; cursor:pointer for toggle affordance */
+		.sidebar-group-label{padding:.5rem 1.25rem .25rem;font-family:var(--font-mono);font-size:.5625rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.1em;display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;text-align:left;cursor:pointer}
+		/* ── Nav group collapse (click-to-collapse groups, pm7-borrowed transition) ──
+		   Caret rotate ported from pm7.css:4845-4848, re-namespaced.
+		   Collapse transition (max-height:0→1000px) ported from pm7.css:4849-4856, re-namespaced. */
+		.sidebar-group-label::after{content:"▾";font-size:.625rem;color:var(--text-muted);transition:transform .3s ease-in-out;flex-shrink:0}
+		.sidebar-group[data-collapsed="true"] .sidebar-group-label::after{transform:rotate(-90deg)}
+		.sidebar-group-items{overflow:hidden;transition:max-height .3s ease-in-out,visibility 0s;max-height:1000px;visibility:visible}
+		/* delay visibility:hidden until after max-height animation so links leave tab order only once fully hidden */
+		.sidebar-group[data-collapsed="true"] .sidebar-group-items{max-height:0;visibility:hidden;transition:max-height .3s ease-in-out,visibility 0s .3s}
+		/* hide caret in icon-rail mode (sidebar collapsed) */
+		.sidebar.collapsed .sidebar-group-label::after{display:none}
+		/* in icon-rail mode group-collapse is meaningless (labels hidden, pointer-events:none); force all groups expanded */
+		.sidebar.collapsed .sidebar-group-items{max-height:none;visibility:visible}
 		.sidebar-item{display:flex;align-items:center;gap:.625rem;padding:.4375rem 1.25rem;color:var(--text-secondary);text-decoration:none;font-size:.8125rem;font-weight:500;border-left:2px solid transparent;transition:color .15s,background-color .15s,border-color .15s;white-space:nowrap;cursor:pointer}
 		.sidebar-item:hover{color:var(--text-primary);background:var(--accent-glow)}
 		.sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-glow)}
 		.sidebar-icon{font-size:.9375rem;width:1.25rem;text-align:center;flex-shrink:0}
 		.sidebar-bottom{margin-top:auto;padding:.5rem 0;border-top:1px solid var(--border-subtle)}
+		/* ── Profile block (Phase 7) — sticky-bottom identity (BcryptTOTPAuth) ──
+		   Renders above Logout when ChromeState.Profile.Name is non-empty.
+		   Collapsed (icon-rail) mode hides name/role via label opacity rule above.
+		   Avatar circle: fixed 28px, accent blue, mono initial. */
+		.sidebar-profile{display:flex;align-items:center;gap:.625rem;padding:.5rem 1.25rem .25rem;min-width:0}
+		.sidebar-profile-avatar{flex-shrink:0;width:1.75rem;height:1.75rem;border-radius:50%;background:var(--accent-dim);color:#93c5fd;font-family:var(--font-mono);font-size:.6875rem;font-weight:700;display:flex;align-items:center;justify-content:center;text-transform:uppercase;line-height:1}
+		.sidebar-profile-info{min-width:0;flex:1}
+		.sidebar-profile-name{font-size:.8125rem;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+		.sidebar-profile-role{font-size:.6875rem;font-family:var(--font-mono);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.0625rem}
+		.sidebar.collapsed .sidebar-profile-info,.sidebar.collapsed .sidebar-profile{overflow:hidden;opacity:0;height:0;padding:0}
 		/* ── Sidebar collapse (icon-rail 220→56px) ────────────────────────────
 		   CSS ported from go-nerv internal/admin/templates/layout.html:67-86.
 		   cubic-bezier(.4,0,.2,1) = standard material ease-in-out. */
@@ -84,6 +107,19 @@ templ layoutStyles() {
 		   mono .625rem pill, border-radius 9999px, border+bg-elevated surface. */
 		.sidebar-count{margin-left:auto;font-family:var(--font-mono);font-size:.625rem;font-weight:600;padding:.0625rem .375rem;border-radius:9999px;border:1px solid var(--border);color:var(--text-secondary);background:var(--bg-elevated)}
 		.sidebar.collapsed .sidebar-count{display:none}
+		/* ── Collapsed-mode tooltips (.sidebar-tooltip) ───────────────────────
+		   Pure CSS, CSP-clean: no JS required. The span is always in the DOM
+		   but hidden by default; only revealed on hover when the sidebar is
+		   collapsed (icon-rail mode).
+		   position:fixed escapes .sidebar{overflow:hidden} — position:absolute
+		   is clipped at the 56px collapsed boundary and never renders on screen.
+		   CSS anchor positioning (anchor(right)/anchor(top)) positions each fixed
+		   tooltip relative to its sidebar-item anchor so it appears flush to the
+		   icon's right edge (Chrome 125+/Firefox 133+/Safari 18+).
+		   Each <a> carries inline anchor-name:--nav-<id>; each .sidebar-tooltip
+		   <span> carries position-anchor:--nav-<id> referencing it. */
+		.sidebar-tooltip{display:none}
+		.sidebar.collapsed .sidebar-item:hover .sidebar-tooltip{display:block;position:fixed;left:anchor(right);top:anchor(top);padding:.25rem .625rem;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:.75rem;font-weight:500;white-space:nowrap;pointer-events:none;z-index:100}
 		#content{padding:1.5rem 2rem 2rem}
 		.htmx-indicator{display:none}
 		.htmx-request .htmx-indicator{display:inline-block}
@@ -113,6 +149,20 @@ templ layoutStyles() {
 		.filter-chip.active{color:#fff;background:var(--accent);border-color:var(--accent)}
 		.pagination{display:flex;gap:.5rem;justify-content:center;margin-top:1.25rem}
 		.sidebar .pm7-sidebar-item--active{border-left-color:var(--accent);background:var(--accent-glow)}
+		/* ── Nav parent-item submenu (Phase 5, one level) ─────────────────────
+		   Caret mirrors Phase 4 group collapse pattern (re-namespaced).
+		   .sidebar-parent wraps parent navLink + .sidebar-children; default expanded.
+		   JS (sb-s cookie) controls collapse; active-child guard blocks collapse.
+		   Parent link click in JS toggles submenu (preventDefault navigation). */
+		.sidebar-parent > .sidebar-item::after{content:"▾";font-size:.625rem;color:var(--text-muted);transition:transform .3s ease-in-out;margin-left:auto;flex-shrink:0}
+		.sidebar-parent[data-collapsed="true"] > .sidebar-item::after{transform:rotate(-90deg)}
+		.sidebar-children{overflow:hidden;transition:max-height .3s ease-in-out,visibility 0s;max-height:1000px;visibility:visible}
+		.sidebar-parent[data-collapsed="true"] .sidebar-children{max-height:0;visibility:hidden;transition:max-height .3s ease-in-out,visibility 0s .3s}
+		.sidebar-children .sidebar-item{padding-left:2.5rem}
+		/* hide caret in icon-rail mode (sidebar collapsed) */
+		.sidebar.collapsed .sidebar-parent > .sidebar-item::after{display:none}
+		/* in icon-rail mode force all submenus expanded (mirrors Phase 4 group behaviour) */
+		.sidebar.collapsed .sidebar-children{max-height:none;visibility:visible}
 		/* ── Fit axis chips ───────────────────────────────────────────────── */
 		/* Namespaced fit-* to avoid collision with .badge-* (which carry semantic
 		   green/red for system success/error — orthogonal to job-fit). */
@@ -167,5 +217,19 @@ templ layoutStyles() {
 		.job-detail-meta{font-family:var(--font-mono);font-size:.6875rem;color:var(--text-muted);margin-bottom:1rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
 		.job-detail-meta a{color:var(--accent);text-decoration:none}
 		.job-detail-meta a:hover{opacity:.8}
+		/* ── Mobile off-canvas drawer (Phase 6, pm7-borrowed overlay) ─────────
+		   Overlay backdrop: pm7.css:4668-4681 (.pm7-sidebar-overlay), re-namespaced.
+		   Responsive transform: pm7.css:4731-4748 (.pm7-sidebar--static), inverted to
+		   max-width:767px and re-namespaced to .sidebar / .sidebar-overlay.
+		   Desktop (≥768px) unchanged — sidebar retains normal flow positioning. */
+		.sidebar-overlay{position:fixed;inset:0;background-color:rgba(0,0,0,.5);opacity:0;visibility:hidden;transition:opacity .3s ease-in-out;z-index:999}
+		.sidebar-overlay--visible{opacity:1;visibility:visible}
+		.sidebar-mobile-toggle{display:none;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.25rem;padding:.5rem .75rem;line-height:1;transition:color .15s}
+		.sidebar-mobile-toggle:hover{color:var(--text-primary)}
+		@media(max-width:767px){
+			.sidebar{position:fixed;top:0;left:0;height:100%;z-index:1000;transform:translateX(-100%);transition:transform .3s ease-in-out}
+			.sidebar--open{transform:translateX(0)}
+			.sidebar-mobile-toggle{display:block}
+		}
 	</style>
 }
