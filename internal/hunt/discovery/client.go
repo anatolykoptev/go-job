@@ -1,19 +1,25 @@
 // Package discovery provides the cross-service URL-discovery client that
-// delegates ATS board URL discovery to go-search's fused multi-source pipeline.
+// delegates ATS board URL discovery to go-search's raw_web_search pipeline.
 //
-// Design (ADR-002): go-job's local SearchDirect covers only DDG/Marginalia
-// which are unreliable from the Oracle DC ASN.  go-search's research tool adds
-// Brave-API + ox-browser-search + RRF fusion — the only DC-reliable sources
-// that index boards.greenhouse.io, jobs.lever.co, and jobs.ashbyhq.com.
-// Reproducing those legs in go-job would duplicate a paid-API budget and a
-// headless pool; delegating keeps them single-metered.
+// Design (ADR-002-r1): raw_web_search is scrapers-only (Brave-API + DDG +
+// ox-browser-search) — zero embedder involvement.  The previous delegation
+// to /api/tools/research (depth=fast) still hit the full research pipeline
+// including the ARM e5-large embedder; under concurrent ATS discovery load
+// the embedder saturates and discovery times out.  raw_web_search bypasses
+// the embedder entirely: live probe yields 42 greenhouse board URLs vs 2 from
+// the research depth=fast path.
 //
 // Transport: go-search exposes its tools via a REST bridge at /api/tools/{name}
 // (mcpserver.Config{RESTBridge:true}, defaultRESTPrefix="/api").  The REST
 // bridge uses an in-process InMemoryTransport to the mcp.Server — it bypasses
 // the StreamableHTTPHandler entirely and requires no Accept negotiation.
-// Response is plain JSON: {"content":[{"type":"text","text":"<json>"}],
-// "structured":{...sources[]},"is_error":false}.
+// Response envelope: {"content":[{"type":"text","text":"<inner-json>"}],"is_error":false}
+// Inner JSON (raw_web_search): {"query":"...","results":[{"url","title","description","score"}],"total":N}
+//
+// DDG redirect handling: raw results may include DDG-wrapped URLs
+// (duckduckgo.com/l/?uddg=<url-encoded-real-url>) and ad redirect URLs
+// (duckduckgo.com/y.js?...).  The client unwraps the "uddg" query param and
+// drops non-ATS-board URLs before returning results.
 //
 // The client returns []engine.SearxngResult so existing slug-regex callers in
 // ats.go are unchanged.  GO_SEARCH_URL empty → the client is nil → discovery
@@ -29,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -39,9 +46,19 @@ import (
 // several substeps in SearchGreenhouseJobs/Lever/Ashby.
 const defaultDiscoveryTimeout = 20 * time.Second
 
-// restAPIPath is the REST bridge path for calling the research tool.
+// restAPIPath is the REST bridge path for calling the raw_web_search tool.
 // go-mcpserver defaults RESTPrefix to "/api"; go-search does not override it.
-const restAPIPath = "/api/tools/research"
+const restAPIPath = "/api/tools/raw_web_search"
+
+// atsBoardHosts is the allowlist of ATS job-board hostnames.  raw_web_search
+// results are filtered to this set after DDG-redirect unwrapping.  URLs on
+// other hosts (ad redirects, tracking pixels, general web results) are dropped.
+var atsBoardHosts = map[string]bool{ //nolint:gochecknoglobals // package-level constant set, never mutated
+	"boards.greenhouse.io":     true,
+	"job-boards.greenhouse.io": true,
+	"jobs.lever.co":            true,
+	"jobs.ashbyhq.com":         true,
+}
 
 // Discoverer is the interface the ATS discovery seam depends on.
 // The go-search-backed client and the nil-fallback both satisfy it.
@@ -52,29 +69,31 @@ type Discoverer interface {
 	DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error)
 }
 
-// restSource is the JSON shape of one source entry returned by go-search's
-// REST bridge for the research tool.
-type restSource struct {
-	Index   int    `json:"index"`
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
+// rawSearchRequest is the body sent to POST /api/tools/raw_web_search.
+type rawSearchRequest struct {
+	Query string `json:"query"`
 }
 
-// restOutput is the "structured" field of the REST bridge response.
-type restOutput struct {
-	Sources []restSource `json:"sources"`
+// rawSearchResult is one hit from the raw_web_search tool.
+type rawSearchResult struct {
+	URL         string  `json:"url"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Score       float64 `json:"score"`
 }
 
-// restResponse is the envelope returned by POST /api/tools/research.
-// go-mcpserver REST bridge always returns:
+// rawSearchOutput is the inner JSON object carried in content[0].text for
+// the raw_web_search tool.
+type rawSearchOutput struct {
+	Results []rawSearchResult `json:"results"`
+	Total   int               `json:"total"`
+}
+
+// rawSearchEnvelope is the REST bridge envelope returned by POST /api/tools/raw_web_search.
+// Results are encoded as a JSON string in content[0].text (no "structured" field).
 //
-//	{"content":[{"type":"text","text":"<inner-json>"}],
-//	 "structured":{<restOutput>},"is_error":false}
-type restResponse struct {
-	// Structured carries the parsed research output including sources.
-	Structured restOutput `json:"structured"`
-	// Content carries the text blob for fallback parsing when Structured.Sources is empty.
+//	{"content":[{"type":"text","text":"<rawSearchOutput-json>"}],"is_error":false}
+type rawSearchEnvelope struct {
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -82,23 +101,8 @@ type restResponse struct {
 	IsError bool `json:"is_error"`
 }
 
-// restRequest is the body sent to POST /api/tools/research.
-type restRequest struct {
-	Query string `json:"query"`
-	// Depth=fast: snippets-only path in go-search, no page fetch, no LLM
-	// synthesis.  Sources[] populated immediately from search result snippets.
-	// Confirmed by live probe 2026-06-23.
-	Depth string `json:"depth"`
-	// BoardDiscovery instructs go-search to relax the per-domain dedup cap so
-	// many results from the same ATS board host (jobs.lever.co, boards.greenhouse.io,
-	// jobs.ashbyhq.com) survive into the result pool instead of being capped at 2.
-	// Added in go-search PR #65 (board_discovery JSON key, omitempty on their side).
-	// Inert / ignored by older go-search versions — backward-compatible.
-	BoardDiscovery bool `json:"board_discovery,omitempty"`
-}
-
-// Client calls go-search's research tool over the REST bridge (plain HTTP+JSON,
-// no MCP envelope, no SSE, no Accept negotiation).
+// Client calls go-search's raw_web_search tool over the REST bridge (plain
+// HTTP+JSON, no MCP envelope, no SSE, no Accept negotiation).
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -115,20 +119,18 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// DiscoverBoardURLs implements Discoverer by calling go-search's REST bridge
-// at POST /api/tools/research with depth=fast (snippets-only, no LLM).
-// Returns (nil, err) on any transport or decode failure — callers fall back.
+// DiscoverBoardURLs implements Discoverer by calling go-search's raw_web_search
+// REST bridge (scrapers-only, zero embedder).  Raw results are DDG-redirect
+// unwrapped and filtered to ATS board hosts before being returned.
+// Returns (nil, err) on any transport or decode failure — callers fall back to
+// local SearchDirect.
 func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error) {
 	// Per-call budget on top of the parent ctx so we never block longer than
 	// defaultDiscoveryTimeout regardless of the parent deadline.
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	body, err := json.Marshal(restRequest{
-		Query:          query,
-		Depth:          "fast",
-		BoardDiscovery: true,
-	})
+	body, err := json.Marshal(rawSearchRequest{Query: query})
 	if err != nil {
 		return nil, fmt.Errorf("discovery: marshal request: %w", err)
 	}
@@ -157,50 +159,107 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, fmt.Errorf("discovery: read body: %w", err)
 	}
 
-	var out restResponse
-	if err := json.Unmarshal(rawBody, &out); err != nil {
-		return nil, fmt.Errorf("discovery: decode response: %w", err)
+	var envelope rawSearchEnvelope
+	if err := json.Unmarshal(rawBody, &envelope); err != nil {
+		return nil, fmt.Errorf("discovery: decode envelope: %w", err)
 	}
 
-	if out.IsError {
+	if envelope.IsError {
 		return nil, errors.New("discovery: go-search reported is_error=true")
 	}
 
-	// Prefer structured.sources (already parsed); fall back to re-parsing
-	// content[0].text as a restOutput JSON blob.
-	sources := out.Structured.Sources
-	if len(sources) == 0 && len(out.Content) > 0 {
-		var fallback restOutput
-		if json.Unmarshal([]byte(out.Content[0].Text), &fallback) == nil {
-			sources = fallback.Sources
-		}
-	}
-
-	if len(sources) == 0 {
-		slog.Debug("discovery: go-search returned no sources", slog.String("query", query))
+	// raw_web_search encodes all results in content[0].text as a JSON string.
+	if len(envelope.Content) == 0 {
+		slog.Debug("discovery: go-search returned empty content", slog.String("query", query))
 		return nil, nil
 	}
 
-	results := make([]engine.SearxngResult, 0, len(sources))
-	for _, s := range sources {
-		if s.URL == "" {
+	var out rawSearchOutput
+	if err := json.Unmarshal([]byte(envelope.Content[0].Text), &out); err != nil {
+		return nil, fmt.Errorf("discovery: decode raw_web_search output: %w", err)
+	}
+
+	if len(out.Results) == 0 {
+		slog.Debug("discovery: go-search returned no results", slog.String("query", query))
+		return nil, nil
+	}
+
+	results := make([]engine.SearxngResult, 0, len(out.Results))
+	nonEmptyURLCount := 0
+
+	for _, r := range out.Results {
+		if r.URL == "" {
+			continue
+		}
+		nonEmptyURLCount++
+
+		// Unwrap DDG redirect (duckduckgo.com/l/?uddg=<url>); drop DDG ad URLs.
+		clean, ok := unwrapDDG(r.URL)
+		if !ok {
+			continue
+		}
+		// Filter to ATS board hosts — drops general web results and ad noise.
+		if !isATSBoardHost(clean) {
 			continue
 		}
 		results = append(results, engine.SearxngResult{
-			URL:     s.URL,
-			Title:   s.Title,
-			Content: s.Snippet,
+			URL:     clean,
+			Title:   r.Title,
+			Content: r.Description,
 		})
 	}
 
-	// If go-search returned sources but every source has an empty URL, treat it
-	// as a malformed response rather than a genuine "nothing found" answer.
-	// Returning an error lets the caller fall back to local scrapers, which is
-	// safer than short-circuiting on a response that may just be schema drift.
-	if len(results) == 0 && len(sources) > 0 {
-		return nil, fmt.Errorf("discovery: go-search returned %d source(s) but all had empty URL (malformed response)", len(sources))
+	// Schema-drift guard: if every result had an empty URL field, the response
+	// is malformed (raw_web_search always populates url).  Return an error so
+	// callers fall back to local scrapers rather than short-circuiting on a
+	// trusted-empty answer.
+	if nonEmptyURLCount == 0 {
+		return nil, fmt.Errorf("discovery: raw_web_search returned %d result(s) but all had empty URL (malformed response)", len(out.Results))
 	}
 
-	slog.Debug("discovery: go-search sources", slog.String("query", query), slog.Int("count", len(results)))
+	if len(results) == 0 {
+		slog.Debug("discovery: no ATS board URLs after filtering",
+			slog.String("query", query), slog.Int("raw", len(out.Results)))
+		return nil, nil
+	}
+
+	slog.Debug("discovery: raw_web_search results",
+		slog.String("query", query),
+		slog.Int("raw", len(out.Results)),
+		slog.Int("board", len(results)))
 	return results, nil
+}
+
+// unwrapDDG handles DDG redirect URLs of the form:
+//
+//	https://duckduckgo.com/l/?uddg=<url-encoded-real-url>&...
+//
+// Returns (rawURL, true) when the URL is not on the duckduckgo.com domain, or
+// when it is a valid DDG redirect (the decoded real URL).  Returns ("", false)
+// for DDG ad/tracking URLs that carry no real destination (e.g. y.js).
+func unwrapDDG(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		// Unparseable URL — pass through; the host filter will drop it.
+		return rawURL, true
+	}
+	if parsed.Hostname() != "duckduckgo.com" {
+		return rawURL, true
+	}
+	// DDG redirect: /l/ path with uddg param carries the real destination.
+	if uddg := parsed.Query().Get("uddg"); uddg != "" {
+		// Query().Get() already URL-decodes the param value.
+		return uddg, true
+	}
+	// Any other duckduckgo.com URL (ads, y.js click-tracking, etc.) — drop.
+	return "", false
+}
+
+// isATSBoardHost reports whether the given URL's host is in atsBoardHosts.
+func isATSBoardHost(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return atsBoardHosts[parsed.Hostname()]
 }
