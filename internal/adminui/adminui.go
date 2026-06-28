@@ -64,11 +64,11 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	// Shortlist (curated targets) is registered first so it appears first in the
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
 	// nav item — no manual p.AddNav call needed.
-	resource.Register(p, shortlistResource(store, adminUser, authority))
+	resource.Register(p, shortlistResource(store, adminUser, authority, []byte(csrfKey)))
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
-	jr := jobsResource(store, authority, []byte(csrfKey))
+	jr := jobsResource(store, adminUser, authority, []byte(csrfKey))
 	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority)
 	resource.Register(p, jr)
 
@@ -93,7 +93,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser)))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
-	mux.Handle("POST "+adminBasePath+"/jobs/{id}/shortlist", a.Require(shortlistHandler(store, a, []byte(csrfKey))))
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/shortlist", a.Require(shortlistHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
 	// /admin/shortlist (list + htmx rows) is handled by go-panel via resource.Register above.
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;

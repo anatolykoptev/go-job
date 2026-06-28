@@ -1676,19 +1676,72 @@ func (s *Store) CountShortlist(ctx context.Context, user string, stages []string
 	return n
 }
 
-// ToggleShortlist flips hunt_jobs.shortlisted for the given id using a single
-// atomic UPDATE … RETURNING. Returns the new shortlisted value after the flip.
-// The column is added by migration 010_hunt_jobs_shortlisted.sql (boolean NOT NULL DEFAULT false).
-func (s *Store) ToggleShortlist(ctx context.Context, id int64) (bool, error) {
-	var newVal bool
-	err := s.pool.QueryRow(ctx,
-		`UPDATE hunt_jobs SET shortlisted = NOT shortlisted WHERE id = $1 RETURNING shortlisted`,
-		id,
-	).Scan(&newVal)
+// ToggleShortlistStar toggles a job's membership in the shortlist by flipping
+// its hunt_ratings stage between StageSaved (★ on) and StageNew (★ off).
+//
+// Note preservation: existing note is always kept; this method never overwrites
+// or clears a user's note text. On INSERT (no prior row), note starts as NULL.
+//
+// Toggle semantics:
+//   - Current stage ∈ activeStages → set stage=StageNew → returns false (star off)
+//   - Current stage ∉ activeStages (or no row yet) → upsert stage=StageSaved → returns true (star on)
+//
+// Footgun: demoting a job at stage "applied" / "interview" to StageNew is
+// intentional per spec, but operators should be aware it removes the row from
+// /admin/shortlist and resets the stage to "new".
+func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user string, activeStages []string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("hunt: toggle shortlist id=%d: %w", id, err)
+		return false, fmt.Errorf("hunt: toggle star: begin tx: %w", err)
 	}
-	return newVal, nil
+	var txErr error
+	defer func() {
+		if txErr != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	// Read current stage (if any) — FOR UPDATE to lock the row.
+	var curStage *string
+	_ = tx.QueryRow(ctx,
+		`SELECT stage FROM hunt_ratings
+		  WHERE entry_kind = 'job' AND entry_id = $1 AND user_name = $2
+		  FOR UPDATE`,
+		entryID, user,
+	).Scan(&curStage)
+
+	isStarred := false
+	if curStage != nil {
+		for _, s := range activeStages {
+			if s == *curStage {
+				isStarred = true
+				break
+			}
+		}
+	}
+
+	newStage := StageSaved
+	if isStarred {
+		newStage = StageNew
+	}
+
+	// Upsert: note is NOT in SET clause → preserved on conflict.
+	// On INSERT (no prior row), note starts as NULL (field is nullable).
+	if _, txErr = tx.Exec(ctx, `
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, rated_at, updated_at)
+		VALUES ('job', $1, $2, $3, NOW(), NOW())
+		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
+			SET stage      = EXCLUDED.stage,
+			    updated_at = NOW()`,
+		entryID, user, newStage,
+	); txErr != nil {
+		return false, fmt.Errorf("hunt: toggle star id=%d: upsert: %w", entryID, txErr)
+	}
+
+	if txErr = tx.Commit(ctx); txErr != nil {
+		return false, fmt.Errorf("hunt: toggle star id=%d: commit: %w", entryID, txErr)
+	}
+	return !isStarred, nil
 }
 
 // CountScored returns the number of open hunt_jobs rows that have been LLM-scored
