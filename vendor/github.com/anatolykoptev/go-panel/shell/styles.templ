@@ -232,5 +232,30 @@ templ layoutStyles() {
 			.sidebar--open{transform:translateX(0)}
 			.sidebar-mobile-toggle{display:block}
 		}
+		/* ── Stat cards (StatCardView) ─────────────────────────────────────────
+		   Ported VERBATIM from oxpulse-admin internal/admin/templates/layout.html:58-62.
+		   .stat-grid is a layout helper; individual .stat-card tiles are rendered
+		   by components.StatCardView. */
+		.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem}
+		.stat-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem;transition:border-color .15s}
+		.stat-card:hover{border-color:var(--accent)}
+		.stat-label{font-family:var(--font-mono);font-size:.6875rem;font-weight:500;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.375rem}
+		.stat-value{font-size:1.75rem;font-weight:700;color:var(--accent);font-family:var(--font-mono)}
+		/* ── Delta badges (GA4-style period-over-period) ───────────────────────
+		   Ported from oxpulse-admin layout.html:81-86; remapped to go-panel tokens.
+		   .delta-down uses var(--red-dim) instead of rgba(239,68,68,.15) so it
+		   tracks the existing --red-dim:#7f1d1d token rather than a hardcoded value. */
+		.delta{display:inline-block;margin-left:.4rem;font-family:var(--font-mono);font-size:.625rem;font-weight:600;padding:.125rem .4rem;border-radius:999px;vertical-align:middle}
+		.delta-up{color:var(--green);background:var(--green-dim)}
+		.delta-down{color:var(--red);background:var(--red-dim)}
+		.delta-new{color:var(--accent);background:var(--accent-glow)}
+		.delta-flat{color:var(--text-muted);background:var(--border-subtle)}
+		/* ── Sparkline (components.Sparkline) ──────────────────────────────────
+		   Ported VERBATIM from oxpulse-admin internal/admin/templates/layout.html:131-133.
+		   Server-rendered inline SVG; no JS, no chart library, CSP/ТСПУ-safe.
+		   Stroke colours use existing tokens (var(--accent)/var(--border)). */
+		.sparkline{vertical-align:middle;display:inline-block}
+		.sparkline-line{stroke:var(--accent);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}
+		.sparkline-zero{stroke:var(--border);stroke-width:1;stroke-dasharray:2,2}
 	</style>
 }
