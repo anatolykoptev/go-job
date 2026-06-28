@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -82,25 +80,13 @@ func fetchHimalayas(ctx context.Context, query string, limit int) ([]engine.Free
 
 	apiURL := himalayasAPIURL + "?" + params.Encode()
 
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, apiURL, nil)
+	// Route through the hardened proxy fetcher (DirectFirst Chrome-TLS -> Webshare
+	// proxy pool -> oxbrowser/byparr CF-solver). himalayas.app sits behind Cloudflare
+	// which fingerprints the TLS ClientHello (JA3); the stdlib http.Client has a
+	// bot-signature JA3 even with a spoofed Chrome User-Agent, reliably returning 403.
+	body, err := engine.FetchProxyBody(fetchCtx, apiURL, nil)
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", engine.UserAgentChrome)
-
-	resp, err := engine.Cfg.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("himalayas request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("himalayas returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("himalayas fetch failed: %w", err)
 	}
 
 	return parseHimalayasResponse(body)
