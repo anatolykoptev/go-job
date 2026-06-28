@@ -79,6 +79,8 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	resource.Register(p, oversizeResource(pool))
 
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
+	p.AddNav(shell.NavItem{Group: grpHunt})
+	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
@@ -88,6 +90,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
 	// GET /admin/jobs/{id} (natural 3-segment URL) is now served by go-panel.
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser)))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))

@@ -1,0 +1,21 @@
+package components
+
+// Grid renders a responsive stat-card grid layout.
+//
+// Usage:
+//
+//	components.Grid(
+//	    components.StatCardView(card1),
+//	    components.StatCardView(card2),
+//	)
+//
+// Wraps each widget in order inside a single <div class="stat-grid">.
+// The .stat-grid CSS is defined in shell/styles.templ (added in Phase 1).
+// Consumer usage pattern: p.RenderPage(w, r, "Dashboard", "dashboard", components.Grid(cards...))
+templ Grid(widgets ...templ.Component) {
+	<div class="stat-grid">
+		for _, w := range widgets {
+			@w
+		}
+	</div>
+}

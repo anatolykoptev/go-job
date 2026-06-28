@@ -237,3 +237,9 @@ type Rating struct {
 	RatedAt   time.Time `json:"rated_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// SourceCount is a per-source open job count returned by Store.CountBySource.
+type SourceCount struct {
+	Source string
+	N      int
+}

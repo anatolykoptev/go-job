@@ -648,3 +648,103 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, rows, "rating entered by a different user must not appear in the owner's shortlist")
 }
+
+// ── CountScored + CountBySource (Phase 4a dashboard) ─────────────────────────
+
+// TestStore_CountScored_OnlyOpenAndScored seeds open-scored, open-unscored,
+// and closed-scored rows. Assert CountScored returns only the open-AND-scored count.
+//
+// RED-on-revert: removing "AND scored_at IS NOT NULL" from CountScored's query
+// makes the result include unscored rows and the assertion fails.
+func TestStore_CountScored_OnlyOpenAndScored(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	mustUpsert := func(url, source, status string) int64 {
+		t.Helper()
+		j := hunt.Job{
+			DedupHash: hunt.DedupHash(url),
+			Title:     "Job " + url,
+			URL:       url,
+			Source:    source,
+			Status:    status,
+		}
+		id, _, err := s.UpsertJob(ctx, j)
+		require.NoError(t, err)
+		return id
+	}
+	score := func(id int64) {
+		t.Helper()
+		require.NoError(t, s.SetJobScore(ctx, id, hunt.ScoreResult{
+			FitBand:     "moderate",
+			SuccessBand: "MODERATE",
+			OverUnder:   "well_matched",
+			ScoredAt:    time.Now(),
+		}))
+	}
+
+	// open + scored -> counted
+	idA := mustUpsert("https://example.com/jobs/a", "linkedin", hunt.StatusOpen)
+	score(idA)
+	// open + unscored -> NOT counted
+	_ = mustUpsert("https://example.com/jobs/b", "indeed", hunt.StatusOpen)
+	// closed + scored -> NOT counted (status!='open')
+	idC := mustUpsert("https://example.com/jobs/c", "linkedin", hunt.StatusOpen)
+	score(idC)
+	_, err := pool.Exec(ctx, "UPDATE hunt_jobs SET status='closed' WHERE id=$1", idC)
+	require.NoError(t, err)
+
+	got := s.CountScored(ctx)
+	assert.Equal(t, 1, got, "CountScored must count only open rows with scored_at IS NOT NULL")
+}
+
+// TestStore_CountBySource_DescendingOrder seeds open jobs from multiple sources
+// and asserts CountBySource returns each source with the correct count, ordered
+// descending by count.
+//
+// RED-on-revert: removing ORDER BY 2 DESC breaks the ordering assertion.
+// RED-on-revert: removing WHERE status='open' includes closed rows and breaks counts.
+func TestStore_CountBySource_DescendingOrder(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	seed := func(urlSuffix, source, status string) {
+		t.Helper()
+		j := hunt.Job{
+			DedupHash: hunt.DedupHash("https://example.com/src-test/" + urlSuffix),
+			Title:     "Job " + urlSuffix,
+			URL:       "https://example.com/src-test/" + urlSuffix,
+			Source:    source,
+			Status:    status,
+		}
+		_, _, err := s.UpsertJob(ctx, j)
+		require.NoError(t, err)
+	}
+
+	// linkedin: 3 open, indeed: 2 open, himalayas: 1 open 1 closed
+	seed("l1", "linkedin", hunt.StatusOpen)
+	seed("l2", "linkedin", hunt.StatusOpen)
+	seed("l3", "linkedin", hunt.StatusOpen)
+	seed("i1", "indeed", hunt.StatusOpen)
+	seed("i2", "indeed", hunt.StatusOpen)
+	seed("h1", "himalayas", hunt.StatusOpen)
+	seed("h2", "himalayas", hunt.StatusOpen)
+	// Mark h2 closed so only 1 himalayas open
+	_, err := pool.Exec(ctx, "UPDATE hunt_jobs SET status='closed' WHERE url='https://example.com/src-test/h2'")
+	require.NoError(t, err)
+
+	rows := s.CountBySource(ctx)
+	require.Len(t, rows, 3, "expect 3 distinct sources with open jobs")
+	assert.Equal(t, "linkedin", rows[0].Source, "first source must be linkedin (count=3)")
+	assert.Equal(t, 3, rows[0].N)
+	assert.Equal(t, "indeed", rows[1].Source, "second source must be indeed (count=2)")
+	assert.Equal(t, 2, rows[1].N)
+	assert.Equal(t, "himalayas", rows[2].Source, "third source must be himalayas (count=1)")
+	assert.Equal(t, 1, rows[2].N)
+}
