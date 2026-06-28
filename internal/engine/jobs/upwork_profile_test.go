@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 )
 
 // TestFormatUpworkPasteBlocks_TitleAndOverview verifies that title and overview
@@ -160,9 +162,7 @@ func TestInsertUpworkSkillSQL_Structure(t *testing.T) {
 // Red-on-revert: break getUpworkProfileSQL COALESCE or error discrimination → test fails.
 func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping DB integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 
 	ctx := context.Background()
 	db, err := ConnectResumeDB(ctx, dsn)
@@ -234,9 +234,7 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 // Requires DATABASE_URL; skips otherwise.
 func TestInsertDeleteUpworkSkill_RoundTrip(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping DB integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 
 	ctx := context.Background()
 	db, err := ConnectResumeDB(ctx, dsn)

@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 )
 
 // --- Helper unit tests (no DB) ---
@@ -204,21 +204,7 @@ func TestFitness_F3_SingleSourceCubeKey(t *testing.T) {
 func testResumeDB(t *testing.T) *ResumeDB {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set — skipping DB-backed test")
-	}
-
-	// Parse the DB name and refuse to run against a non-test database.
-	cfg, err := pgxpool.ParseConfig(dbURL)
-	if err != nil {
-		t.Fatalf("testResumeDB: parse DATABASE_URL: %v", err)
-	}
-	dbName := cfg.ConnConfig.Database
-	if !strings.HasSuffix(dbName, "_test") {
-		t.Skipf("testResumeDB: database %q does not end in \"_test\" — "+
-			"refusing to run destructive tests against a non-test DB. "+
-			"Set DATABASE_URL to a *_test database.", dbName)
-	}
+	dbtest.RequireTestDB(t, dbURL)
 
 	ctx := context.Background()
 	db, connErr := ConnectResumeDB(ctx, dbURL)

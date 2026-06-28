@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -13,13 +14,11 @@ import (
 )
 
 // openTestPool returns a pool for integration tests.
-// Skips if DATABASE_URL is unset.
+// Skips if DATABASE_URL is unset; fatals if it points at a non-_test database.
 func openTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping store integration tests")
-	}
+	dbtest.RequireTestDB(t, dsn)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)

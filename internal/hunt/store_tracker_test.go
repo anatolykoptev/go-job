@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -12,9 +13,7 @@ import (
 func setupTestStore(t *testing.T) *hunt.Store {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set; skipping postgres tests")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect postgres: %v", err)

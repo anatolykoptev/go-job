@@ -6,17 +6,17 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/go-panel/resource"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestHuntResources_Smoke runs each hunt resource Lister against DATABASE_URL
 // (read-only SELECT) and asserts the SQL builds and every row's cell count
-// matches the spec columns. Skips when DATABASE_URL is unset (CI-safe).
+// matches the spec columns. Skips when DATABASE_URL is unset (CI-safe);
+// fatals if it points at a non-_test database.
 func TestHuntResources_Smoke(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping hunt resources integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)

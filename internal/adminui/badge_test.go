@@ -8,17 +8,17 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-panel/shell"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// openBadgeTestStore opens a hunt.Store against DATABASE_URL, or skips the test.
+// openBadgeTestStore opens a hunt.Store against DATABASE_URL, or skips the test;
+// fatals if DATABASE_URL points at a non-_test database.
 func openBadgeTestStore(t *testing.T) *hunt.Store {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping badge integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
