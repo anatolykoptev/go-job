@@ -3,6 +3,7 @@ package huntworker
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/stretchr/testify/assert"
@@ -110,6 +111,39 @@ func TestNewWorker_NilStore_ReturnsNil(t *testing.T) {
 // The set below is NOT exhaustive — it is sampled representative examples of
 // the class of company-specific strings that must be absent.  When adding a new
 // test query, prefer generic role/skill language, not employer names.
+// TestPerPlatformTimeout_ExceedsRawWebSearchServerCap pins that the ENCLOSING
+// per-platform deadline (the platCtx created in runCycle) exceeds go-search's
+// raw_web_search server-side ToolTimeout (90s).
+//
+// Why this test is needed (distinct from TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap
+// in the discovery package, which only checks the LEAF const):
+// context.WithTimeout honours the EARLIER deadline.  If platCtx has 45s and the
+// leaf adds a 100s child timeout, the effective deadline is min(45s, 100s) = 45s —
+// below the server cap.  go-search's 90s ToolTimeout fires AFTER go-job has already
+// given up, so the Degraded=true response never arrives and the
+// source="degraded-fallback" metric stays permanently near-zero in the huntworker.
+//
+// RED-on-revert: restoring perPlatformTimeout = 45 * time.Second makes this test
+// fail immediately (45s ≤ 90s).
+func TestPerPlatformTimeout_ExceedsRawWebSearchServerCap(t *testing.T) {
+	// rawWebSearchServerCap is go-search's server-side ToolTimeout — the deadline
+	// within which go-search must respond before it returns a 200+Degraded=true.
+	// Any enclosing go-job deadline at or below this value means Degraded never
+	// arrives and the degraded-fallback metric is unreachable.
+	const rawWebSearchServerCap = 90 * time.Second
+	if perPlatformTimeout <= rawWebSearchServerCap {
+		t.Fatalf(
+			"perPlatformTimeout (%v) must exceed go-search raw_web_search server ToolTimeout (%v): "+
+				"context.WithTimeout honours the EARLIER deadline, so the enclosing platCtx clamps "+
+				"discovery to min(perPlatformTimeout, defaultDiscoveryTimeout); "+
+				"if perPlatformTimeout ≤ server cap, Degraded responses never arrive before go-job "+
+				"times out and source=\"degraded-fallback\" stays permanently near-zero; "+
+				"increase perPlatformTimeout above %v",
+			perPlatformTimeout, rawWebSearchServerCap, rawWebSearchServerCap,
+		)
+	}
+}
+
 func TestNoCompanyTargetingInDefaults(t *testing.T) {
 	// Representative company names / ATS slugs that must never appear in defaults.
 	// These are PUBLIC well-known entities — listing them here is NOT a personal

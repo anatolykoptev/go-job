@@ -331,9 +331,9 @@ func FormatMetrics() string {
 	}
 	// Discovery source counters pre-touched so rate()-floor alerts see 0 when
 	// HUNT_INGEST_ENABLED is off (or go-search is healthy but idle) — same class
-	// as per-platform outcome above.  Both validDiscoverySources and
-	// validDiscoveryPlatforms are bounded enums (2 × 3 = 6 series).
-	for _, src := range []string{"go-search", "local-fallback"} {
+	// as per-platform outcome above.  validDiscoverySources and
+	// validDiscoveryPlatforms are bounded enums (3 × 3 = 9 series).
+	for _, src := range []string{"go-search", "local-fallback", "degraded-fallback"} {
 		keys = append(keys, MetricHuntDiscoverySource+"{source="+src+"}")
 	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
@@ -609,11 +609,25 @@ var validDiscoveryPlatforms = map[string]bool{
 	DiscoveryPlatformAshby:      true,
 }
 
+// ErrDiscoveryDegraded is returned (wrapped) by discovery.Client.DiscoverBoardURLs
+// when raw_web_search responds with Degraded=true — meaning the result set is
+// unreliable (all broad-web legs failed or the server-side context deadline fired).
+// Callers use errors.Is(err, engine.ErrDiscoveryDegraded) to distinguish this
+// class from a transport/connection error so they can emit a distinct metric label.
+//
+// Defined here (in engine, not in hunt/discovery) so the jobs package can import
+// it without creating a cycle: jobs → discovery → engine → jobs.
+var ErrDiscoveryDegraded = errors.New("discovery: raw_web_search degraded")
+
 // validDiscoverySources bounds the source label for hunt_discovery_source_total.
-// "go-search" = fused multi-source path (Brave-API + ox-browser + DDG via go-search).
-// "local-fallback" = degraded DDG/Marginalia-only path (go-job's own SearchDirect).
+// "go-search"        = fused multi-source path (Brave-API + ox-browser + DDG via go-search).
+// "local-fallback"   = degraded DDG/Marginalia-only path (go-job's own SearchDirect);
+//                      triggered by a transport/connection error from go-search.
+// "degraded-fallback"= go-search returned HTTP 200 + Degraded=true (partial fan-out
+//                      failure); also falls back to local but is observably distinct
+//                      from a transport error and separable in dashboards/alerts.
 var validDiscoverySources = map[string]bool{
-	"go-search": true, "local-fallback": true,
+	"go-search": true, "local-fallback": true, "degraded-fallback": true,
 }
 
 // IncrHuntDiscoveryURLs adds n to gojob_hunt_discovery_urls_total{platform=<p>}.
@@ -629,7 +643,8 @@ func IncrHuntDiscoveryURLs(platform string, n int) {
 }
 
 // IncrHuntDiscoverySource bumps gojob_hunt_discovery_source_total{source=<s>}.
-// source ∈ {"go-search","local-fallback"}. Unrecognised values are dropped.
+// source ∈ {"go-search","local-fallback","degraded-fallback"}. Unrecognised values
+// are dropped silently (allowlist guard prevents cardinality explosion).
 func IncrHuntDiscoverySource(source string) {
 	if !validDiscoverySources[source] {
 		return
