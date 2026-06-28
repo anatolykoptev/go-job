@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -116,6 +117,73 @@ func TestDiscoverJobURLs_NoDiscoverer_UsesLocalOnly(t *testing.T) {
 	assert.NotPanics(t, func() {
 		_ = discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
 	})
+}
+
+// TestDiscoverJobURLs_DegradedFallback_DistinctMetric verifies that when
+// DiscoverBoardURLs returns an error wrapping engine.ErrDiscoveryDegraded,
+// discoverJobURLs increments source="degraded-fallback" and does NOT touch
+// source="local-fallback" — keeping the two failure classes separable in metrics.
+//
+// Proof of RED-on-revert: if the errors.Is branch is collapsed back to a single
+// IncrHuntDiscoverySource("local-fallback") call (pre-change behaviour), the
+// degraded-fallback delta becomes 0 and local-fallback delta becomes 1 — both
+// assertions below invert.
+func TestDiscoverJobURLs_DegradedFallback_DistinctMetric(t *testing.T) {
+	resetATSDiscoverer(t)
+	// Return an error that wraps ErrDiscoveryDegraded, mirroring what
+	// discovery.Client returns on a 200+Degraded=true response.
+	degradedErr := fmt.Errorf("discovery: raw_web_search degraded (ctx_deadline): %w", engine.ErrDiscoveryDegraded)
+	ATSDiscoverer = &fakeDiscoverer{err: degradedErr}
+
+	before := engine.GetMetrics()
+	_ = discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
+	after := engine.GetMetrics()
+
+	degradedKey := engine.MetricHuntDiscoverySource + "{source=degraded-fallback}"
+	localKey := engine.MetricHuntDiscoverySource + "{source=local-fallback}"
+
+	degradedDelta := after[degradedKey] - before[degradedKey]
+	localDelta := after[localKey] - before[localKey]
+
+	assert.Equal(t, int64(1), degradedDelta,
+		"expected degraded-fallback counter +1; got %d — "+
+			"reverting the errors.Is branch would set this to 0 (label goes to local-fallback instead)",
+		degradedDelta)
+	assert.Equal(t, int64(0), localDelta,
+		"expected local-fallback counter unchanged on Degraded error; got +%d — "+
+			"reverting the errors.Is branch would set this to 1",
+		localDelta)
+}
+
+// TestDiscoverJobURLs_TransportError_LocalFallback_Metric guards the pre-existing
+// transport-error → source="local-fallback" path against regression after the
+// Degraded branch was added.
+//
+// Proof of RED-on-revert: if errors.Is is removed and all errors route to
+// "degraded-fallback", local-fallback delta becomes 0 and degraded-fallback becomes 1.
+func TestDiscoverJobURLs_TransportError_LocalFallback_Metric(t *testing.T) {
+	resetATSDiscoverer(t)
+	// Plain transport error — does NOT wrap ErrDiscoveryDegraded.
+	ATSDiscoverer = &fakeDiscoverer{err: errors.New("connection refused")}
+
+	before := engine.GetMetrics()
+	_ = discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
+	after := engine.GetMetrics()
+
+	degradedKey := engine.MetricHuntDiscoverySource + "{source=degraded-fallback}"
+	localKey := engine.MetricHuntDiscoverySource + "{source=local-fallback}"
+
+	degradedDelta := after[degradedKey] - before[degradedKey]
+	localDelta := after[localKey] - before[localKey]
+
+	assert.Equal(t, int64(0), degradedDelta,
+		"expected degraded-fallback counter unchanged on transport error; got +%d — "+
+			"removing the errors.Is guard would send all errors here",
+		degradedDelta)
+	assert.Equal(t, int64(1), localDelta,
+		"expected local-fallback counter +1 on transport error; got %d — "+
+			"removing the errors.Is guard would send this to degraded-fallback instead",
+		localDelta)
 }
 
 // TestDeduplicateByURL verifies URL-keyed deduplication preserves first occurrence.

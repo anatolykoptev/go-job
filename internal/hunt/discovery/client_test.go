@@ -3,12 +3,14 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -317,6 +319,10 @@ func TestDiscovery_Degraded_FallsBack(t *testing.T) {
 	require.Error(t, err, "degraded response must return an error (triggers local fallback)")
 	assert.Contains(t, err.Error(), "degraded", "error must mention 'degraded'")
 	assert.Contains(t, err.Error(), "all sources blocked", "error must propagate degrade_reason")
+	// errors.Is must resolve so callers (jobs.discoverJobURLs) can emit the
+	// distinct source="degraded-fallback" metric label.
+	assert.True(t, errors.Is(err, engine.ErrDiscoveryDegraded),
+		"error must wrap engine.ErrDiscoveryDegraded so callers can errors.Is-detect it; got: %v", err)
 }
 
 // TestDiscovery_CleanZero_NoFallback asserts that when raw_web_search returns
@@ -390,4 +396,21 @@ func TestDiscovery_TransportError_FallsBack(t *testing.T) {
 
 	assert.Nil(t, results, "transport error must return nil results")
 	assert.Error(t, err, "transport error must return an error (triggers local fallback)")
+}
+
+// TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap pins that
+// defaultDiscoveryTimeout exceeds go-search's raw_web_search server-side
+// ToolTimeout (90s, the go-mcpserver global default; raw_web_search has no
+// per-tool override).  If go-job's ctx fires first, go-search never returns its
+// 200+Degraded=true signal and the degraded-fallback metric never increments.
+//
+// RED-on-revert: restoring defaultDiscoveryTimeout = 20*time.Second causes this
+// test to fail because 20s < 90s.
+func TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap(t *testing.T) {
+	const rawWebSearchServerCap = 90 * time.Second
+	if defaultDiscoveryTimeout <= rawWebSearchServerCap {
+		t.Fatalf("defaultDiscoveryTimeout (%v) must exceed go-search raw_web_search server ToolTimeout (%v) "+
+			"so Degraded responses arrive before go-job gives up; increase defaultDiscoveryTimeout",
+			defaultDiscoveryTimeout, rawWebSearchServerCap)
+	}
 }

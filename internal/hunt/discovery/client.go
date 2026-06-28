@@ -42,9 +42,19 @@ import (
 )
 
 // defaultDiscoveryTimeout is the per-call deadline for go-search round-trips.
-// Must stay well under the ToolTimeout default (90s) — discovery is one of
-// several substeps in SearchGreenhouseJobs/Lever/Ashby.
-const defaultDiscoveryTimeout = 20 * time.Second
+//
+// This value MUST exceed go-search's raw_web_search server-side ToolTimeout (90s,
+// the go-mcpserver global default; raw_web_search has no per-tool override).  If
+// go-job's context expires before go-search finishes, the HTTP call fails with a
+// transport error and discoverJobURLs falls back with source="local-fallback",
+// never seeing the 200+Degraded=true response that raw_web_search would return on
+// partial fan-out failure.  Keeping go-job's budget above 90s lets the Degraded
+// signal arrive so callers can emit the distinct source="degraded-fallback" label
+// (separable from transport errors in dashboards/alerts).
+//
+// Current value: 90s server cap + 10s margin = 100s.
+// The http.Client.Timeout is set to defaultDiscoveryTimeout + 2s as a safety net.
+const defaultDiscoveryTimeout = 100 * time.Second
 
 // restAPIPath is the REST bridge path for calling the raw_web_search tool.
 // go-mcpserver defaults RESTPrefix to "/api"; go-search does not override it.
@@ -198,7 +208,9 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		slog.Warn("discovery: raw_web_search degraded, falling back to local",
 			slog.String("query", query),
 			slog.String("degrade_reason", out.DegradeReason))
-		return nil, fmt.Errorf("discovery: raw_web_search degraded: %s", out.DegradeReason)
+		// Wrap engine.ErrDiscoveryDegraded so callers can errors.Is-detect this
+		// class and emit source="degraded-fallback" rather than "local-fallback".
+		return nil, fmt.Errorf("discovery: raw_web_search degraded (%s): %w", out.DegradeReason, engine.ErrDiscoveryDegraded)
 	}
 
 	// Clean zero: Degraded=false with no results means the sources answered and

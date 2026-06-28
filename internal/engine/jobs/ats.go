@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -104,23 +105,39 @@ var (
 //   - clean (no-error) empty answer → trusted empty, local scrapers NOT consulted.
 //     Callers that chain multiple discovery queries (e.g. lever dual-query) depend
 //     on reliable empty-on-miss semantics to know when to try a secondary query.
-//   - transport / decode error → fall through to local scrapers (the degraded floor).
+//   - Degraded=true (engine.ErrDiscoveryDegraded wrapped in err) → partial fan-out
+//     failure on go-search's side; fall through to local scrapers, observable as
+//     gojob_hunt_discovery_source_total{source="degraded-fallback"}.
+//   - transport / connection error → fall through to local scrapers, observable as
+//     gojob_hunt_discovery_source_total{source="local-fallback"}.
 //
-// When ATSDiscoverer is nil, or after a go-search transport error, the local path
-// (go-engine DIRECT + additive SearXNG) runs as the degraded floor.  A degraded
-// run is observable via gojob_hunt_discovery_source_total{source="local-fallback"}
-// rising; outcome=empty on ATS sources is the expected downstream signal rather
-// than a permanent-floor guarantee.
+// "degraded-fallback" and "local-fallback" are kept DISTINCT so operators can
+// tell apart "go-search returned a partial answer" (degraded-fallback, go-search
+// was reachable but its scrapers failed) from "go-search was unreachable"
+// (local-fallback, network/timeout before any response).
+//
+// When ATSDiscoverer is nil the local path runs unconditionally (no metric bump).
 func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
 	if ATSDiscoverer != nil {
 		results, err := ATSDiscoverer.DiscoverBoardURLs(ctx, query)
 		if err != nil {
-			// go-search unavailable — fall through to local scrapers.
-			slog.Warn("discover: go-search unavailable, falling back to local",
-				slog.String("query", query),
-				slog.Any("error", err),
-			)
-			engine.IncrHuntDiscoverySource("local-fallback")
+			if errors.Is(err, engine.ErrDiscoveryDegraded) {
+				// go-search returned 200+Degraded=true: partial source failure.
+				// Fall through to local scrapers with a distinct metric label so
+				// dashboards can separate this from a transport error.
+				slog.Warn("discover: go-search degraded, falling back to local",
+					slog.String("query", query),
+					slog.Any("error", err),
+				)
+				engine.IncrHuntDiscoverySource("degraded-fallback")
+			} else {
+				// Transport/connection/decode error — go-search was unreachable.
+				slog.Warn("discover: go-search unavailable, falling back to local",
+					slog.String("query", query),
+					slog.Any("error", err),
+				)
+				engine.IncrHuntDiscoverySource("local-fallback")
+			}
 		} else {
 			// go-search returned a definitive answer (empty or not): trust it and
 			// skip local scrapers.  Local fallback runs only on transport errors so

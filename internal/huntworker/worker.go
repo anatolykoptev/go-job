@@ -59,7 +59,25 @@ type unscoredJobStore interface {
 const defaultIngestQueries = "software engineer,backend engineer,golang developer"
 
 // perPlatformTimeout caps one ATS search call (slug discovery + API fetch).
-const perPlatformTimeout = 45 * time.Second
+//
+// This value MUST exceed go-search's raw_web_search server-side ToolTimeout (90s,
+// the go-mcpserver global default).  If platCtx fires before go-search finishes,
+// the HTTP call fails with a transport error and the Degraded=true signal never
+// arrives — discoverJobURLs falls back with source="local-fallback" instead of the
+// distinct source="degraded-fallback", making the two failure classes
+// indistinguishable in dashboards and alerts.
+//
+// Budget breakdown:
+//   - discovery fan-out: parallel DISCOVERY_QUERY_VARIANTS goroutines each call
+//     DiscoverBoardURLs(platCtx, …), which adds its own defaultDiscoveryTimeout
+//     (100s) child deadline.  Parallel fan-out → dominated by slowest variant ≈ 100s.
+//   - ATS board API fetch: typically 2–5 s per slug; 20 s headroom is sufficient.
+//
+// Current value: 90s server cap + 30s margin = 120s.
+// The enclosing deadline must stay above the server cap; see also
+// TestPerPlatformTimeout_ExceedsRawWebSearchServerCap and
+// discovery.TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap.
+const perPlatformTimeout = 120 * time.Second
 
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
