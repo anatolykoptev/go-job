@@ -195,6 +195,10 @@ func FreelanceJobToHunt(f engine.FreelanceJob) hunt.Freelance {
 }
 
 // SecurityProgramToHunt converts a SecurityProgram to a hunt.Security.
+// Note: federacy programs do not carry bounty-amount fields in the BTD data source
+// (only an offers_awards flag); their MaxBounty is always 0 after parsing. They
+// surface in the DB and via the backfill summary card but never fire isUrgentSecurity.
+// This is an upstream-data limitation, not a defect.
 // Min/MaxBounty are parsed from human-readable strings (e.g. "$50,000").
 // Archived=true (Sherlock) maps to StatusArchived.
 // Raw is populated with the serialized source struct for audit trail.

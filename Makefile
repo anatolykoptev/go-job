@@ -21,11 +21,11 @@ lint:
 clean:
 	rm -f $(BINARY)
 
-# preflight — the merge gate. Scoped to the two package trees that carry
+# preflight — the merge gate. Scoped to the five package trees that carry
 # DB round-trip tests; -p 1 caps parallelism for the 4-core ARM box.
 # With DATABASE_URL set (e.g. CI ephemeral postgres), the previously
 # t.Skip'd DB round-trip tests run live. Without it they skip cleanly.
-# go vet runs on the same two trees — not ./... (avoids the full workspace
+# go vet runs on the same five trees — not ./... (avoids the full workspace
 # on a prod box).
 preflight:
 	@echo "==> fitness: no inline math.Round*100 clone in resume_edit.go (use parseDollarsToCents)"
@@ -38,7 +38,7 @@ preflight:
 	@! grep -nE '\.(gd-copy-btn|li-pre|li-code-wrap|cc-muted|cc-green|cc-amber|cc-red)\{' internal/adminui/linkedin.go internal/adminui/upwork.go || (echo "FAIL: copy-block/char-chip CSS rule regrew in linkedin.go/upwork.go -- it must live only in partials.go sharedCSS" && exit 1)
 	@grep -qE '\.gd-copy-btn\{' internal/adminui/partials.go || (echo "FAIL: copy-block CSS missing from partials.go sharedCSS -- the single source of truth was removed" && exit 1)
 	@echo "OK: copy-block/char-chip CSS is single-sourced in partials.go"
-	@echo "==> go vet ./internal/adminui/... ./internal/engine/jobs/..."
-	GOWORK=off go vet ./internal/adminui/... ./internal/engine/jobs/...
-	@echo "==> go test -p 1 ./internal/adminui/... ./internal/engine/jobs/..."
-	GOWORK=off go test -p 1 ./internal/adminui/... ./internal/engine/jobs/...
+	@echo "==> go vet ./internal/adminui/... ./internal/engine/jobs/... ./internal/huntworker/... ./internal/hunt/... ./internal/jobserver/..."
+	GOWORK=off go vet ./internal/adminui/... ./internal/engine/jobs/... ./internal/huntworker/... ./internal/hunt/... ./internal/jobserver/...
+	@echo "==> go test -p 1 ./internal/adminui/... ./internal/engine/jobs/... ./internal/huntworker/... ./internal/hunt/... ./internal/jobserver/..."
+	GOWORK=off go test -p 1 ./internal/adminui/... ./internal/engine/jobs/... ./internal/huntworker/... ./internal/hunt/... ./internal/jobserver/...
