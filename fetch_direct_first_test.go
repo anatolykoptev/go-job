@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	twitterpkg "github.com/anatolykoptev/go-twitter"
 )
 
 // TestResolveFetchMode validates resolveFetchMode against all documented and
@@ -52,5 +53,24 @@ func TestEngineConfigFetchDirectFirstField(t *testing.T) {
 	c.FetchDirectFirst = false
 	if c.FetchDirectFirst {
 		t.Fatal("FetchDirectFirst field should be false after reset")
+	}
+}
+
+// TestTwitterClientConfigSilentFallbackFields ensures the ClientConfig fields
+// used for silent-fallback mode when go-social is configured are accessible and
+// assignable (compile-time coverage for the fix in initEngine).
+func TestTwitterClientConfigSilentFallbackFields(t *testing.T) {
+	// Verify that the two fields the fix uses exist on twitter.ClientConfig
+	// and carry the correct zero values (OpenAccountCount=0 suppresses guest
+	// bootstrap; DisableGuestFallback=true blocks the guest-token fallback path).
+	cfg := twitterpkg.ClientConfig{
+		OpenAccountCount:     0,
+		DisableGuestFallback: true,
+	}
+	if cfg.OpenAccountCount != 0 {
+		t.Fatalf("OpenAccountCount: got %d, want 0", cfg.OpenAccountCount)
+	}
+	if !cfg.DisableGuestFallback {
+		t.Fatal("DisableGuestFallback: got false, want true")
 	}
 }
