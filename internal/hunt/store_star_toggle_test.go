@@ -8,13 +8,14 @@ import (
 )
 
 // insertStarTestJob inserts a bare-minimum hunt_jobs row for star toggle tests.
+// Uses a unique URL per test name to avoid dedup-hash collisions across subtests.
 func insertStarTestJob(t *testing.T, s *hunt.Store) int64 {
 	t.Helper()
 	j := hunt.Job{
-		DedupHash: hunt.DedupHash("https://star-test.example/job"),
+		DedupHash: hunt.DedupHash("https://star-test.example/job/" + t.Name()),
 		Title:     "Star Test Role",
 		Company:   "StarCo",
-		URL:       "https://star-test.example/job",
+		URL:       "https://star-test.example/job/" + t.Name(),
 		Source:    "star_test",
 		Status:    "open",
 	}
@@ -32,8 +33,8 @@ func insertStarTestJob(t *testing.T, s *hunt.Store) int64 {
 	return id
 }
 
-// activeStages mirrors shortlistActiveStages from adminui.
-var activeStages = []string{
+// testActiveStages mirrors adminui.shortlistActiveStages.
+var testActiveStages = []string{
 	hunt.StageInteresting,
 	hunt.StageSaved,
 	hunt.StageClaimed,
@@ -42,177 +43,209 @@ var activeStages = []string{
 	hunt.StageOffer,
 }
 
+// testSoftStages mirrors hunt.StarSoftStages (the demotable set).
+var testSoftStages = hunt.StarSoftStages
+
 const starTestUser = "test_admin"
 
-// TestStore_ToggleShortlistStar_StarOn verifies that toggling a job with no
-// prior rating (or StageNew) creates a hunt_ratings row with StageSaved and
-// returns starred=true.
-//
-// Red-on-revert: removing ToggleShortlistStar → compile error. Reverting the
-// stage-to-saved logic → stage=="new" and assertion fails.
-func TestStore_ToggleShortlistStar_StarOn(t *testing.T) {
+// toggleStar is a test helper that calls ToggleShortlistStar with the standard
+// testActiveStages + testSoftStages used across all star tests.
+func toggleStar(t *testing.T, s *hunt.Store, id int64) bool {
+	t.Helper()
+	starred, err := s.ToggleShortlistStar(context.Background(), id, starTestUser, testActiveStages, testSoftStages)
+	if err != nil {
+		t.Fatalf("ToggleShortlistStar: %v", err)
+	}
+	return starred
+}
+
+// readStage reads the hunt_ratings.stage for a job.
+func readStage(t *testing.T, s *hunt.Store, id int64) string {
+	t.Helper()
+	var stage string
+	if err := s.Pool().QueryRow(context.Background(),
+		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
+		id, starTestUser,
+	).Scan(&stage); err != nil {
+		t.Fatalf("readStage: %v", err)
+	}
+	return stage
+}
+
+func migratedStore(t *testing.T) (*hunt.Store, func()) {
+	t.Helper()
 	pool := openTestPool(t)
-	ctx := context.Background()
 	s := hunt.NewStore(pool)
-	if err := s.Migrate(ctx); err != nil {
+	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	return s, pool.Close
+}
+
+// TestStore_ToggleShortlistStar_StarOn_NoRow verifies that toggling a job with
+// no prior rating creates a StageSaved row and returns starred=true.
+//
+// Red-on-revert: removing ToggleShortlistStar → compile error.
+// Reverting star-on path → stage=="new" or starred=false.
+func TestStore_ToggleShortlistStar_StarOn_NoRow(t *testing.T) {
+	s, close := migratedStore(t)
+	defer close()
 
 	id := insertStarTestJob(t, s)
 
-	// No prior rating — star ON.
-	starred, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages)
-	if err != nil {
-		t.Fatalf("ToggleShortlistStar (star on): %v", err)
-	}
+	starred := toggleStar(t, s, id)
 	if !starred {
-		t.Errorf("ToggleShortlistStar (star on): want starred=true, got false")
+		t.Errorf("star on (no row): want starred=true, got false")
 	}
-
-	// Verify DB: stage must be StageSaved.
-	var stage string
-	if err := pool.QueryRow(ctx,
-		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
-	).Scan(&stage); err != nil {
-		t.Fatalf("read stage after star on: %v", err)
-	}
-	if stage != hunt.StageSaved {
-		t.Errorf("stage after star on: want %q, got %q", hunt.StageSaved, stage)
+	if got := readStage(t, s, id); got != hunt.StageSaved {
+		t.Errorf("stage after star on (no row): want %q, got %q", hunt.StageSaved, got)
 	}
 }
 
-// TestStore_ToggleShortlistStar_StarOff verifies that toggling a job whose
-// stage is in activeStages demotes it to StageNew and returns starred=false.
+// TestStore_ToggleShortlistStar_StarOn_FromNew verifies that toggling a job at
+// StageNew (not in activeStages) stars it (sets StageSaved).
 //
-// Red-on-revert: reverting the stage-to-new logic → stage remains "saved" and assertion fails.
-func TestStore_ToggleShortlistStar_StarOff(t *testing.T) {
-	pool := openTestPool(t)
-	ctx := context.Background()
-	s := hunt.NewStore(pool)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+// Red-on-revert: reverting star-on path → stage stays "new".
+func TestStore_ToggleShortlistStar_StarOn_FromNew(t *testing.T) {
+	s, close := migratedStore(t)
+	defer close()
 
 	id := insertStarTestJob(t, s)
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageNew, ""); err != nil {
+		t.Fatalf("Rate (seed new): %v", err)
+	}
 
-	// Seed an active rating (StageSaved = starred).
-	if err := s.Rate(ctx, "job", id, starTestUser, hunt.StageSaved, "keep this note"); err != nil {
+	starred := toggleStar(t, s, id)
+	if !starred {
+		t.Errorf("star on from new: want starred=true, got false")
+	}
+	if got := readStage(t, s, id); got != hunt.StageSaved {
+		t.Errorf("stage after star on from new: want %q, got %q", hunt.StageSaved, got)
+	}
+}
+
+// TestStore_ToggleShortlistStar_StarOn_NotePreserved verifies that star-on from
+// StageDiscarded (not in activeStages) preserves an existing note.
+//
+// Red-on-revert: including note in ON CONFLICT SET clause → note wiped.
+func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
+	s, close := migratedStore(t)
+	defer close()
+
+	id := insertStarTestJob(t, s)
+	const wantNote = "do not delete this note"
+
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, wantNote); err != nil {
+		t.Fatalf("Rate (seed discarded with note): %v", err)
+	}
+
+	starred := toggleStar(t, s, id)
+	if !starred {
+		t.Errorf("star on from discarded: want starred=true, got false")
+	}
+
+	var note *string
+	if err := s.Pool().QueryRow(context.Background(),
+		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
+		id, starTestUser,
+	).Scan(&note); err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if note == nil || *note != wantNote {
+		t.Errorf("note after star on: want %q, got %v", wantNote, note)
+	}
+}
+
+// TestStore_ToggleShortlistStar_SoftDemote tests star-off from each of the
+// three soft (demotable) stages → should demote to StageNew, return starred=false.
+//
+// Red-on-revert: removing the soft-stage branch → stage unchanged, starred=true.
+func TestStore_ToggleShortlistStar_SoftDemote(t *testing.T) {
+	softCases := []string{hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed}
+	for _, initialStage := range softCases {
+		initialStage := initialStage
+		t.Run(initialStage, func(t *testing.T) {
+			s, close := migratedStore(t)
+			defer close()
+
+			id := insertStarTestJob(t, s)
+			if err := s.Rate(context.Background(), "job", id, starTestUser, initialStage, "my note"); err != nil {
+				t.Fatalf("Rate (seed %s): %v", initialStage, err)
+			}
+
+			starred := toggleStar(t, s, id)
+			if starred {
+				t.Errorf("star off from %s: want starred=false, got true", initialStage)
+			}
+			if got := readStage(t, s, id); got != hunt.StageNew {
+				t.Errorf("stage after star off from %s: want %q, got %q", initialStage, hunt.StageNew, got)
+			}
+		})
+	}
+}
+
+// TestStore_ToggleShortlistStar_SoftDemote_NotePreserved verifies that note
+// survives a soft-stage star-off.
+//
+// Red-on-revert: including note in SET clause → note wiped on demotion.
+func TestStore_ToggleShortlistStar_SoftDemote_NotePreserved(t *testing.T) {
+	s, close := migratedStore(t)
+	defer close()
+
+	id := insertStarTestJob(t, s)
+	const wantNote = "important note keep on demotion"
+
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageSaved, wantNote); err != nil {
 		t.Fatalf("Rate (seed): %v", err)
 	}
 
-	// Star OFF.
-	starred, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages)
-	if err != nil {
-		t.Fatalf("ToggleShortlistStar (star off): %v", err)
-	}
+	starred := toggleStar(t, s, id)
 	if starred {
-		t.Errorf("ToggleShortlistStar (star off): want starred=false, got true")
+		t.Errorf("star off from saved: want starred=false, got true")
 	}
 
-	// Verify DB: stage must be StageNew.
-	var stage string
-	if err := pool.QueryRow(ctx,
-		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
+	var note *string
+	if err := s.Pool().QueryRow(context.Background(),
+		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
 		id, starTestUser,
-	).Scan(&stage); err != nil {
-		t.Fatalf("read stage after star off: %v", err)
+	).Scan(&note); err != nil {
+		t.Fatalf("read note: %v", err)
 	}
-	if stage != hunt.StageNew {
-		t.Errorf("stage after star off: want %q, got %q", hunt.StageNew, stage)
+	if note == nil || *note != wantNote {
+		t.Errorf("note after soft demotion: want %q, got %v", wantNote, note)
 	}
 }
 
-// TestStore_ToggleShortlistStar_NotePreserved verifies that note text is never
-// wiped when toggling star on or off.
+// TestStore_ToggleShortlistStar_AdvancedStageNoOp tests that a star click on a
+// job at an advanced pipeline stage (applied/interview/offer) is a NO-OP:
+// stage must be unchanged and starred=true must be returned.
 //
-// Red-on-revert: using SET note='' in the upsert ON CONFLICT clause → note="".
-func TestStore_ToggleShortlistStar_NotePreserved(t *testing.T) {
-	pool := openTestPool(t)
-	ctx := context.Background()
-	s := hunt.NewStore(pool)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	id := insertStarTestJob(t, s)
-	const wantNote = "important note do not delete"
-
-	// Seed a rating with a note.
-	if err := s.Rate(ctx, "job", id, starTestUser, hunt.StageSaved, wantNote); err != nil {
-		t.Fatalf("Rate (seed): %v", err)
-	}
-
-	// Star OFF — note must survive.
-	if _, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages); err != nil {
-		t.Fatalf("ToggleShortlistStar (star off): %v", err)
-	}
-	var noteAfterOff *string
-	if err := pool.QueryRow(ctx,
-		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
-	).Scan(&noteAfterOff); err != nil {
-		t.Fatalf("read note after star off: %v", err)
-	}
-	if noteAfterOff == nil || *noteAfterOff != wantNote {
-		t.Errorf("note after star off: want %q, got %v", wantNote, noteAfterOff)
-	}
-
-	// Star ON again — note must still survive.
-	if _, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages); err != nil {
-		t.Fatalf("ToggleShortlistStar (star on again): %v", err)
-	}
-	var noteAfterOn *string
-	if err := pool.QueryRow(ctx,
-		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
-	).Scan(&noteAfterOn); err != nil {
-		t.Fatalf("read note after star on: %v", err)
-	}
-	if noteAfterOn == nil || *noteAfterOn != wantNote {
-		t.Errorf("note after star on: want %q, got %v", wantNote, noteAfterOn)
-	}
-}
-
-// TestStore_ToggleShortlistStar_AppliedStageIsStarred verifies that a job at
-// StageApplied (an active stage) is treated as starred, and toggling it
-// demotes to StageNew.
+// This is the key operator-safety requirement: a star click can NEVER lose a
+// pipeline stage.
 //
-// Red-on-revert: removing StageApplied from activeStages → job appears unstarred,
-// toggle goes the wrong direction.
-func TestStore_ToggleShortlistStar_AppliedStageIsStarred(t *testing.T) {
-	pool := openTestPool(t)
-	ctx := context.Background()
-	s := hunt.NewStore(pool)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+// Red-on-revert: removing the advanced-stage guard → applied demotes to "new",
+// starred=false → assertion fails on both stage and starred.
+func TestStore_ToggleShortlistStar_AdvancedStageNoOp(t *testing.T) {
+	advancedCases := []string{hunt.StageApplied, hunt.StageInterview, hunt.StageOffer}
+	for _, initialStage := range advancedCases {
+		initialStage := initialStage
+		t.Run(initialStage, func(t *testing.T) {
+			s, close := migratedStore(t)
+			defer close()
 
-	id := insertStarTestJob(t, s)
+			id := insertStarTestJob(t, s)
+			if err := s.Rate(context.Background(), "job", id, starTestUser, initialStage, "pipeline note"); err != nil {
+				t.Fatalf("Rate (seed %s): %v", initialStage, err)
+			}
 
-	// Seed at StageApplied (pipeline stage — definitely in shortlist).
-	if err := s.Rate(ctx, "job", id, starTestUser, hunt.StageApplied, ""); err != nil {
-		t.Fatalf("Rate (seed applied): %v", err)
-	}
-
-	// Toggle: applied is active → should turn star OFF (demote to new).
-	starred, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages)
-	if err != nil {
-		t.Fatalf("ToggleShortlistStar (applied): %v", err)
-	}
-	if starred {
-		t.Errorf("ToggleShortlistStar on applied stage: want starred=false (demoted to new), got true")
-	}
-
-	var stage string
-	if err := pool.QueryRow(ctx,
-		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
-	).Scan(&stage); err != nil {
-		t.Fatalf("read stage after toggle on applied: %v", err)
-	}
-	if stage != hunt.StageNew {
-		t.Errorf("stage after toggle on applied: want %q (new), got %q", hunt.StageNew, stage)
+			starred := toggleStar(t, s, id)
+			if !starred {
+				t.Errorf("advanced stage %s no-op: want starred=true (unchanged), got false", initialStage)
+			}
+			if got := readStage(t, s, id); got != initialStage {
+				t.Errorf("advanced stage %s no-op: stage must be UNCHANGED, got %q", initialStage, got)
+			}
+		})
 	}
 }
 
@@ -223,37 +256,20 @@ func TestStore_ToggleShortlistStar_AppliedStageIsStarred(t *testing.T) {
 // Red-on-revert: reverting the activeStages membership check → discarded job
 // treated as starred, toggle goes wrong direction.
 func TestStore_ToggleShortlistStar_StarStateReflectsActiveStages(t *testing.T) {
-	pool := openTestPool(t)
-	ctx := context.Background()
-	s := hunt.NewStore(pool)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	s, close := migratedStore(t)
+	defer close()
 
 	id := insertStarTestJob(t, s)
 
-	// Seed at StageDiscarded — NOT in activeStages.
-	if err := s.Rate(ctx, "job", id, starTestUser, hunt.StageDiscarded, ""); err != nil {
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, ""); err != nil {
 		t.Fatalf("Rate (seed discarded): %v", err)
 	}
 
-	// Toggle: discarded is not active → should turn star ON (set saved).
-	starred, err := s.ToggleShortlistStar(ctx, id, starTestUser, activeStages)
-	if err != nil {
-		t.Fatalf("ToggleShortlistStar (discarded): %v", err)
-	}
+	starred := toggleStar(t, s, id)
 	if !starred {
-		t.Errorf("ToggleShortlistStar on discarded stage: want starred=true, got false")
+		t.Errorf("star on from discarded: want starred=true, got false")
 	}
-
-	var stage string
-	if err := pool.QueryRow(ctx,
-		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
-	).Scan(&stage); err != nil {
-		t.Fatalf("read stage after toggle on discarded: %v", err)
-	}
-	if stage != hunt.StageSaved {
-		t.Errorf("stage after toggle on discarded: want %q, got %q", hunt.StageSaved, stage)
+	if got := readStage(t, s, id); got != hunt.StageSaved {
+		t.Errorf("stage after toggle on discarded: want %q, got %q", hunt.StageSaved, got)
 	}
 }
