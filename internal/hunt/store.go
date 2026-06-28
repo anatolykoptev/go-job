@@ -104,6 +104,11 @@ func (s *Store) SetEnricher(e BountyEnricher) { s.enricher = e }
 // SetNotifier wires a Telegram notifier that fires on OutcomeCreated ingest events.
 func (s *Store) SetNotifier(n Notifier) { s.notifier = n }
 
+// Notifier returns the wired Telegram notifier (may be nil).
+// Used by the persist layer (opportunity_search.go) to apply the
+// backfill-guard notify policy outside of the upsert internals.
+func (s *Store) Notifier() Notifier { return s.notifier }
+
 // NotifyJobIfOpen fires NotifyNewJob on the wired notifier for an open job.
 // It is a no-op if the notifier is nil or the job is not open/empty-status.
 // Called by the MCP path (persistJobListings) when HUNT_NOTIFY_ON_SEARCH=true.
@@ -181,11 +186,6 @@ func (s *Store) UpsertBounty(ctx context.Context, b Bounty) (id int64, outcome O
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert bounty: %w", err)
 	}
 	if created {
-		// Only notify for open bounties — prevents Telegram blast on first deploy when
-		// historical claimed/completed/archived bounties are ingested for the first time.
-		if s.notifier != nil && status == StatusOpen {
-			s.notifier.NotifyNewBounty(b)
-		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -581,10 +581,6 @@ func (s *Store) UpsertFreelance(ctx context.Context, f Freelance) (id int64, out
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert freelance: %w", err)
 	}
 	if created {
-		// Only notify for open freelance projects — non-open status means archived listing.
-		if s.notifier != nil && status == StatusOpen {
-			s.notifier.NotifyNewFreelance(f)
-		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
@@ -665,10 +661,6 @@ func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, out
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert security: %w", err)
 	}
 	if created {
-		// Only notify for open security programs — non-open status means archived program.
-		if s.notifier != nil && status == StatusOpen {
-			s.notifier.NotifyNewSecurity(sec)
-		}
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil

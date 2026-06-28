@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	securityCacheKey = "security_programs"
+	securityCacheKey  = "security_programs"
 	securityBodyLimit = 10 * 1024 * 1024 // 10 MB
 )
 
@@ -39,6 +39,11 @@ var securitySources = []struct {
 		url:      "https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data/yeswehack_data.json",
 		platform: "yeswehack",
 		parser:   parseYesWeHackData,
+	},
+	{
+		url:      "https://raw.githubusercontent.com/arkadiyt/bounty-targets-data/main/data/federacy_data.json",
+		platform: "federacy",
+		parser:   parseFederacyData,
 	},
 }
 

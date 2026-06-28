@@ -76,9 +76,10 @@ func TestUpsert_DoesNotNotifyMergedBounty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, notifier.bounties, "notifier must NOT fire for merged bounty")
 }
-
-// TestUpsert_NotifiesOpenBounty verifies that open bounties still trigger the notifier.
-func TestUpsert_NotifiesOpenBounty(t *testing.T) {
+// TestUpsert_NeverNotifiesBounty verifies that after the notify-policy relocation,
+// UpsertBounty does NOT call NotifyNewBounty directly even for open bounties.
+// Notify is the persist layer responsibility now (persistBounties in opportunity_search.go).
+func TestUpsert_NeverNotifiesBounty(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 	s := hunt.NewStore(pool)
@@ -98,9 +99,10 @@ func TestUpsert_NotifiesOpenBounty(t *testing.T) {
 	_, outcome, err := s.UpsertBounty(ctx, open)
 	require.NoError(t, err)
 	assert.Equal(t, hunt.OutcomeCreated, outcome)
-	assert.Len(t, notifier.bounties, 1, "notifier MUST fire for open bounty")
+	// Notify relocated to persist layer - UpsertBounty must NOT call NotifyNewBounty.
+	assert.Empty(t, notifier.bounties,
+		"UpsertBounty must NOT notify (notify relocated to persistBounties)")
 }
-
 // TestUpsert_DoesNotNotifyClosedJob verifies job notifier is also gated on open status.
 func TestUpsert_DoesNotNotifyClosedJob(t *testing.T) {
 	pool := openTestPool(t)

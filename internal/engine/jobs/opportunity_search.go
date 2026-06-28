@@ -41,7 +41,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, bountyToOpportunity(b))
 			}
 
-			persistBounties(ctx, bounties)
+			PersistBounties(ctx, bounties)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -62,7 +62,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, securityToOpportunity(s))
 			}
 
-			persistSecurity(ctx, programs)
+			PersistSecurity(ctx, programs)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -83,7 +83,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, freelanceToOpportunity(f))
 			}
 
-			persistFreelanceJobs(ctx, freelanceJobs)
+			PersistFreelanceJobs(ctx, freelanceJobs)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -231,47 +231,133 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 	return all
 }
 
-// persistBounties writes BountyListings into the hunt store (best-effort, non-blocking on nil store).
-func persistBounties(ctx context.Context, bounties []engine.BountyListing) {
+// persistBounties writes BountyListings into the hunt store and applies the
+// backfill-guard notify policy (best-effort, non-blocking on nil store).
+// Notify logic lives here (not in UpsertBounty) so both the scheduled and
+// on-demand paths share one policy, and the initial seed does not flood.
+//nolint:dupl
+func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Bounty
+	var fetched, notified, suppressed int
+	fetched = len(bounties)
 	for _, b := range bounties {
-		_, outcome, err := store.UpsertBounty(ctx, BountyListingToHunt(b))
+		hb := BountyListingToHunt(b)
+		_, outcome, err := store.UpsertBounty(ctx, hb)
 		engine.IncrHuntIngest(hunt.KindBounty, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert bounty failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hb.Status == hunt.StatusOpen {
+			created = append(created, hb)
 		}
 	}
+	applyBountyNotifyPolicy(store.Notifier(), created)
+	if len(created) > notifyBackfillThreshold() {
+		suppressed = len(created)
+	} else {
+		for _, b := range created {
+			if isUrgentBounty(b) {
+				notified++
+			} else {
+				suppressed++
+			}
+		}
+	}
+	slog.Info("hunt: persist bounties",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }
 
-// persistSecurity writes SecurityPrograms into the hunt store.
-func persistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
+// persistSecurity writes SecurityPrograms into the hunt store and applies the
+// backfill-guard notify policy.
+//nolint:dupl
+func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Security
+	var fetched, notified, suppressed int
+	fetched = len(programs)
 	for _, sp := range programs {
-		_, outcome, err := store.UpsertSecurity(ctx, SecurityProgramToHunt(sp))
+		hs := SecurityProgramToHunt(sp)
+		_, outcome, err := store.UpsertSecurity(ctx, hs)
 		engine.IncrHuntIngest(hunt.KindSecurity, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert security failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hs.Status == hunt.StatusOpen {
+			created = append(created, hs)
 		}
 	}
+	applySecurityNotifyPolicy(store.Notifier(), created)
+	if len(created) > notifyBackfillThreshold() {
+		suppressed = len(created)
+	} else {
+		for _, s := range created {
+			if isUrgentSecurity(s) {
+				notified++
+			} else {
+				suppressed++
+			}
+		}
+	}
+	slog.Info("hunt: persist security",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }
 
-// persistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store.
-func persistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
+// persistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store
+// and applies the backfill-guard notify policy.
+//nolint:dupl
+func PersistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Freelance
+	var fetched, notified, suppressed int
+	fetched = len(freelanceJobs)
 	for _, f := range freelanceJobs {
-		_, outcome, err := store.UpsertFreelance(ctx, FreelanceJobToHunt(f))
+		hf := FreelanceJobToHunt(f)
+		_, outcome, err := store.UpsertFreelance(ctx, hf)
 		engine.IncrHuntIngest(hunt.KindFreelance, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert freelance failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hf.Status == hunt.StatusOpen {
+			created = append(created, hf)
 		}
 	}
+	applyFreelanceNotifyPolicy(store.Notifier(), created)
+	if len(created) > notifyBackfillThreshold() {
+		suppressed = len(created)
+	} else {
+		for _, f := range created {
+			if isUrgentFreelance(f) {
+				notified++
+			} else {
+				suppressed++
+			}
+		}
+	}
+	slog.Info("hunt: persist freelance",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }
