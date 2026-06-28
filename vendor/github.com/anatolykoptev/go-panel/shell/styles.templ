@@ -56,7 +56,7 @@ templ layoutStyles() {
 		a:hover{opacity:.85}
 		.app{display:flex;min-height:100vh}
 		.main{flex:1;overflow-x:auto;background:var(--bg-base)}
-		.sidebar{width:220px;background:var(--bg-deep);border-right:1px solid var(--border-subtle);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+		.sidebar{width:220px;background:var(--bg-deep);border-right:1px solid var(--border-subtle);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;position:sticky;top:0;height:100vh;align-self:flex-start}
 		.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;min-height:56px}
 		.sidebar-header h1{font-family:var(--font-mono);font-size:.8125rem;font-weight:600;color:var(--accent);letter-spacing:.02em;white-space:nowrap;overflow:hidden}
 		.sidebar-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.125rem;padding:.25rem;line-height:1;flex-shrink:0;transition:color .15s}
