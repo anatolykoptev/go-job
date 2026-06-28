@@ -6,6 +6,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -197,4 +198,16 @@ func ExtractHTMLText(ctx context.Context, htmlBody string, pageURL string) (stri
 		txt = txt[:cfg.MaxContentChars] + "..."
 	}
 	return txt, nil
+}
+
+// FetchProxyBody fetches the raw response body through the hardened proxy fetcher
+// (DirectFirst Chrome-TLS → Webshare proxy pool → oxbrowser/byparr CF-solver).
+// Use for bot-protected JSON/raw APIs where FetchRawContent's direct-only path
+// is insufficient. Returns raw bytes on success, error on permanent failure.
+// This is the canonical seam for any future CF-blocked source.
+func FetchProxyBody(ctx context.Context, rawURL string, extra map[string]string) ([]byte, error) {
+	if fetcherProxy == nil {
+		return nil, errors.New("proxy fetcher not initialized")
+	}
+	return fetcherProxy.FetchBodyWithHeaders(ctx, rawURL, extra)
 }
