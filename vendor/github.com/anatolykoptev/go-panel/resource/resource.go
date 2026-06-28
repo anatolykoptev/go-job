@@ -135,6 +135,18 @@ type Resource struct {
 	Scope  tenant.Scope // city_slug scope; empty = global
 	Perms  Perms
 
+	// RequiredRole gates every route of this resource behind the named role:
+	// only a session whose role equals RequiredRole (or the "owner" super-role)
+	// may reach the list, detail, and form routes; everyone else gets 403.
+	// Empty (default) = no role gate: any authenticated operator may access,
+	// preserving the foundational behaviour.
+	//
+	// A non-empty RequiredRole requires the configured authenticator to
+	// implement RoleAuthenticator; Register panics at startup otherwise
+	// (fail-closed). The same role drives nav-hiding via HasRole so the sidebar
+	// does not surface a resource the operator cannot open.
+	RequiredRole string
+
 	// Lister fetches one page of rows. The kit hands it a safe ListQuery;
 	// the app owns the row type + scan. go-panel never assumes a schema.
 	Lister func(ctx context.Context, q ListQuery) (rows []Row, total int, err error)
@@ -151,6 +163,18 @@ type Resource struct {
 	// Writer enables create/edit forms. Nil = read-only (Phase 1 behaviour, default).
 	// When non-nil, CSRFKey must be set in Config (panic at Register if missing or < 32 bytes — fail-closed).
 	Writer *Writer
+
+	// Visible is a cosmetic predicate that controls nav-link visibility.
+	// nil = always visible (zero-value safe, default behaviour).
+	// When non-nil, the resource layer evaluates it before passing the nav list
+	// to Layout; items whose Visible returns false are dropped from the sidebar.
+	//
+	// SECURITY: Visible is COSMETIC ONLY — it hides the nav link but does NOT
+	// gate the route. An operator who knows the URL can still reach the resource.
+	// Use RequiredRole to gate the route itself. Visible is the right tool for
+	// feature flags, tenant-tier restrictions, or any cosmetic hide that does
+	// NOT need to enforce access control.
+	Visible func(ctx context.Context) bool
 
 	// Badge is an optional closure returning a short live count or label displayed
 	// as a pill next to the nav item (e.g. "12", "new"). Called once per page render —
@@ -170,18 +194,48 @@ type Panel struct {
 		LoginHandler() http.Handler
 		LogoutHandler() http.Handler
 	}
-	resolver tenant.Resolver
-	basePath string
-	nav      []shell.NavItem
-	title    string
-	csrfKey  []byte
-	locales  locale.Set // configured i18n locales; zero value = single-locale
+	resolver   tenant.Resolver
+	basePath   string
+	nav        []shell.NavItem
+	title      string
+	csrfKey    []byte
+	locales    locale.Set        // configured i18n locales; zero value = single-locale
+	profileCfg shell.ProfileConfig // static defaults for the sidebar profile block
+}
+
+// SetProfile configures the static defaults for the sidebar profile block.
+// For multi-user consumers (BcryptTOTPAuth), Name and Role are overlaid
+// per-request from the live session (auth.SessionFrom), so typically only
+// SettingsURL and LogoutURL need to be set here. For single-user consumers
+// (HMACAuth), leaving ProfileConfig zero renders the bare Logout footer
+// (backward-compatible default).
+func (p *Panel) SetProfile(cfg shell.ProfileConfig) {
+	p.profileCfg = cfg
 }
 
 // sessionCookier is the optional interface implemented by authenticators that
 // expose their session cookie name, used for CSRF double-submit binding.
 type sessionCookier interface {
 	SessionCookieName() string
+}
+
+// RoleAuthenticator is the optional capability an Authenticator implements to
+// back role-gated resources. It is the security AUTHORITY for role checks:
+//
+//   - RequireRole is the route gate. It wraps a handler so only a session whose
+//     role matches role (or the "owner" super-role) proceeds; everyone else
+//     receives 403. This is the enforcement boundary — a route's access is
+//     decided here, never derived from HasRole.
+//   - HasRole is a read-only derivation used for nav-hiding (don't render a link
+//     the operator cannot use). It must never be the only check guarding a
+//     protected route; that is RequireRole's job.
+//
+// An authenticator that does not implement this interface cannot back a Resource
+// with a non-empty RequiredRole: Register panics at startup (fail-closed) rather
+// than mount the resource ungated.
+type RoleAuthenticator interface {
+	RequireRole(role string, next http.HandlerFunc) http.HandlerFunc
+	HasRole(ctx context.Context, role string) bool
 }
 
 // Config holds Panel configuration.
@@ -248,19 +302,22 @@ func (p *Panel) Handler() http.Handler {
 }
 
 // handleIndex serves GET {basePath}/{$} (the bare base path).
-// Authenticated: redirects to the first registered resource with a non-empty URL.
-// If no resources are registered, returns a minimal 200 HTML page.
+// Authenticated: redirects to the first registered resource with a non-empty URL
+// that the current operator is permitted to access (respects RequiredRole and
+// Visible filters, so an operator is never bounced from the root into a resource
+// they'll 403 on).
+// If no accessible resources are registered, returns a minimal 200 HTML page.
 // Unauthenticated: handled by p.auth.Require before this is reached.
 func (p *Panel) handleIndex(w http.ResponseWriter, r *http.Request) {
-	for _, n := range p.nav {
-		// Skip group headers (empty URL, ID prefixed with "group:").
+	for _, n := range p.navItemsFor(r.Context(), "") {
+		// Skip group headers (empty URL).
 		if n.URL == "" {
 			continue
 		}
 		http.Redirect(w, r, n.URL, http.StatusSeeOther)
 		return
 	}
-	// No resources registered yet — return a minimal placeholder page.
+	// No accessible resources registered — return a minimal placeholder page.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<html><body><h1>Admin</h1><p>No resources registered yet.</p></body></html>"))
 }
@@ -319,6 +376,7 @@ func Register(p *Panel, r Resource) {
 	if r.Writer != nil {
 		validateWriterConfig(p, r)
 	}
+	validateRoleConfig(p, r)
 
 	// Add nav entry.
 	if r.Group != "" {
@@ -339,24 +397,26 @@ func Register(p *Panel, r Resource) {
 		}
 	}
 	p.nav = append(p.nav, shell.NavItem{
-		ID:    r.Name,
-		Label: r.Title,
-		Icon:  r.Icon,
-		URL:   p.basePath + "/" + r.Name,
-		Badge: r.Badge,
+		ID:           r.Name,
+		Label:        r.Title,
+		Icon:         r.Icon,
+		URL:          p.basePath + "/" + r.Name,
+		Badge:        r.Badge,
+		Visible:      r.Visible,
+		RequiredRole: r.RequiredRole,
 	})
 
 	listPath := p.basePath + "/" + r.Name
 	rowsPath := p.basePath + "/" + r.Name + "/rows"
 
 	listHandler := p.makeListHandler(r)
-	p.mux.HandleFunc("GET "+listPath, p.auth.Require(func(w http.ResponseWriter, req *http.Request) {
-		nav := p.activeNav(r.Name)
+	p.mux.HandleFunc("GET "+listPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
+		nav := p.activeNav(req.Context(), r.Name)
 		shell.SecurityHeaders(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		listHandler(w, req, nav, false)
 	}))
-	p.mux.HandleFunc("GET "+rowsPath, p.auth.Require(func(w http.ResponseWriter, req *http.Request) {
+	p.mux.HandleFunc("GET "+rowsPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
 		shell.SecurityHeaders(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		listHandler(w, req, nil, true)
@@ -390,6 +450,39 @@ func validateWriterConfig(p *Panel, r Resource) {
 	}
 }
 
+// validateRoleConfig panics at Register time if the resource declares a
+// non-empty RequiredRole but the authenticator cannot enforce it (does not
+// implement RoleAuthenticator). Fail-closed: a role-gated resource must never
+// mount against an authenticator that would serve it ungated.
+func validateRoleConfig(p *Panel, r Resource) {
+	if r.RequiredRole == "" {
+		return
+	}
+	if _, ok := p.auth.(RoleAuthenticator); !ok {
+		panic(fmt.Sprintf("resource.Register %q: RequiredRole %q is set but the authenticator does not implement RoleAuthenticator — role gating cannot be enforced (fail-closed)", r.Name, r.RequiredRole))
+	}
+}
+
+// guard wraps h with the panel's authentication and, when requiredRole is
+// non-empty, additionally enforces the role via the RoleAuthenticator
+// capability. For an empty role it is exactly p.auth.Require — no behaviour
+// change for resources that declare no RequiredRole.
+//
+// A non-empty role requires p.auth to implement RoleAuthenticator. That is
+// guaranteed at Register time by validateRoleConfig, so the assertion here is
+// defence-in-depth: a failure means the guarantee was bypassed, and we fail
+// closed (panic at mount) rather than fail open.
+func (p *Panel) guard(requiredRole string, h http.HandlerFunc) http.HandlerFunc {
+	if requiredRole == "" {
+		return p.auth.Require(h)
+	}
+	ra, ok := p.auth.(RoleAuthenticator)
+	if !ok {
+		panic(fmt.Sprintf("resource: guard called with role %q but the authenticator does not implement RoleAuthenticator (validateRoleConfig bypassed — fail-closed)", requiredRole))
+	}
+	return ra.RequireRole(requiredRole, h)
+}
+
 // ErrDetailNotFound may be returned by Detailer to signal a 404.
 var ErrDetailNotFound = errors.New("resource: detail not found")
 
@@ -397,7 +490,7 @@ var ErrDetailNotFound = errors.New("resource: detail not found")
 // Called only when r.Detailer != nil.
 func mountDetailRoute(p *Panel, r Resource) {
 	detailPath := p.basePath + "/" + r.Name + "/{id}"
-	p.mux.HandleFunc("GET "+detailPath, p.auth.Require(detailHandler(p, r)))
+	p.mux.HandleFunc("GET "+detailPath, p.guard(r.RequiredRole, detailHandler(p, r)))
 }
 
 // detailHandler returns the handler for GET {basePath}/{name}/{id}.
@@ -428,7 +521,7 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		nav := p.activeNav(r.Name)
+		nav := p.activeNav(req.Context(), r.Name)
 		d := detailPageData{
 			Resource: r,
 			ID:       id,
@@ -437,7 +530,7 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 		}
 		content := detailPageContent(d)
 		layoutComp := shell.Layout(p.title, nav, content)
-		renderCtx := shell.ContextWithSidebar(req.Context(), sidebarStateFrom(req))
+		renderCtx := shell.ContextWithChrome(req.Context(), p.chromeStateFrom(req))
 		if err := layoutComp.Render(renderCtx, w); err != nil {
 			slog.Error("resource: render detail page", "resource", r.Name, "id", id, "err", err)
 			http.Error(w, "render failed", http.StatusInternalServerError)
@@ -452,9 +545,9 @@ func mountWriterRoutes(p *Panel, r Resource) {
 	editPath := p.basePath + "/" + r.Name + "/{id}/edit"
 	savePath := p.basePath + "/" + r.Name + "/{id}/save"
 
-	p.mux.HandleFunc("GET "+newPath, p.auth.Require(newFormHandler(p, r)))
-	p.mux.HandleFunc("GET "+editPath, p.auth.Require(editFormHandler(p, r)))
-	p.mux.HandleFunc("POST "+savePath, p.auth.Require(saveHandler(p, r)))
+	p.mux.HandleFunc("GET "+newPath, p.guard(r.RequiredRole, newFormHandler(p, r)))
+	p.mux.HandleFunc("GET "+editPath, p.guard(r.RequiredRole, editFormHandler(p, r)))
+	p.mux.HandleFunc("POST "+savePath, p.guard(r.RequiredRole, saveHandler(p, r)))
 }
 
 // withResolvedForm returns a shallow copy of r whose Writer.Form has all
@@ -503,7 +596,7 @@ func newFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		nav := p.activeNav(r.Name)
+		nav := p.activeNav(req.Context(), r.Name)
 		tok := csrf.Issue(p.csrfKey, p.sessionValue(req), csrf.DefaultTTL)
 		d := formPageData{
 			Resource:     rr,
@@ -514,7 +607,7 @@ func newFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			ActiveLocale: p.locales.Default,
 		}
 		layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithChrome(ctx, p.chromeStateFrom(req)), w); err != nil {
 			slog.Error("resource: render new form", "resource", r.Name, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
@@ -550,7 +643,7 @@ func editFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		nav := p.activeNav(r.Name)
+		nav := p.activeNav(req.Context(), r.Name)
 		tok := csrf.Issue(p.csrfKey, p.sessionValue(req), csrf.DefaultTTL)
 		d := formPageData{
 			Resource:     rr,
@@ -562,7 +655,7 @@ func editFormHandler(p *Panel, r Resource) http.HandlerFunc {
 			ActiveLocale: loc,
 		}
 		layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithChrome(ctx, p.chromeStateFrom(req)), w); err != nil {
 			slog.Error("resource: render edit form", "resource", r.Name, "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
@@ -668,7 +761,7 @@ func collectFormValues(req *http.Request, fields []Field) map[string]string {
 func renderValidationErrors(w http.ResponseWriter, req *http.Request, p *Panel, r Resource, id string, loc locale.Locale, values map[string]string, errs formErrors) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnprocessableEntity)
-	nav := p.activeNav(r.Name)
+	nav := p.activeNav(req.Context(), r.Name)
 	tok := csrf.Issue(p.csrfKey, p.sessionValue(req), csrf.DefaultTTL)
 	d := formPageData{
 		Resource:     r,
@@ -681,7 +774,7 @@ func renderValidationErrors(w http.ResponseWriter, req *http.Request, p *Panel, 
 		ActiveLocale: loc,
 	}
 	layoutComp := shell.Layout(p.title, nav, formPageContent(d))
-	if err := layoutComp.Render(shell.ContextWithSidebar(req.Context(), sidebarStateFrom(req)), w); err != nil {
+	if err := layoutComp.Render(shell.ContextWithChrome(req.Context(), p.chromeStateFrom(req)), w); err != nil {
 		slog.Error("resource: render validation errors", "resource", r.Name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
@@ -699,10 +792,62 @@ func (p *Panel) sessionValue(r *http.Request) string {
 	return c.Value
 }
 
-// activeNav returns a copy of the nav with the given resource ID marked active.
-// It delegates to NavItemsActive to avoid duplication.
-func (p *Panel) activeNav(activeID string) []shell.NavItem {
-	return p.NavItemsActive(activeID)
+// navItemsFor returns the context-filtered, active-marked nav list for rendering.
+// It applies two orthogonal filters in the resource layer so the shell template
+// receives a pre-filtered list and never evaluates auth or closures itself:
+//
+//  1. RequiredRole-derived hide: a nav item whose RequiredRole is set is dropped
+//     unless the session on ctx satisfies the role via RoleAuthenticator.HasRole.
+//     This auto-derives nav-hiding from the same role used by the route gate, so
+//     the two can never drift apart (the consumer declares the role once in
+//     Resource.RequiredRole; both enforcement and hiding derive from it).
+//
+//  2. Visible cosmetic predicate: a nav item whose Visible closure returns false
+//     for ctx is dropped. Visible is COSMETIC ONLY — it hides the nav link but
+//     does NOT gate the route. An item hidden by Visible is still reachable by
+//     direct URL; use RequiredRole to enforce access.
+//
+// Group headers (Group != "") are never dropped by these filters: they carry no
+// route and have no RequiredRole/Visible themselves.
+//
+// NavItemsActive (public, unfiltered) is kept unchanged for introspection/tests.
+func (p *Panel) navItemsFor(ctx context.Context, activeID string) []shell.NavItem {
+	// Type-assert once. nil when auth lacks the RoleAuthenticator capability;
+	// that can only happen for items with RequiredRole="" (validateRoleConfig
+	// at Register panics otherwise), so nil is safe — those items pass through.
+	ra, _ := p.auth.(RoleAuthenticator)
+
+	out := make([]shell.NavItem, 0, len(p.nav))
+	for _, item := range p.nav {
+		// Group headers are structural — never filtered.
+		if item.Group != "" && item.URL == "" {
+			out = append(out, item)
+			continue
+		}
+
+		// RequiredRole-derived nav-hide.
+		if item.RequiredRole != "" {
+			if ra == nil || !ra.HasRole(ctx, item.RequiredRole) {
+				continue // item is invisible to this session
+			}
+		}
+
+		// Visible cosmetic predicate.
+		if item.Visible != nil && !item.Visible(ctx) {
+			continue
+		}
+
+		// Mark active.
+		item.Active = item.ID == activeID
+		out = append(out, item)
+	}
+	return out
+}
+
+// activeNav returns a context-filtered, active-marked copy of the nav list.
+// Uses navItemsFor so role-gated and Visible-hidden items are excluded.
+func (p *Panel) activeNav(ctx context.Context, activeID string) []shell.NavItem {
+	return p.navItemsFor(ctx, activeID)
 }
 
 // makeListHandler builds the handler func for a resource's list page.
@@ -777,7 +922,7 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 
 		content := listPageContent(data)
 		layoutComp := shell.Layout(p.title, nav, content)
-		if err := layoutComp.Render(shell.ContextWithSidebar(ctx, sidebarStateFrom(req)), w); err != nil {
+		if err := layoutComp.Render(shell.ContextWithChrome(ctx, p.chromeStateFrom(req)), w); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
