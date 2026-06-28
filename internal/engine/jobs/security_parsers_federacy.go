@@ -10,11 +10,11 @@ import (
 // --- Federacy ---
 
 type federacyProgram struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	OffersAwards bool  `json:"offers_awards"`
-	URL         string `json:"url"`
-	Targets     struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	OffersAwards bool   `json:"offers_awards"`
+	URL          string `json:"url"`
+	Targets      struct {
 		InScope []struct {
 			Type   string `json:"type"`
 			Target string `json:"target"`

@@ -28,6 +28,12 @@ type OppWorker struct {
 	interval time.Duration
 }
 
+// cycleSecurityHook is a test-only seam: when non-nil it is called inside the
+// security closure of runCycle before the fetch, allowing tests to inject panics
+// and verify the recover() guard actually catches them.
+// Must be nil in production — set only in test code.
+var cycleSecurityHook func()
+
 // NewOppWorker builds an OppWorker from env vars.
 func NewOppWorker() *OppWorker {
 	return &OppWorker{
@@ -76,6 +82,9 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 				)
 			}
 		}()
+		if cycleSecurityHook != nil {
+			cycleSecurityHook()
+		}
 		secPrograms := jobs.FetchAllSecurityUnlimited(ctx)
 		jobs.PersistSecurity(ctx, secPrograms)
 	}()

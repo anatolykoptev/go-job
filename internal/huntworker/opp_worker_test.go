@@ -59,11 +59,14 @@ func TestStartOpportunityWorker_Disabled_Noop(t *testing.T) {
 // when the hunt store is nil (PersistX funcs are no-ops on nil store). This covers
 // the scheduled path for a freshly-configured instance.
 //
-// Revert-red: if a panic in a fetch helper (simulated by nil store path's early
-// return being removed) propagates out of runCycle, the test goroutine panics and
-// the test process crashes → RED.
+// The context is pre-cancelled so runCycle returns from fetch helpers immediately
+// without making live network calls, keeping the test hermetic.
+//
+// Revert-red: if a panic in a fetch helper propagates out of runCycle (i.e. the
+// recover() guard is removed), the test goroutine panics and the process crashes → RED.
 func TestRunCycle_NilStore_NoPanic(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately — fetch helpers return fast on done context
 	w := NewOppWorker()
 	// engine.GetHuntStore() returns nil (no SetHuntStore in this test binary).
 	// PersistX returns immediately on nil store, so runCycle should complete cleanly.
@@ -75,8 +78,8 @@ func TestRunCycle_NilStore_NoPanic(t *testing.T) {
 	select {
 	case <-done:
 		// OK
-	case <-time.After(30 * time.Second):
-		t.Fatal("runCycle did not complete within 30s — likely hung on a network fetch in test; set HUNT_OPP_INGEST_ENABLED=false or stub fetch")
+	case <-time.After(10 * time.Second):
+		t.Fatal("runCycle did not complete within 10s with pre-cancelled context")
 	}
 }
 
@@ -110,17 +113,21 @@ func TestRun_ContextCancel_Returns(t *testing.T) {
 
 // TestOppWorkerPanicRecovery_DoesNotAbortOtherKinds verifies the panic-isolation
 // contract: a panic in one kind's closure must not prevent the log line at the end
-// of runCycle from being reached. We verify this indirectly — if the test completes
-// without deadlocking or panicking the test process, isolation held.
+// of runCycle from being reached.
 //
-// The actual panic recovery is exercised via the defer-recover in each closure;
-// since we cannot inject panics into the fetch functions without mocks, this test
-// confirms the structural invariant (runCycle returns) which would fail if the
-// recover() were removed and a panic propagated to the top level.
+// A real panic is injected via cycleSecurityHook (a package-level func var seam)
+// so that removing the recover() from the security closure causes the test process
+// to crash → RED. This is stronger than the structural-only check replaced.
+//
+// Revert-red: remove the defer-recover from the security closure → cycleSecurityHook
+// panic propagates to the test goroutine, the process crashes, CI goes RED.
 func TestOppWorkerPanicRecovery_DoesNotAbortOtherKinds(t *testing.T) {
+	t.Cleanup(func() { cycleSecurityHook = nil })
+	cycleSecurityHook = func() { panic("injected test panic — must be caught by recover()") }
+
 	assert.NotPanics(t, func() {
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // cancel immediately so fetches are fast (ctx already done)
+		cancel() // cancel immediately so non-panicking fetch helpers return fast
 		w := NewOppWorker()
 		w.runCycle(ctx)
 	}, "runCycle must not propagate panics from individual kind closures")

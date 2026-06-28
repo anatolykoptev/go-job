@@ -169,7 +169,7 @@ func applyFreelanceNotifyPolicy(notifier hunt.Notifier, created []hunt.Freelance
 // summaryTitle builds a one-line summary title for backfill summary cards.
 // e.g. "🆕 42 new security programs ingested (top: AngelList VDP)"
 func summaryTitle(kind string, count int, topName string) string {
-	s := "🆕 " + itoa(count) + " new " + kind
+	s := "🆕 " + strconv.Itoa(count) + " new " + kind
 	if count == 1 {
 		s += " item ingested"
 	} else {
@@ -181,110 +181,23 @@ func summaryTitle(kind string, count int, topName string) string {
 	return s
 }
 
-func itoa(n int) string {
-	return strconv.Itoa(n)
-}
 
-// fetchAllBountiesUnlimited fetches ALL bounties (no per-call cap) for scheduled ingest.
+
+// FetchAllBountiesUnlimited fetches ALL bounties (no per-call cap) for scheduled ingest.
+// Delegates to fetchAllBountiesImpl with a large limit and no total-result cap.
 func FetchAllBountiesUnlimited(ctx context.Context) []engine.BountyListing {
-	const bigLimit = 10000
-
-	var all []engine.BountyListing
-
-	if bvecs, err := SearchAlgoraEnriched(ctx, bigLimit); err == nil {
-		for _, bv := range bvecs {
-			all = append(all, bv.Bounty)
-		}
-	} else {
-		slog.Warn("opp ingest: algora error", slog.Any("error", err))
-	}
-
-	sources := []struct {
-		name string
-		fn   func(context.Context, int) ([]engine.BountyListing, error)
-	}{
-		{"opire", SearchOpire},
-		{"bountyhub", SearchBountyHub},
-		{"boss", SearchBoss},
-		{"lightning", SearchLightning},
-		{"collaborators", SearchCollaborators},
-	}
-
-	for _, s := range sources {
-		bounties, err := s.fn(ctx, bigLimit)
-		if err != nil {
-			slog.Warn("opp ingest: "+s.name+" error", slog.Any("error", err))
-			continue
-		}
-		all = append(all, bounties...)
-	}
-
-	return all
+	return fetchAllBountiesImpl(ctx, 10000, false)
 }
 
-// fetchAllSecurityUnlimited fetches ALL security programs (no cap) for scheduled ingest.
+// FetchAllSecurityUnlimited fetches ALL security programs (no cap) for scheduled ingest.
+// Delegates to fetchAllSecurityImpl with a large limit and no total-result cap;
+// applyCap=false also bypasses the result cache to pull the full live dataset.
 func FetchAllSecurityUnlimited(ctx context.Context) []engine.SecurityProgram {
-	const bigLimit = 10000
-
-	var all []engine.SecurityProgram
-
-	btd, err := fetchAllSecurityPrograms(ctx) // fetches all 5 BTD sources, no limit
-	if err != nil {
-		slog.Warn("opp ingest: security btd error", slog.Any("error", err))
-	} else {
-		all = append(all, btd...)
-	}
-
-	imm, err := SearchImmunefi(ctx, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: immunefi error", slog.Any("error", err))
-	} else {
-		all = append(all, imm...)
-	}
-
-	shr, err := SearchSherlock(ctx, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: sherlock error", slog.Any("error", err))
-	} else {
-		all = append(all, shr...)
-	}
-
-	cantina, err := SearchCantina(ctx, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: cantina error", slog.Any("error", err))
-	} else {
-		all = append(all, cantina...)
-	}
-
-	c4r, err := SearchCode4rena(ctx, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: code4rena error", slog.Any("error", err))
-	} else {
-		all = append(all, c4r...)
-	}
-
-	return all
+	return fetchAllSecurityImpl(ctx, 10000, false)
 }
 
-// fetchAllFreelanceUnlimited fetches ALL freelance items (no cap) for scheduled ingest.
+// FetchAllFreelanceUnlimited fetches ALL freelance items (no cap) for scheduled ingest.
+// Delegates to fetchAllFreelanceImpl with a large limit and no total-result cap.
 func FetchAllFreelanceUnlimited(ctx context.Context) []engine.FreelanceJob {
-	const bigLimit = 10000
-
-	var all []engine.FreelanceJob
-
-	rok, err := SearchRemoteOKFreelance(ctx, langAliasGolang, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: remoteok error", slog.Any("error", err))
-	} else {
-		all = append(all, rok...)
-	}
-
-	him, err := SearchHimalayas(ctx, langAliasGolang, bigLimit)
-	if err != nil {
-		slog.Warn("opp ingest: himalayas error", slog.Any("error", err))
-	} else {
-		all = append(all, him...)
-	}
-
-	return all
+	return fetchAllFreelanceImpl(ctx, 10000, false)
 }

@@ -78,7 +78,7 @@ func TestUpsert_DoesNotNotifyMergedBounty(t *testing.T) {
 }
 // TestUpsert_NeverNotifiesBounty verifies that after the notify-policy relocation,
 // UpsertBounty does NOT call NotifyNewBounty directly even for open bounties.
-// Notify is the persist layer responsibility now (persistBounties in opportunity_search.go).
+// Notify is the persist layer responsibility now (PersistBounties in opportunity_search.go).
 func TestUpsert_NeverNotifiesBounty(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -101,7 +101,7 @@ func TestUpsert_NeverNotifiesBounty(t *testing.T) {
 	assert.Equal(t, hunt.OutcomeCreated, outcome)
 	// Notify relocated to persist layer - UpsertBounty must NOT call NotifyNewBounty.
 	assert.Empty(t, notifier.bounties,
-		"UpsertBounty must NOT notify (notify relocated to persistBounties)")
+		"UpsertBounty must NOT notify (notify relocated to PersistBounties)")
 }
 // TestUpsert_DoesNotNotifyClosedJob verifies job notifier is also gated on open status.
 func TestUpsert_DoesNotNotifyClosedJob(t *testing.T) {
