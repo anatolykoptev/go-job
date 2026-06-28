@@ -25,6 +25,11 @@ func TestStarToggleHTML_Unshortlisted(t *testing.T) {
 	if strings.Contains(got, "★") {
 		t.Errorf("starToggleHTML(42, false): should not contain filled star ★")
 	}
+	// Guard against a malformed tag (e.g. a stray `">>` closing the form),
+	// which renders a literal `>` in every table row. `>>` must never appear.
+	if strings.Contains(got, ">>") {
+		t.Errorf("starToggleHTML: malformed markup, contains \">>\":\n%s", got)
+	}
 }
 
 // TestStarToggleHTML_Shortlisted verifies the ★ state: filled star, correct

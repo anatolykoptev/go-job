@@ -58,7 +58,7 @@ func starToggleHTML(id int64, shortlisted bool, csrfTok string) string {
 	}
 	idStr := strconv.FormatInt(id, 10)
 	return fmt.Sprintf(
-		`<form method="POST" action="/admin/jobs/%s/shortlist" style="display:inline;margin:0">>`+
+		`<form method="POST" action="/admin/jobs/%s/shortlist" style="display:inline;margin:0">`+
 			`<input type="hidden" name="%s" value="%s">`+
 			`<button type="submit" style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1" title="Toggle shortlist">%s</button>`+
 			`</form>`,
