@@ -47,14 +47,17 @@ var shortlistActiveStages = []string{
 // Stage/fit/market/docs badges are at i>0 where cell.HTML is respected.
 var shortlistSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: "j.title"},
-		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: "j.company"},
+		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: sqlJTitle},
+		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
 		{Key: "stage", Label: "Stage", Sortable: true, SQLExpr: "r.stage", Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
 		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: "comp", Label: "Comp", Sortable: false},
 		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
 		{Key: "rated", Label: "Rated", Sortable: true, SQLExpr: "r.rated_at", Width: "6rem"},
+		// Star column: every shortlist row is starred (stage ∈ shortlistActiveStages
+		// by query). Clicking demotes to StageNew → row drops off shortlist on reload.
+		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
 	},
 	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
@@ -65,15 +68,15 @@ var shortlistSpec = admintable.Spec{
 // are surfaced as badges in the Docs cell instead. Stage and text-search filters
 // are SQL-backed via the FilterSpec.
 var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
-	{Key: keyQ, SQLExprs: []string{"j.title", "j.company"}, Match: admintable.ILike},
+	{Key: keyQ, SQLExprs: []string{sqlJTitle, sqlJCompany}, Match: admintable.ILike},
 	{Key: "stage", SQLExpr: "r.stage", Match: admintable.Eq, Allowed: shortlistActiveStages},
 }}
 
-func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority) resource.Resource {
+func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
 	return resource.Resource{
 		Name:  navIDShortlist,
 		Title: "Shortlist",
-		Icon:  "⭐",
+		Icon:  "★",
 		Group: grpHunt,
 		Sort:  shortlistSpec,
 		Filter: shortlistFilter,
@@ -85,7 +88,7 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 			}
 			return strconv.Itoa(n)
 		}),
-		Lister: shortlistLister(store, adminUser, authority),
+		Lister: shortlistLister(store, adminUser, authority, csrfKey),
 	}
 }
 
@@ -95,7 +98,7 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 // unit test exercise the same query — no decoy gap. PDF-derived filter chips
 // (pack-ready, with-docs) cannot be expressed as SQL; they surface as Docs
 // badges per row instead.
-func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		storeRows, total, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
 			User:       adminUser,
@@ -115,6 +118,9 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 		// rows then show no Docs badges without failing.
 		legacyEntries := authority.LegacyEntries()
 
+		// Mint a single CSRF token for all star-toggle forms on this page.
+		csrfTok := mintStarCSRF(ctx, csrfKey)
+
 		out := make([]resource.Row, 0, len(storeRows))
 		for _, row := range storeRows {
 			// Uploads-first: canonical path per hunt_jobs.id.
@@ -131,18 +137,22 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 			// Cell order MUST match shortlistSpec.Columns order.
 			// Cell-0 = plain text Title (go-panel wraps in <a href>; cell.HTML ignored
 			// at i=0). Company is a separate sortable column at cell-1.
+			// Every shortlist row is starred (true) — it's on the list by query definition.
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(row.ID, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(row.ID, 10),
 				Cells: []resource.Cell{
-					{Value: row.Title},                                                                            // [0] Title
-					{Value: row.Company},                                                                          // [1] Company
-					{Value: stageBadgeHTML(row.Stage), HTML: true},                                               // [2] Stage
-					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                  // [3] Fit
-					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                          // [4] Market
+					{Value: row.Title},                                                                              // [0] Title
+					{Value: row.Company},                                                                            // [1] Company
+					{Value: stageBadgeHTML(row.Stage), HTML: true},                                                 // [2] Stage
+					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                    // [3] Fit
+					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                            // [4] Market
 					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [5] Comp
-					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                             // [6] Docs
-					{Value: row.RatedAt.Format("2006-01-02")},                                                    // [7] Rated
+					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                                 // [6] Docs
+					{Value: row.RatedAt.Format("2006-01-02")},                                                      // [7] Rated
+					// [8] Star — always filled (★) since every row is on the shortlist.
+					// Clicking POSTs toggle: demotes stage to StageNew → row drops off shortlist.
+					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true},
 				},
 			})
 		}

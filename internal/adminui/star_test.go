@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestStarToggleHTML_Unshortlisted verifies the ☆ state: hollow star, correct
-// action URL, CSRF token present.
+// TestStarToggleHTML_Unstarred verifies the ☆ state: hollow star, correct
+// action URL, CSRF token present, aria-label=Add, aria-pressed=false.
 // Red-on-revert: removing starToggleHTML or inverting the star glyph → fails.
-func TestStarToggleHTML_Unshortlisted(t *testing.T) {
+func TestStarToggleHTML_Unstarred(t *testing.T) {
 	got := starToggleHTML(42, false, "test-tok")
 	for _, want := range []string{
 		`action="/admin/jobs/42/shortlist"`,
@@ -17,6 +17,9 @@ func TestStarToggleHTML_Unshortlisted(t *testing.T) {
 		`☆`,
 		`name="_csrf"`,
 		`value="test-tok"`,
+		`aria-label="Add to shortlist"`,
+		`aria-pressed="false"`,
+		`outline-offset:2px`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("starToggleHTML(42, false): want %q in output, got:\n%s", want, got)
@@ -25,6 +28,9 @@ func TestStarToggleHTML_Unshortlisted(t *testing.T) {
 	if strings.Contains(got, "★") {
 		t.Errorf("starToggleHTML(42, false): should not contain filled star ★")
 	}
+	if strings.Contains(got, `aria-label="Remove`) {
+		t.Errorf("starToggleHTML(42, false): aria-label must say Add, not Remove")
+	}
 	// Guard against a malformed tag (e.g. a stray `">>` closing the form),
 	// which renders a literal `>` in every table row. `>>` must never appear.
 	if strings.Contains(got, ">>") {
@@ -32,19 +38,26 @@ func TestStarToggleHTML_Unshortlisted(t *testing.T) {
 	}
 }
 
-// TestStarToggleHTML_Shortlisted verifies the ★ state: filled star, correct
-// action URL.
-// Red-on-revert: inverting the shortlisted branch → ★ missing in filled state.
-func TestStarToggleHTML_Shortlisted(t *testing.T) {
+// TestStarToggleHTML_Starred verifies the ★ state: filled star, correct action URL,
+// aria-label=Remove, aria-pressed=true.
+// Red-on-revert: inverting the starred branch → ★ missing, aria-pressed="true" missing.
+func TestStarToggleHTML_Starred(t *testing.T) {
 	got := starToggleHTML(99, true, "another-tok")
-	if !strings.Contains(got, "★") {
-		t.Errorf("starToggleHTML(99, true): want ★ in output, got:\n%s", got)
-	}
-	if !strings.Contains(got, `action="/admin/jobs/99/shortlist"`) {
-		t.Errorf("starToggleHTML(99, true): want correct action URL, got:\n%s", got)
+	for _, want := range []string{
+		`★`,
+		`action="/admin/jobs/99/shortlist"`,
+		`aria-label="Remove from shortlist"`,
+		`aria-pressed="true"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("starToggleHTML(99, true): want %q in output, got:\n%s", want, got)
+		}
 	}
 	if strings.Contains(got, "☆") {
 		t.Errorf("starToggleHTML(99, true): should not contain hollow star ☆")
+	}
+	if strings.Contains(got, `aria-pressed="false"`) {
+		t.Errorf("starToggleHTML(99, true): aria-pressed must be true, not false")
 	}
 }
 
@@ -65,47 +78,14 @@ func TestStarToggleHTML_CSRFNotInAction(t *testing.T) {
 	}
 }
 
-// TestJobsFilter_ShortlistedFilter verifies the shortlisted=true filter reaches
-// the WHERE clause as a bind arg, not concatenated SQL.
-// Red-on-revert: removing the shortlisted filter from jobsFilter → len(args)==0.
-func TestJobsFilter_ShortlistedFilter(t *testing.T) {
-	vals := url.Values{
-		colKeyShortlisted: {"true"},
-	}
-	conds, args := jobsFilter.Where(vals, 1)
-
-	// Must produce a WHERE condition.
-	if conds == "" {
-		t.Fatalf("shortlisted=true filter: want non-empty conds, got empty")
-	}
-	// Condition must reference the column name, not inject the value.
-	if !strings.Contains(conds, "shortlisted") {
-		t.Errorf("shortlisted filter conds: want 'shortlisted' in %q", conds)
-	}
-	// Value 'true' must be a bind arg, not embedded in SQL.
-	if strings.Contains(conds, "true") {
-		t.Errorf("shortlisted filter: 'true' must be a bind arg, not in SQL conds %q", conds)
-	}
-	if len(args) == 0 {
-		t.Fatalf("shortlisted=true filter: want bind args, got none")
-	}
-
-	// "false" not in Allowed list — verify it's not passed as a bind arg
-	// (the filter framework drops unknown values).
-	vals2 := url.Values{colKeyShortlisted: {"false"}}
-	conds2, args2 := jobsFilter.Where(vals2, 1)
-	// "false" IS in the Allowed list, so it should produce a condition.
-	if conds2 == "" {
-		t.Fatalf("shortlisted=false filter: want non-empty conds, got empty")
-	}
-	if len(args2) == 0 {
-		t.Fatalf("shortlisted=false filter: want bind args, got none")
-	}
-
-	// Unknown value must be dropped.
-	vals3 := url.Values{colKeyShortlisted: {"maybe"}}
-	_, args3 := jobsFilter.Where(vals3, 1)
-	if len(args3) != 0 {
-		t.Errorf("shortlisted=maybe (unknown): want 0 bind args, got %d: %v", len(args3), args3)
+// TestJobsFilter_NoShortlistedFilter verifies the boolean shortlisted filter
+// has been removed from jobsFilter. The star is now rating-backed (LEFT JOIN),
+// not a separate column filter.
+// Red-on-revert: re-adding the shortlisted filter → this assertion fails.
+func TestJobsFilter_NoShortlistedFilter(t *testing.T) {
+	// "shortlisted=true" must produce no WHERE condition — filter was removed.
+	_, args := jobsFilter.Where(url.Values{"shortlisted": {"true"}}, 1)
+	if len(args) != 0 {
+		t.Errorf("shortlisted filter must be absent from jobsFilter: got %d bind args", len(args))
 	}
 }

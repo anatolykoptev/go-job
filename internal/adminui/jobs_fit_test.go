@@ -239,8 +239,8 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	if jobsSpec.Columns[1].Key != "company" {
 		t.Errorf("column[1] must be Company (key=%q), got key=%q", "company", jobsSpec.Columns[1].Key)
 	}
-	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != colKeyShortlisted {
-		t.Errorf("last column must be Star (key=%q), got key=%q", colKeyShortlisted, jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
+	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != "star" {
+		t.Errorf("last column must be Star (key=%q), got key=%q", "star", jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
 	}
 }
 
@@ -432,7 +432,7 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 	}
 	// authority=nil: docs column renders empty chips (no crash).
 	// csrfKey=nil: star toggle renders ☆ with an empty-session token.
-	rows, total, err := jobsLister(pool, nil, nil)(context.Background(), q)
+	rows, total, err := jobsLister(pool, "test_admin", nil, nil)(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}
