@@ -6,15 +6,16 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 )
 
-// openTestDB returns a ConnectResumeDB connected to DATABASE_URL, or skips.
+// openTestDB returns a ConnectResumeDB connected to DATABASE_URL, or skips;
+// fatals if DATABASE_URL points at a non-_test database.
 func openTestDB(t *testing.T) *ResumeDB {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set — skipping DB integration test")
-	}
+	dbtest.RequireTestDB(t, dsn)
 	db, err := ConnectResumeDB(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("ConnectResumeDB: %v", err)
