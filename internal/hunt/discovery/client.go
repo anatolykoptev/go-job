@@ -84,9 +84,19 @@ type rawSearchResult struct {
 
 // rawSearchOutput is the inner JSON object carried in content[0].text for
 // the raw_web_search tool.
+//
+// Degraded and DegradeReason are the in-band failure signal introduced in
+// go-search P3.  When Degraded is true the result set cannot be trusted (all
+// broad-web legs failed or the context deadline fired) and callers MUST fall
+// back to local scrapers rather than treating it as a clean zero.
+//
+// Backward compatibility: older go-search versions do not emit the "degraded"
+// field.  JSON absent → Go zero-value → Degraded=false → treated as healthy.
 type rawSearchOutput struct {
-	Results []rawSearchResult `json:"results"`
-	Total   int               `json:"total"`
+	Results       []rawSearchResult `json:"results"`
+	Total         int               `json:"total"`
+	Degraded      bool              `json:"degraded"`
+	DegradeReason string            `json:"degrade_reason,omitempty"`
 }
 
 // rawSearchEnvelope is the REST bridge envelope returned by POST /api/tools/raw_web_search.
@@ -179,6 +189,20 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, fmt.Errorf("discovery: decode raw_web_search output: %w", err)
 	}
 
+	// Degraded=true means the result set cannot be trusted: all broad-web legs
+	// failed or the context deadline fired.  Fall back to local scrapers so we
+	// never short-circuit on a broken fan-out masquerading as a clean zero.
+	// The DegradeReason is logged for observability and included in the error so
+	// callers can emit a metric or alert on the specific failure class.
+	if out.Degraded {
+		slog.Warn("discovery: raw_web_search degraded, falling back to local",
+			slog.String("query", query),
+			slog.String("degrade_reason", out.DegradeReason))
+		return nil, fmt.Errorf("discovery: raw_web_search degraded: %s", out.DegradeReason)
+	}
+
+	// Clean zero: Degraded=false with no results means the sources answered and
+	// genuinely found nothing.  Return (nil, nil) — no fallback, no alert.
 	if len(out.Results) == 0 {
 		slog.Debug("discovery: go-search returned no results", slog.String("query", query))
 		return nil, nil

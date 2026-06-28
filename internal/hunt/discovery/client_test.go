@@ -279,3 +279,115 @@ func TestClient_DiscoverBoardURLs_NonBoardURLsFiltered(t *testing.T) {
 	assert.Nil(t, err, "all-non-board results should return nil error (legitimate empty, not schema drift)")
 	assert.Nil(t, results)
 }
+
+// rawDegradedEnvelope builds a REST bridge envelope whose inner JSON includes
+// the Degraded/DegradeReason fields introduced in go-search P3.  Unlike
+// rawCannedResponse, it writes the inner JSON as a raw string to avoid
+// depending on the rawSearchOutput struct (so the RED test can compile before
+// the struct is updated).
+func rawDegradedEnvelope(innerJSON string) []byte {
+	env := rawSearchEnvelope{}
+	env.Content = []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{{Type: "text", Text: innerJSON}}
+	b, _ := json.Marshal(env)
+	return b
+}
+
+// TestDiscovery_Degraded_FallsBack asserts that when raw_web_search signals
+// Degraded=true, DiscoverBoardURLs returns (nil, err) so callers fall back to
+// local scrapers.  The error must mention the degrade_reason.
+//
+// RED: currently the client does NOT check the Degraded field — it sees
+// Results=[] and returns (nil, nil), treating a broken fan-out as a clean zero.
+func TestDiscovery_Degraded_FallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(rawDegradedEnvelope(
+			`{"degraded":true,"degrade_reason":"all sources blocked","results":[],"total":0}`,
+		))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
+
+	assert.Nil(t, results, "degraded response must return nil results")
+	require.Error(t, err, "degraded response must return an error (triggers local fallback)")
+	assert.Contains(t, err.Error(), "degraded", "error must mention 'degraded'")
+	assert.Contains(t, err.Error(), "all sources blocked", "error must propagate degrade_reason")
+}
+
+// TestDiscovery_CleanZero_NoFallback asserts that when raw_web_search returns
+// Degraded=false with zero results, DiscoverBoardURLs returns (nil, nil) — a
+// genuine clean zero that should NOT trigger local fallback.
+//
+// RED: currently the client always returns (nil, nil) for empty results, which
+// happens to look correct here.  Once the Degraded branch is implemented we
+// need to confirm the nil-nil path is preserved for the clean-zero case and
+// does not get accidentally turned into an error.
+func TestDiscovery_CleanZero_NoFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(rawDegradedEnvelope(
+			`{"degraded":false,"results":[],"total":0}`,
+		))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
+
+	assert.Nil(t, results, "clean zero must return nil results")
+	assert.Nil(t, err, "clean zero must return nil error — no fallback")
+}
+
+// TestDiscovery_ResultsPresent_Used asserts that when raw_web_search returns
+// Degraded=false with ATS board results, DiscoverBoardURLs returns those
+// results (after ATS-host filtering) with no error.
+//
+// This exercises the normal happy path under the new Degraded-aware branching.
+func TestDiscovery_ResultsPresent_Used(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(rawDegradedEnvelope(
+			`{"degraded":false,"results":[{"url":"https://boards.greenhouse.io/acme","title":"Acme Jobs","description":"10 openings","score":0.9}],"total":1}`,
+		))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io acme")
+
+	require.NoError(t, err, "healthy results must not return an error")
+	require.NotEmpty(t, results, "healthy results must be returned")
+	assert.Equal(t, "https://boards.greenhouse.io/acme", results[0].URL)
+	assert.Equal(t, "Acme Jobs", results[0].Title)
+}
+
+// TestDiscovery_TransportError_FallsBack asserts that a connection-level error
+// (server closes mid-request) still returns (nil, err) — the pre-existing
+// transport-error fallback path must continue to work after the Degraded branch
+// is added.
+func TestDiscovery_TransportError_FallsBack(t *testing.T) {
+	// Server immediately closes the connection without sending any response.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hijack the connection and close it to simulate a network drop.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			// Fallback: just return 500 (also exercises the error path).
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
+
+	assert.Nil(t, results, "transport error must return nil results")
+	assert.Error(t, err, "transport error must return an error (triggers local fallback)")
+}
