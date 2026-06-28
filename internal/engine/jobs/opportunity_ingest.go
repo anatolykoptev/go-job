@@ -181,8 +181,6 @@ func summaryTitle(kind string, count int, topName string) string {
 	return s
 }
 
-
-
 // FetchAllBountiesUnlimited fetches ALL bounties (no per-call cap) for scheduled ingest.
 // Delegates to fetchAllBountiesImpl with a large limit and no total-result cap.
 func FetchAllBountiesUnlimited(ctx context.Context) []engine.BountyListing {
