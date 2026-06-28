@@ -1676,6 +1676,21 @@ func (s *Store) CountShortlist(ctx context.Context, user string, stages []string
 	return n
 }
 
+// ToggleShortlist flips hunt_jobs.shortlisted for the given id using a single
+// atomic UPDATE … RETURNING. Returns the new shortlisted value after the flip.
+// The column is added by migration 010_hunt_jobs_shortlisted.sql (boolean NOT NULL DEFAULT false).
+func (s *Store) ToggleShortlist(ctx context.Context, id int64) (bool, error) {
+	var newVal bool
+	err := s.pool.QueryRow(ctx,
+		`UPDATE hunt_jobs SET shortlisted = NOT shortlisted WHERE id = $1 RETURNING shortlisted`,
+		id,
+	).Scan(&newVal)
+	if err != nil {
+		return false, fmt.Errorf("hunt: toggle shortlist id=%d: %w", id, err)
+	}
+	return newVal, nil
+}
+
 // CountScored returns the number of open hunt_jobs rows that have been LLM-scored
 // (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
 func (s *Store) CountScored(ctx context.Context) int {
