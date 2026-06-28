@@ -8,8 +8,8 @@ import (
 
 // NavItem is a sidebar navigation entry registered by a Resource.
 //
-// NavItem contains a func field (Badge) and is therefore NOT comparable —
-// do not use == on NavItem values or as map keys.
+// NavItem contains func fields (Badge, Visible) and is therefore NOT comparable
+// — do not use == on NavItem values or as map keys. (F5)
 type NavItem struct {
 	ID     string
 	Label  string
@@ -18,12 +18,118 @@ type NavItem struct {
 	Active bool
 	Group  string // non-empty = this item is a group header, not a link
 
+	// Tooltip is the text shown as a popover when the sidebar is in collapsed
+	// (icon-rail) mode. Empty string falls back to Label — zero-value safe,
+	// existing callers are unaffected.
+	// Also emitted as aria-label on the anchor for screen-reader wayfinding.
+	Tooltip string
+
 	// Badge is an optional closure returning a short label/count pill shown
 	// next to the nav item (e.g. "12", "new"). Called once per page render —
 	// wrap with shell.CachedBadge to avoid a per-render DB query.
 	// nil = no badge (zero-value safe; existing callers are unaffected).
 	// The returned string is HTML-escaped by templ; do NOT pass templ.Raw.
 	Badge func(ctx context.Context) string
+
+	// Visible is a cosmetic predicate evaluated in the RESOURCE layer
+	// (navItemsFor) before the nav list reaches Layout. nil = always visible.
+	// The shell template renders a pre-filtered list and NEVER calls Visible.
+	//
+	// SECURITY: Visible is NEVER a route gate. An item hidden by Visible is
+	// still reachable by direct URL. Use Resource.RequiredRole to enforce
+	// access on the route itself.
+	Visible func(ctx context.Context) bool
+
+	// RequiredRole is metadata copied from Resource.RequiredRole at Register
+	// time. Used by navItemsFor (resource layer) to derive nav-hiding from the
+	// same role used by the route gate — NEVER evaluated by the shell template.
+	// Zero value = no role gate (backward-compat).
+	RequiredRole string
+
+	// Children is an optional list of one-level child navigation items.
+	// nil or empty means the item is a leaf — current behaviour, backward-compat.
+	// Children-of-children are ignored: one level only (rule-of-three YAGNI).
+	// NavItem contains func fields and is therefore NOT comparable;
+	// do not use == on NavItem values or slice elements for identity. (F5)
+	Children []NavItem
+}
+
+// tooltipOf returns item.Tooltip when non-empty, otherwise item.Label.
+// Used for aria-label and the collapsed-mode .sidebar-tooltip span.
+func tooltipOf(item NavItem) string {
+	if item.Tooltip != "" {
+		return item.Tooltip
+	}
+	return item.Label
+}
+
+// avatarInitial returns the first rune of name as a string, or "?" when empty.
+// Used to render the avatar circle in the profile block. Safe for UTF-8 names.
+func avatarInitial(name string) string {
+	for _, r := range name {
+		return string(r)
+	}
+	return "?"
+}
+
+// profileLogoutURL returns p.LogoutURL if set, otherwise the conventional default.
+func profileLogoutURL(p ProfileConfig) string {
+	if p.LogoutURL != "" {
+		return p.LogoutURL
+	}
+	return "/admin/logout"
+}
+
+// hasActiveChild reports whether any direct child of item is active.
+// Used server-side to emit data-has-active-child on parent submenu wrappers,
+// so JS always keeps parents of the current-page item expanded regardless of
+// the sb-s cookie — mirrors the group-level guard in toNavGroups.
+func hasActiveChild(item NavItem) bool {
+	for _, child := range item.Children {
+		if child.Active {
+			return true
+		}
+	}
+	return false
+}
+
+// navGrouped pairs a nav group header with the items that follow it.
+// An empty Label ("") represents items that appear before any group header.
+type navGrouped struct {
+	Label     string
+	Collapsed bool
+	Items     []NavItem
+}
+
+// toNavGroups converts a flat []NavItem (group-header NavItem followed by its
+// member NavItems) into a []navGrouped for nested sidebar-group rendering.
+// Items appearing before any group header go into an anonymous entry (Label="")
+// that is not collapsible — preserves backward compat with navs that skip groups.
+// collapsedGroups is ChromeState.CollapsedGroups; nil map is safe (treated as empty).
+//
+// A group that contains the current active item is always expanded regardless of
+// the sb-g cookie: hiding the active wayfinding indicator is disorienting.
+func toNavGroups(nav []NavItem, collapsedGroups map[string]bool) []navGrouped {
+	var out []navGrouped
+	for _, item := range nav {
+		if item.Group != "" {
+			out = append(out, navGrouped{
+				Label:     item.Group,
+				Collapsed: collapsedGroups[item.Group],
+			})
+		} else {
+			if len(out) == 0 {
+				out = append(out, navGrouped{}) // anonymous pre-group bucket
+			}
+			out[len(out)-1].Items = append(out[len(out)-1].Items, item)
+			// Active item forces its group expanded: collapsed active item hides
+			// the current-page wayfinding indicator, which is disorienting.
+			if item.Active {
+				out[len(out)-1].Collapsed = false
+			}
+		}
+	}
+	return out
 }
 
 // Layout renders the full admin page chrome: html head, pm7 CSS, sidebar nav,
@@ -31,7 +137,7 @@ type NavItem struct {
 // For htmx requests, render the content component directly (fragment swap).
 //
 // New state (sidebar collapse) is threaded via context.Context so this
-// signature stays frozen: use shell.ContextWithSidebar before calling Render.
+// signature stays frozen: use shell.ContextWithChrome before calling Render.
 templ Layout(title string, nav []NavItem, content templ.Component) {
 	<!DOCTYPE html>
 	<html lang="en" class="dark">
@@ -45,46 +151,77 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 		</head>
 		<body>
 			<div class="app">
-				<aside class={ "sidebar", templ.KV("collapsed", SidebarFromContext(ctx).Collapsed) } id="sidebar">
+				<aside class={ "sidebar", templ.KV("collapsed", ChromeFromContext(ctx).Collapsed) } id="sidebar">
 					<div class="sidebar-header">
 						<h1>{ title }</h1>
 						<button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
 					</div>
 					<nav class="sidebar-nav">
-						for _, item := range nav {
-							if item.Group != "" {
-								<div class="sidebar-group">
-									<div class="sidebar-group-label">{ item.Group }</div>
-								</div>
-							} else {
-								<a
-									class={ "sidebar-item pm7-sidebar-item", templ.KV("active pm7-sidebar-item--active", item.Active) }
-									href={ templ.SafeURL(item.URL) }
-									if item.Active {
-										aria-current="page"
+						for _, group := range toNavGroups(nav, ChromeFromContext(ctx).CollapsedGroups) {
+							if group.Label != "" {
+								<div class="sidebar-group"
+									if group.Collapsed {
+										data-collapsed="true"
 									}
 								>
-									if item.Icon != "" {
-										<span class="sidebar-icon">{ item.Icon }</span>
-									}
-									<span class="sidebar-label">{ item.Label }</span>
-									if item.Badge != nil {
-										if b := item.Badge(ctx); b != "" {
-											<span class="sidebar-count">{ b }</span>
+									<button type="button" class="sidebar-group-label" data-group={ group.Label }
+										if group.Collapsed {
+											aria-expanded="false"
+										} else {
+											aria-expanded="true"
 										}
-									}
-								</a>
+									>{ group.Label }</button>
+									<div class="sidebar-group-items">
+										for _, item := range group.Items {
+											@sidebarItem(item)
+										}
+									</div>
+								</div>
+							} else {
+								for _, item := range group.Items {
+									@sidebarItem(item)
+								}
 							}
 						}
 					</nav>
 					<div class="sidebar-bottom">
-						<a class="sidebar-item" href="/admin/logout">
-							<span class="sidebar-icon">&#x2192;</span>
-							<span class="sidebar-label">Logout</span>
-						</a>
+						if prof := ChromeFromContext(ctx).Profile; prof.Name != "" {
+							// Profile block — multi-user consumers (BcryptTOTPAuth).
+							<div class="sidebar-profile">
+								<div class="sidebar-profile-avatar" aria-hidden="true">{ avatarInitial(prof.Name) }</div>
+								<div class="sidebar-profile-info">
+									<div class="sidebar-profile-name">{ prof.Name }</div>
+									if prof.Role != "" {
+										<div class="sidebar-profile-role">{ prof.Role }</div>
+									}
+								</div>
+							</div>
+							if prof.SettingsURL != "" {
+								<a class="sidebar-item" href={ templ.SafeURL(prof.SettingsURL) } aria-label="Settings">
+									<span class="sidebar-icon">&#x2699;</span>
+									<span class="sidebar-label">Settings</span>
+									<span class="sidebar-tooltip">Settings</span>
+								</a>
+							}
+							<a class="sidebar-item sidebar-item--logout" href={ templ.SafeURL(profileLogoutURL(prof)) } aria-label="Logout">
+								<span class="sidebar-icon">&#x2192;</span>
+								<span class="sidebar-label">Logout</span>
+								<span class="sidebar-tooltip">Logout</span>
+							</a>
+						} else {
+							// Bare Logout — backward-compat for single-user consumers (HMACAuth)
+							// or when Profile.Name is empty.
+							<a class="sidebar-item" href="/admin/logout" aria-label="Logout" style="anchor-name: --nav-logout">
+								<span class="sidebar-icon">&#x2192;</span>
+								<span class="sidebar-label">Logout</span>
+								<span class="sidebar-tooltip" style="position-anchor: --nav-logout">Logout</span>
+							</a>
+						}
 					</div>
 				</aside>
+				<div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
 				<main class="main">
+					<button type="button" class="sidebar-mobile-toggle" id="sidebar-mobile-toggle" aria-label="Open navigation">&#9776;</button>
 					<div id="content">
 						@content
 					</div>
@@ -95,6 +232,61 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 			<script src="/admin/static/admin.js" defer></script>
 		</body>
 	</html>
+}
+
+// navLink renders the raw <a> element for a single nav item.
+// Extracted so both sidebarItem (leaf) and sidebarItem (parent) can call it
+// without duplicating markup, and child items in .sidebar-children reuse the
+// same template rather than a hand-rolled copy.
+templ navLink(item NavItem) {
+	<a
+		class={ "sidebar-item pm7-sidebar-item", templ.KV("active pm7-sidebar-item--active", item.Active) }
+		href={ templ.SafeURL(item.URL) }
+		aria-label={ tooltipOf(item) }
+		style={ "anchor-name: --nav-" + item.ID }
+		if item.Active {
+			aria-current="page"
+		}
+	>
+		if item.Icon != "" {
+			<span class="sidebar-icon">{ item.Icon }</span>
+		}
+		<span class="sidebar-label">{ item.Label }</span>
+		if item.Badge != nil {
+			if b := item.Badge(ctx); b != "" {
+				<span class="sidebar-count">{ b }</span>
+			}
+		}
+		<span class="sidebar-tooltip" style={ "position-anchor: --nav-" + item.ID }>{ tooltipOf(item) }</span>
+	</a>
+}
+
+// sidebarItem renders a leaf nav link or a one-level submenu parent.
+// Leaf (no Children): delegates directly to navLink.
+// Parent (len(Children)>0): wraps navLink in a .sidebar-parent div,
+// emits data-has-active-child when any child is active (JS mirrors this guard
+// to force the parent expanded regardless of the sb-s collapse cookie), and
+// appends a .sidebar-children block that loops direct children via navLink.
+// Children-of-children are ignored — one level only (YAGNI).
+// Server-side always renders expanded; JS (sb-s cookie) controls collapse.
+templ sidebarItem(item NavItem) {
+	if len(item.Children) > 0 {
+		<div
+			class="sidebar-parent"
+			if hasActiveChild(item) {
+				data-has-active-child="true"
+			}
+		>
+			@navLink(item)
+			<div class="sidebar-children">
+				for _, child := range item.Children {
+					@navLink(child)
+				}
+			</div>
+		</div>
+	} else {
+		@navLink(item)
+	}
 }
 
 // LoginIdentifier describes the login form's identity field, letting one

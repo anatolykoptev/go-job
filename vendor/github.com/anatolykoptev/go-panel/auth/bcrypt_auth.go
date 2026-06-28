@@ -315,13 +315,39 @@ func (a *BcryptTOTPAuth) reject(w http.ResponseWriter, r *http.Request) {
 
 // RequireRole wraps Require and additionally requires the session role to equal
 // role (or "owner", which is always permitted). Not part of Authenticator.
+//
+// On a role-denied 403, a structured warning is emitted via slog. A spike in
+// these log lines indicates either a misconfigured role or a probing attempt
+// (direct-URL access to a role-gated resource with insufficient privileges).
 func (a *BcryptTOTPAuth) RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return a.Require(func(w http.ResponseWriter, r *http.Request) {
 		s, ok := SessionFrom(r.Context())
 		if !ok || (s.Role != role && s.Role != RoleOwner) {
+			userID := ""
+			actualRole := ""
+			if ok {
+				userID = s.UserID
+				actualRole = s.Role
+			}
+			slog.WarnContext(r.Context(), "auth: role-denied",
+				"required_role", role,
+				"actual_role", actualRole,
+				"user_id", userID,
+				"path", r.URL.Path,
+				"method", r.Method,
+			)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
 		next(w, r)
 	})
+}
+
+// HasRole reports whether the session on ctx satisfies role: an exact role match
+// or the "owner" super-role. It is the read-only derivation behind nav-hiding and
+// must never be used as a route gate — RequireRole is the authority. Returns
+// false (never panics) when ctx carries no session.
+func (a *BcryptTOTPAuth) HasRole(ctx context.Context, role string) bool {
+	s, ok := SessionFrom(ctx)
+	return ok && (s.Role == role || s.Role == RoleOwner)
 }
