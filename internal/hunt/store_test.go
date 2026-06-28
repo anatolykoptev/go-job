@@ -385,10 +385,11 @@ func TestStore_UpsertJob_WeakThenOk(t *testing.T) {
 	assert.Equal(t, []string{"go", "k8s"}, got.Skills, "skills must be promoted from ok ingest")
 }
 
-// TestStore_UpsertJob_NoDowngrade verifies that a weak re-ingest (title='') over an
-// already-good row NEVER overwrites the good fields. Locks the invariant: the fill-only
-// guards in UpsertJob ON CONFLICT must never downgrade good->weak/empty.
-// RED signal: remove EXCLUDED.description <> '' guard -> description overwrites with HTML blob.
+// TestStore_UpsertJob_NoDowngrade verifies that a weak re-ingest (title=”) over an
+// already-good row NEVER overwrites the good fields. Locks the ELSE arm: once title is
+// non-empty the row is good and the ELSE branch preserves ALL content fields regardless
+// of what EXCLUDED carries. NOTE: this test does NOT lock the EXCLUDED.* <> ”/IS NOT NULL
+// guards; those are covered by TestStore_UpsertJob_WeakRow_NoFieldDowngrade below.
 func TestStore_UpsertJob_NoDowngrade(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -436,6 +437,68 @@ func TestStore_UpsertJob_NoDowngrade(t *testing.T) {
 	assert.Equal(t, "Own reliability for 99.99% uptime across 50 services.", got.Description, "good description must not be overwritten by HTML blob")
 	assert.Equal(t, "GoodCorp", got.Company, "good company must survive empty re-ingest")
 	assert.Equal(t, []string{"go", "prometheus", "k8s"}, got.Skills, "good skills must not be cleared by nil re-ingest")
+}
+
+// TestStore_UpsertJob_WeakRow_NoFieldDowngrade locks the EXCLUDED.* <> ” / IS NOT NULL
+// guards in UpsertJob ON CONFLICT that protect populated content fields even when the
+// stored row is weak (title=”). A second weak re-ingest with empty description/company
+// and nil skills must NOT overwrite the step-1 populated values.
+//
+// RED-on-revert: removing any of these guards from the ON CONFLICT SET makes this test fail:
+//
+//	EXCLUDED.description IS NOT NULL AND EXCLUDED.description <> ''
+//	EXCLUDED.company IS NOT NULL AND EXCLUDED.company <> ''
+//	array_length(EXCLUDED.skills, 1) IS NOT NULL
+func TestStore_UpsertJob_WeakRow_NoFieldDowngrade(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	s := hunt.NewStore(pool)
+	require.NoError(t, s.Migrate(ctx))
+	truncateJobs(t, pool)
+
+	url := "https://jobs.example.com/weak-nodowngrade-vacancy"
+	hash := hunt.DedupHash(url)
+
+	// Step 1: create a WEAK row (title='') but with non-empty description/company/skills.
+	weak1 := hunt.Job{
+		DedupHash:   hash,
+		Title:       "", // empty — the weak-row marker; title='' is the queryable proxy
+		Company:     "PartialCorp",
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "Some partial description from raw scrape.",
+		Skills:      []string{"python", "docker"},
+	}
+	_, outcome1, err := s.UpsertJob(ctx, weak1)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeCreated, outcome1, "step 1 should create the weak row")
+
+	// Step 2: still-weak re-ingest (title still '') with EMPTY description, EMPTY company,
+	// and nil skills. The EXCLUDED.* <> '' / IS NOT NULL guards must block clobber.
+	weak2 := hunt.Job{
+		DedupHash:   hash,
+		Title:       "", // still weak
+		Company:     "", // incoming empty — must NOT overwrite "PartialCorp"
+		URL:         url,
+		Source:      "vacancy_ingest",
+		Description: "",  // incoming empty — must NOT overwrite step-1 description
+		Skills:      nil, // incoming nil  — must NOT clear step-1 skills
+	}
+	_, outcome2, err := s.UpsertJob(ctx, weak2)
+	require.NoError(t, err)
+	assert.Equal(t, hunt.OutcomeMerged, outcome2, "step 2 should merge (same URL)")
+
+	// Step-1 non-empty fields must survive the step-2 empty re-ingest.
+	jobs, err := s.ListJobs(ctx, hunt.JobFilter{Source: "vacancy_ingest", IncludeClosed: true, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	got := jobs[0]
+	assert.Equal(t, "Some partial description from raw scrape.", got.Description,
+		"EXCLUDED.description guard: non-empty stored description must survive empty re-ingest on weak row")
+	assert.Equal(t, "PartialCorp", got.Company,
+		"EXCLUDED.company guard: non-empty stored company must survive empty re-ingest on weak row")
+	assert.Equal(t, []string{"python", "docker"}, got.Skills,
+		"EXCLUDED.skills guard: non-nil stored skills must survive nil re-ingest on weak row")
 }
 
 // --- AuditContest ---

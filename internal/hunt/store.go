@@ -320,9 +320,13 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 			    status = CASE WHEN hunt_jobs.status = 'open' THEN EXCLUDED.status ELSE hunt_jobs.status END,
 			    closed_at = COALESCE(hunt_jobs.closed_at, EXCLUDED.closed_at),
 			    -- Fill-only: promote empty/weak-row fields from a newer ingest but never clobber
-			    -- an already-good value. title='' is the proxy for a weak-ingest row (LLM
-			    -- returned nothing); content fields also promote when their own stored value is
-			    -- empty/NULL and the incoming value is non-empty. Never downgrades good->weak.
+			    -- an already-good value. title='' is the queryable proxy for weak-ingest
+			    -- rows (LLM returned nothing) and the marker for rows needing re-enrichment;
+			    -- no additional migration column is required. Content fields also promote when
+			    -- the stored value is empty/NULL and the incoming value is non-empty. The
+			    -- EXCLUDED.* <> '' / IS NOT NULL guards prevent an empty re-ingest
+			    -- from clobbering a populated field even on a weak row (title='' stored).
+			    -- Never downgrades good->weak.
 			    title       = CASE WHEN hunt_jobs.title = '' THEN EXCLUDED.title ELSE hunt_jobs.title END,
 			    description = CASE WHEN (hunt_jobs.title = '' OR hunt_jobs.description IS NULL OR hunt_jobs.description = '') AND EXCLUDED.description IS NOT NULL AND EXCLUDED.description <> '' THEN EXCLUDED.description ELSE hunt_jobs.description END,
 			    company     = CASE WHEN (hunt_jobs.title = '' OR hunt_jobs.company IS NULL OR hunt_jobs.company = '') AND EXCLUDED.company IS NOT NULL AND EXCLUDED.company <> '' THEN EXCLUDED.company ELSE hunt_jobs.company END,
