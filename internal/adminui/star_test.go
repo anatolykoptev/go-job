@@ -7,7 +7,7 @@ import (
 )
 
 // TestStarToggleHTML_Unstarred verifies the ☆ state: hollow star, correct
-// action URL, CSRF token present.
+// action URL, CSRF token present, aria-label=Add, aria-pressed=false.
 // Red-on-revert: removing starToggleHTML or inverting the star glyph → fails.
 func TestStarToggleHTML_Unstarred(t *testing.T) {
 	got := starToggleHTML(42, false, "test-tok")
@@ -17,6 +17,9 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 		`☆`,
 		`name="_csrf"`,
 		`value="test-tok"`,
+		`aria-label="Add to shortlist"`,
+		`aria-pressed="false"`,
+		`outline-offset:2px`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("starToggleHTML(42, false): want %q in output, got:\n%s", want, got)
@@ -25,6 +28,9 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 	if strings.Contains(got, "★") {
 		t.Errorf("starToggleHTML(42, false): should not contain filled star ★")
 	}
+	if strings.Contains(got, `aria-label="Remove`) {
+		t.Errorf("starToggleHTML(42, false): aria-label must say Add, not Remove")
+	}
 	// Guard against a malformed tag (e.g. a stray `">>` closing the form),
 	// which renders a literal `>` in every table row. `>>` must never appear.
 	if strings.Contains(got, ">>") {
@@ -32,18 +38,26 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 	}
 }
 
-// TestStarToggleHTML_Starred verifies the ★ state: filled star, correct action URL.
-// Red-on-revert: inverting the starred branch → ★ missing in filled state.
+// TestStarToggleHTML_Starred verifies the ★ state: filled star, correct action URL,
+// aria-label=Remove, aria-pressed=true.
+// Red-on-revert: inverting the starred branch → ★ missing, aria-pressed="true" missing.
 func TestStarToggleHTML_Starred(t *testing.T) {
 	got := starToggleHTML(99, true, "another-tok")
-	if !strings.Contains(got, "★") {
-		t.Errorf("starToggleHTML(99, true): want ★ in output, got:\n%s", got)
-	}
-	if !strings.Contains(got, `action="/admin/jobs/99/shortlist"`) {
-		t.Errorf("starToggleHTML(99, true): want correct action URL, got:\n%s", got)
+	for _, want := range []string{
+		`★`,
+		`action="/admin/jobs/99/shortlist"`,
+		`aria-label="Remove from shortlist"`,
+		`aria-pressed="true"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("starToggleHTML(99, true): want %q in output, got:\n%s", want, got)
+		}
 	}
 	if strings.Contains(got, "☆") {
 		t.Errorf("starToggleHTML(99, true): should not contain hollow star ☆")
+	}
+	if strings.Contains(got, `aria-pressed="false"`) {
+		t.Errorf("starToggleHTML(99, true): aria-pressed must be true, not false")
 	}
 }
 

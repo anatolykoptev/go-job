@@ -42,6 +42,13 @@ func sessionCookieFrom(ctx context.Context) string {
 	return v
 }
 
+// mintStarCSRF issues a CSRF token bound to the session cookie in ctx.
+// Shared helper used by jobsLister and shortlistLister to avoid duplicate
+// sessVal/csrf.Issue two-liners.
+func mintStarCSRF(ctx context.Context, csrfKey []byte) string {
+	return csrf.Issue(csrfKey, sessionCookieFrom(ctx), csrf.DefaultTTL)
+}
+
 // starToggleHTML returns XSS-safe HTML for a shortlist star toggle form cell.
 // The form POSTs to /admin/jobs/{id}/shortlist and redirects back to Referer
 // (preserving the current filter state). csrfTok is the hex/decimal token from
@@ -51,30 +58,44 @@ func sessionCookieFrom(ctx context.Context) string {
 // neither contains user-supplied text, so no additional escaping is needed beyond
 // the html.EscapeString on csrfTok (which protects against any unexpected char
 // in the token format).
-func starToggleHTML(id int64, shortlisted bool, csrfTok string) string {
+//
+// Accessibility: aria-pressed reflects current starred state; aria-label
+// describes the action resulting from the click (add vs. remove).
+// outline-offset:2px ensures keyboard focus is visible when the UA's default
+// button:focus-visible outline is absent (stripped by border:none reset).
+func starToggleHTML(id int64, starred bool, csrfTok string) string {
 	star := "☆"
-	if shortlisted {
+	ariaLabel := "Add to shortlist"
+	ariaPressed := "false"
+	if starred {
 		star = "★"
+		ariaLabel = "Remove from shortlist"
+		ariaPressed = "true"
 	}
 	idStr := strconv.FormatInt(id, 10)
 	return fmt.Sprintf(
 		`<form method="POST" action="/admin/jobs/%s/shortlist" style="display:inline;margin:0">`+
 			`<input type="hidden" name="%s" value="%s">`+
-			`<button type="submit" style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1" title="Toggle shortlist">%s</button>`+
+			`<button type="submit"`+
+			` style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;outline-offset:2px"`+
+			` aria-label="%s" aria-pressed="%s"`+
+			` title="%s">%s</button>`+
 			`</form>`,
 		idStr,
 		html.EscapeString(csrf.FormField),
 		html.EscapeString(csrfTok),
+		ariaLabel,
+		ariaPressed,
+		ariaLabel,
 		star,
 	)
 }
 
 // shortlistHandler returns an http.HandlerFunc that toggles a job's shortlist
 // membership via hunt_ratings (rating-backed star). CSRF-protected (same pattern
-// as rateHandler). Redirects to Referer on success to preserve filter state.
-//
-// Toggle semantics (see Store.ToggleShortlistStar): stage ∈ activeStages → demote
-// to StageNew (star off); otherwise → upsert StageSaved (star on). Note preserved.
+// as rateHandler). On success redirects to Referer to preserve filter state.
+// On toggle error redirects to Referer with ?err=star-toggle-failed so the
+// operator stays in the admin UI (no dead-end error page).
 func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
@@ -99,9 +120,17 @@ func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator,
 			return
 		}
 
-		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistActiveStages); err != nil {
+		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistActiveStages, hunt.StarSoftStages); err != nil {
 			slog.Error("shortlistHandler: toggle star", "id", id64, "err", err)
-			http.Error(w, "update failed", http.StatusInternalServerError)
+			// Redirect back with an error param so the operator stays in the admin
+			// UI rather than landing on a dead-end error page.
+			dest := safeAdminReferer(r.Header.Get("Referer"))
+			if strings.Contains(dest, "?") {
+				dest += "&err=star-toggle-failed"
+			} else {
+				dest += "?err=star-toggle-failed"
+			}
+			http.Redirect(w, r, dest, http.StatusSeeOther) //nolint:gosec // G710: safeAdminReferer validates Referer: rejects absolute URLs (non-empty Host/Scheme), restricts path to /admin/* only.
 			return
 		}
 

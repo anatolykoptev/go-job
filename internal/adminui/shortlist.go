@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/admintable"
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
@@ -77,7 +76,7 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 	return resource.Resource{
 		Name:  navIDShortlist,
 		Title: "Shortlist",
-		Icon:  "⭐",
+		Icon:  "★",
 		Group: grpHunt,
 		Sort:  shortlistSpec,
 		Filter: shortlistFilter,
@@ -120,10 +119,7 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 		legacyEntries := authority.LegacyEntries()
 
 		// Mint a single CSRF token for all star-toggle forms on this page.
-		// Session cookie is available via withSessionCookieContext (injected by
-		// the panel handler wrapper in adminui.New).
-		sessVal := sessionCookieFrom(ctx)
-		csrfTok := csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
+		csrfTok := mintStarCSRF(ctx, csrfKey)
 
 		out := make([]resource.Row, 0, len(storeRows))
 		for _, row := range storeRows {

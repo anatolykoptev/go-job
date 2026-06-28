@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/admintable"
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
@@ -193,10 +192,7 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 		}
 
 		// Mint a single CSRF token for all star-toggle forms on this page.
-		// The token is bound to the session cookie value injected by
-		// withSessionCookieContext (see star.go). Token is valid for csrf.DefaultTTL.
-		sessVal := sessionCookieFrom(ctx)
-		csrfTok := csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
+		csrfTok := mintStarCSRF(ctx, csrfKey)
 
 		var out []resource.Row
 		for rows.Next() {
