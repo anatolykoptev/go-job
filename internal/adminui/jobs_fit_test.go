@@ -190,7 +190,8 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted, 6=Location, 7=Source, 8=Docs.
+	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted,
+	// 6=Location, 7=Source, 8=Docs, 9=Star toggle.
 	cells := []resource.Cell{
 		{Value: "Some Title"},                                       // 0: title — plain text cell-0
 		{Value: "Acme Corp"},                                        // 1: company — plain text
@@ -201,6 +202,7 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 		{Value: "Remote (US)"},                                      // 6: location
 		{Value: "linkedin"},                                         // 7: source
 		{Value: docsChipHTML(1, false, false), HTML: true},          // 8: docs (no resume/cover)
+		{Value: starToggleHTML(1, false, ""), HTML: true},           // 9: star toggle
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -226,12 +228,19 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	if !cells[8].HTML {
 		t.Errorf("cell[8] (Docs chip) must have HTML:true")
 	}
-	// Assert column order: Title first, Company second.
+	// Assert star toggle is at index 9 (HTML:true, always last).
+	if !cells[9].HTML {
+		t.Errorf("cell[9] (Star toggle) must have HTML:true")
+	}
+	// Assert column order: Title first, Company second, Star last.
 	if jobsSpec.Columns[0].Key != colKeyTitle {
 		t.Errorf("column[0] must be Title (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
 	}
 	if jobsSpec.Columns[1].Key != "company" {
 		t.Errorf("column[1] must be Company (key=%q), got key=%q", "company", jobsSpec.Columns[1].Key)
+	}
+	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != colKeyShortlisted {
+		t.Errorf("last column must be Star (key=%q), got key=%q", colKeyShortlisted, jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
 	}
 }
 
@@ -298,8 +307,8 @@ func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
 		t.Errorf("OrderBy for sort=market should contain 'LONGSHOT', got: %q", orderByMarket)
 	}
 
-	// Column count sanity (FIX 3 added Docs column — now 9 total).
-	const expectedCols = 9
+	// Column count sanity (shortlist star added — now 10 total).
+	const expectedCols = 10
 	if len(jobsSpec.Columns) != expectedCols {
 		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
 	}
@@ -422,7 +431,8 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 		Offset: 0,
 	}
 	// authority=nil: docs column renders empty chips (no crash).
-	rows, total, err := jobsLister(pool, nil)(context.Background(), q)
+	// csrfKey=nil: star toggle renders ☆ with an empty-session token.
+	rows, total, err := jobsLister(pool, nil, nil)(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}
