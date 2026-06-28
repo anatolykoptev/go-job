@@ -302,9 +302,20 @@ func initEngine() hunt.Notifier {
 	if len(accounts) > 0 {
 		openCount = 0
 	}
+	// When go-social is configured it owns all Twitter search; the local client
+	// is never used for search in that path. Building it with the default
+	// OpenAccountCount=2 triggers two guest-token bootstraps at startup that
+	// always fail from a datacenter IP (Bad guest token, code 239 / 403).
+	// Suppress the noise: build the local client in silent-fallback mode.
+	disableGuestFallback := false
+	if c.SocialClient != nil {
+		openCount = 0
+		disableGuestFallback = true
+	}
 	tw, err := twitter.NewClient(twitter.ClientConfig{
-		Accounts:         accounts,
-		OpenAccountCount: openCount,
+		Accounts:             accounts,
+		OpenAccountCount:     openCount,
+		DisableGuestFallback: disableGuestFallback,
 	})
 	if err != nil {
 		slog.Warn("twitter client init failed", slog.Any("error", err))
