@@ -33,10 +33,30 @@ func trendClass(t Trend) string {
 	}
 }
 
+// trendGlyph returns a Unicode direction glyph for the given Trend, matching
+// the repo's shape-glyph a11y convention (WCAG 1.4.1 — direction is not
+// conveyed by colour alone). Rendered visibly inside the delta span so screen
+// readers announce it without a separate sr-only element.
+func trendGlyph(t Trend) string {
+	switch t {
+	case TrendUp:
+		return "↑"
+	case TrendDown:
+		return "↓"
+	case TrendFlat:
+		return "→"
+	case TrendNew:
+		return "✦"
+	default:
+		return ""
+	}
+}
+
 // StatCard is the data model for a single metric tile.
 //
 // Label, Value, and Delta are HTML-escaped by templ; never pass templ.Raw.
-// Spark is reserved for a future sparkline mini-chart; unused in this phase.
+// Spark is the mini-sparkline data series (oldest → newest) rendered by
+// Sparkline when non-empty. Pass nil or an empty slice to suppress the chart.
 type StatCard struct {
 	Label string
 	Value string
@@ -66,7 +86,7 @@ templ StatCardView(c StatCard) {
 		<div class="stat-value">
 			{ c.Value }
 			if c.Trend != TrendNone && c.Delta != "" {
-				<span class={ "delta", trendClass(c.Trend) }>{ c.Delta }</span>
+				<span class={ "delta", trendClass(c.Trend) }>{ trendGlyph(c.Trend) }{ c.Delta }</span>
 			}
 		</div>
 		if len(c.Spark) > 0 {

@@ -35,8 +35,8 @@ const (
 func Sparkline(values []int) templ.Component {
 	if len(values) == 0 {
 		return templ.Raw(fmt.Sprintf(
-			`<svg width="%d" height="%d" class="sparkline" aria-hidden="true"></svg>`,
-			sparkWidth, sparkHeight,
+			`<svg width="%d" height="%d" viewBox="0 0 %d %d" class="sparkline" aria-hidden="true"></svg>`,
+			sparkWidth, sparkHeight, sparkWidth, sparkHeight,
 		))
 	}
 
@@ -51,13 +51,28 @@ func Sparkline(values []int) templ.Component {
 	if maxV == 0 {
 		midY := sparkHeight / 2
 		return templ.Raw(fmt.Sprintf(
-			`<svg width="%d" height="%d" class="sparkline" aria-hidden="true">`+
+			`<svg width="%d" height="%d" viewBox="0 0 %d %d" class="sparkline" aria-hidden="true">`+
 				`<line x1="0" y1="%d" x2="%d" y2="%d" class="sparkline-zero"/></svg>`,
-			sparkWidth, sparkHeight, midY, sparkWidth, midY,
+			sparkWidth, sparkHeight, sparkWidth, sparkHeight, midY, sparkWidth, midY,
 		))
 	}
 
 	n := len(values)
+
+	// Single non-zero value: the loop would emit one point, which is invisible
+	// in all browsers (polyline needs ≥2 points). Render a flat segment at the
+	// computed y position so the cell retains visual breadth.
+	if n == 1 {
+		plotH := float64(sparkHeight - 2*sparkPad)
+		y := float64(sparkPad) + plotH*(1.0-float64(values[0])/float64(maxV))
+		return templ.Raw(fmt.Sprintf(
+			`<svg width="%d" height="%d" viewBox="0 0 %d %d" class="sparkline" aria-hidden="true">`+
+				`<polyline fill="none" points="%.1f,%.1f %.1f,%.1f" class="sparkline-line"/></svg>`,
+			sparkWidth, sparkHeight, sparkWidth, sparkHeight,
+			float64(sparkPad), y, float64(sparkWidth-sparkPad), y,
+		))
+	}
+
 	step := float64(sparkWidth-2*sparkPad) / float64(max(n-1, 1))
 	plotH := float64(sparkHeight - 2*sparkPad)
 
@@ -76,8 +91,8 @@ func Sparkline(values []int) templ.Component {
 	points := sb.String()
 
 	return templ.Raw(fmt.Sprintf(
-		`<svg width="%d" height="%d" class="sparkline" aria-hidden="true">`+
+		`<svg width="%d" height="%d" viewBox="0 0 %d %d" class="sparkline" aria-hidden="true">`+
 			`<polyline fill="none" points="%s" class="sparkline-line"/></svg>`,
-		sparkWidth, sparkHeight, points,
+		sparkWidth, sparkHeight, sparkWidth, sparkHeight, points,
 	))
 }

@@ -41,10 +41,30 @@ func trendClass(t Trend) string {
 	}
 }
 
+// trendGlyph returns a Unicode direction glyph for the given Trend, matching
+// the repo's shape-glyph a11y convention (WCAG 1.4.1 — direction is not
+// conveyed by colour alone). Rendered visibly inside the delta span so screen
+// readers announce it without a separate sr-only element.
+func trendGlyph(t Trend) string {
+	switch t {
+	case TrendUp:
+		return "↑"
+	case TrendDown:
+		return "↓"
+	case TrendFlat:
+		return "→"
+	case TrendNew:
+		return "✦"
+	default:
+		return ""
+	}
+}
+
 // StatCard is the data model for a single metric tile.
 //
 // Label, Value, and Delta are HTML-escaped by templ; never pass templ.Raw.
-// Spark is reserved for a future sparkline mini-chart; unused in this phase.
+// Spark is the mini-sparkline data series (oldest → newest) rendered by
+// Sparkline when non-empty. Pass nil or an empty slice to suppress the chart.
 type StatCard struct {
 	Label string
 	Value string
@@ -96,7 +116,7 @@ func StatCardView(c StatCard) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(c.Label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 65, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 85, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -109,7 +129,7 @@ func StatCardView(c StatCard) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(c.Value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 67, Col: 12}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 87, Col: 12}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -143,11 +163,20 @@ func StatCardView(c StatCard) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var6 string
-			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(c.Delta)
+			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(trendGlyph(c.Trend))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 69, Col: 58}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 89, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var7 string
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(c.Delta)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `components/statcard.templ`, Line: 89, Col: 81}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
