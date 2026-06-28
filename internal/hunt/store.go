@@ -763,6 +763,11 @@ func (s *Store) GetAuditContest(ctx context.Context, id int64) (*AuditContest, e
 
 // Rate inserts or updates a user rating for a hunt entry.
 // Upserts on (entry_kind, entry_id, user_name).
+//
+// Note semantics: Rate ALWAYS overwrites the note with the caller-supplied value
+// (even if empty). This is intentional for the stage-select + note form. Contrast
+// with ToggleShortlistStar, which deliberately NEVER touches the note column.
+// Do not unify these two paths without understanding the divergence.
 func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, stage, note string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, note, rated_at, updated_at)
@@ -1676,20 +1681,43 @@ func (s *Store) CountShortlist(ctx context.Context, user string, stages []string
 	return n
 }
 
-// ToggleShortlistStar toggles a job's membership in the shortlist by flipping
-// its hunt_ratings stage between StageSaved (★ on) and StageNew (★ off).
+// starSoftStages are the stages a star-click can demote to StageNew ("star off").
+// Only these "soft" triage stages are eligible for demotion; advanced pipeline
+// stages (StageApplied, StageInterview, StageOffer) are protected — a star click
+// on an advanced-stage job is a no-op. Single source of truth; passed in from
+// adminui alongside shortlistActiveStages.
+var StarSoftStages = []string{
+	StageInteresting,
+	StageSaved,
+	StageClaimed,
+}
+
+// stageIn returns true when stage is present in the given slice.
+func stageIn(stage string, stages []string) bool {
+	for _, s := range stages {
+		if s == stage {
+			return true
+		}
+	}
+	return false
+}
+
+// ToggleShortlistStar toggles a job's shortlist membership via hunt_ratings.
 //
-// Note preservation: existing note is always kept; this method never overwrites
-// or clears a user's note text. On INSERT (no prior row), note starts as NULL.
+// Note preservation: the ON CONFLICT clause does NOT touch the note column, so
+// any existing note survives both star-on and star-off transitions. This
+// diverges intentionally from Store.Rate, which DOES overwrite the note on
+// every call (see Rate for rationale). Do not merge these two paths.
 //
-// Toggle semantics:
-//   - Current stage ∈ activeStages → set stage=StageNew → returns false (star off)
-//   - Current stage ∉ activeStages (or no row yet) → upsert stage=StageSaved → returns true (star on)
+// Toggle semantics (per adminui.shortlistActiveStages + adminui.StarSoftStages):
+//   - No row / stage ∉ activeStages       → upsert stage=StageSaved → return starred=true (star on)
+//   - stage ∈ softDemotable               → update stage=StageNew   → return starred=false (star off)
+//   - stage ∈ advanced (applied/interview/offer) → NO-OP            → return starred=true (unchanged)
 //
-// Footgun: demoting a job at stage "applied" / "interview" to StageNew is
-// intentional per spec, but operators should be aware it removes the row from
-// /admin/shortlist and resets the stage to "new".
-func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user string, activeStages []string) (bool, error) {
+// The advanced-stage protection guarantees a star click can NEVER silently lose
+// an applied/interview/offer pipeline stage. Those stages are managed only via
+// the detail-page stage select.
+func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user string, activeStages, softDemotable []string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("hunt: toggle star: begin tx: %w", err)
@@ -1702,31 +1730,40 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 	}()
 
 	// Read current stage (if any) — FOR UPDATE to lock the row.
+	// pgx.ErrNoRows → no prior row; treat as star-on. Any other error → surface.
 	var curStage *string
-	_ = tx.QueryRow(ctx,
+	scanErr := tx.QueryRow(ctx,
 		`SELECT stage FROM hunt_ratings
 		  WHERE entry_kind = 'job' AND entry_id = $1 AND user_name = $2
 		  FOR UPDATE`,
 		entryID, user,
 	).Scan(&curStage)
-
-	isStarred := false
-	if curStage != nil {
-		for _, s := range activeStages {
-			if s == *curStage {
-				isStarred = true
-				break
-			}
-		}
+	if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
+		txErr = scanErr
+		return false, fmt.Errorf("hunt: toggle star id=%d: read stage: %w", entryID, scanErr)
 	}
+
+	// Advanced-stage protection: job at applied/interview/offer → no-op.
+	// The star stays filled; these stages are managed via the detail-page select only.
+	if curStage != nil && stageIn(*curStage, activeStages) && !stageIn(*curStage, softDemotable) {
+		// Commit the read-only transaction cleanly (no writes).
+		if txErr = tx.Commit(ctx); txErr != nil {
+			return false, fmt.Errorf("hunt: toggle star id=%d: commit no-op: %w", entryID, txErr)
+		}
+		return true, nil // starred unchanged — advanced stage
+	}
+
+	isStarred := curStage != nil && stageIn(*curStage, activeStages)
 
 	newStage := StageSaved
 	if isStarred {
 		newStage = StageNew
 	}
 
-	// Upsert: note is NOT in SET clause → preserved on conflict.
-	// On INSERT (no prior row), note starts as NULL (field is nullable).
+	// Upsert: note column is excluded from SET → preserved on conflict.
+	// On INSERT (no prior row), note is NULL (nullable field).
+	// NOTE: Store.Rate deliberately overwrites note on every call; this method
+	// deliberately does NOT. Do not unify without understanding the divergence.
 	if _, txErr = tx.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, rated_at, updated_at)
 		VALUES ('job', $1, $2, $3, NOW(), NOW())
