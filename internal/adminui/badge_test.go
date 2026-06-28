@@ -34,7 +34,7 @@ func openBadgeTestStore(t *testing.T) *hunt.Store {
 // "jobs resource Badge must be non-nil".
 func TestJobsResource_BadgeClosureNonNil(t *testing.T) {
 	store := openBadgeTestStore(t)
-	r := jobsResource(store, nil, nil)
+	r := jobsResource(store, "test_badge_user", nil, nil)
 	if r.Badge == nil {
 		t.Fatal("jobs resource Badge must be non-nil")
 	}
@@ -56,7 +56,7 @@ func TestJobsResource_BadgeClosureNonNil(t *testing.T) {
 // RED-on-revert: removing Badge from shortlistResource makes this test fail.
 func TestShortlistResource_BadgeClosureNonNil(t *testing.T) {
 	store := openBadgeTestStore(t)
-	r := shortlistResource(store, "test_badge_user", nil)
+	r := shortlistResource(store, "test_badge_user", nil, nil)
 	if r.Badge == nil {
 		t.Fatal("shortlist resource Badge must be non-nil")
 	}
