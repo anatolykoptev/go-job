@@ -58,7 +58,7 @@ func TestHuntWriterInvariant(t *testing.T) {
 		t.Fatalf("cannot read opportunity_search.go: %v", err)
 	}
 
-	for _, sym := range []string{"persistBounties", "persistSecurity", "persistFreelanceJobs"} {
+	for _, sym := range []string{"func PersistBounties(", "func PersistSecurity(", "func PersistFreelanceJobs("} {
 		if !bytes.Contains(data, []byte(sym)) {
 			t.Errorf("hunt-writer invariant BROKEN: %s missing from opportunity_search.go", sym)
 		}

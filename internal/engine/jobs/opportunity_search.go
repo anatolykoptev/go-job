@@ -41,7 +41,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, bountyToOpportunity(b))
 			}
 
-			persistBounties(ctx, bounties)
+			PersistBounties(ctx, bounties)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -62,7 +62,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, securityToOpportunity(s))
 			}
 
-			persistSecurity(ctx, programs)
+			PersistSecurity(ctx, programs)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -83,7 +83,7 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 				converted = append(converted, freelanceToOpportunity(f))
 			}
 
-			persistFreelanceJobs(ctx, freelanceJobs)
+			PersistFreelanceJobs(ctx, freelanceJobs)
 
 			mu.Lock()
 			opps = append(opps, converted...)
@@ -117,11 +117,16 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 }
 
 func fetchAllBounties(ctx context.Context) []engine.BountyListing {
+	return fetchAllBountiesImpl(ctx, 50, true)
+}
+
+// fetchAllBountiesImpl is the shared aggregator for both the on-demand search path
+// (limit=50, applyCap=true) and the scheduled ingest path (limit=10000, applyCap=false).
+// When applyCap is true the combined result is capped to limit items.
+func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engine.BountyListing {
 	var all []engine.BountyListing
 
-	const perSourceLimit = 50
-
-	if bvecs, err := SearchAlgoraEnriched(ctx, perSourceLimit); err == nil {
+	if bvecs, err := SearchAlgoraEnriched(ctx, limit); err == nil {
 		for _, bv := range bvecs {
 			all = append(all, bv.Bounty)
 		}
@@ -141,7 +146,7 @@ func fetchAllBounties(ctx context.Context) []engine.BountyListing {
 	}
 
 	for _, s := range sources {
-		bounties, err := s.fn(ctx, perSourceLimit)
+		bounties, err := s.fn(ctx, limit)
 		if err != nil {
 			slog.Warn("opportunity_search: "+s.name+" error", slog.Any("error", err))
 			continue
@@ -150,73 +155,96 @@ func fetchAllBounties(ctx context.Context) []engine.BountyListing {
 		all = append(all, bounties...)
 	}
 
-	if len(all) > perSourceLimit {
-		all = all[:perSourceLimit]
+	if applyCap && len(all) > limit {
+		all = all[:limit]
 	}
 
 	return all
 }
 
 func fetchAllSecurity(ctx context.Context) []engine.SecurityProgram {
+	return fetchAllSecurityImpl(ctx, 50, true)
+}
+
+// fetchAllSecurityImpl is the shared aggregator for both paths.
+// When applyCap is false the per-source requests use a large limit and the
+// BTD fetch goes direct (bypassing the result cache) so the ingest cycle
+// always pulls the full live dataset. When applyCap is true the combined
+// result is capped to limit items using the cached SearchSecurityPrograms path.
+func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engine.SecurityProgram {
 	var all []engine.SecurityProgram
 
-	const perSourceLimit = 50
-
-	btd, err := SearchSecurityPrograms(ctx, perSourceLimit)
-	if err != nil {
-		slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
+	if applyCap {
+		// On-demand path: use cached helper with limit applied.
+		btd, err := SearchSecurityPrograms(ctx, limit)
+		if err != nil {
+			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
+		} else {
+			all = append(all, btd...)
+		}
 	} else {
-		all = append(all, btd...)
+		// Scheduled path: bypass cache to get the full live dataset.
+		btd, err := fetchAllSecurityPrograms(ctx)
+		if err != nil {
+			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
+		} else {
+			all = append(all, btd...)
+		}
 	}
 
-	imm, err := SearchImmunefi(ctx, perSourceLimit)
+	imm, err := SearchImmunefi(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: immunefi error", slog.Any("error", err))
 	} else {
 		all = append(all, imm...)
 	}
 
-	shr, err := SearchSherlock(ctx, perSourceLimit)
+	shr, err := SearchSherlock(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: sherlock error", slog.Any("error", err))
 	} else {
 		all = append(all, shr...)
 	}
 
-	cantina, err := SearchCantina(ctx, perSourceLimit)
+	cantina, err := SearchCantina(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: cantina error", slog.Any("error", err))
 	} else {
 		all = append(all, cantina...)
 	}
 
-	c4r, err := SearchCode4rena(ctx, perSourceLimit)
+	c4r, err := SearchCode4rena(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: code4rena error", slog.Any("error", err))
 	} else {
 		all = append(all, c4r...)
 	}
 
-	if len(all) > perSourceLimit {
-		all = all[:perSourceLimit]
+	if applyCap && len(all) > limit {
+		all = all[:limit]
 	}
 
 	return all
 }
 
 func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
+	return fetchAllFreelanceImpl(ctx, 30, true)
+}
+
+// fetchAllFreelanceImpl is the shared aggregator for both paths.
+// When applyCap is true the combined result is capped to 50 items (on-demand);
+// when false no cap is applied (scheduled ingest).
+func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engine.FreelanceJob {
 	var all []engine.FreelanceJob
 
-	const perSourceLimit = 30
-
-	rok, err := SearchRemoteOKFreelance(ctx, langAliasGolang, perSourceLimit)
+	rok, err := SearchRemoteOKFreelance(ctx, langAliasGolang, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: remoteok error", slog.Any("error", err))
 	} else {
 		all = append(all, rok...)
 	}
 
-	him, err := SearchHimalayas(ctx, langAliasGolang, perSourceLimit)
+	him, err := SearchHimalayas(ctx, langAliasGolang, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: himalayas error", slog.Any("error", err))
 	} else {
@@ -224,54 +252,107 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 	}
 
 	const capFreelance = 50
-	if len(all) > capFreelance {
+	if applyCap && len(all) > capFreelance {
 		all = all[:capFreelance]
 	}
 
 	return all
 }
 
-// persistBounties writes BountyListings into the hunt store (best-effort, non-blocking on nil store).
-func persistBounties(ctx context.Context, bounties []engine.BountyListing) {
+// PersistBounties writes BountyListings into the hunt store and applies the
+// backfill-guard notify policy (best-effort, non-blocking on nil store).
+// Notify logic lives here (not in UpsertBounty) so both the scheduled and
+// on-demand paths share one policy, and the initial seed does not flood.
+//
+//nolint:dupl
+func PersistBounties(ctx context.Context, bounties []engine.BountyListing) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Bounty
+	fetched := len(bounties)
 	for _, b := range bounties {
-		_, outcome, err := store.UpsertBounty(ctx, BountyListingToHunt(b))
+		hb := BountyListingToHunt(b)
+		_, outcome, err := store.UpsertBounty(ctx, hb)
 		engine.IncrHuntIngest(hunt.KindBounty, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert bounty failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hb.Status == hunt.StatusOpen {
+			created = append(created, hb)
 		}
 	}
+	notified, suppressed := applyBountyNotifyPolicy(store.Notifier(), created)
+	slog.Info("hunt: persist bounties",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }
 
-// persistSecurity writes SecurityPrograms into the hunt store.
-func persistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
+// PersistSecurity writes SecurityPrograms into the hunt store and applies the
+// backfill-guard notify policy.
+//
+//nolint:dupl
+func PersistSecurity(ctx context.Context, programs []engine.SecurityProgram) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Security
+	fetched := len(programs)
 	for _, sp := range programs {
-		_, outcome, err := store.UpsertSecurity(ctx, SecurityProgramToHunt(sp))
+		hs := SecurityProgramToHunt(sp)
+		_, outcome, err := store.UpsertSecurity(ctx, hs)
 		engine.IncrHuntIngest(hunt.KindSecurity, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert security failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hs.Status == hunt.StatusOpen {
+			created = append(created, hs)
 		}
 	}
+	notified, suppressed := applySecurityNotifyPolicy(store.Notifier(), created)
+	slog.Info("hunt: persist security",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }
 
-// persistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store.
-func persistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
+// PersistFreelanceJobs writes FreelanceJobs (remoteok/himalayas) into the hunt store
+// and applies the backfill-guard notify policy.
+//
+//nolint:dupl
+func PersistFreelanceJobs(ctx context.Context, freelanceJobs []engine.FreelanceJob) {
 	store := engine.GetHuntStore()
 	if store == nil {
 		return
 	}
+	var created []hunt.Freelance
+	fetched := len(freelanceJobs)
 	for _, f := range freelanceJobs {
-		_, outcome, err := store.UpsertFreelance(ctx, FreelanceJobToHunt(f))
+		hf := FreelanceJobToHunt(f)
+		_, outcome, err := store.UpsertFreelance(ctx, hf)
 		engine.IncrHuntIngest(hunt.KindFreelance, outcome.String())
 		if err != nil {
 			slog.Warn("hunt: upsert freelance failed", slog.Any("error", err))
+			continue
+		}
+		if outcome == hunt.OutcomeCreated && hf.Status == hunt.StatusOpen {
+			created = append(created, hf)
 		}
 	}
+	notified, suppressed := applyFreelanceNotifyPolicy(store.Notifier(), created)
+	slog.Info("hunt: persist freelance",
+		slog.Int("fetched", fetched),
+		slog.Int("created", len(created)),
+		slog.Int("notified", notified),
+		slog.Int("suppressed", suppressed),
+	)
 }

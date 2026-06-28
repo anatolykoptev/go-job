@@ -58,6 +58,7 @@ func main() {
 	// huntNotifier is the same Telegram notifier wired to the store so the worker
 	// fires on OutcomeCreated without going back through the store's unexported field.
 	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier)
+	huntworker.StartOpportunityWorker(sigCtx, engine.GetHuntStore())
 
 	startPrometheusScrape(sigCtx, slog.Default())
 

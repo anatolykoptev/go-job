@@ -20,10 +20,10 @@ type mockNotifier struct {
 	security  []hunt.Security
 }
 
-func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)                    { m.bounties = append(m.bounties, b) }
-func (m *mockNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult)     { m.jobs = append(m.jobs, j) }
-func (m *mockNotifier) NotifyNewFreelance(f hunt.Freelance)              { m.freelance = append(m.freelance, f) }
-func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)               { m.security = append(m.security, s) }
+func (m *mockNotifier) NotifyNewBounty(b hunt.Bounty)                { m.bounties = append(m.bounties, b) }
+func (m *mockNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult) { m.jobs = append(m.jobs, j) }
+func (m *mockNotifier) NotifyNewFreelance(f hunt.Freelance)          { m.freelance = append(m.freelance, f) }
+func (m *mockNotifier) NotifyNewSecurity(s hunt.Security)            { m.security = append(m.security, s) }
 
 // TestUpsert_DoesNotNotifyClosedBounty verifies that notifier.NotifyNewBounty is NOT
 // called when a new bounty is inserted with Status != open (e.g. claimed/completed).
@@ -77,8 +77,10 @@ func TestUpsert_DoesNotNotifyMergedBounty(t *testing.T) {
 	assert.Empty(t, notifier.bounties, "notifier must NOT fire for merged bounty")
 }
 
-// TestUpsert_NotifiesOpenBounty verifies that open bounties still trigger the notifier.
-func TestUpsert_NotifiesOpenBounty(t *testing.T) {
+// TestUpsert_NeverNotifiesBounty verifies that after the notify-policy relocation,
+// UpsertBounty does NOT call NotifyNewBounty directly even for open bounties.
+// Notify is the persist layer responsibility now (PersistBounties in opportunity_search.go).
+func TestUpsert_NeverNotifiesBounty(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 	s := hunt.NewStore(pool)
@@ -98,7 +100,9 @@ func TestUpsert_NotifiesOpenBounty(t *testing.T) {
 	_, outcome, err := s.UpsertBounty(ctx, open)
 	require.NoError(t, err)
 	assert.Equal(t, hunt.OutcomeCreated, outcome)
-	assert.Len(t, notifier.bounties, 1, "notifier MUST fire for open bounty")
+	// Notify relocated to persist layer - UpsertBounty must NOT call NotifyNewBounty.
+	assert.Empty(t, notifier.bounties,
+		"UpsertBounty must NOT notify (notify relocated to PersistBounties)")
 }
 
 // TestUpsert_DoesNotNotifyClosedJob verifies job notifier is also gated on open status.
