@@ -27,6 +27,8 @@ func resolveTypstTheme(name string) typstTheme {
 		return typstThemeCard
 	case themeDark:
 		return typstThemeDark
+	case "resume":
+		return typstThemeResume
 	default: // "report" and anything else
 		return typstThemeReport
 	}
@@ -225,4 +227,59 @@ var typstThemeDark = typstTheme{preamble: `
   set text(size: 32pt, weight: "semibold", fill: rgb("#C9D1D9"))
   block(width: 100%, it.body)
 }
+`}
+
+// ── resume ────────────────────────────────────────────────
+// Compact single-page resume theme tuned for US job applications.
+// US-Letter paper (recruiters print/scan Letter; A4 gets scaled or clipped).
+// Left-aligned body (no justify) — justified text creates visible inter-word
+// rivers that read as template tells.  Tighter margins, leading, and heading
+// vspace than "report" so content-rich one-page CVs don't spill to a second
+// page.  All show-rules for code blocks and tables are identical to "report".
+var typstThemeResume = typstTheme{preamble: `
+#set page(
+  paper:  "us-letter",
+  margin: (x: 20mm, top: 14mm, bottom: 14mm),
+)
+
+#set text(font: "IBM Plex Sans", size: 10.5pt, fill: rgb("#0f172a"))
+#set par(leading: 0.6em, spacing: 0.7em)
+#set list(indent: 8pt)
+#set enum(indent: 8pt)
+
+#show heading.where(level: 1): it => {
+  v(3mm, weak: true)
+  text(size: 16pt, weight: "semibold", fill: rgb("#0f172a"), tracking: -0.5pt, it.body)
+  v(1mm, weak: true)
+  line(length: 100%, stroke: rgb("#e2e8f0") + 1pt)
+  v(1.5mm, weak: true)
+}
+#show heading.where(level: 2): it => {
+  v(2.5mm, weak: true)
+  text(size: 12pt, weight: "semibold", fill: rgb("#1e293b"), it.body)
+  v(0.8mm, weak: true)
+}
+#show heading.where(level: 3): it => {
+  v(2mm, weak: true)
+  text(size: 10.5pt, weight: "semibold", fill: rgb("#334155"), it.body)
+  v(0.5mm, weak: true)
+}
+#show raw.where(block: true): it => block(
+  fill:   rgb("#f8fafc"),
+  stroke: rgb("#e2e8f0") + 0.8pt,
+  radius: 5pt,
+  inset:  (x: 12pt, y: 10pt),
+  width:  100%,
+  text(font: "IBM Plex Mono", size: 9pt, fill: rgb("#334155"), it),
+)
+#show raw.where(block: false): it => box(fill: rgb("#f1f5f9"), inset: (x: 4pt, y: 2pt), radius: 3pt, text(font: "IBM Plex Mono", size: 9pt, fill: rgb("#1e293b"), it))
+
+#show table: set table(stroke: (x, y) => {
+  if y == 0 { (bottom: rgb("#94a3b8") + 1pt) }
+  else { (bottom: rgb("#e2e8f0") + 0.6pt) }
+})
+#show table.cell.where(y: 0): set text(weight: "semibold", size: 9pt)
+#set table(inset: (x: 8pt, y: 6pt))
+
+// ── cover (title page) injected by Go before body ────────
 `}
