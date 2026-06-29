@@ -38,6 +38,8 @@ const stageNoStage = ""
 // unintended navigation on arrow-key traversal.
 //
 // TODO(stage): surface ?err= via a jobs-page banner (shared with star.go)
+//
+// NOTE: mirrors status.go; extract a shared inlineEnumDropdown on the 3rd such field.
 func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	idStr := strconv.FormatInt(id, 10)
 	var sb strings.Builder
