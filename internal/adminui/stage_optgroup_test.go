@@ -90,6 +90,21 @@ func TestStageOptgroupHTML_OutOfEnumSentinel(t *testing.T) {
 	}
 }
 
+// TestStageOptgroupHTML_OutOfEnumEscaping verifies that an out-of-enum
+// currentStage containing HTML metacharacters is properly escaped so the
+// html.EscapeString invariant that backs the //nolint:gosec G203 annotation
+// cannot silently regress.
+func TestStageOptgroupHTML_OutOfEnumEscaping(t *testing.T) {
+	payload := `<script>alert(1)</script>`
+	got := stageOptgroupHTML(payload)
+	if strings.Contains(got, payload) {
+		t.Errorf("stageOptgroupHTML: raw %q appeared unescaped in output", payload)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("stageOptgroupHTML: expected &lt;script&gt; escaped form in output, got:\n%s", got)
+	}
+}
+
 // TestStageDropdownHTML_CSRFFieldPresent verifies stageDropdownHTML output
 // contains the CSRF hidden field — required invariant from the stage handler.
 func TestStageDropdownHTML_CSRFFieldPresent(t *testing.T) {
