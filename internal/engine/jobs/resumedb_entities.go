@@ -34,7 +34,8 @@ func (db *ResumeDB) InsertExperience(ctx context.Context, personID int, e Experi
 
 func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]ExperienceRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, title, company, location, start_date, end_date, description, highlights
+		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights
 		 FROM resume_experiences WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -58,7 +59,8 @@ func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]Exper
 		return nil, nil
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, title, company, location, start_date, end_date, description, highlights
+		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights
 		 FROM resume_experiences WHERE id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
@@ -103,7 +105,8 @@ func (db *ResumeDB) InsertSkill(ctx context.Context, personID int, s SkillRecord
 
 func (db *ResumeDB) GetAllSkills(ctx context.Context, personID int) ([]SkillRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, name, category, level FROM resume_skills WHERE person_id = $1 ORDER BY id`, personID)
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, '')
+		 FROM resume_skills WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +148,7 @@ func (db *ResumeDB) InsertProject(ctx context.Context, personID int, p ProjectRe
 
 func (db *ResumeDB) GetAllProjects(ctx context.Context, personID int) ([]ProjectRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, name, description, url, tech, highlights
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
 		 FROM resume_projects WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -168,7 +171,7 @@ func (db *ResumeDB) GetProjectsByIDs(ctx context.Context, ids []int) ([]ProjectR
 		return nil, nil
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, name, description, url, tech, highlights
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
 		 FROM resume_projects WHERE id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
@@ -211,7 +214,7 @@ func (db *ResumeDB) InsertAchievement(ctx context.Context, personID int, a Achie
 
 func (db *ResumeDB) GetAllAchievements(ctx context.Context, personID int) ([]AchievementRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, text, metric, value, context
+		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
 		 FROM resume_achievements WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -234,7 +237,7 @@ func (db *ResumeDB) GetAchievementsByIDs(ctx context.Context, ids []int) ([]Achi
 		return nil, nil
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, text, metric, value, context
+		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
 		 FROM resume_achievements WHERE id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
@@ -278,7 +281,8 @@ func (db *ResumeDB) InsertEducation(ctx context.Context, personID int, e Educati
 
 func (db *ResumeDB) GetAllEducations(ctx context.Context, personID int) ([]EducationRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, school, degree, field, start_date, end_date, gpa, highlights
+		`SELECT id, COALESCE(person_id, 0), school, degree, COALESCE(field, ''),
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(gpa, ''), highlights
 		 FROM resume_educations WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -320,7 +324,7 @@ func (db *ResumeDB) InsertCertification(ctx context.Context, personID int, c Cer
 
 func (db *ResumeDB) GetAllCertifications(ctx context.Context, personID int) ([]CertificationRecord, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, person_id, name, issuer, year, url
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(issuer, ''), COALESCE(year, ''), COALESCE(url, '')
 		 FROM resume_certifications WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -463,4 +467,3 @@ func (db *ResumeDB) InsertAchievementExtended(ctx context.Context, personID int,
 	).Scan(&id)
 	return id, err
 }
-
