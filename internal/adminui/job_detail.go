@@ -86,7 +86,9 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>
       <span>My pipeline</span>
-      <select name="stage">{{.StageOpts}}</select>
+      {{/* required: browser blocks empty submission; rateHandler 400 stays as defense-in-depth.
+           Do NOT remove required to silence the 400 — that would silently write stage="" to the DB. */}}
+      <select name="stage" required>{{.StageOpts}}</select>
     </label>
     <label>
       <span>Note</span>
