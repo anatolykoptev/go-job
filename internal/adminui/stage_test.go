@@ -20,7 +20,7 @@ func TestStageDropdownHTML_NoCurrentStage(t *testing.T) {
 		`name="stage"`,
 		`name="_csrf"`,
 		`value="test-tok"`,
-		`aria-label="Pipeline stage"`,
+		`aria-label="My pipeline"`,
 		// Placeholder option: disabled, hidden, and selected when stage=="".
 		`value="" disabled hidden selected`,
 		// Explicit submit button (WCAG 3.2.2 — no onchange auto-submit).
