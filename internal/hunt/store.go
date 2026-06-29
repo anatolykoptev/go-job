@@ -1803,6 +1803,24 @@ func (s *Store) SetStage(ctx context.Context, kind string, entryID int64, user, 
 	return nil
 }
 
+// SetStatus updates the status column for a hunt_jobs row.
+// Returns ErrNotFound when no row with the given id exists.
+// Use this for operator-driven lifecycle updates from the admin UI — it is
+// distinct from UpdateStatus (enricher-driven, accepts closedAt).
+func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE hunt_jobs SET status=$1 WHERE id=$2`,
+		status, id,
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: set status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("hunt: set status: %w", ErrNotFound)
+	}
+	return nil
+}
+
 // CountScored returns the number of open hunt_jobs rows that have been LLM-scored
 // (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
 func (s *Store) CountScored(ctx context.Context) int {
