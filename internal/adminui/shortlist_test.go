@@ -13,6 +13,21 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// rateForTest is a test-only helper that routes a logical status value to the
+// correct DB axis (triage vs stage) and calls Store.Rate. Mirrors the axis-routing
+// logic in trackerRate and the adminui handlers so tests exercise the real code path.
+//
+// Triage-axis values (hunt.TriageStages): written to triage column, stage="".
+// Pipeline-axis values (hunt.PipelineStages): written to stage column, triage="".
+func rateForTest(ctx context.Context, store *hunt.Store, kind string, id int64, user, value, note string) error {
+	switch value {
+	case hunt.StageInteresting, hunt.StageSaved, hunt.StageDiscarded:
+		return store.Rate(ctx, kind, id, user, value, "", note)
+	default:
+		return store.Rate(ctx, kind, id, user, "", value, note)
+	}
+}
+
 func openShortlistPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
@@ -84,18 +99,23 @@ func TestShortlistPG_ListShortlist(t *testing.T) {
 	idB := insertTestJob(t, pool, "Beta", "SWE II", &score2, "moderate", "2026-02-01")
 	idC := insertTestJob(t, pool, "Gamma", "Reject Me", nil, "", "")
 
-	// Rate A as "saved", B as "interesting", C as "discarded" (excluded from shortlist).
-	if err := store.Rate(ctx, "job", idA, "test_sl", hunt.StageSaved, ""); err != nil {
+	// Rate A as "saved" (triage axis), B as "interesting" (triage axis),
+	// C as "discarded" (triage axis, excluded from shortlist by shortlistTriageValues).
+	if err := rateForTest(ctx, store, "job", idA, "test_sl", hunt.StageSaved, ""); err != nil {
 		t.Fatalf("rate A: %v", err)
 	}
-	if err := store.Rate(ctx, "job", idB, "test_sl", hunt.StageInteresting, ""); err != nil {
+	if err := rateForTest(ctx, store, "job", idB, "test_sl", hunt.StageInteresting, ""); err != nil {
 		t.Fatalf("rate B: %v", err)
 	}
-	if err := store.Rate(ctx, "job", idC, "test_sl", hunt.StageDiscarded, ""); err != nil {
+	if err := rateForTest(ctx, store, "job", idC, "test_sl", hunt.StageDiscarded, ""); err != nil {
 		t.Fatalf("rate C: %v", err)
 	}
 
-	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{User: "test_sl", Stages: shortlistActiveStages})
+	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
+		User:         "test_sl",
+		TriageValues: shortlistTriageValues,
+		StageValues:  shortlistPipelineValues,
+	})
 	if err != nil {
 		t.Fatalf("ListShortlist: %v", err)
 	}
@@ -123,9 +143,20 @@ func TestShortlistPG_ListShortlist(t *testing.T) {
 	}
 }
 
-// TestShortlistPG_AllActiveStagesIncluded verifies all 6 active stages reach the shortlist
-// and the 3 excluded stages (new, discarded, rejected) do not.
-// Red-on-revert: removing a stage from shortlistActiveStages → row count drops → test fails.
+// TestShortlistPG_AllActiveStagesIncluded verifies that all 6 active
+// triage+pipeline values appear on the shortlist and the 3 excluded values do not.
+//
+// After migration 012 the active set is split across two axes:
+//   - triage: interesting, saved          (shortlistTriageValues)
+//   - stage:  claimed, applied, interview, offer (shortlistPipelineValues)
+//
+// Excluded: discarded (triage axis, not in shortlistTriageValues),
+//
+//	rejected (pipeline axis, not in shortlistPipelineValues),
+//	new      (legacy, maps to both-empty after migration)
+//
+// Red-on-revert: removing a value from either shortlistTriageValues or
+// shortlistPipelineValues → row count drops → test fails.
 func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 	pool := openShortlistPool(t)
 	ctx := context.Background()
@@ -134,60 +165,88 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 
 	store := hunt.NewStore(pool)
 
-	// One job per stage.
-	activeStages := []string{
-		hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed,
-		hunt.StageApplied, hunt.StageInterview, hunt.StageOffer,
-	}
-	excludedStages := []string{hunt.StageNew, hunt.StageDiscarded, hunt.StageRejected}
+	// Active values (should appear).
+	activeTriageValues := []string{hunt.StageInteresting, hunt.StageSaved}
+	activePipelineValues := []string{hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer}
+	totalActive := len(activeTriageValues) + len(activePipelineValues)
 
-	for _, stage := range append(activeStages, excludedStages...) {
-		id := insertTestJob(t, pool, stage+"-co", stage+"-role", nil, "", "")
-		if err := store.Rate(ctx, "job", id, "test_sl", stage, ""); err != nil {
-			t.Fatalf("rate stage=%s: %v", stage, err)
+	for _, v := range activeTriageValues {
+		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+			t.Fatalf("rate triage=%s: %v", v, err)
+		}
+	}
+	for _, v := range activePipelineValues {
+		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+			t.Fatalf("rate stage=%s: %v", v, err)
 		}
 	}
 
-	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{User: "test_sl", Stages: shortlistActiveStages})
+	// Excluded values (must not appear).
+	for _, v := range []string{hunt.StageDiscarded, hunt.StageRejected} {
+		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+			t.Fatalf("rate excluded=%s: %v", v, err)
+		}
+	}
+
+	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
+		User:         "test_sl",
+		TriageValues: shortlistTriageValues,
+		StageValues:  shortlistPipelineValues,
+	})
 	if err != nil {
 		t.Fatalf("ListShortlist: %v", err)
 	}
-	if len(rows) != len(activeStages) {
-		t.Errorf("want %d rows (active stages), got %d", len(activeStages), len(rows))
+	if len(rows) != totalActive {
+		t.Errorf("want %d active rows, got %d", totalActive, len(rows))
 	}
 
-	// None of the excluded stages should appear.
-	excluded := map[string]bool{hunt.StageNew: true, hunt.StageDiscarded: true, hunt.StageRejected: true}
+	// Excluded must not appear.
+	excluded := map[string]bool{hunt.StageDiscarded: true, hunt.StageRejected: true}
 	for _, r := range rows {
-		if excluded[r.Stage] {
-			t.Errorf("excluded stage %q appeared in shortlist", r.Stage)
+		if excluded[r.Triage] || excluded[r.Stage] {
+			t.Errorf("excluded value (triage=%q, stage=%q) appeared in shortlist", r.Triage, r.Stage)
 		}
 	}
 }
 
 // ── resource.Resource unit tests ──────────────────────────────────────────────
 
-// TestStageBadgeHTML verifies that stageBadgeHTML uses closed-enum CSS classes and
-// escapes stage text, with no raw DB text in HTML attribute values.
+// TestStageBadgeHTML verifies that stageBadgeHTML uses closed-enum CSS classes,
+// escapes stage text, and returns "" for the empty string (no badge).
 // Red-on-revert: removing stageBadgeClass map → wrong/missing CSS class → fails.
 func TestStageBadgeHTML(t *testing.T) {
 	cases := []struct {
-		stage   string
-		wantCls string // expected substring in output
+		value   string
+		want    string // expected substring in output
+		nonEmpty bool   // if true, output must be non-empty
 	}{
-		{hunt.StageInteresting, "badge-blue"},
-		{hunt.StageSaved, `class="badge"`},        // no extra modifier for saved
-		{hunt.StageClaimed, "badge-blue"},
-		{hunt.StageApplied, "badge-blue"},
-		{hunt.StageInterview, "badge-green"},
-		{hunt.StageOffer, "badge-green"},
-		{"unknown-stage", `class="badge"`},         // unknown → plain badge, no modifier
-		{"<script>xss</script>", "&lt;script&gt;"}, // stage text must be escaped
+		// Triage-axis badges.
+		{hunt.StageInteresting, "badge-blue", true},
+		{hunt.StageSaved, `class="badge"`, true},               // saved → plain badge (no extra modifier)
+		{hunt.StageDiscarded, `class="badge badge-gray"`, true}, // discarded → gray (MEDIUM-1 fix; visually distinct)
+		// Pipeline-axis badges.
+		{hunt.StageClaimed, "badge-blue", true},
+		{hunt.StageApplied, "badge-blue", true},
+		{hunt.StageInterview, "badge-green", true},
+		{hunt.StageOffer, "badge-green", true},
+		// Unknown / empty.
+		{"unknown-stage", `class="badge"`, true},          // unknown → plain badge
+		{"<script>xss</script>", "&lt;script&gt;", true},  // must escape user-visible text
+		{"", "", false},                                    // empty → no output
 	}
 	for _, tc := range cases {
-		got := stageBadgeHTML(tc.stage)
-		if !strings.Contains(got, tc.wantCls) {
-			t.Errorf("stageBadgeHTML(%q): want %q in output, got %q", tc.stage, tc.wantCls, got)
+		got := stageBadgeHTML(tc.value)
+		if !tc.nonEmpty {
+			if got != "" {
+				t.Errorf("stageBadgeHTML(%q): want empty string, got %q", tc.value, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("stageBadgeHTML(%q): want %q in output, got %q", tc.value, tc.want, got)
 		}
 	}
 }

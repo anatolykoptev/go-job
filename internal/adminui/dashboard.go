@@ -21,7 +21,7 @@ const navIDDashboard = "dashboard"
 type dashboardStore interface {
 	CountOpenJobs(ctx context.Context) int
 	CountScored(ctx context.Context) int
-	CountShortlist(ctx context.Context, user string, stages []string) int
+	CountShortlist(ctx context.Context, user string, triageValues, stageValues []string) int
 	CountBySource(ctx context.Context) []hunt.SourceCount
 }
 
@@ -63,7 +63,7 @@ func dashboardHandler(p *resource.Panel, store dashboardStore, adminUser string)
 		return strconv.Itoa(store.CountScored(ctx))
 	})
 	shortlistBadge := shell.CachedBadge(cacheTTL, func(ctx context.Context) string {
-		return strconv.Itoa(store.CountShortlist(ctx, adminUser, shortlistActiveStages))
+		return strconv.Itoa(store.CountShortlist(ctx, adminUser, shortlistTriageValues, shortlistPipelineValues))
 	})
 	sourcesFunc := cachedSources(cacheTTL, store.CountBySource)
 

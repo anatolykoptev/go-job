@@ -13,9 +13,9 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// stageDropdownHTML returns XSS-safe HTML for an inline stage-change form cell.
-// The form POSTs to /admin/jobs/{id}/stage. Stage options are derived from
-// hunt.AllStages (the single source of truth — no local duplicate list).
+// stageDropdownHTML returns XSS-safe HTML for an inline pipeline-stage-change form cell.
+// The form POSTs to /admin/jobs/{id}/stage. Stage options are pipeline-only after
+// migration 012 (no triage values in the table inline dropdown).
 //
 // currentStage is the raw value from hunt_ratings.stage (or "" if no row). It
 // is used only as an equality key to select the `selected` attribute — never
@@ -23,15 +23,13 @@ import (
 // csrf.Issue.
 //
 // XSS safety: id is an int64 PK (author-constant), option values are the
-// closed-enum stage constants (author-constant), csrfTok is the only
+// closed-enum pipeline stage constants (author-constant), csrfTok is the only
 // caller-supplied string and is wrapped with html.EscapeString. No
 // user-supplied text enters the HTML output.
 //
 // Accessibility: no onchange auto-submit (WCAG 3.2.2 — On Input); the explicit
 // "✓" submit button lets keyboard users confirm the selection without
 // unintended navigation on arrow-key traversal.
-//
-// TODO(stage): surface ?err= via a jobs-page banner (shared with star.go)
 //
 // NOTE: mirrors status.go; extract a shared inlineEnumDropdown on the 3rd such field.
 func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
@@ -44,19 +42,11 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 		html.EscapeString(csrf.FormField),
 		html.EscapeString(csrfTok),
 	)
-	// CSS uses tokens defined in go-panel/shell styles_templ.go:
-	//   --bg-elevated:#1a2540  --text-primary:#e8edf5  --border:#1e2d4a
-	// Fallbacks are the hardcoded token values so the select is readable on any
-	// host that doesn't inject the shell stylesheet (e.g. tests / plain HTTP).
 	sb.WriteString(`<select name="stage" ` +
 		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#1e2d4a);background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5);cursor:pointer" ` +
 		`aria-label="My pipeline">`)
-	// Options are rendered by stageOptgroupHTML: two <optgroup> blocks (Triage /
-	// Pipeline) derived from hunt.TriageStages + hunt.PipelineStages. Out-of-enum
-	// handling (placeholder + sentinel) is owned by stageOptgroupHTML.
-	sb.WriteString(stageOptgroupHTML(currentStage))
-	// Submit button: explicit user gesture satisfies WCAG 3.2.2 (On Input).
-	// Matches star.go button pattern: background:none;border:none;cursor:pointer.
+	// Pipeline-only options — no triage values (those are managed via the detail-page triage form).
+	sb.WriteString(pipelineOptgroupHTML(currentStage))
 	sb.WriteString(`</select>` +
 		`<button type="submit" aria-label="Save stage" ` +
 		`style="background:none;border:none;cursor:pointer;font-size:.8rem;padding:.1rem .2rem;line-height:1;color:var(--text-secondary,#7b8ba8)">✓</button>` +
@@ -64,11 +54,10 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	return sb.String()
 }
 
-// stageHandler returns an http.HandlerFunc that sets a job's pipeline stage via
-// hunt_ratings. CSRF-protected (same pattern as rateHandler / shortlistHandler).
-// Uses Store.SetStage so the existing note is preserved — the detail page's note
-// field is never wiped by a table-row stage change.
-// On success redirects to Referer (preserving filter state, same as shortlistHandler).
+// stageHandler returns an http.HandlerFunc that sets a job's PIPELINE stage via
+// hunt_ratings.stage. CSRF-protected. Uses Store.SetStage so the existing note is
+// preserved. Pipeline-only: rejects any triage-axis value.
+// On success redirects to Referer (preserving filter state).
 func stageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
@@ -94,13 +83,10 @@ func stageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csr
 		}
 
 		stage := r.FormValue("stage")
-		// Empty string is the "no-op" sentinel from the placeholder option — skip the write.
-		if stage == "" {
-			http.Redirect(w, r, safeAdminReferer(r.Header.Get("Referer")), http.StatusSeeOther) //nolint:gosec // G710: safeAdminReferer validates.
-			return
-		}
-		if !validHuntStages[stage] {
-			http.Error(w, "invalid stage", http.StatusBadRequest)
+		// stage=="" is the explicit "— clear —" option (SetStage("") blanks the column).
+		// Only reject non-empty values that are not in the pipeline enum.
+		if stage != "" && !validPipelineStages[stage] {
+			http.Error(w, "invalid pipeline stage", http.StatusBadRequest)
 			return
 		}
 

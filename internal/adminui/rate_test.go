@@ -13,34 +13,62 @@ import (
 	"github.com/anatolykoptev/go-panel/csrf"
 )
 
-// TestValidHuntStages_Allowlist is a fast table check; no DB needed.
-// Red-on-revert: remove validHuntStages or change entries → mismatches here.
-// Phase 1 unification arc widened the allowlist with pipeline stages per Decision 2.
-func TestValidHuntStages_Allowlist(t *testing.T) {
-	cases := []struct {
+// TestValidStageAllowlists verifies validPipelineStages and validTriageStages
+// after the migration 012 split. Each axis has its own closed-enum allowlist.
+//
+// Red-on-revert: remove either map or move a value between axes → mismatches here.
+func TestValidStageAllowlists(t *testing.T) {
+	pipelineCases := []struct {
 		stage string
 		want  bool
 	}{
-		// Triage / kanban stages.
-		{"new", true},
-		{"interesting", true},
-		{"saved", true},
-		{"discarded", true},
+		// Pipeline-axis values (hunt_ratings.stage).
 		{"claimed", true},
-		// Pipeline stages added in Phase 1 unification arc.
 		{"applied", true},
 		{"interview", true},
 		{"offer", true},
 		{"rejected", true},
-		// Must never be accepted.
+		// Triage values must NOT be in the pipeline allowlist.
+		{"interesting", false},
+		{"saved", false},
+		{"discarded", false},
+		// Legacy / invalid.
+		{"new", false},
 		{"hacked", false},
 		{"", false},
-		{"NEW", false},
+		{"APPLIED", false},
 	}
-	for _, tc := range cases {
-		got := validHuntStages[tc.stage]
+	for _, tc := range pipelineCases {
+		got := validPipelineStages[tc.stage]
 		if got != tc.want {
-			t.Errorf("validHuntStages[%q] = %v, want %v", tc.stage, got, tc.want)
+			t.Errorf("validPipelineStages[%q] = %v, want %v", tc.stage, got, tc.want)
+		}
+	}
+
+	triageCases := []struct {
+		stage string
+		want  bool
+	}{
+		// Triage-axis values (hunt_ratings.triage).
+		{"interesting", true},
+		{"saved", true},
+		{"discarded", true},
+		// Pipeline values must NOT be in the triage allowlist.
+		{"claimed", false},
+		{"applied", false},
+		{"interview", false},
+		{"offer", false},
+		{"rejected", false},
+		// Legacy / invalid.
+		{"new", false},
+		{"hacked", false},
+		{"", false},
+		{"SAVED", false},
+	}
+	for _, tc := range triageCases {
+		got := validTriageStages[tc.stage]
+		if got != tc.want {
+			t.Errorf("validTriageStages[%q] = %v, want %v", tc.stage, got, tc.want)
 		}
 	}
 }

@@ -240,7 +240,13 @@ func run() error {
 		stage := mapStatus(tj.Status)
 		note := buildNote(tj)
 
-		if err := store.Rate(ctx, hunt.KindJob, id, *user, stage, note); err != nil {
+		// Route to the correct axis after migration 012 split:
+		// "saved" lives on triage; pipeline statuses live on stage.
+		triage, stageVal := "", stage
+		if stage == hunt.StageSaved {
+			triage, stageVal = hunt.StageSaved, ""
+		}
+		if err := store.Rate(ctx, hunt.KindJob, id, *user, triage, stageVal, note); err != nil {
 			slog.Error("rate job", "id", id, "company", tj.Company, "err", err)
 			nSkipped++
 			continue

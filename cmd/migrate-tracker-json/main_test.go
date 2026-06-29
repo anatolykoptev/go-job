@@ -296,9 +296,10 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 		assert.True(t, outcome == hunt.OutcomeCreated || outcome == hunt.OutcomeMerged)
 		jobIDs = append(jobIDs, id)
 
-		stage := mapStatus(tj.Status)
+		stage := mapStatus(tj.Status) // always StageSaved after mapStatus
 		note := buildNote(tj)
-		require.NoError(t, store.Rate(ctx, hunt.KindJob, id, testUser, stage, note))
+		// StageSaved is a triage-axis value post-012.
+		require.NoError(t, store.Rate(ctx, hunt.KindJob, id, testUser, stage, "", note))
 	}
 
 	// Assert: hunt_jobs rows have NULL fit_score (migration never writes it).
@@ -311,15 +312,16 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 		assert.Nil(t, fitScore, "fit_score must be NULL after migration (stale score must NOT be written)")
 	}
 
-	// Assert: both entries have stage=saved (pack-ready maps to saved).
+	// Assert: both entries have triage='saved' (pack-ready maps to saved).
+	// After migration 012: StageSaved is stored in the triage column, not stage.
 	for _, id := range jobIDs {
-		var stage string
+		var triage string
 		err := pool.QueryRow(ctx,
-			"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
+			"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
 			id, testUser,
-		).Scan(&stage)
+		).Scan(&triage)
 		require.NoError(t, err)
-		assert.Equal(t, hunt.StageSaved, stage, "stage must be 'saved' for id=%d", id)
+		assert.Equal(t, hunt.StageSaved, triage, "triage must be 'saved' for id=%d", id)
 	}
 
 	// Assert idempotency: second upsert produces OutcomeMerged (no new rows) and
@@ -336,7 +338,7 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, hunt.OutcomeMerged, outcome, "second run must merge (not create) entry %d", i)
 
-		require.NoError(t, store.Rate(ctx, hunt.KindJob, jobIDs[i], testUser, hunt.StageSaved, ""))
+		require.NoError(t, store.Rate(ctx, hunt.KindJob, jobIDs[i], testUser, hunt.StageSaved, "", ""))
 	}
 
 	// Count: 0 new hunt_jobs rows added on second pass (delta == 0).

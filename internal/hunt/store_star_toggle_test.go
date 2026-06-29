@@ -33,33 +33,30 @@ func insertStarTestJob(t *testing.T, s *hunt.Store) int64 {
 	return id
 }
 
-// testActiveStages mirrors adminui.shortlistActiveStages.
-var testActiveStages = []string{
-	hunt.StageInteresting,
-	hunt.StageSaved,
+// testPipelineStages are the pipeline stages the star toggle protects against
+// accidental star-off. Mirrors adminui.shortlistPipelineValues.
+var testPipelineStages = []string{
 	hunt.StageClaimed,
 	hunt.StageApplied,
 	hunt.StageInterview,
 	hunt.StageOffer,
 }
 
-// testSoftStages mirrors hunt.StarSoftStages (the demotable set).
-var testSoftStages = hunt.StarSoftStages
-
 const starTestUser = "test_admin"
 
 // toggleStar is a test helper that calls ToggleShortlistStar with the standard
-// testActiveStages + testSoftStages used across all star tests.
+// pipeline-protection stages and soft-demotable triage values.
 func toggleStar(t *testing.T, s *hunt.Store, id int64) bool {
 	t.Helper()
-	starred, err := s.ToggleShortlistStar(context.Background(), id, starTestUser, testActiveStages, testSoftStages)
+	starred, err := s.ToggleShortlistStar(context.Background(), id, starTestUser,
+		testPipelineStages, hunt.StarSoftTriageValues)
 	if err != nil {
 		t.Fatalf("ToggleShortlistStar: %v", err)
 	}
 	return starred
 }
 
-// readStage reads the hunt_ratings.stage for a job.
+// readStage reads hunt_ratings.stage (pipeline axis) for a job.
 func readStage(t *testing.T, s *hunt.Store, id int64) string {
 	t.Helper()
 	var stage string
@@ -70,6 +67,20 @@ func readStage(t *testing.T, s *hunt.Store, id int64) string {
 		t.Fatalf("readStage: %v", err)
 	}
 	return stage
+}
+
+// readTriage reads hunt_ratings.triage (triage axis) for a job.
+// After migration 012 the star toggle operates exclusively on the triage column.
+func readTriage(t *testing.T, s *hunt.Store, id int64) string {
+	t.Helper()
+	var triage string
+	if err := s.Pool().QueryRow(context.Background(),
+		"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
+		id, starTestUser,
+	).Scan(&triage); err != nil {
+		t.Fatalf("readTriage: %v", err)
+	}
+	return triage
 }
 
 func migratedStore(t *testing.T) (*hunt.Store, func()) {
@@ -83,10 +94,12 @@ func migratedStore(t *testing.T) (*hunt.Store, func()) {
 }
 
 // TestStore_ToggleShortlistStar_StarOn_NoRow verifies that toggling a job with
-// no prior rating creates a StageSaved row and returns starred=true.
+// no prior rating creates a row with triage='saved' and returns starred=true.
+//
+// After migration 012: star controls ONLY the triage column.
 //
 // Red-on-revert: removing ToggleShortlistStar → compile error.
-// Reverting star-on path → stage=="new" or starred=false.
+// Reverting star-on path → triage=="" or starred=false.
 func TestStore_ToggleShortlistStar_StarOn_NoRow(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
@@ -97,37 +110,50 @@ func TestStore_ToggleShortlistStar_StarOn_NoRow(t *testing.T) {
 	if !starred {
 		t.Errorf("star on (no row): want starred=true, got false")
 	}
-	if got := readStage(t, s, id); got != hunt.StageSaved {
-		t.Errorf("stage after star on (no row): want %q, got %q", hunt.StageSaved, got)
+	if got := readTriage(t, s, id); got != hunt.StageSaved {
+		t.Errorf("triage after star on (no row): want %q, got %q", hunt.StageSaved, got)
+	}
+	// Star-on must NOT touch the pipeline stage column.
+	if got := readStage(t, s, id); got != "" {
+		t.Errorf("stage after star on (no row): must be empty (untouched), got %q", got)
 	}
 }
 
-// TestStore_ToggleShortlistStar_StarOn_FromNew verifies that toggling a job at
-// StageNew (not in activeStages) stars it (sets StageSaved).
+// TestStore_ToggleShortlistStar_StarOn_FromUnrated verifies that toggling a job
+// with an empty-string triage (untriaged) stars it (sets triage='saved').
 //
-// Red-on-revert: reverting star-on path → stage stays "new".
-func TestStore_ToggleShortlistStar_StarOn_FromNew(t *testing.T) {
+// Red-on-revert: reverting star-on path → triage stays "".
+func TestStore_ToggleShortlistStar_StarOn_FromUnrated(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 
 	id := insertStarTestJob(t, s)
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageNew, ""); err != nil {
-		t.Fatalf("Rate (seed new): %v", err)
+	// Insert an explicit empty-triage row (representing a post-migration "new" job).
+	if err := s.Rate(context.Background(), "job", id, starTestUser, "", "", ""); err != nil {
+		t.Fatalf("Rate (seed untriaged): %v", err)
 	}
 
 	starred := toggleStar(t, s, id)
 	if !starred {
-		t.Errorf("star on from new: want starred=true, got false")
+		t.Errorf("star on from untriaged: want starred=true, got false")
 	}
-	if got := readStage(t, s, id); got != hunt.StageSaved {
-		t.Errorf("stage after star on from new: want %q, got %q", hunt.StageSaved, got)
+	if got := readTriage(t, s, id); got != hunt.StageSaved {
+		t.Errorf("triage after star on from untriaged: want %q, got %q", hunt.StageSaved, got)
 	}
 }
 
 // TestStore_ToggleShortlistStar_StarOn_NotePreserved verifies that star-on from
-// StageDiscarded (not in activeStages) preserves an existing note.
+// an unrated-but-noted state preserves the existing note.
+//
+// The note column is excluded from the ON CONFLICT SET list in ToggleShortlistStar
+// so that a star click never silently wipes an existing note. This test guards that
+// invariant: seed a row with note but empty triage → toggle star → note survives.
 //
 // Red-on-revert: including note in ON CONFLICT SET clause → note wiped.
+//
+// Note: seeding from triage='discarded' is intentionally avoided here; discarded is
+// a protected state (triage ∉ softDemotable) and star-on produces a NO-OP (starred=false).
+// That contract is tested separately in TestStore_ToggleShortlistStar_Discarded_IsNoOp.
 func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
@@ -135,13 +161,15 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	id := insertStarTestJob(t, s)
 	const wantNote = "do not delete this note"
 
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, wantNote); err != nil {
-		t.Fatalf("Rate (seed discarded with note): %v", err)
+	// Seed: empty triage + existing note. Rate with triage="" uses CASE guard
+	// (preserves existing triage=''), so this is "unrated with a note".
+	if err := s.Rate(context.Background(), "job", id, starTestUser, "", "", wantNote); err != nil {
+		t.Fatalf("Rate (seed unrated with note): %v", err)
 	}
 
 	starred := toggleStar(t, s, id)
 	if !starred {
-		t.Errorf("star on from discarded: want starred=true, got false")
+		t.Errorf("star on from unrated: want starred=true, got false")
 	}
 
 	var note *string
@@ -156,29 +184,40 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	}
 }
 
-// TestStore_ToggleShortlistStar_SoftDemote tests star-off from each of the
-// three soft (demotable) stages → should demote to StageNew, return starred=false.
+// TestStore_ToggleShortlistStar_SoftDemote tests star-off from each of the two
+// soft (demotable) triage values → should clear triage to '', return starred=false.
 //
-// Red-on-revert: removing the soft-stage branch → stage unchanged, starred=true.
+// After migration 012: star-off clears the triage column (NOT stage). The pipeline
+// stage is never touched. The legacy 'claimed' value is now a pipeline stage and is
+// handled by TestStore_ToggleShortlistStar_AdvancedStageNoOp.
+//
+// Red-on-revert: removing the soft-stage branch → triage unchanged, starred=true.
 func TestStore_ToggleShortlistStar_SoftDemote(t *testing.T) {
-	softCases := []string{hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed}
-	for _, initialStage := range softCases {
-		initialStage := initialStage
-		t.Run(initialStage, func(t *testing.T) {
+	// Only triage-axis values are soft-demotable.
+	softCases := []string{hunt.StageInteresting, hunt.StageSaved}
+	for _, initialTriage := range softCases {
+		initialTriage := initialTriage
+		t.Run(initialTriage, func(t *testing.T) {
 			s, close := migratedStore(t)
 			defer close()
 
 			id := insertStarTestJob(t, s)
-			if err := s.Rate(context.Background(), "job", id, starTestUser, initialStage, "my note"); err != nil {
-				t.Fatalf("Rate (seed %s): %v", initialStage, err)
+			// Seed via triage axis.
+			if err := s.Rate(context.Background(), "job", id, starTestUser, initialTriage, "", "my note"); err != nil {
+				t.Fatalf("Rate (seed triage=%s): %v", initialTriage, err)
 			}
 
 			starred := toggleStar(t, s, id)
 			if starred {
-				t.Errorf("star off from %s: want starred=false, got true", initialStage)
+				t.Errorf("star off from triage=%s: want starred=false, got true", initialTriage)
 			}
-			if got := readStage(t, s, id); got != hunt.StageNew {
-				t.Errorf("stage after star off from %s: want %q, got %q", initialStage, hunt.StageNew, got)
+			// Triage must be cleared.
+			if got := readTriage(t, s, id); got != "" {
+				t.Errorf("triage after star off from %s: want \"\", got %q", initialTriage, got)
+			}
+			// Pipeline stage must be untouched.
+			if got := readStage(t, s, id); got != "" {
+				t.Errorf("stage after star off from triage=%s: must be untouched (\"\"), got %q", initialTriage, got)
 			}
 		})
 	}
@@ -195,7 +234,7 @@ func TestStore_ToggleShortlistStar_SoftDemote_NotePreserved(t *testing.T) {
 	id := insertStarTestJob(t, s)
 	const wantNote = "important note keep on demotion"
 
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageSaved, wantNote); err != nil {
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageSaved, "", wantNote); err != nil {
 		t.Fatalf("Rate (seed): %v", err)
 	}
 
@@ -217,59 +256,91 @@ func TestStore_ToggleShortlistStar_SoftDemote_NotePreserved(t *testing.T) {
 }
 
 // TestStore_ToggleShortlistStar_AdvancedStageNoOp tests that a star click on a
-// job at an advanced pipeline stage (applied/interview/offer) is a NO-OP:
+// job at any pipeline stage (claimed/applied/interview/offer) is a NO-OP:
 // stage must be unchanged and starred=true must be returned.
+//
+// After migration 012: claimed is now a pipeline stage (moved from triage-soft to
+// pipeline-protected), alongside applied/interview/offer.
 //
 // This is the key operator-safety requirement: a star click can NEVER lose a
 // pipeline stage.
 //
-// Red-on-revert: removing the advanced-stage guard → applied demotes to "new",
-// starred=false → assertion fails on both stage and starred.
+// Red-on-revert: removing the advanced-stage guard → claimed/applied/etc. clears
+// triage; starred=false assertion fails.
 func TestStore_ToggleShortlistStar_AdvancedStageNoOp(t *testing.T) {
-	advancedCases := []string{hunt.StageApplied, hunt.StageInterview, hunt.StageOffer}
-	for _, initialStage := range advancedCases {
+	// All pipeline stages must be protected — including claimed (moved post-012).
+	pipelineCases := []string{
+		hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer,
+	}
+	for _, initialStage := range pipelineCases {
 		initialStage := initialStage
 		t.Run(initialStage, func(t *testing.T) {
 			s, close := migratedStore(t)
 			defer close()
 
 			id := insertStarTestJob(t, s)
-			if err := s.Rate(context.Background(), "job", id, starTestUser, initialStage, "pipeline note"); err != nil {
-				t.Fatalf("Rate (seed %s): %v", initialStage, err)
+			// Seed via pipeline axis (triage="", stage=initialStage).
+			if err := s.Rate(context.Background(), "job", id, starTestUser, "", initialStage, "pipeline note"); err != nil {
+				t.Fatalf("Rate (seed stage=%s): %v", initialStage, err)
 			}
 
 			starred := toggleStar(t, s, id)
 			if !starred {
-				t.Errorf("advanced stage %s no-op: want starred=true (unchanged), got false", initialStage)
+				t.Errorf("pipeline stage %s no-op: want starred=true (unchanged), got false", initialStage)
 			}
 			if got := readStage(t, s, id); got != initialStage {
-				t.Errorf("advanced stage %s no-op: stage must be UNCHANGED, got %q", initialStage, got)
+				t.Errorf("pipeline stage %s no-op: stage must be UNCHANGED, got %q", initialStage, got)
 			}
 		})
 	}
 }
 
-// TestStore_ToggleShortlistStar_StarStateReflectsActiveStages verifies that a
-// job at StageDiscarded (not in activeStages) is treated as unstarred and
-// toggling stars it (sets StageSaved).
+// TestStore_ToggleShortlistStar_Discarded_IsNoOp verifies that a star click on a
+// job with triage='discarded' is a deliberate-negative-decision NO-OP: the triage
+// column is NOT overwritten with 'saved', and starred=false is returned.
 //
-// Red-on-revert: reverting the activeStages membership check → discarded job
-// treated as starred, toggle goes wrong direction.
-func TestStore_ToggleShortlistStar_StarStateReflectsActiveStages(t *testing.T) {
+// Design contract (types.go: StarSoftTriageValues excludes discarded):
+// a negative triage decision is explicit — a star click can never silently clear it.
+//
+// Red-on-revert: removing the triage-protection guard in ToggleShortlistStar →
+// triage is overwritten with 'saved'; this test fails on both assertions.
+func TestStore_ToggleShortlistStar_Discarded_IsNoOp(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 
 	id := insertStarTestJob(t, s)
-
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, ""); err != nil {
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, "", ""); err != nil {
 		t.Fatalf("Rate (seed discarded): %v", err)
 	}
 
 	starred := toggleStar(t, s, id)
-	if !starred {
-		t.Errorf("star on from discarded: want starred=true, got false")
+	if starred {
+		t.Errorf("star click on discarded: want starred=false (no-op), got true")
 	}
-	if got := readStage(t, s, id); got != hunt.StageSaved {
-		t.Errorf("stage after toggle on discarded: want %q, got %q", hunt.StageSaved, got)
+	if got := readTriage(t, s, id); got != hunt.StageDiscarded {
+		t.Errorf("triage after star click on discarded: want %q (unchanged), got %q", hunt.StageDiscarded, got)
+	}
+}
+
+// TestStore_ToggleShortlistStar_StarSoftTriageValues_Aligned verifies that
+// hunt.StarSoftTriageValues covers exactly {interesting, saved} — the set that
+// toggleStar demotes. If new triage values are added without updating this set,
+// star behaviour breaks silently.
+//
+// Red-on-revert: adding a triage value to StarSoftTriageValues without intent →
+// star-off behaviour widens unexpectedly.
+func TestStore_ToggleShortlistStar_StarSoftTriageValues_Aligned(t *testing.T) {
+	expected := map[string]bool{
+		hunt.StageInteresting: true,
+		hunt.StageSaved:       true,
+	}
+	if len(hunt.StarSoftTriageValues) != len(expected) {
+		t.Errorf("StarSoftTriageValues: want %d entries, got %d: %v",
+			len(expected), len(hunt.StarSoftTriageValues), hunt.StarSoftTriageValues)
+	}
+	for _, v := range hunt.StarSoftTriageValues {
+		if !expected[v] {
+			t.Errorf("StarSoftTriageValues: unexpected value %q", v)
+		}
 	}
 }

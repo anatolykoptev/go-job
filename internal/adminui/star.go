@@ -133,7 +133,9 @@ func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator,
 			return
 		}
 
-		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistActiveStages, hunt.StarSoftStages); err != nil {
+		// activePipelineStages: protect advanced pipeline stages from star-off.
+		// softDemotable: triage values a star-off is allowed to clear (StarSoftTriageValues).
+		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistPipelineValues, hunt.StarSoftTriageValues); err != nil {
 			slog.Error("shortlistHandler: toggle star", "id", id64, "err", err)
 			// Redirect back with an error param so the operator stays in the admin
 			// UI rather than landing on a dead-end error page.
