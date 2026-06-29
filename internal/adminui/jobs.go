@@ -104,11 +104,18 @@ const colKeyStar = "star"
 // Kept as a constant to avoid goconst warnings (used in jobsSpec + jobsFilter).
 const colKeyStage = "stage"
 
+// colKeyTriage is the filter key for the triage axis (hunt_ratings.triage).
+// Shared with shortlist.go and stage_optgroup.go (goconst: 3+ occurrences).
+const colKeyTriage = "triage"
+
 // colWidthStage is the column width for the inline pipeline stage dropdown.
 const colWidthStage = "9rem"
 
 // sqlRStage is the SQL expression for the joined hunt_ratings.stage column.
 const sqlRStage = "r.stage"
+
+// sqlRTriage is the SQL expression for the joined hunt_ratings.triage column.
+const sqlRTriage = "r.triage"
 
 // jobsSpec drives the /admin/jobs table sort/columns. Cell order in the Lister
 // MUST match Columns order.
@@ -144,20 +151,21 @@ var jobsSpec = admintable.Spec{
 	DefaultDir: admintable.Desc,
 }
 
-// allHuntStageValues lists every valid stage for the stage filter Allowed list.
-// Derived from hunt.AllStages — the single source of truth for the stage enum.
-var allHuntStageValues = hunt.AllStages
-
 // jobsFilter declares the /admin/jobs filter bar. Every SQLExpr is author-constant;
 // request values reach SQL only as bind args (never concatenated). Allowed sets are
 // safe-degrade (an unknown value drops the filter, never an error).
+//
+// After migration 012 the filter has TWO rating-axis entries:
+//   - triage: filters on r.triage (interest signal), Allowed = TriageStages
+//   - stage:  filters on r.stage  (pipeline position), Allowed = PipelineStages
 var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{sqlJTitle, sqlJCompany}, Match: admintable.ILike},
 	{Key: colStatus, SQLExpr: sqlJStatus, Match: admintable.Eq, Allowed: jobStatusFilterAllowed},
 	{Key: colSource, SQLExpr: sqlJSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
-	// Stage filter uses the joined r.stage column — works because jobsLister always
-	// LEFT JOINs hunt_ratings. An unknown stage value is silently ignored (safe-degrade).
-	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: allHuntStageValues},
+	// Triage filter on r.triage — works because jobsLister always LEFT JOINs hunt_ratings.
+	{Key: colKeyTriage, SQLExpr: sqlRTriage, Match: admintable.Eq, Allowed: hunt.TriageStages},
+	// Pipeline stage filter on r.stage — pipeline values only after migration 012.
+	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
 func jobsResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
@@ -202,23 +210,24 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 			return nil, 0, fmt.Errorf("adminui: count jobs: %w", err)
 		}
 
-		// Args layout: [...whereArgs, adminUser, activeStages, limit, offset]
-		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistActiveStages, q.Limit, q.Offset)
-		// $n+1 = adminUser, $n+2 = activeStages[], $n+3 = limit, $n+4 = offset.
-		// The LEFT JOIN computes: starred (bool) and stage (text) per-row from hunt_ratings.
-		// Both columns reuse the same single join — no second join added.
+		// Args layout: [...whereArgs, adminUser, triageValues[], stageValues[], limit, offset]
+		// $n+1 = adminUser, $n+2 = shortlistTriageValues, $n+3 = shortlistPipelineValues,
+		// $n+4 = limit, $n+5 = offset.
+		// The LEFT JOIN computes starred (bool), triage, and stage per-row from hunt_ratings.
+		// All three reuse the same single LEFT JOIN — no second join.
+		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistTriageValues, shortlistPipelineValues, q.Limit, q.Offset)
 		query := fmt.Sprintf(`
 			SELECT j.id, COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.status,''),
 			       j.fit_score, COALESCE(j.fit_band,''), COALESCE(j.success_band,''), COALESCE(j.over_under,''),
 			       j.posted_at, j.last_seen_at,
 			       COALESCE(j.location,''), COALESCE(j.source,''), COALESCE(j.url,''),
-			       COALESCE(r.stage = ANY($%d::text[]), false) AS starred,
+			       COALESCE(r.triage = ANY($%d::text[]) OR r.stage = ANY($%d::text[]), false) AS starred,
 			       COALESCE(r.stage, '') AS stage
 			  FROM hunt_jobs j
 			  LEFT JOIN hunt_ratings r
 			         ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
 			 WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d`,
-			n+2, n+1, where, jobsSpec.OrderBy(q.Sort), n+3, n+4)
+			n+2, n+3, n+1, where, jobsSpec.OrderBy(q.Sort), n+4, n+5)
 		rows, err := pool.Query(ctx, query, args...)
 		if err != nil {
 			return nil, 0, fmt.Errorf("adminui: list jobs: %w", err)

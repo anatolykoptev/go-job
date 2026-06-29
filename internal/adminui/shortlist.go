@@ -24,12 +24,19 @@ const (
 	cssBadgeGreen = "badge-green"
 )
 
-// shortlistActiveStages is the curated set: jobs with a hunt_ratings row in one
-// of these stages appear on the shortlist. Excludes new/discarded/rejected which
-// are noise or terminal-negative.
-var shortlistActiveStages = []string{
+// shortlistTriageValues is the set of hunt_ratings.triage values that bring a job
+// onto the shortlist. Excludes discarded (deliberate negative triage decision).
+// Shared with jobs.go (star computation) and star.go (toggle params).
+var shortlistTriageValues = []string{
 	hunt.StageInteresting,
 	hunt.StageSaved,
+}
+
+// shortlistPipelineValues is the set of hunt_ratings.stage values that bring a job
+// onto the shortlist (i.e. the operator has actively moved it into the pipeline).
+// Excludes rejected (terminal-negative pipeline state).
+// Shared with jobs.go (star computation) and star.go (toggle params).
+var shortlistPipelineValues = []string{
 	hunt.StageClaimed,
 	hunt.StageApplied,
 	hunt.StageInterview,
@@ -65,12 +72,13 @@ var shortlistSpec = admintable.Spec{
 }
 
 // shortlistFilter declares the /admin/shortlist filter bar.
+// Two separate axis filters: triage (interest signal) and stage (pipeline position).
 // PDF-derived filters (pack-ready, with-docs) cannot be expressed as SQL — they
-// are surfaced as badges in the Docs cell instead. Stage and text-search filters
-// are SQL-backed via the FilterSpec.
+// are surfaced as badges in the Docs cell instead.
 var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{sqlJTitle, sqlJCompany}, Match: admintable.ILike},
-	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: shortlistActiveStages},
+	{Key: colKeyTriage, SQLExpr: sqlRTriage, Match: admintable.Eq, Allowed: hunt.TriageStages},
+	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
 func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
@@ -83,7 +91,7 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 		Filter: shortlistFilter,
 		Perms: resource.ReadAny,
 		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
-			n := store.CountShortlist(ctx, adminUser, shortlistActiveStages)
+			n := store.CountShortlist(ctx, adminUser, shortlistTriageValues, shortlistPipelineValues)
 			if n == 0 {
 				return ""
 			}
@@ -102,13 +110,14 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		storeRows, total, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
-			User:       adminUser,
-			Stages:     shortlistActiveStages,
-			WhereConds: q.WhereConds,
-			WhereArgs:  q.WhereArgs,
-			OrderBy:    shortlistSpec.OrderBy(q.Sort),
-			Limit:      q.Limit,
-			Offset:     q.Offset,
+			User:         adminUser,
+			TriageValues: shortlistTriageValues,
+			StageValues:  shortlistPipelineValues,
+			WhereConds:   q.WhereConds,
+			WhereArgs:    q.WhereArgs,
+			OrderBy:      shortlistSpec.OrderBy(q.Sort),
+			Limit:        q.Limit,
+			Offset:       q.Offset,
 		})
 		if err != nil {
 			return nil, 0, err
@@ -146,7 +155,7 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 					{Value: row.Title},                                                                              // [0] Title (plain text — Href-linked)
 					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true},                                     // [1] Star (front after Title; always ★)
 					{Value: row.Company},                                                                            // [2] Company
-					{Value: stageBadgeHTML(row.Stage), HTML: true},                                                 // [3] Stage
+					{Value: triageStageBadgesHTML(row.Triage, row.Stage), HTML: true},                              // [3] Triage + Stage badges
 					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                    // [4] Fit
 					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                            // [5] Market
 					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [6] Comp
@@ -159,27 +168,52 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 	}
 }
 
-// stageBadgeClass maps hunt stage constants to go-panel badge CSS modifier classes.
-// Only values in this closed-enum map are used as CSS class names — unknown stages
+// stageBadgeClass maps hunt stage/triage constants to go-panel badge CSS modifier classes.
+// Only values in this closed-enum map are used as CSS class names — unknown values
 // fall back to no modifier (plain .badge). No raw DB text appears in HTML attributes.
 var stageBadgeClass = map[string]string{
+	// Triage axis
 	hunt.StageInteresting: cssBadgeBlue,
 	hunt.StageSaved:       "",
-	hunt.StageClaimed:     cssBadgeBlue,
-	hunt.StageApplied:     cssBadgeBlue,
-	hunt.StageInterview:   cssBadgeGreen,
-	hunt.StageOffer:       cssBadgeGreen,
+	hunt.StageDiscarded:   "",
+	// Pipeline axis
+	hunt.StageClaimed:   cssBadgeBlue,
+	hunt.StageApplied:   cssBadgeBlue,
+	hunt.StageInterview: cssBadgeGreen,
+	hunt.StageOffer:     cssBadgeGreen,
 }
 
-// stageBadgeHTML returns XSS-safe HTML for a stage badge cell.
-// CSS class comes from the closed-enum stageBadgeClass map; stage text is escaped.
-func stageBadgeHTML(stage string) string {
-	cls := stageBadgeClass[stage] // "" for unknown / rejected / discarded stages
+// stageBadgeHTML returns XSS-safe HTML for a single stage/triage badge.
+// CSS class comes from the closed-enum stageBadgeClass map; text is escaped.
+// Returns empty string when value is "".
+func stageBadgeHTML(value string) string {
+	if value == "" {
+		return ""
+	}
+	cls := stageBadgeClass[value] // "" for unknown / rejected
 	extra := ""
 	if cls != "" {
 		extra = " " + cls
 	}
-	return fmt.Sprintf(`<span class="badge%s">%s</span>`, extra, html.EscapeString(stage))
+	return fmt.Sprintf(`<span class="badge%s">%s</span>`, extra, html.EscapeString(value))
+}
+
+// triageStageBadgesHTML renders up to two badges — one for triage, one for pipeline stage.
+// Either may be empty (""); only non-empty values are rendered. Used in the shortlist
+// Stage column (post-migration-012 split).
+func triageStageBadgesHTML(triage, stage string) string {
+	t := stageBadgeHTML(triage)
+	s := stageBadgeHTML(stage)
+	switch {
+	case t == "" && s == "":
+		return `<span class="badge badge-gray">—</span>`
+	case t != "" && s != "":
+		return t + " " + s
+	case t != "":
+		return t
+	default:
+		return s
+	}
 }
 
 // docsChipHTML returns XSS-safe HTML for the Docs cell.

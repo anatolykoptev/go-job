@@ -29,7 +29,7 @@ func (s *countingDashStore) CountScored(_ context.Context) int {
 	return 7
 }
 
-func (s *countingDashStore) CountShortlist(_ context.Context, _ string, _ []string) int {
+func (s *countingDashStore) CountShortlist(_ context.Context, _ string, _, _ []string) int {
 	s.queries.Add(1)
 	return 3
 }

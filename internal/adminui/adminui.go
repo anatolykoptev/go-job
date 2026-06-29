@@ -94,8 +94,10 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rate", a.Require(rateHandler(store, adminUser, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/rescore", a.Require(rescoreHandler(pool, store, a, []byte(csrfKey))))
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/shortlist", a.Require(shortlistHandler(store, adminUser, a, []byte(csrfKey))))
-	// Inline stage dropdown in the jobs table — note-preserving (SetStage, not Rate).
+	// Inline pipeline-stage dropdown in the jobs table — note-preserving (SetStage, not Rate).
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/stage", a.Require(stageHandler(store, adminUser, a, []byte(csrfKey))))
+	// Detail-page triage form — triage-only (SetTriage); preserves stage + note.
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/triage", a.Require(triageHandler(store, adminUser, a, []byte(csrfKey))))
 	// Job posting lifecycle status dropdown on the detail page.
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/status", a.Require(statusHandler(store, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
