@@ -93,9 +93,10 @@ func (a *TypstAdapter) PDF(ctx context.Context, md string) ([]byte, error) {
 	mdWithPreamble := ligaPreamble + mdNorm
 
 	raw, err := a.r.Render(ctx, mdWithPreamble, "markdown", render.Options{
-		// "report" theme: professional A4 layout with IBM Plex Sans.
-		// The liga suppression above composes with the preamble's #set text().
-		Theme: "report",
+		// "resume" theme: compact single-column US-Letter layout (IBM Plex Sans,
+		// left-aligned, 20mm margins, no footer date) tuned to keep a content-rich
+		// resume on one page. The liga suppression above composes with its #set text().
+		Theme: "resume",
 	})
 	if err != nil {
 		// render/typst emits "pandoc binary not found ..." or
