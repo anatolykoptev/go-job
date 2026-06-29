@@ -1781,6 +1781,28 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 	return !isStarred, nil
 }
 
+// SetStage updates ONLY the stage column for a hunt_ratings row, preserving the
+// existing note. This is the correct write path for the inline stage dropdown in
+// the jobs table, where the operator changes stage without touching the note field.
+//
+// Contrast with Rate, which ALWAYS overwrites the note. Do not unify these paths.
+//
+// If no row exists, a new one is inserted with an empty note (NULL).
+func (s *Store) SetStage(ctx context.Context, kind string, entryID int64, user, stage string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, rated_at, updated_at)
+		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
+			SET stage      = EXCLUDED.stage,
+			    updated_at = NOW()`,
+		kind, entryID, user, stage,
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: set stage: %w", err)
+	}
+	return nil
+}
+
 // CountScored returns the number of open hunt_jobs rows that have been LLM-scored
 // (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
 func (s *Store) CountScored(ctx context.Context) int {
