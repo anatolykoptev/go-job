@@ -38,7 +38,7 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	idStr := strconv.FormatInt(id, 10)
 	var sb strings.Builder
 	fmt.Fprintf(&sb,
-		`<form method="POST" action="/admin/jobs/%s/stage" style="display:inline;margin:0">`+
+		`<form method="POST" action="/admin/jobs/%s/stage" style="display:inline;margin:0" onsubmit="this.querySelector('button[type=submit]').disabled=true">`+
 			`<input type="hidden" name="%s" value="%s">`,
 		idStr,
 		html.EscapeString(csrf.FormField),
@@ -50,7 +50,7 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	// host that doesn't inject the shell stylesheet (e.g. tests / plain HTTP).
 	sb.WriteString(`<select name="stage" ` +
 		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#1e2d4a);background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5);cursor:pointer" ` +
-		`aria-label="Pipeline stage">`)
+		`aria-label="My pipeline">`)
 	// Options are rendered by stageOptgroupHTML: two <optgroup> blocks (Triage /
 	// Pipeline) derived from hunt.TriageStages + hunt.PipelineStages. Out-of-enum
 	// handling (placeholder + sentinel) is owned by stageOptgroupHTML.
