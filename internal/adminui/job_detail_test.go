@@ -225,14 +225,48 @@ func TestBuildOverviewSection_FieldsPresent(t *testing.T) {
 			t.Errorf("item %q: got %q, want %q", label, gotVal, wantVal)
 		}
 	}
-	// Status is now an editable dropdown (HTML:true); verify the item is present
-	// and contains the expected current status as the selected option.
-	statusVal, ok := got["Status"]
+	// Posting status is now an editable dropdown (HTML:true, label "Posting status").
+	// Verify the item is present and contains the expected current status as the selected option.
+	statusVal, ok := got["Posting status"]
 	if !ok {
-		t.Error("missing Status item in Overview")
+		t.Error("missing 'Posting status' item in Overview (label changed from 'Status' in P3 IA fix)")
 	} else if !strings.Contains(statusVal, `value="open" selected`) {
-		t.Errorf("Status dropdown: want \"open\" option selected, got:\n%s", statusVal)
+		t.Errorf("Posting status dropdown: want \"open\" option selected, got:\n%s", statusVal)
 	}
+}
+
+// TestJobDetailLabels verifies both IA labels appear in the rendered job detail output.
+// P3: "Posting status" distinguishes the external lifecycle from "My pipeline" (operator funnel).
+func TestJobDetailLabels(t *testing.T) {
+	t.Run("overview_posting_status_label", func(t *testing.T) {
+		rec := jobDetailRecord{Status: "open"}
+		sec := buildOverviewSection(rec, "", 1, "tok")
+		found := false
+		for _, item := range sec.Items {
+			if item.Label == "Posting status" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("buildOverviewSection: missing 'Posting status' item (must not be labeled 'Status')")
+		}
+		for _, item := range sec.Items {
+			if item.Label == "Status" {
+				t.Error("buildOverviewSection: found old 'Status' label — must be renamed to 'Posting status'")
+			}
+		}
+	})
+
+	t.Run("application_my_pipeline_label", func(t *testing.T) {
+		html, err := buildApplicationSectionHTML(1, "tok", nil, false, false)
+		if err != nil {
+			t.Fatalf("buildApplicationSectionHTML: %v", err)
+		}
+		if !strings.Contains(html, "My pipeline") {
+			t.Errorf("buildApplicationSectionHTML: missing 'My pipeline' label in output")
+		}
+	})
 }
 
 // isJobDetailNotFound is a test helper that wraps the resource package check.
