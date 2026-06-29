@@ -1802,12 +1802,11 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 	if err != nil {
 		return false, fmt.Errorf("hunt: toggle star: begin tx: %w", err)
 	}
-	var txErr error
-	defer func() {
-		if txErr != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
+	// Unconditional deferred rollback: safe no-op after a successful Commit (pgx
+	// returns ErrTxClosed without re-acquiring the connection). Guarantees the
+	// connection is ALWAYS returned to the pool on every return path — including
+	// early returns in the no-op branches and any unexpected panic.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Read current triage + stage — FOR UPDATE to lock the row.
 	// pgx.ErrNoRows → no prior row; treat as star-on. Any other error → surface.
@@ -1819,15 +1818,14 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 		entryID, user,
 	).Scan(&curTriage, &curStage)
 	if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
-		txErr = scanErr
 		return false, fmt.Errorf("hunt: toggle star id=%d: read triage: %w", entryID, scanErr)
 	}
 
 	// Pipeline protection: job at an advanced pipeline stage → no-op.
 	// A star click can NEVER silently clear an applied/interview/offer position.
 	if curStage != nil && stageIn(*curStage, activePipelineStages) {
-		if txErr = tx.Commit(ctx); txErr != nil {
-			return false, fmt.Errorf("hunt: toggle star id=%d: commit no-op: %w", entryID, txErr)
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("hunt: toggle star id=%d: commit no-op: %w", entryID, err)
 		}
 		return true, nil // starred unchanged — advanced pipeline stage
 	}
@@ -1837,8 +1835,8 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 	// (interesting, saved) can be starred off; all other ∈ TriageStages values are
 	// treated as protected and produce a no-op → return false (the star stays ☆).
 	if curTriage != nil && *curTriage != "" && !stageIn(*curTriage, softDemotable) {
-		if txErr = tx.Commit(ctx); txErr != nil {
-			return false, fmt.Errorf("hunt: toggle star id=%d: commit triage-protect: %w", entryID, txErr)
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("hunt: toggle star id=%d: commit triage-protect: %w", entryID, err)
 		}
 		return false, nil // triage unchanged — deliberate negative decision
 	}
@@ -1853,19 +1851,19 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 
 	// Upsert triage; note and stage are NOT touched.
 	// On INSERT (no prior row) stage defaults to '' and note to NULL.
-	if _, txErr = tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, rated_at, updated_at)
 		VALUES ('job', $1, $2, $3, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
 			SET triage     = EXCLUDED.triage,
 			    updated_at = NOW()`,
 		entryID, user, newTriage,
-	); txErr != nil {
-		return false, fmt.Errorf("hunt: toggle star id=%d: upsert: %w", entryID, txErr)
+	); err != nil {
+		return false, fmt.Errorf("hunt: toggle star id=%d: upsert: %w", entryID, err)
 	}
 
-	if txErr = tx.Commit(ctx); txErr != nil {
-		return false, fmt.Errorf("hunt: toggle star id=%d: commit: %w", entryID, txErr)
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("hunt: toggle star id=%d: commit: %w", entryID, err)
 	}
 	return !isStarred, nil
 }

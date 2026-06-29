@@ -48,8 +48,7 @@ func TestStore_RateExact_TrackerTransition(t *testing.T) {
 		testID   = int64(99990001)
 		testUser = "tracker_transition_test"
 	)
-	_ = s.Pool().QueryRow(ctx, "SELECT 1") // ensure pool alive
-	// Clean up any leftover row.
+	// Clean up any leftover row from a prior failed run.
 	_, _ = s.Pool().Exec(ctx, "DELETE FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND user_name=$3",
 		testKind, testID, testUser)
 	t.Cleanup(func() {

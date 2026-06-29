@@ -143,9 +143,17 @@ func TestStore_ToggleShortlistStar_StarOn_FromUnrated(t *testing.T) {
 }
 
 // TestStore_ToggleShortlistStar_StarOn_NotePreserved verifies that star-on from
-// triage='discarded' preserves an existing note.
+// an unrated-but-noted state preserves the existing note.
+//
+// The note column is excluded from the ON CONFLICT SET list in ToggleShortlistStar
+// so that a star click never silently wipes an existing note. This test guards that
+// invariant: seed a row with note but empty triage → toggle star → note survives.
 //
 // Red-on-revert: including note in ON CONFLICT SET clause → note wiped.
+//
+// Note: seeding from triage='discarded' is intentionally avoided here; discarded is
+// a protected state (triage ∉ softDemotable) and star-on produces a NO-OP (starred=false).
+// That contract is tested separately in TestStore_ToggleShortlistStar_Discarded_IsNoOp.
 func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
@@ -153,14 +161,15 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	id := insertStarTestJob(t, s)
 	const wantNote = "do not delete this note"
 
-	// discarded is a triage-axis value.
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, "", wantNote); err != nil {
-		t.Fatalf("Rate (seed discarded with note): %v", err)
+	// Seed: empty triage + existing note. Rate with triage="" uses CASE guard
+	// (preserves existing triage=''), so this is "unrated with a note".
+	if err := s.Rate(context.Background(), "job", id, starTestUser, "", "", wantNote); err != nil {
+		t.Fatalf("Rate (seed unrated with note): %v", err)
 	}
 
 	starred := toggleStar(t, s, id)
 	if !starred {
-		t.Errorf("star on from discarded: want starred=true, got false")
+		t.Errorf("star on from unrated: want starred=true, got false")
 	}
 
 	var note *string
