@@ -48,6 +48,10 @@ var shortlistActiveStages = []string{
 var shortlistSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: sqlJTitle},
+		// Star column at index 1 (front after Title). Every shortlist row is starred
+		// (stage ∈ shortlistActiveStages by query). Clicking demotes to StageNew →
+		// row drops off shortlist on reload.
+		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
 		{Key: "stage", Label: "Stage", Sortable: true, SQLExpr: "r.stage", Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
@@ -55,9 +59,6 @@ var shortlistSpec = admintable.Spec{
 		{Key: "comp", Label: "Comp", Sortable: false},
 		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
 		{Key: "rated", Label: "Rated", Sortable: true, SQLExpr: "r.rated_at", Width: "6rem"},
-		// Star column: every shortlist row is starred (stage ∈ shortlistActiveStages
-		// by query). Clicking demotes to StageNew → row drops off shortlist on reload.
-		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
 	},
 	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
@@ -136,23 +137,21 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 
 			// Cell order MUST match shortlistSpec.Columns order.
 			// Cell-0 = plain text Title (go-panel wraps in <a href>; cell.HTML ignored
-			// at i=0). Company is a separate sortable column at cell-1.
+			// at i=0). Star is at cell-1 (front after Title). Company at cell-2.
 			// Every shortlist row is starred (true) — it's on the list by query definition.
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(row.ID, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(row.ID, 10),
 				Cells: []resource.Cell{
-					{Value: row.Title},                                                                              // [0] Title
-					{Value: row.Company},                                                                            // [1] Company
-					{Value: stageBadgeHTML(row.Stage), HTML: true},                                                 // [2] Stage
-					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                    // [3] Fit
-					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                            // [4] Market
-					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [5] Comp
-					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                                 // [6] Docs
-					{Value: row.RatedAt.Format("2006-01-02")},                                                      // [7] Rated
-					// [8] Star — always filled (★) since every row is on the shortlist.
-					// Clicking POSTs toggle: demotes stage to StageNew → row drops off shortlist.
-					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true},
+					{Value: row.Title},                                                                              // [0] Title (plain text — Href-linked)
+					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true},                                     // [1] Star (front after Title; always ★)
+					{Value: row.Company},                                                                            // [2] Company
+					{Value: stageBadgeHTML(row.Stage), HTML: true},                                                 // [3] Stage
+					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                    // [4] Fit
+					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                            // [5] Market
+					{Value: salaryDetailStr(row.SalaryMin, row.SalaryMax, row.SalaryCurrency, row.SalaryInterval)}, // [6] Comp
+					{Value: docsChipHTML(row.ID, hasResume, hasCover), HTML: true},                                 // [7] Docs
+					{Value: row.RatedAt.Format("2006-01-02")},                                                      // [8] Rated
 				},
 			})
 		}

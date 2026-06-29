@@ -49,6 +49,15 @@ func mintStarCSRF(ctx context.Context, csrfKey []byte) string {
 	return csrf.Issue(csrfKey, sessionCookieFrom(ctx), csrf.DefaultTTL)
 }
 
+// starColorGold is the CSS color for the filled (★) star button.
+// Chosen to be visually distinct and recognisable as "bookmarked/saved" across
+// common light and dark admin themes.
+const starColorGold = "#f5b301"
+
+// starColorMuted is the CSS color for the empty (☆) star button.
+// A neutral grey keeps the unfilled state from drawing attention.
+const starColorMuted = "#9aa0a6"
+
 // starToggleHTML returns XSS-safe HTML for a shortlist star toggle form cell.
 // The form POSTs to /admin/jobs/{id}/shortlist and redirects back to Referer
 // (preserving the current filter state). csrfTok is the hex/decimal token from
@@ -63,27 +72,31 @@ func mintStarCSRF(ctx context.Context, csrfKey []byte) string {
 // describes the action resulting from the click (add vs. remove).
 // outline-offset:2px ensures keyboard focus is visible when the UA's default
 // button:focus-visible outline is absent (stripped by border:none reset).
+// Color: starred ★ renders in starColorGold; unstarred ☆ in starColorMuted.
 func starToggleHTML(id int64, starred bool, csrfTok string) string {
 	star := "☆"
 	ariaLabel := "Add to shortlist"
 	ariaPressed := "false"
+	color := starColorMuted
 	if starred {
 		star = "★"
 		ariaLabel = "Remove from shortlist"
 		ariaPressed = "true"
+		color = starColorGold
 	}
 	idStr := strconv.FormatInt(id, 10)
 	return fmt.Sprintf(
 		`<form method="POST" action="/admin/jobs/%s/shortlist" style="display:inline;margin:0">`+
 			`<input type="hidden" name="%s" value="%s">`+
 			`<button type="submit"`+
-			` style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;outline-offset:2px"`+
+			` style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;outline-offset:2px;color:%s"`+
 			` aria-label="%s" aria-pressed="%s"`+
 			` title="%s">%s</button>`+
 			`</form>`,
 		idStr,
 		html.EscapeString(csrf.FormField),
 		html.EscapeString(csrfTok),
+		color,
 		ariaLabel,
 		ariaPressed,
 		ariaLabel,
