@@ -13,12 +13,6 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// stageNoStage is the sentinel option value for "no stage set yet".
-// Displayed as a disabled, hidden placeholder; submitting this value is a no-op
-// in the handler. The option is kept selected when currentStage=="" so the
-// browser shows "— stage —" rather than promoting the first real option.
-const stageNoStage = ""
-
 // stageDropdownHTML returns XSS-safe HTML for an inline stage-change form cell.
 // The form POSTs to /admin/jobs/{id}/stage. Stage options are derived from
 // hunt.AllStages (the single source of truth — no local duplicate list).
@@ -44,7 +38,7 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	idStr := strconv.FormatInt(id, 10)
 	var sb strings.Builder
 	fmt.Fprintf(&sb,
-		`<form method="POST" action="/admin/jobs/%s/stage" style="display:inline;margin:0">`+
+		`<form method="POST" action="/admin/jobs/%s/stage" style="display:inline;margin:0" onsubmit="this.querySelector('button[type=submit]').disabled=true">`+
 			`<input type="hidden" name="%s" value="%s">`,
 		idStr,
 		html.EscapeString(csrf.FormField),
@@ -56,29 +50,11 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	// host that doesn't inject the shell stylesheet (e.g. tests / plain HTTP).
 	sb.WriteString(`<select name="stage" ` +
 		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#1e2d4a);background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5);cursor:pointer" ` +
-		`aria-label="Pipeline stage">`)
-	// Placeholder: disabled + hidden so it is selectable by the browser when no
-	// stage is set, but not choosable by the user (prevents accidental no-op
-	// submissions after a real stage has been assigned).
-	placeholderSelected := ""
-	if currentStage == stageNoStage {
-		placeholderSelected = ` selected`
-	}
-	fmt.Fprintf(&sb, `<option value="" disabled hidden%s>— stage —</option>`, placeholderSelected)
-	// Real stage options derived from hunt.AllStages — single source of truth.
-	// Labels equal the stage constant strings (no separate label dictionary needed).
-	for _, s := range hunt.AllStages {
-		selected := ""
-		if s == currentStage {
-			selected = ` selected`
-		}
-		// Option elements inherit the select's background/color on most browsers,
-		// but explicit styling avoids white-on-white in WebKit when the user opens
-		// the native picker (background:var(--bg-elevated) + color:var(--text-primary)).
-		fmt.Fprintf(&sb,
-			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
-			s, selected, s)
-	}
+		`aria-label="My pipeline">`)
+	// Options are rendered by stageOptgroupHTML: two <optgroup> blocks (Triage /
+	// Pipeline) derived from hunt.TriageStages + hunt.PipelineStages. Out-of-enum
+	// handling (placeholder + sentinel) is owned by stageOptgroupHTML.
+	sb.WriteString(stageOptgroupHTML(currentStage))
 	// Submit button: explicit user gesture satisfies WCAG 3.2.2 (On Input).
 	// Matches star.go button pattern: background:none;border:none;cursor:pointer.
 	sb.WriteString(`</select>` +

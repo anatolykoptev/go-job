@@ -30,13 +30,18 @@ const (
 	StageRejected  = "rejected"
 )
 
+// TriageStages are operator-assessment phases before application.
+// Ordered: earliest decision first.
+var TriageStages = []string{StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed}
+
+// PipelineStages are post-application funnel phases.
+// Ordered: earliest funnel step first.
+var PipelineStages = []string{StageApplied, StageInterview, StageOffer, StageRejected}
+
 // AllStages is the canonical ordered list of hunt stages (triage + pipeline).
-// Adding a new stage: edit ONLY this slice; everything else derives from it.
-// Order matters for UI presentation (kanban triage first, then funnel stages).
-var AllStages = []string{
-	StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed,
-	StageApplied, StageInterview, StageOffer, StageRejected,
-}
+// Adding a new stage: edit TriageStages or PipelineStages — AllStages is derived automatically.
+// Order matters for UI presentation (triage first, then funnel stages).
+var AllStages = append(append([]string{}, TriageStages...), PipelineStages...)
 
 // Status values for hunt entry lifecycle. Default is "open".
 // "closed" — issue closed without merge; "merged" — PR merged / bounty claimed;
