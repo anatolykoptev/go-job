@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
 // TestStageDropdownHTML_NoCurrentStage verifies that when no stage is set (empty
@@ -16,16 +18,22 @@ func TestStageDropdownHTML_NoCurrentStage(t *testing.T) {
 		`action="/admin/jobs/42/stage"`,
 		`method="POST"`,
 		`name="stage"`,
-		`onchange="this.form.submit()"`,
 		`name="_csrf"`,
 		`value="test-tok"`,
 		`aria-label="Pipeline stage"`,
-		// Placeholder option selected when stage=="".
-		`value="" selected`,
+		// Placeholder option: disabled, hidden, and selected when stage=="".
+		`value="" disabled hidden selected`,
+		// Explicit submit button (WCAG 3.2.2 — no onchange auto-submit).
+		`type="submit"`,
+		`aria-label="Save stage"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stageDropdownHTML(42, \"\", ...): want %q in output, got:\n%s", want, got)
 		}
+	}
+	// onchange auto-submit must NOT be present (WCAG 3.2.2).
+	if strings.Contains(got, `onchange="this.form.submit()"`) {
+		t.Errorf("stageDropdownHTML: onchange auto-submit violates WCAG 3.2.2 — must use explicit submit button")
 	}
 }
 
@@ -38,17 +46,18 @@ func TestStageDropdownHTML_AppliedSelected(t *testing.T) {
 	if !strings.Contains(got, `value="applied" selected`) {
 		t.Errorf("stageDropdownHTML(7, \"applied\", ...): want applied option selected, got:\n%s", got)
 	}
-	// Placeholder option must NOT be selected.
-	if strings.Contains(got, `value="" selected`) {
+	// Placeholder option must NOT be selected (disabled hidden, no selected attr).
+	if strings.Contains(got, `value="" disabled hidden selected`) {
 		t.Errorf("stageDropdownHTML(7, \"applied\", ...): placeholder must not be selected when stage is set")
 	}
 }
 
-// TestStageDropdownHTML_AllStagesPresent verifies all 9 stage values appear as options.
-// Red-on-revert: removing a stage from stageOptions → this assertion fails.
+// TestStageDropdownHTML_AllStagesPresent verifies all stages from hunt.AllStages
+// appear as options in the dropdown.
+// Red-on-revert: removing a stage from hunt.AllStages → this assertion fails.
 func TestStageDropdownHTML_AllStagesPresent(t *testing.T) {
 	got := stageDropdownHTML(1, "", "tok")
-	for _, stage := range []string{"new", "interesting", "saved", "discarded", "claimed", "applied", "interview", "offer", "rejected"} {
+	for _, stage := range hunt.AllStages {
 		if !strings.Contains(got, `value="`+stage+`"`) {
 			t.Errorf("stageDropdownHTML: want option value=%q in output", stage)
 		}
@@ -132,5 +141,91 @@ func TestJobsFilter_StageInvalidDropped(t *testing.T) {
 	}
 	if len(args) != 0 {
 		t.Errorf("jobsFilter: invalid stage must produce zero bind args, got %d", len(args))
+	}
+}
+
+// TestStageEnumSync verifies that validHuntStages, allHuntStageValues, and the
+// stage options rendered by stageDropdownHTML stay in sync with hunt.AllStages.
+// Red-on-revert: adding a stage to hunt.AllStages without propagating → this fails.
+func TestStageEnumSync(t *testing.T) {
+	t.Run("validHuntStages", func(t *testing.T) {
+		// Every entry in hunt.AllStages must be in validHuntStages.
+		for _, s := range hunt.AllStages {
+			if !validHuntStages[s] {
+				t.Errorf("validHuntStages: missing stage %q (present in hunt.AllStages)", s)
+			}
+		}
+		// validHuntStages must not contain extras beyond hunt.AllStages.
+		canonical := make(map[string]bool, len(hunt.AllStages))
+		for _, s := range hunt.AllStages {
+			canonical[s] = true
+		}
+		for s := range validHuntStages {
+			if !canonical[s] {
+				t.Errorf("validHuntStages: extra stage %q not in hunt.AllStages", s)
+			}
+		}
+	})
+
+	t.Run("allHuntStageValues", func(t *testing.T) {
+		if len(allHuntStageValues) != len(hunt.AllStages) {
+			t.Errorf("allHuntStageValues: len=%d, want %d (hunt.AllStages)", len(allHuntStageValues), len(hunt.AllStages))
+		}
+		for i, s := range hunt.AllStages {
+			if i >= len(allHuntStageValues) {
+				break
+			}
+			if allHuntStageValues[i] != s {
+				t.Errorf("allHuntStageValues[%d]=%q, want %q", i, allHuntStageValues[i], s)
+			}
+		}
+	})
+
+	t.Run("stageDropdownOptions", func(t *testing.T) {
+		got := stageDropdownHTML(1, "", "tok")
+		for _, s := range hunt.AllStages {
+			if !strings.Contains(got, `value="`+s+`"`) {
+				t.Errorf("stageDropdownHTML: missing option for stage %q (present in hunt.AllStages)", s)
+			}
+		}
+	})
+}
+
+// TestStageDropdownHTML_ShellTokens verifies the select style uses CSS custom
+// properties defined in go-panel/shell (styles_templ.go) and not the stale
+// undefined --input-bg or --text tokens that caused white-on-dark rendering.
+// Red-on-revert: reverting to --input-bg/--text → this test fails.
+func TestStageDropdownHTML_ShellTokens(t *testing.T) {
+	got := stageDropdownHTML(1, "", "tok")
+	// Must use defined shell tokens.
+	for _, token := range []string{"--bg-elevated", "--text-primary", "--border"} {
+		if !strings.Contains(got, token) {
+			t.Errorf("stageDropdownHTML: must reference shell CSS token %q, not found in output:\n%s", token, got)
+		}
+	}
+	// Must NOT use the undefined tokens that caused white-on-dark regression.
+	for _, bad := range []string{"--input-bg", "var(--text,"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("stageDropdownHTML: must not reference undefined token %q (causes white-on-dark), got:\n%s", bad, got)
+		}
+	}
+}
+
+// TestStageDropdownHTML_PlaceholderDisabledHidden verifies the placeholder option
+// is marked disabled and hidden so users cannot re-select "no stage" after setting one,
+// while still allowing the browser to display it when stage=="".
+func TestStageDropdownHTML_PlaceholderDisabledHidden(t *testing.T) {
+	// When stage is unset, placeholder must be disabled hidden AND selected.
+	gotEmpty := stageDropdownHTML(5, "", "tok")
+	if !strings.Contains(gotEmpty, `value="" disabled hidden selected`) {
+		t.Errorf("stageDropdownHTML (no stage): placeholder must be disabled hidden selected, got:\n%s", gotEmpty)
+	}
+	// When a stage is set, placeholder must be disabled hidden but NOT selected.
+	gotSet := stageDropdownHTML(5, "applied", "tok")
+	if !strings.Contains(gotSet, `value="" disabled hidden`) {
+		t.Errorf("stageDropdownHTML (applied): placeholder must be disabled hidden, got:\n%s", gotSet)
+	}
+	if strings.Contains(gotSet, `value="" disabled hidden selected`) {
+		t.Errorf("stageDropdownHTML (applied): placeholder must not be selected when stage is set")
 	}
 }
