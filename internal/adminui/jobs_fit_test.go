@@ -190,19 +190,21 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title, 1=Star toggle, 2=Company, 3=Fit chip, 4=Market chip,
-	// 5=Status, 6=Posted, 7=Location, 8=Source, 9=Docs.
+	// 0=Title, 1=Star toggle, 2=Stage dropdown, 3=Company,
+	// 4=Fit chip, 5=Market chip, 6=Status, 7=Posted,
+	// 8=Location, 9=Source, 10=Docs.
 	cells := []resource.Cell{
-		{Value: "Some Title"},                                       // 0: title — plain text cell-0 (Href-linked)
-		{Value: starToggleHTML(1, false, ""), HTML: true},           // 1: star toggle (front after Title)
-		{Value: "Acme Corp"},                                        // 2: company — plain text
-		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 3: fit chip
-		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 4: market chip
-		{Value: "open"},                                             // 5: status
-		{Value: "2026-06-01"},                                       // 6: posted
-		{Value: "Remote (US)"},                                      // 7: location
-		{Value: "linkedin"},                                         // 8: source
-		{Value: docsChipHTML(1, false, false), HTML: true},          // 9: docs (no resume/cover)
+		{Value: "Some Title"},                                        // 0: title — plain text cell-0 (Href-linked)
+		{Value: starToggleHTML(1, false, ""), HTML: true},            // 1: star toggle (front after Title)
+		{Value: stageDropdownHTML(1, "", ""), HTML: true},            // 2: stage dropdown (pipeline stage)
+		{Value: "Acme Corp"},                                         // 3: company — plain text
+		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},      // 4: fit chip
+		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true},  // 5: market chip
+		{Value: "open"},                                              // 6: status (job posting open/closed)
+		{Value: "2026-06-01"},                                        // 7: posted
+		{Value: "Remote (US)"},                                       // 8: location
+		{Value: "linkedin"},                                          // 9: source
+		{Value: docsChipHTML(1, false, false), HTML: true},           // 10: docs (no resume/cover)
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -216,31 +218,38 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	if !cells[1].HTML {
 		t.Errorf("cell[1] (Star toggle) must have HTML:true")
 	}
-	// Assert company is at index 2 (plain text).
-	if cells[2].HTML {
-		t.Errorf("cell[2] (Company) must have HTML:false")
+	// Assert stage dropdown is at index 2 (HTML:true, right after star).
+	if !cells[2].HTML {
+		t.Errorf("cell[2] (Stage dropdown) must have HTML:true")
 	}
-	// Assert fit chip is at index 3 (HTML:true, not cell-0).
-	if !cells[3].HTML {
-		t.Errorf("cell[3] (Fit chip) must have HTML:true")
+	// Assert company is at index 3 (plain text).
+	if cells[3].HTML {
+		t.Errorf("cell[3] (Company) must have HTML:false")
 	}
-	// Assert market chip is at index 4 (HTML:true, not cell-0).
+	// Assert fit chip is at index 4 (HTML:true, not cell-0).
 	if !cells[4].HTML {
-		t.Errorf("cell[4] (Market Read chip) must have HTML:true")
+		t.Errorf("cell[4] (Fit chip) must have HTML:true")
 	}
-	// Assert docs chip is at index 9 (HTML:true).
-	if !cells[9].HTML {
-		t.Errorf("cell[9] (Docs chip) must have HTML:true")
+	// Assert market chip is at index 5 (HTML:true, not cell-0).
+	if !cells[5].HTML {
+		t.Errorf("cell[5] (Market Read chip) must have HTML:true")
 	}
-	// Assert column order: Title first, Star second, Docs last.
+	// Assert docs chip is at index 10 (HTML:true).
+	if !cells[10].HTML {
+		t.Errorf("cell[10] (Docs chip) must have HTML:true")
+	}
+	// Assert column order: Title first, Star second, Stage third, Docs last.
 	if jobsSpec.Columns[0].Key != colKeyTitle {
 		t.Errorf("column[0] must be Title (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
 	}
-	if jobsSpec.Columns[1].Key != "star" {
-		t.Errorf("column[1] must be Star (key=%q), got key=%q", "star", jobsSpec.Columns[1].Key)
+	if jobsSpec.Columns[1].Key != colKeyStar {
+		t.Errorf("column[1] must be Star (key=%q), got key=%q", colKeyStar, jobsSpec.Columns[1].Key)
 	}
-	if jobsSpec.Columns[2].Key != colCompany {
-		t.Errorf("column[2] must be Company (key=%q), got key=%q", colCompany, jobsSpec.Columns[2].Key)
+	if jobsSpec.Columns[2].Key != colKeyStage {
+		t.Errorf("column[2] must be Stage (key=%q), got key=%q", colKeyStage, jobsSpec.Columns[2].Key)
+	}
+	if jobsSpec.Columns[3].Key != colCompany {
+		t.Errorf("column[3] must be Company (key=%q), got key=%q", colCompany, jobsSpec.Columns[3].Key)
 	}
 	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != "docs" {
 		t.Errorf("last column must be Docs (key=%q), got key=%q", "docs", jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
@@ -310,8 +319,8 @@ func TestJobsSpec_OfflineQueryStructure(t *testing.T) {
 		t.Errorf("OrderBy for sort=market should contain 'LONGSHOT', got: %q", orderByMarket)
 	}
 
-	// Column count sanity (shortlist star added — now 10 total).
-	const expectedCols = 10
+	// Column count sanity (stage dropdown added — now 11 total).
+	const expectedCols = 11
 	if len(jobsSpec.Columns) != expectedCols {
 		t.Errorf("jobsSpec has %d columns, expected %d", len(jobsSpec.Columns), expectedCols)
 	}
