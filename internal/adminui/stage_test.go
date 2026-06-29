@@ -20,7 +20,7 @@ func TestStageDropdownHTML_NoCurrentStage(t *testing.T) {
 		`name="stage"`,
 		`name="_csrf"`,
 		`value="test-tok"`,
-		`aria-label="Pipeline stage"`,
+		`aria-label="My pipeline"`,
 		// Placeholder option: disabled, hidden, and selected when stage=="".
 		`value="" disabled hidden selected`,
 		// Explicit submit button (WCAG 3.2.2 — no onchange auto-submit).
@@ -212,18 +212,24 @@ func TestStageDropdownHTML_ShellTokens(t *testing.T) {
 }
 
 // TestStageDropdownHTML_PlaceholderDisabledHidden verifies the placeholder option
-// is marked disabled and hidden so users cannot re-select "no stage" after setting one,
-// while still allowing the browser to display it when stage=="".
+// behaviour for out-of-enum and empty-stage cases.
+//
+// NOTE (P2 refactor): stageOptgroupHTML only renders a sentinel when currentStage
+// is NOT in hunt.AllStages. When a valid stage is set ("applied"), no sentinel is
+// rendered — the select opens with the matching option pre-selected, which is correct
+// UX (the user doesn't need a "reset to no stage" path after rating). This is
+// consistent with statusDropdownHTML's out-of-enum-only sentinel.
 func TestStageDropdownHTML_PlaceholderDisabledHidden(t *testing.T) {
 	// When stage is unset, placeholder must be disabled hidden AND selected.
 	gotEmpty := stageDropdownHTML(5, "", "tok")
 	if !strings.Contains(gotEmpty, `value="" disabled hidden selected`) {
 		t.Errorf("stageDropdownHTML (no stage): placeholder must be disabled hidden selected, got:\n%s", gotEmpty)
 	}
-	// When a stage is set, placeholder must be disabled hidden but NOT selected.
+	// When a valid stage is set, NO sentinel/placeholder is rendered (P2 behaviour).
+	// The matching <option> is simply marked selected.
 	gotSet := stageDropdownHTML(5, "applied", "tok")
-	if !strings.Contains(gotSet, `value="" disabled hidden`) {
-		t.Errorf("stageDropdownHTML (applied): placeholder must be disabled hidden, got:\n%s", gotSet)
+	if !strings.Contains(gotSet, `value="applied" selected`) {
+		t.Errorf("stageDropdownHTML (applied): want applied option selected, got:\n%s", gotSet)
 	}
 	if strings.Contains(gotSet, `value="" disabled hidden selected`) {
 		t.Errorf("stageDropdownHTML (applied): placeholder must not be selected when stage is set")
