@@ -96,6 +96,8 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/shortlist", a.Require(shortlistHandler(store, adminUser, a, []byte(csrfKey))))
 	// Inline stage dropdown in the jobs table — note-preserving (SetStage, not Rate).
 	mux.Handle("POST "+adminBasePath+"/jobs/{id}/stage", a.Require(stageHandler(store, adminUser, a, []byte(csrfKey))))
+	// Job posting lifecycle status dropdown on the detail page.
+	mux.Handle("POST "+adminBasePath+"/jobs/{id}/status", a.Require(statusHandler(store, a, []byte(csrfKey))))
 	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
 	// /admin/shortlist (list + htmx rows) is handled by go-panel via resource.Register above.
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;

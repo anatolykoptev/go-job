@@ -199,30 +199,39 @@ func TestBuildOverviewSection_FieldsPresent(t *testing.T) {
 		Remote:     "yes",
 		JobType:    "full-time",
 		Experience: "5+ years",
-		Status:     "new",
+		Status:     "open",
 	}
-	sec := buildOverviewSection(rec, "")
+	// id=1, csrfTok="test-tok" — required for the status dropdown.
+	sec := buildOverviewSection(rec, "", 1, "test-tok")
 	if sec.Title != "Overview" {
 		t.Fatalf("expected title Overview, got %q", sec.Title)
 	}
-	want := map[string]string{
+	// Plain-text items: check label→value for non-HTML items.
+	wantPlain := map[string]string{
 		"Company":    "Acme Corp",
 		"Location":   "San Francisco",
 		"Remote":     "yes",
 		"Type":       "full-time",
 		"Experience": "5+ years",
-		"Status":     "new",
 	}
 	got := make(map[string]string, len(sec.Items))
 	for _, item := range sec.Items {
 		got[item.Label] = item.Value
 	}
-	for label, wantVal := range want {
+	for label, wantVal := range wantPlain {
 		if gotVal, ok := got[label]; !ok {
 			t.Errorf("missing item %q in Overview", label)
 		} else if gotVal != wantVal {
 			t.Errorf("item %q: got %q, want %q", label, gotVal, wantVal)
 		}
+	}
+	// Status is now an editable dropdown (HTML:true); verify the item is present
+	// and contains the expected current status as the selected option.
+	statusVal, ok := got["Status"]
+	if !ok {
+		t.Error("missing Status item in Overview")
+	} else if !strings.Contains(statusVal, `value="open" selected`) {
+		t.Errorf("Status dropdown: want \"open\" option selected, got:\n%s", statusVal)
 	}
 }
 
