@@ -13,45 +13,6 @@ import (
 // is the currently selected value. Extracted as a const to satisfy goconst (4+ uses).
 const attrSelected = ` selected`
 
-// stageOptgroupHTML returns the inner HTML for a combined stage <select> element,
-// structured as two <optgroup> blocks: "Triage" (hunt.TriageStages) and
-// "Pipeline" (hunt.PipelineStages). Option values are html.EscapeString-wrapped
-// as a matter of style (stage values are author-constant).
-//
-// currentStage is used only as an equality key to apply the `selected`
-// attribute — it is never interpolated into HTML as text.
-//
-// Out-of-enum handling:
-//   - currentStage == "" → disabled/hidden placeholder "— stage —" is prepended
-//     and marked selected so the browser shows a prompt rather than defaulting
-//     to the first real option.
-//   - currentStage != "" and not in AllStages → disabled/hidden sentinel
-//     "current: {escaped}" is prepended so the operator sees the real value
-//     without a no-op ✓ save silently overwriting it.
-//
-// CSS: per-option background/color match the parent select's CSS vars
-// (--bg-elevated / --text-primary) for WebKit native-picker compatibility.
-func stageOptgroupHTML(current string) string {
-	var sb strings.Builder
-
-	// Out-of-enum sentinel / placeholder.
-	if !slices.Contains(hunt.AllStages, current) {
-		if current == "" {
-			sb.WriteString(`<option value="" disabled hidden` + attrSelected + `>— stage —</option>`)
-		} else {
-			fmt.Fprintf(&sb,
-				`<option value="" disabled hidden`+attrSelected+` style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">current: %s</option>`,
-				html.EscapeString(current),
-			)
-		}
-	}
-
-	appendOptgroup(&sb, "Triage", hunt.TriageStages, current)
-	appendOptgroup(&sb, "Pipeline", hunt.PipelineStages, current)
-
-	return sb.String()
-}
-
 // pipelineOptgroupHTML returns inner HTML for a pipeline-only <select> element.
 // Used in the jobs-table inline dropdown (migration 012: triage managed separately).
 //

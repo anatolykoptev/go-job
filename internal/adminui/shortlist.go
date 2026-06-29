@@ -22,6 +22,7 @@ const navIDShortlist = "shortlist"
 const (
 	cssBadgeBlue  = "badge-blue"
 	cssBadgeGreen = "badge-green"
+	cssBadgeGray  = "badge-gray" // used for discarded (negative triage decision)
 )
 
 // shortlistTriageValues is the set of hunt_ratings.triage values that bring a job
@@ -60,7 +61,9 @@ var shortlistSpec = admintable.Spec{
 		// row drops off shortlist on reload.
 		{Key: colKeyStar, Label: "★", Sortable: false, Width: "3rem"},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
-		{Key: colKeyStage, Label: "Stage", Sortable: true, SQLExpr: sqlRStage, Width: colWidth8rem},
+		// "Triage / Stage" renders triage + pipeline badges together (triageStageBadgesHTML).
+		// Sort applies to the pipeline axis (r.stage) only; triage has no separate sort key.
+		{Key: colKeyStage, Label: "Triage / Stage", Sortable: true, SQLExpr: sqlRStage, Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
 		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: "comp", Label: "Comp", Sortable: false},
@@ -174,8 +177,8 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 var stageBadgeClass = map[string]string{
 	// Triage axis
 	hunt.StageInteresting: cssBadgeBlue,
-	hunt.StageSaved:       "",
-	hunt.StageDiscarded:   "",
+	hunt.StageSaved:       "",           // default badge — neutral/selected
+	hunt.StageDiscarded:   cssBadgeGray, // muted — negative decision, visually distinct from saved
 	// Pipeline axis
 	hunt.StageClaimed:   cssBadgeBlue,
 	hunt.StageApplied:   cssBadgeBlue,

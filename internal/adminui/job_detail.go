@@ -76,7 +76,7 @@ type jobDetailRecord struct {
 // TriageOpts and StageOpts are pre-computed template.HTML (P2 dedup) so the
 // template does not double-escape them.
 var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<div class="rate-form">
-  <h3>Rate</h3>
+  <h3>Triage &amp; Pipeline</h3>
   {{if .Rating}}
   <div class="current-rating">
     {{if .Rating.Triage}}<span class="triage">Triage: {{.Rating.Triage}}</span>{{end}}

@@ -225,8 +225,8 @@ func TestStageBadgeHTML(t *testing.T) {
 	}{
 		// Triage-axis badges.
 		{hunt.StageInteresting, "badge-blue", true},
-		{hunt.StageSaved, `class="badge"`, true},    // saved → plain badge (no extra modifier)
-		{hunt.StageDiscarded, `class="badge"`, true}, // discarded → plain badge
+		{hunt.StageSaved, `class="badge"`, true},               // saved → plain badge (no extra modifier)
+		{hunt.StageDiscarded, `class="badge badge-gray"`, true}, // discarded → gray (MEDIUM-1 fix; visually distinct)
 		// Pipeline-axis badges.
 		{hunt.StageClaimed, "badge-blue", true},
 		{hunt.StageApplied, "badge-blue", true},

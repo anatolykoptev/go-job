@@ -48,26 +48,11 @@ var PipelineStages = []string{StageClaimed, StageApplied, StageInterview, StageO
 // Adding a stage: edit TriageStages or PipelineStages — AllStages derives automatically.
 var AllStages = append(append([]string{}, TriageStages...), PipelineStages...)
 
-// legacyAllStages is the pre-split 9-value set including 'new'.
-// Used ONLY in migration 012 backfill WHERE clauses and back-compat validation.
-// Never use this for new UI or validation logic.
-var legacyAllStages = []string{ //nolint:unused // referenced by schema/012 comment; kept for back-compat audit trail
-	StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed,
-	StageApplied, StageInterview, StageOffer, StageRejected,
-}
-
 // StarSoftTriageValues are the triage values a star click can demote to '' (untriaged).
 // Discarded is excluded: it is a deliberate negative triage decision and should not
-// be silently cleared by a star click.
-// Replaces StarSoftStages after migration 012 split; star now controls triage, not stage.
+// be silently cleared by a star click. Any triage value ∉ StarSoftTriageValues is
+// protected by ToggleShortlistStar's triage-protection guard (NO-OP on star click).
 var StarSoftTriageValues = []string{StageInteresting, StageSaved}
-
-// StarSoftStages is kept as a package-level alias so existing test code that
-// references hunt.StarSoftStages compiles without churn. It now delegates to
-// StarSoftTriageValues. New code should use StarSoftTriageValues directly.
-//
-// Deprecated: use StarSoftTriageValues.
-var StarSoftStages = StarSoftTriageValues
 
 // Status values for hunt entry lifecycle. Default is "open".
 // "closed" — issue closed without merge; "merged" — PR merged / bounty claimed;

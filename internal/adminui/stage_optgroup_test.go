@@ -7,101 +7,94 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// TestStageOptgroupHTML_Structure verifies both optgroup labels are present in output.
-func TestStageOptgroupHTML_Structure(t *testing.T) {
-	got := stageOptgroupHTML("new")
-	for _, want := range []string{
-		`<optgroup label="Triage">`,
-		`<optgroup label="Pipeline">`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("stageOptgroupHTML: want %q in output, got:\n%s", want, got)
-		}
+// TestPipelineOptgroupHTML_Structure verifies the pipeline optgroup label is present.
+// Red-on-revert: removing the Pipeline optgroup → this fails.
+func TestPipelineOptgroupHTML_Structure(t *testing.T) {
+	got := pipelineOptgroupHTML("applied")
+	if !strings.Contains(got, `<optgroup label="Pipeline">`) {
+		t.Errorf("pipelineOptgroupHTML: want Pipeline optgroup, got:\n%s", got)
 	}
 }
 
-// TestStageOptgroupHTML_TriageMembership verifies all TriageStages are in the
-// Triage optgroup and none appear in the Pipeline optgroup.
-func TestStageOptgroupHTML_TriageMembership(t *testing.T) {
-	got := stageOptgroupHTML("")
-	// Locate the two optgroup blocks by splitting on Pipeline optgroup.
-	triagePart, pipelinePart, found := strings.Cut(got, `<optgroup label="Pipeline">`)
-	if !found {
-		t.Fatal("stageOptgroupHTML: missing Pipeline optgroup")
-	}
+// TestPipelineOptgroupHTML_NoPipelineStagesAbsent verifies no triage values appear.
+func TestPipelineOptgroupHTML_NoTriageValues(t *testing.T) {
+	got := pipelineOptgroupHTML("")
 	for _, s := range hunt.TriageStages {
-		if !strings.Contains(triagePart, `value="`+s+`"`) {
-			t.Errorf("stageOptgroupHTML: TriageStage %q not found in Triage block", s)
-		}
-		if strings.Contains(pipelinePart, `value="`+s+`"`) {
-			t.Errorf("stageOptgroupHTML: TriageStage %q appears in Pipeline block", s)
+		if strings.Contains(got, `value="`+s+`"`) {
+			t.Errorf("pipelineOptgroupHTML: triage value %q must not appear in pipeline dropdown", s)
 		}
 	}
 }
 
-// TestStageOptgroupHTML_PipelineMembership verifies all PipelineStages are in the
-// Pipeline optgroup and none appear in the Triage optgroup.
-func TestStageOptgroupHTML_PipelineMembership(t *testing.T) {
-	got := stageOptgroupHTML("")
-	triagePart, pipelinePart, found := strings.Cut(got, `<optgroup label="Pipeline">`)
-	if !found {
-		t.Fatal("stageOptgroupHTML: missing Pipeline optgroup")
-	}
+// TestPipelineOptgroupHTML_AllPipelineStagesPresent verifies all PipelineStages are rendered.
+func TestPipelineOptgroupHTML_AllPipelineStagesPresent(t *testing.T) {
+	got := pipelineOptgroupHTML("")
 	for _, s := range hunt.PipelineStages {
-		if !strings.Contains(pipelinePart, `value="`+s+`"`) {
-			t.Errorf("stageOptgroupHTML: PipelineStage %q not found in Pipeline block", s)
-		}
-		if strings.Contains(triagePart, `value="`+s+`"`) {
-			t.Errorf("stageOptgroupHTML: PipelineStage %q appears in Triage block", s)
+		if !strings.Contains(got, `value="`+s+`"`) {
+			t.Errorf("pipelineOptgroupHTML: PipelineStage %q not found in output", s)
 		}
 	}
 }
 
-// TestStageOptgroupHTML_SelectedCorrect verifies the currentStage option is marked selected.
-func TestStageOptgroupHTML_SelectedCorrect(t *testing.T) {
-	for _, stage := range hunt.AllStages {
-		got := stageOptgroupHTML(stage)
-		want := `value="` + stage + `" selected`
+// TestPipelineOptgroupHTML_ClearOptionPresent verifies "— clear —" appears when a
+// stage is active (so operator can remove job from pipeline).
+// Red-on-revert: removing the clear option → operator cannot blank the pipeline stage.
+func TestPipelineOptgroupHTML_ClearOptionPresent(t *testing.T) {
+	got := pipelineOptgroupHTML(hunt.StageApplied)
+	if !strings.Contains(got, `<option value="">— clear —</option>`) {
+		t.Errorf("pipelineOptgroupHTML(applied): want '— clear —' option with value=\"\", got:\n%s", got)
+	}
+}
+
+// TestPipelineOptgroupHTML_ClearOptionAbsentWhenEmpty verifies "— clear —" is
+// absent when no stage is set (nothing to clear).
+func TestPipelineOptgroupHTML_ClearOptionAbsentWhenEmpty(t *testing.T) {
+	got := pipelineOptgroupHTML("")
+	if strings.Contains(got, `— clear —`) {
+		t.Errorf("pipelineOptgroupHTML(\"\"): '— clear —' must not appear when no stage is set, got:\n%s", got)
+	}
+}
+
+// TestPipelineOptgroupHTML_SelectedCorrect verifies the current pipeline stage is selected.
+func TestPipelineOptgroupHTML_SelectedCorrect(t *testing.T) {
+	for _, stage := range hunt.PipelineStages {
+		got := pipelineOptgroupHTML(stage)
+		want := `value="` + stage + `"` + attrSelected
 		if !strings.Contains(got, want) {
-			t.Errorf("stageOptgroupHTML(%q): want %q in output", stage, want)
+			t.Errorf("pipelineOptgroupHTML(%q): want %q in output", stage, want)
 		}
 	}
 }
 
-// TestStageOptgroupHTML_EmptyPlaceholder verifies the "— stage —" placeholder is
-// rendered as disabled+hidden+selected when currentStage=="".
-func TestStageOptgroupHTML_EmptyPlaceholder(t *testing.T) {
-	got := stageOptgroupHTML("")
-	if !strings.Contains(got, `value="" disabled hidden selected`) {
-		t.Errorf("stageOptgroupHTML(\"\"): want disabled hidden selected placeholder, got:\n%s", got)
+// TestTriageSelectOptionsHTML_AllTriageStagesPresent verifies all TriageStages are rendered.
+func TestTriageSelectOptionsHTML_AllTriageStagesPresent(t *testing.T) {
+	got := triageSelectOptionsHTML("")
+	for _, s := range hunt.TriageStages {
+		if !strings.Contains(got, `value="`+s+`"`) {
+			t.Errorf("triageSelectOptionsHTML: TriageStage %q not found in output", s)
+		}
 	}
 }
 
-// TestStageOptgroupHTML_OutOfEnumSentinel verifies the sentinel option is rendered
-// for a value not in AllStages.
-func TestStageOptgroupHTML_OutOfEnumSentinel(t *testing.T) {
-	got := stageOptgroupHTML("unknown-legacy-stage")
-	if !strings.Contains(got, `disabled hidden selected`) {
-		t.Errorf("stageOptgroupHTML(unknown): want sentinel disabled hidden selected, got:\n%s", got)
-	}
-	// Sentinel text must be escaped — user-supplied stage value never raw in HTML.
-	if !strings.Contains(got, `current: unknown-legacy-stage`) {
-		t.Errorf("stageOptgroupHTML(unknown): want sentinel 'current: ...' in output, got:\n%s", got)
+// TestTriageSelectOptionsHTML_NoPipelineValues verifies no pipeline values appear.
+func TestTriageSelectOptionsHTML_NoPipelineValues(t *testing.T) {
+	got := triageSelectOptionsHTML("")
+	for _, s := range hunt.PipelineStages {
+		if strings.Contains(got, `value="`+s+`"`) {
+			t.Errorf("triageSelectOptionsHTML: pipeline value %q must not appear in triage select", s)
+		}
 	}
 }
 
-// TestStageOptgroupHTML_OutOfEnumEscaping verifies that an out-of-enum
-// currentStage containing HTML metacharacters is properly escaped so the
-// html.EscapeString invariant that backs the //nolint:gosec G203 annotation
-// cannot silently regress.
-func TestStageOptgroupHTML_OutOfEnumEscaping(t *testing.T) {
-	payload := `<script>alert(1)</script>`
-	got := stageOptgroupHTML(payload)
-	if strings.Contains(got, payload) {
-		t.Errorf("stageOptgroupHTML: raw %q appeared unescaped in output", payload)
-	}
-	if !strings.Contains(got, "&lt;script&gt;") {
-		t.Errorf("stageOptgroupHTML: expected &lt;script&gt; escaped form in output, got:\n%s", got)
+// TestTriageSelectOptionsHTML_ClearOptionAlwaysPresent verifies blank "— none —"
+// is always present so operator can clear the triage signal.
+// Red-on-revert: removing the blank option → triage can never be cleared.
+func TestTriageSelectOptionsHTML_ClearOptionAlwaysPresent(t *testing.T) {
+	for _, cur := range append(hunt.TriageStages, "") {
+		got := triageSelectOptionsHTML(cur)
+		if !strings.Contains(got, `<option value=""`) {
+			t.Errorf("triageSelectOptionsHTML(%q): blank clear option must always be present", cur)
+		}
 	}
 }
 
@@ -120,17 +113,15 @@ func TestStageDropdownHTML_CSRFFieldPresent(t *testing.T) {
 // TestStageDropdownHTML_PipelineOnly verifies that stageDropdownHTML (jobs-table
 // inline dropdown) contains only the Pipeline optgroup, NOT a Triage optgroup.
 // After migration 012: the stage dropdown controls only the pipeline axis.
-// Triage is managed by a separate /triage form on the job-detail page.
 //
-// Red-on-revert: reverting stageDropdownHTML to use stageOptgroupHTML (combined) →
-// Triage optgroup would appear in the jobs-table dropdown, which is incorrect.
+// Red-on-revert: if stageDropdownHTML were restored to use a combined optgroup
+// containing triage values, the triage filter bar would show editable pipeline
+// values in the wrong form.
 func TestStageDropdownHTML_PipelineOnly(t *testing.T) {
 	got := stageDropdownHTML(1, "", "tok")
-	// Pipeline optgroup must be present.
 	if !strings.Contains(got, `<optgroup label="Pipeline">`) {
 		t.Errorf("stageDropdownHTML: want Pipeline optgroup in output, got:\n%s", got)
 	}
-	// Triage optgroup must NOT be present — it belongs to the separate /triage form.
 	if strings.Contains(got, `<optgroup label="Triage">`) {
 		t.Errorf("stageDropdownHTML: Triage optgroup must NOT appear in the pipeline-only jobs dropdown")
 	}

@@ -83,12 +83,9 @@ func stageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csr
 		}
 
 		stage := r.FormValue("stage")
-		// Empty string is the "no-op" sentinel from the placeholder option — skip the write.
-		if stage == "" {
-			http.Redirect(w, r, safeAdminReferer(r.Header.Get("Referer")), http.StatusSeeOther) //nolint:gosec // G710: safeAdminReferer validates.
-			return
-		}
-		if !validPipelineStages[stage] {
+		// stage=="" is the explicit "— clear —" option (SetStage("") blanks the column).
+		// Only reject non-empty values that are not in the pipeline enum.
+		if stage != "" && !validPipelineStages[stage] {
 			http.Error(w, "invalid pipeline stage", http.StatusBadRequest)
 			return
 		}
