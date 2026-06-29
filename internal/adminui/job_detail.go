@@ -73,6 +73,7 @@ type jobDetailRecord struct {
 // applicationSectionTmpl is the html/template for the Rate + download section.
 // All DB/user fields are escaped by the template engine. The CSRF token is a
 // hex/base64 value from csrf.Issue — safe to inject as a hidden form field.
+// StageOpts is pre-computed template.HTML from stageOptgroupHTML (P2 dedup).
 var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<div class="rate-form">
   <h3>Rate</h3>
   {{if .Rating}}
@@ -84,22 +85,8 @@ var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<d
   <form method="POST" action="/admin/jobs/{{.ID}}/rate">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>
-      <span>Stage</span>
-      <select name="stage">
-        <optgroup label="Triage">
-          <option value="new"{{if and .Rating (eq .Rating.Stage "new")}} selected{{end}}>new</option>
-          <option value="interesting"{{if and .Rating (eq .Rating.Stage "interesting")}} selected{{end}}>interesting</option>
-          <option value="saved"{{if and .Rating (eq .Rating.Stage "saved")}} selected{{end}}>saved</option>
-          <option value="discarded"{{if and .Rating (eq .Rating.Stage "discarded")}} selected{{end}}>discarded</option>
-          <option value="claimed"{{if and .Rating (eq .Rating.Stage "claimed")}} selected{{end}}>claimed</option>
-        </optgroup>
-        <optgroup label="Pipeline">
-          <option value="applied"{{if and .Rating (eq .Rating.Stage "applied")}} selected{{end}}>applied</option>
-          <option value="interview"{{if and .Rating (eq .Rating.Stage "interview")}} selected{{end}}>interview</option>
-          <option value="offer"{{if and .Rating (eq .Rating.Stage "offer")}} selected{{end}}>offer</option>
-          <option value="rejected"{{if and .Rating (eq .Rating.Stage "rejected")}} selected{{end}}>rejected</option>
-        </optgroup>
-      </select>
+      <span>My pipeline</span>
+      <select name="stage">{{.StageOpts}}</select>
     </label>
     <label>
       <span>Note</span>
@@ -129,6 +116,10 @@ type applicationSectionData struct {
 	Rating    *currentRating
 	HasResume bool
 	HasCover  bool
+	// StageOpts is pre-rendered HTML for the stage <select> inner content
+	// (two <optgroup> blocks). Produced by stageOptgroupHTML; typed as
+	// template.HTML so html/template does not double-escape it.
+	StageOpts template.HTML
 }
 
 // currentRating holds the current hunt_ratings row for a job.
@@ -292,9 +283,11 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string, id int64, c
 	addItem("Location", rec.Location)
 	addItem("Remote", rec.Remote)
 	addItem("Salary", salaryDisplay)
-	// Status is editable via a dropdown form — replaces the read-only addItem("Status").
+	// Posting status is editable via a dropdown form — replaces the read-only addItem.
+	// Label is "Posting status" to distinguish the external job-board lifecycle
+	// (hunt_jobs.status) from the operator's pipeline stage (hunt_ratings.stage).
 	items = append(items, resource.DetailItem{
-		Label: "Status",
+		Label: "Posting status",
 		Value: statusDropdownHTML(id, rec.Status, csrfTok),
 		HTML:  true,
 	})
@@ -339,13 +332,20 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string, id int64, c
 // buildApplicationSectionHTML renders the rate form and download links via
 // html/template (autoescape on all struct fields). The CSRF token is a
 // hex/base64 value from csrf.Issue and is safe as a hidden form value.
+// Stage options are pre-computed via stageOptgroupHTML and passed as
+// template.HTML so html/template does not double-escape them.
 func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRating, hasResume, hasCover bool) (string, error) {
+	var currentStage string
+	if rating != nil {
+		currentStage = rating.Stage
+	}
 	data := applicationSectionData{
 		ID:        id64,
 		CSRFToken: csrfTok,
 		Rating:    rating,
 		HasResume: hasResume,
 		HasCover:  hasCover,
+		StageOpts: template.HTML(stageOptgroupHTML(currentStage)), //nolint:gosec // G203: stageOptgroupHTML produces only author-constant stage strings; no user text.
 	}
 	var buf bytes.Buffer
 	if err := applicationSectionTmpl.Execute(&buf, data); err != nil {
