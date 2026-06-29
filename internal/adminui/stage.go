@@ -13,39 +13,31 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// stageOptions is the ordered option list for the inline stage dropdown.
-// Each entry is (value, display label). The empty value "— stage —" is a
-// placeholder sentinel for "no stage set yet" (maps to no rating row / stage="").
-// Author-constant: no user text, no escaping required for values or labels.
 // stageNoStage is the sentinel option value for "no stage set yet".
-// Displayed as a placeholder; submitting this value is a no-op in the handler.
+// Displayed as a disabled, hidden placeholder; submitting this value is a no-op
+// in the handler. The option is kept selected when currentStage=="" so the
+// browser shows "— stage —" rather than promoting the first real option.
 const stageNoStage = ""
 
-var stageOptions = []struct{ Value, Label string }{
-	{stageNoStage, "— stage —"},
-	// Labels are the same string as hunt.Stage* constants (no separate label dict needed).
-	{hunt.StageNew, hunt.StageNew},
-	{hunt.StageInteresting, hunt.StageInteresting},
-	{hunt.StageSaved, hunt.StageSaved},
-	{hunt.StageDiscarded, hunt.StageDiscarded},
-	{hunt.StageClaimed, hunt.StageClaimed},
-	{hunt.StageApplied, hunt.StageApplied},
-	{hunt.StageInterview, hunt.StageInterview},
-	{hunt.StageOffer, hunt.StageOffer},
-	{hunt.StageRejected, hunt.StageRejected},
-}
-
 // stageDropdownHTML returns XSS-safe HTML for an inline stage-change form cell.
-// The form POSTs to /admin/jobs/{id}/stage. The <select> submits on change via
-// onchange="this.form.submit()" so no submit button is needed.
+// The form POSTs to /admin/jobs/{id}/stage. Stage options are derived from
+// hunt.AllStages (the single source of truth — no local duplicate list).
 //
 // currentStage is the raw value from hunt_ratings.stage (or "" if no row). It
-// is used only as a map key to select the `selected` attribute — never interpolated
-// into HTML as text. csrfTok is the hex/decimal CSRF token from csrf.Issue.
+// is used only as an equality key to select the `selected` attribute — never
+// interpolated into HTML as text. csrfTok is the hex/decimal CSRF token from
+// csrf.Issue.
 //
-// XSS safety: id is an int64 PK (author-constant), option values are the closed-enum
-// stage constants (author-constant), csrfTok is the only caller-supplied string and
-// is wrapped with html.EscapeString. No user-supplied text enters the HTML output.
+// XSS safety: id is an int64 PK (author-constant), option values are the
+// closed-enum stage constants (author-constant), csrfTok is the only
+// caller-supplied string and is wrapped with html.EscapeString. No
+// user-supplied text enters the HTML output.
+//
+// Accessibility: no onchange auto-submit (WCAG 3.2.2 — On Input); the explicit
+// "✓" submit button lets keyboard users confirm the selection without
+// unintended navigation on arrow-key traversal.
+//
+// TODO(stage): surface ?err= via a jobs-page banner (shared with star.go)
 func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 	idStr := strconv.FormatInt(id, 10)
 	var sb strings.Builder
@@ -56,17 +48,41 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 		html.EscapeString(csrf.FormField),
 		html.EscapeString(csrfTok),
 	)
-	sb.WriteString(`<select name="stage" onchange="this.form.submit()" ` +
-		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#ccc);background:var(--input-bg,#fff);color:var(--text,inherit);cursor:pointer" ` +
+	// CSS uses tokens defined in go-panel/shell styles_templ.go:
+	//   --bg-elevated:#1a2540  --text-primary:#e8edf5  --border:#1e2d4a
+	// Fallbacks are the hardcoded token values so the select is readable on any
+	// host that doesn't inject the shell stylesheet (e.g. tests / plain HTTP).
+	sb.WriteString(`<select name="stage" ` +
+		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#1e2d4a);background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5);cursor:pointer" ` +
 		`aria-label="Pipeline stage">`)
-	for _, opt := range stageOptions {
+	// Placeholder: disabled + hidden so it is selectable by the browser when no
+	// stage is set, but not choosable by the user (prevents accidental no-op
+	// submissions after a real stage has been assigned).
+	placeholderSelected := ""
+	if currentStage == stageNoStage {
+		placeholderSelected = ` selected`
+	}
+	fmt.Fprintf(&sb, `<option value="" disabled hidden%s>— stage —</option>`, placeholderSelected)
+	// Real stage options derived from hunt.AllStages — single source of truth.
+	// Labels equal the stage constant strings (no separate label dictionary needed).
+	for _, s := range hunt.AllStages {
 		selected := ""
-		if opt.Value == currentStage {
+		if s == currentStage {
 			selected = ` selected`
 		}
-		fmt.Fprintf(&sb, `<option value="%s"%s>%s</option>`, opt.Value, selected, opt.Label)
+		// Option elements inherit the select's background/color on most browsers,
+		// but explicit styling avoids white-on-white in WebKit when the user opens
+		// the native picker (background:var(--bg-elevated) + color:var(--text-primary)).
+		fmt.Fprintf(&sb,
+			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
+			s, selected, s)
 	}
-	sb.WriteString(`</select></form>`)
+	// Submit button: explicit user gesture satisfies WCAG 3.2.2 (On Input).
+	// Matches star.go button pattern: background:none;border:none;cursor:pointer.
+	sb.WriteString(`</select>` +
+		`<button type="submit" aria-label="Save stage" ` +
+		`style="background:none;border:none;cursor:pointer;font-size:.8rem;padding:.1rem .2rem;line-height:1;color:var(--text-secondary,#7b8ba8)">✓</button>` +
+		`</form>`)
 	return sb.String()
 }
 

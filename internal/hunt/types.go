@@ -30,6 +30,14 @@ const (
 	StageRejected  = "rejected"
 )
 
+// AllStages is the canonical ordered list of hunt stages (triage + pipeline).
+// Adding a new stage: edit ONLY this slice; everything else derives from it.
+// Order matters for UI presentation (kanban triage first, then funnel stages).
+var AllStages = []string{
+	StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed,
+	StageApplied, StageInterview, StageOffer, StageRejected,
+}
+
 // Status values for hunt entry lifecycle. Default is "open".
 // "closed" — issue closed without merge; "merged" — PR merged / bounty claimed;
 // "archived" — repo/program archived; "ended" — time-bound contest expired.
