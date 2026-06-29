@@ -78,29 +78,37 @@ func TestStageDropdownHTML_MalformedMarkup(t *testing.T) {
 	}
 }
 
-// TestJobsSpec_StageColumn verifies the Stage column appears in jobsSpec at index 2
-// (right after star at index 1), uses colKeyStage key, and is not confused with
-// the job-posting-status column.
-// Red-on-revert: removing the Stage column → index-out-of-bounds or key mismatch.
-func TestJobsSpec_StageColumn(t *testing.T) {
+// TestJobsSpec_TriageAndStageColumns verifies the layout after migration 012:
+//   - [2] Triage badge (read-only, colKeyTriage)
+//   - [3] Stage dropdown (pipeline-only, colKeyStage)
+//
+// The status column (job posting open/closed) must still be present and separate.
+// Red-on-revert: removing/reordering columns → key mismatch; triage filter
+// filter would produce no visible output in the table.
+func TestJobsSpec_TriageAndStageColumns(t *testing.T) {
 	cols := jobsSpec.Columns
-	if len(cols) < 3 {
-		t.Fatalf("jobsSpec.Columns: want at least 3 columns, got %d", len(cols))
+	if len(cols) < 5 {
+		t.Fatalf("jobsSpec.Columns: want at least 5 columns, got %d", len(cols))
 	}
-	// Index 0: Title (Href-linked).
 	if cols[0].Key != colKeyTitle {
 		t.Errorf("cols[0]: want key=%q, got %q", colKeyTitle, cols[0].Key)
 	}
-	// Index 1: Star.
 	if cols[1].Key != colKeyStar {
 		t.Errorf("cols[1]: want key=%q, got %q", colKeyStar, cols[1].Key)
 	}
-	// Index 2: Stage dropdown (pipeline stage).
-	if cols[2].Key != colKeyStage {
-		t.Errorf("cols[2]: want key=%q (stage dropdown), got %q", colKeyStage, cols[2].Key)
+	// Index 2: read-only Triage badge — makes the triage filter bar produce output.
+	if cols[2].Key != colKeyTriage {
+		t.Errorf("cols[2]: want key=%q (triage badge), got %q", colKeyTriage, cols[2].Key)
 	}
-	if cols[2].Label != "Stage" {
-		t.Errorf("cols[2]: want label=%q, got %q", "Stage", cols[2].Label)
+	if cols[2].Label != "Triage" {
+		t.Errorf("cols[2]: want label=%q, got %q", "Triage", cols[2].Label)
+	}
+	// Index 3: Stage dropdown (pipeline stage only).
+	if cols[3].Key != colKeyStage {
+		t.Errorf("cols[3]: want key=%q (stage dropdown), got %q", colKeyStage, cols[3].Key)
+	}
+	if cols[3].Label != "Stage" {
+		t.Errorf("cols[3]: want label=%q, got %q", "Stage", cols[3].Label)
 	}
 	// The status column (job posting open/closed) must still be present and separate.
 	found := false

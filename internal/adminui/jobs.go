@@ -125,18 +125,19 @@ const sqlRTriage = "r.triage"
 // cell.HTML for that index. Therefore cell-0 MUST be plain text (Title).
 // The star column is at index 1 — immediately after Title — so it appears at
 // the front in practice without displacing the Href-linked cell-0.
-// Stage dropdown is at index 2 (pipeline stage — NOT the job posting status).
-// Fit and Market Read chips are at indices 4 and 5 (i>0 → cell.HTML respected).
+// Triage badge (read-only) is at index 2; Stage dropdown at index 3 (pipeline only).
+// Fit and Market Read chips are at indices 5 and 6 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: sqlJTitle},
 		// Star toggle at index 1 (front of visible columns after Title).
-		// Cell value is raw HTML (<form> with CSRF) — rendered with HTML: true.
-		// Not sortable: star state is a join expression, not a table column.
 		{Key: colKeyStar, Label: "★", Sortable: false, Width: "3rem"},
-		// Stage dropdown at index 2. Inline <form> — POSTs to /admin/jobs/{id}/stage.
+		// Triage badge at index 2 — read-only; editable on the detail page.
+		// Sortable via r.triage so operator can sort by interest signal.
+		// Having a visible cell makes the triage filter bar produce observable output.
+		{Key: colKeyTriage, Label: "Triage", Sortable: true, SQLExpr: sqlRTriage, NullsLast: true, Width: colWidth8rem},
+		// Stage dropdown at index 3. Inline <form> — POSTs to /admin/jobs/{id}/stage.
 		// NOT the same as colStatus ("status" = job posting open/closed — separate axis).
-		// Sortable via r.stage so operator can sort by pipeline funnel.
 		{Key: colKeyStage, Label: "Stage", Sortable: true, SQLExpr: sqlRStage, NullsLast: true, Width: colWidthStage},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: colWidth8rem},
@@ -222,6 +223,7 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 			       j.posted_at, j.last_seen_at,
 			       COALESCE(j.location,''), COALESCE(j.source,''), COALESCE(j.url,''),
 			       COALESCE(r.triage = ANY($%d::text[]) OR r.stage = ANY($%d::text[]), false) AS starred,
+			       COALESCE(r.triage, '') AS triage,
 			       COALESCE(r.stage, '') AS stage
 			  FROM hunt_jobs j
 			  LEFT JOIN hunt_ratings r
@@ -246,16 +248,16 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 		var out []resource.Row
 		for rows.Next() {
 			var (
-				id                           int64
-				title, company, status       string
-				fitBand, sucBand, ou         string
-				location, source, url, stage string
-				fit                          *int
-				posted, recent               *time.Time
-				starred                      bool
+				id                                  int64
+				title, company, status              string
+				fitBand, sucBand, ou                string
+				location, source, url, triage, stage string
+				fit                                 *int
+				posted, recent                      *time.Time
+				starred                             bool
 			)
 			if err := rows.Scan(&id, &title, &company, &status, &fit, &fitBand, &sucBand, &ou,
-				&posted, &recent, &location, &source, &url, &starred, &stage); err != nil {
+				&posted, &recent, &location, &source, &url, &starred, &triage, &stage); err != nil {
 				return nil, 0, fmt.Errorf("adminui: scan job: %w", err)
 			}
 
@@ -273,8 +275,9 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title (plain text — go-panel wraps cell-0 in <a href>, ignoring
-			// cell.HTML). Star is at cell-1 (front after Title). Stage dropdown at cell-2.
-			// Company at cell-3. HTML: true cells at i>0 are rendered with raw HTML.
+			// cell.HTML). Star at cell-1. Triage badge (read-only) at cell-2.
+			// Stage dropdown at cell-3. Company at cell-4.
+			// HTML: true cells at i>0 are rendered with raw HTML.
 			// Row.Href → /admin/jobs/{id} (go-panel Detailer, natural URL).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
@@ -282,15 +285,16 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 				Cells: []resource.Cell{
 					{Value: title},                                                         // [0] Title (plain text — Href-linked)
 					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},             // [1] Star (front after Title)
-					{Value: stageDropdownHTML(id, stage, csrfTok), HTML: true},            // [2] Stage dropdown (pipeline stage, NOT job posting status)
-					{Value: company},                                                       // [3] Company
-					{Value: fitChipHTML(fit, fitBand), HTML: true},                        // [4] Fit chip
-					{Value: marketReadHTML(sucBand, ou), HTML: true},                      // [5] Market chip
-					{Value: status},                                                        // [6] Status (job posting open/closed — separate axis from stage)
-					{Value: dateStr(posted)},                                               // [7] Posted
-					{Value: location},                                                      // [8] Location
-					{Value: source},                                                        // [9] Source
-					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},            // [10] Docs
+					{Value: stageBadgeHTML(triage), HTML: true},                           // [2] Triage badge (read-only; editable on detail page)
+					{Value: stageDropdownHTML(id, stage, csrfTok), HTML: true},            // [3] Stage dropdown (pipeline stage only)
+					{Value: company},                                                       // [4] Company
+					{Value: fitChipHTML(fit, fitBand), HTML: true},                        // [5] Fit chip
+					{Value: marketReadHTML(sucBand, ou), HTML: true},                      // [6] Market chip
+					{Value: status},                                                        // [7] Status (job posting open/closed — separate axis from stage)
+					{Value: dateStr(posted)},                                               // [8] Posted
+					{Value: location},                                                      // [9] Location
+					{Value: source},                                                        // [10] Source
+					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},            // [11] Docs
 				},
 			})
 		}

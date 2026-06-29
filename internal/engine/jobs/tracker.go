@@ -124,18 +124,22 @@ func formatSalary(min, max *int, currency, interval string) string {
 }
 
 // trackerRate routes a status + note write to the correct axis of hunt_ratings
-// (migration 012 split). "saved" writes to the triage column; all pipeline
-// statuses write to the stage column. The other axis is passed as "" so
-// Store.Rate's CASE guard preserves its existing DB value.
+// (migration 012 split) using RateExact to guarantee single-observable-status
+// coherence. RateExact unconditionally overwrites BOTH axes — the active axis
+// gets the status value, the inactive axis is explicitly cleared to ''.
 //
-//   - triage-axis: status=="saved" → Rate(triage="saved", stage="", note)
-//   - pipeline-axis: status∈{claimed,applied,interview,offer,rejected} →
-//     Rate(triage="", stage=status, note)
+// Without this explicit clear a prior triage='saved' row would survive a
+// pipeline transition (applied/interview/offer/rejected) because Rate's CASE
+// guard treats triage="" as PRESERVE; trackerStatusFromRow gives triage
+// precedence → the pipeline state would be forever invisible.
+//
+//   - triage-axis:   status=="saved"  → RateExact(triage="saved", stage="", note)
+//   - pipeline-axis: status∈pipeline  → RateExact(triage="",      stage=status, note)
 func trackerRate(ctx context.Context, store *hunt.Store, id int64, status, note string) error {
 	if status == hunt.StageSaved {
-		return store.Rate(ctx, hunt.KindJob, id, trackerUser, hunt.StageSaved, "", note)
+		return store.RateExact(ctx, hunt.KindJob, id, trackerUser, hunt.StageSaved, "", note)
 	}
-	return store.Rate(ctx, hunt.KindJob, id, trackerUser, "", status, note)
+	return store.RateExact(ctx, hunt.KindJob, id, trackerUser, "", status, note)
 }
 
 // trackerStatusFromRow synthesises a single display status from the two-axis row.
