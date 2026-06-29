@@ -89,19 +89,12 @@ const (
 	statusClosed = "closed"
 )
 
-// Job posting lifecycle status filter constants (j.status values).
-// These are different from hunt pipeline stage names (hunt.Stage*),
-// even though some strings coincide ("applied", "rejected", "offer").
-// j.status describes the job board's own posting state; hunt_ratings.stage is operator pipeline.
-const (
-	jobStatusApplied     = "applied"
-	jobStatusInterviewing = "interviewing"
-	jobStatusRejected    = "rejected"
-	jobStatusOffer       = "offer"
-)
-
 // jobStatusFilterAllowed is the allowed set for the j.status filter bar.
-var jobStatusFilterAllowed = []string{statusOpen, jobStatusApplied, jobStatusInterviewing, jobStatusRejected, jobStatusOffer, statusClosed}
+// Derived from hunt.AllStatuses — the canonical enum for hunt_jobs.status.
+// Only these values exist in the status column; pipeline-stage names
+// (applied/rejected/offer/interviewing) were incorrectly placed here before
+// ADR-003 clarified the two-plane model.
+var jobStatusFilterAllowed = hunt.AllStatuses
 
 // colKeyStar is the column key for the shortlist-star toggle column.
 // Shared between jobsSpec and shortlistSpec (goconst: 4+ occurrences).
