@@ -179,11 +179,16 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth
 
 		salaryDisplay := salaryDetailStr(rec.SalaryMin, rec.SalaryMax, rec.SalaryCurrency, rec.SalaryInterval)
 
+		// CSRF token is minted bound to the session cookie from the request.
+		// Shared by the status dropdown (Overview) and the Application section.
+		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
+		csrfTok := csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
+
 		sections := []resource.DetailSection{
 			// Styles section: CSS required for fit/market/description cards.
 			{RawHTML: jobDetailStyles},
-			// Overview section: key/value pairs.
-			buildOverviewSection(rec, salaryDisplay),
+			// Overview section: key/value pairs + editable status dropdown.
+			buildOverviewSection(rec, salaryDisplay, id64, csrfTok),
 		}
 
 		// Fit Assessment: only when scored.
@@ -207,11 +212,6 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth
 				RawHTML: `<div class="md-body">` + descHTML + `</div>`,
 			})
 		}
-
-		// Application: rate form + download links.
-		// CSRF token is minted bound to the session cookie from the request.
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		csrfTok := csrf.Issue(csrfKey, sessVal, csrf.DefaultTTL)
 
 		rat, ratingErr := store.GetRating(ctx, "job", id64, adminUser)
 		var rating *currentRating
@@ -268,9 +268,13 @@ func scanJobDetail(ctx context.Context, pool *pgxpool.Pool, id64 int64) (jobDeta
 }
 
 // buildOverviewSection constructs the Overview DetailSection from a scanned record.
-// Plain-text items are escaped by go-panel on render. The Apply link uses HTML:true
-// with html.EscapeString applied to the URL — safe to render as markup.
-func buildOverviewSection(rec jobDetailRecord, salaryDisplay string) resource.DetailSection {
+// Plain-text items are escaped by go-panel on render. The Apply link and status
+// dropdown use HTML:true — URLs are html.EscapeString'd, dropdown output is
+// author-constant (no user text interpolated).
+//
+// id and csrfTok are required for the editable status dropdown; csrfTok must be
+// minted from csrf.Issue before calling this function.
+func buildOverviewSection(rec jobDetailRecord, salaryDisplay string, id int64, csrfTok string) resource.DetailSection {
 	var items []resource.DetailItem
 
 	addItem := func(label, value string) {
@@ -288,7 +292,12 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string) resource.De
 	addItem("Location", rec.Location)
 	addItem("Remote", rec.Remote)
 	addItem("Salary", salaryDisplay)
-	addItem("Status", rec.Status)
+	// Status is editable via a dropdown form — replaces the read-only addItem("Status").
+	items = append(items, resource.DetailItem{
+		Label: "Status",
+		Value: statusDropdownHTML(id, rec.Status, csrfTok),
+		HTML:  true,
+	})
 	addItem("Type", rec.JobType)
 	addItem("Experience", rec.Experience)
 	addItem("Source", rec.Source)

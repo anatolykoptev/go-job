@@ -49,6 +49,12 @@ const (
 	StatusEnded    = "ended"
 )
 
+// AllStatuses is the canonical ordered list of hunt_jobs status values.
+// Adding a new status: edit ONLY this slice; everything else derives from it.
+var AllStatuses = []string{
+	StatusOpen, StatusClosed, StatusMerged, StatusArchived, StatusEnded,
+}
+
 // Kind values identify which hunt table an entry_id refers to.
 const (
 	KindBounty       = "bounty"

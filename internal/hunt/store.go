@@ -1803,6 +1803,38 @@ func (s *Store) SetStage(ctx context.Context, kind string, entryID int64, user, 
 	return nil
 }
 
+// SetStatus updates hunt_jobs.status and keeps closed_at in lockstep with the
+// enricher's UpdateStatus invariant:
+//   - terminal status (closed/merged/archived/ended): stamp closed_at=NOW() only
+//     when it is currently NULL (do not overwrite an existing close timestamp).
+//   - open: reset closed_at=NULL.
+//
+// Returns ErrNotFound when no row with the given id exists.
+// Use this for operator-driven lifecycle changes from the admin UI; distinct from
+// UpdateStatus (enricher-driven, accepts an explicit closedAt pointer).
+func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
+	// closed_at logic mirrors UpdateStatus: terminal → stamp if NULL, open → clear.
+	const q = `
+UPDATE hunt_jobs
+   SET status    = $1,
+       closed_at = CASE
+                     WHEN $1 = 'open'
+                       THEN NULL
+                     WHEN closed_at IS NULL
+                       THEN NOW()
+                     ELSE closed_at
+                   END
+ WHERE id = $2`
+	tag, err := s.pool.Exec(ctx, q, status, id)
+	if err != nil {
+		return fmt.Errorf("hunt: set status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("hunt: set status: %w", ErrNotFound)
+	}
+	return nil
+}
+
 // CountScored returns the number of open hunt_jobs rows that have been LLM-scored
 // (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
 func (s *Store) CountScored(ctx context.Context) int {
