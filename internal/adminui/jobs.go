@@ -152,18 +152,8 @@ var jobsSpec = admintable.Spec{
 }
 
 // allHuntStageValues lists every valid stage for the stage filter Allowed list.
-// Mirrors validHuntStages (rate.go) but as a slice for admintable.Filter.Allowed.
-var allHuntStageValues = []string{
-	hunt.StageNew,
-	hunt.StageInteresting,
-	hunt.StageSaved,
-	hunt.StageDiscarded,
-	hunt.StageClaimed,
-	hunt.StageApplied,
-	hunt.StageInterview,
-	hunt.StageOffer,
-	hunt.StageRejected,
-}
+// Derived from hunt.AllStages — the single source of truth for the stage enum.
+var allHuntStageValues = hunt.AllStages
 
 // jobsFilter declares the /admin/jobs filter bar. Every SQLExpr is author-constant;
 // request values reach SQL only as bind args (never concatenated). Allowed sets are
