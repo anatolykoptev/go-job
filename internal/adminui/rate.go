@@ -12,21 +12,15 @@ import (
 )
 
 // validHuntStages is the allowlist of accepted stage values for hunt_ratings.
-// Triage stages (kanban) + pipeline stages (application funnel) unified per
-// ADR-go-job-002 / Phase 1 unification arc. No SQL CHECK constraint — Go-validated.
-var validHuntStages = map[string]bool{
-	// Triage / kanban stages.
-	hunt.StageNew:         true,
-	hunt.StageInteresting: true,
-	hunt.StageSaved:       true,
-	hunt.StageDiscarded:   true,
-	hunt.StageClaimed:     true,
-	// Application pipeline stages (added Phase 1 unification arc).
-	hunt.StageApplied:   true,
-	hunt.StageInterview: true,
-	hunt.StageOffer:     true,
-	hunt.StageRejected:  true,
-}
+// Derived from hunt.AllStages — the single source of truth for the stage enum.
+// No SQL CHECK constraint — Go-validated (ADR-go-job-002 / Phase 1 unification arc).
+var validHuntStages = func() map[string]bool {
+	m := make(map[string]bool, len(hunt.AllStages))
+	for _, s := range hunt.AllStages {
+		m[s] = true
+	}
+	return m
+}()
 
 // rateHandler returns an http.HandlerFunc that upserts a hunt_ratings row.
 // The handler verifies the CSRF token before writing.
