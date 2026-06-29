@@ -32,8 +32,10 @@ func TestStageGrouping(t *testing.T) {
 	})
 
 	t.Run("TriageStages_coverage", func(t *testing.T) {
-		// Every constant the comment documents must appear exactly once.
-		want := []string{StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed}
+		// After migration 012: triage = {interesting, saved, discarded} (3 values).
+		// StageNew is legacy — no new rows; 'claimed' moved to PipelineStages.
+		// Red-on-revert: moving a value to/from TriageStages → len or order mismatch.
+		want := []string{StageInteresting, StageSaved, StageDiscarded}
 		if len(TriageStages) != len(want) {
 			t.Fatalf("TriageStages len=%d, want %d", len(TriageStages), len(want))
 		}
@@ -45,7 +47,10 @@ func TestStageGrouping(t *testing.T) {
 	})
 
 	t.Run("PipelineStages_coverage", func(t *testing.T) {
-		want := []string{StageApplied, StageInterview, StageOffer, StageRejected}
+		// After migration 012: pipeline = {claimed, applied, interview, offer, rejected} (5 values).
+		// 'claimed' moved here from the pre-012 triage group.
+		// Red-on-revert: moving a value to/from PipelineStages → len or order mismatch.
+		want := []string{StageClaimed, StageApplied, StageInterview, StageOffer, StageRejected}
 		if len(PipelineStages) != len(want) {
 			t.Fatalf("PipelineStages len=%d, want %d", len(PipelineStages), len(want))
 		}

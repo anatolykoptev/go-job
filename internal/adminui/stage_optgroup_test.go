@@ -117,16 +117,21 @@ func TestStageDropdownHTML_CSRFFieldPresent(t *testing.T) {
 	}
 }
 
-// TestStageDropdownHTML_OptgroupsPresent verifies the full dropdown (from jobsSpec)
-// now contains Triage and Pipeline optgroups (not a flat list).
-func TestStageDropdownHTML_OptgroupsPresent(t *testing.T) {
+// TestStageDropdownHTML_PipelineOnly verifies that stageDropdownHTML (jobs-table
+// inline dropdown) contains only the Pipeline optgroup, NOT a Triage optgroup.
+// After migration 012: the stage dropdown controls only the pipeline axis.
+// Triage is managed by a separate /triage form on the job-detail page.
+//
+// Red-on-revert: reverting stageDropdownHTML to use stageOptgroupHTML (combined) →
+// Triage optgroup would appear in the jobs-table dropdown, which is incorrect.
+func TestStageDropdownHTML_PipelineOnly(t *testing.T) {
 	got := stageDropdownHTML(1, "", "tok")
-	for _, want := range []string{
-		`<optgroup label="Triage">`,
-		`<optgroup label="Pipeline">`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("stageDropdownHTML: want optgroup %q in output, got:\n%s", want, got)
-		}
+	// Pipeline optgroup must be present.
+	if !strings.Contains(got, `<optgroup label="Pipeline">`) {
+		t.Errorf("stageDropdownHTML: want Pipeline optgroup in output, got:\n%s", got)
+	}
+	// Triage optgroup must NOT be present — it belongs to the separate /triage form.
+	if strings.Contains(got, `<optgroup label="Triage">`) {
+		t.Errorf("stageDropdownHTML: Triage optgroup must NOT appear in the pipeline-only jobs dropdown")
 	}
 }

@@ -761,25 +761,55 @@ func (s *Store) GetAuditContest(ctx context.Context, id int64) (*AuditContest, e
 	return &ac, nil
 }
 
-// Rate inserts or updates a user rating for a hunt entry.
-// Upserts on (entry_kind, entry_id, user_name).
+// Rate inserts or updates a hunt_ratings row.
 //
-// Note semantics: Rate ALWAYS overwrites the note with the caller-supplied value
-// (even if empty). This is intentional for the stage-select + note form. Contrast
-// with ToggleShortlistStar, which deliberately NEVER touches the note column.
-// Do not unify these two paths without understanding the divergence.
-func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, stage, note string) error {
+// Two-axis semantics (migration 012):
+//   - triage: if non-empty, overwrites hunt_ratings.triage; if empty, keeps existing.
+//   - stage:  if non-empty, overwrites hunt_ratings.stage;  if empty, keeps existing.
+//   - note:   ALWAYS overwritten (even to ""), preserving the original note-contract.
+//
+// This is the detail-page write path: the Triage form submits (triage="", stage, note)
+// is replaced by: the Triage form POSTs to /triage → SetTriage (no note change);
+// the Pipeline form POSTs to /rate with ("", stage, note).
+//
+// Single-axis callers: pass "" for the axis they do not own; the CASE guard
+// in the ON CONFLICT clause preserves the existing DB value.
+//
+// Contrast with SetTriage and SetStage, which each preserve ALL other fields including
+// note. Do not unify these paths without understanding the divergence.
+func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, triage, stage, note string) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, note, rated_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
-			SET stage      = EXCLUDED.stage,
+			SET triage     = CASE WHEN EXCLUDED.triage = '' THEN hunt_ratings.triage ELSE EXCLUDED.triage END,
+			    stage      = CASE WHEN EXCLUDED.stage  = '' THEN hunt_ratings.stage  ELSE EXCLUDED.stage  END,
 			    note       = EXCLUDED.note,
 			    updated_at = NOW()`,
-		kind, entryID, user, stage, nullStr(note),
+		kind, entryID, user, triage, stage, nullStr(note),
 	)
 	if err != nil {
 		return fmt.Errorf("hunt: rate: %w", err)
+	}
+	return nil
+}
+
+// SetTriage updates ONLY the triage column for a hunt_ratings row, preserving the
+// existing pipeline stage and note. Mirrors SetStage's note-preserve discipline but
+// for the triage axis (migration 012).
+//
+// If no row exists, a new one is inserted with stage='' and note=NULL.
+func (s *Store) SetTriage(ctx context.Context, kind string, entryID int64, user, triage string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, rated_at, updated_at)
+		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
+			SET triage     = EXCLUDED.triage,
+			    updated_at = NOW()`,
+		kind, entryID, user, triage,
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: set triage: %w", err)
 	}
 	return nil
 }
@@ -790,11 +820,11 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 	var r Rating
 	var note *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, entry_kind, entry_id, user_name, stage, note, rated_at, updated_at
+		SELECT id, entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at
 		FROM hunt_ratings
 		WHERE entry_kind = $1 AND entry_id = $2 AND user_name = $3`,
 		kind, entryID, user,
-	).Scan(&r.ID, &r.EntryKind, &r.EntryID, &r.UserName, &r.Stage, &note, &r.RatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.EntryKind, &r.EntryID, &r.UserName, &r.Triage, &r.Stage, &note, &r.RatedAt, &r.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -809,7 +839,7 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 
 // ShortlistRow is the postgres projection for the /admin/shortlist page.
 // It joins hunt_jobs with hunt_ratings for a given user, filtered to the
-// active-stage set. All nullable DB columns use pointer types.
+// active triage+stage sets. All nullable DB columns use pointer types.
 type ShortlistRow struct {
 	ID             int64
 	Title          string
@@ -826,7 +856,8 @@ type ShortlistRow struct {
 	SalaryInterval string
 	PostedAt       *time.Time
 	ScoredAt       *time.Time
-	Stage          string
+	Triage         string // '' = untriaged
+	Stage          string // '' = not in pipeline
 	Note           string
 	RatedAt        time.Time
 }
@@ -838,8 +869,12 @@ type ShortlistRow struct {
 // the hunt package free of admintable imports while allowing the lister and tests to
 // share a single query path — so the isolation test guards the live code path.
 type ShortlistQuery struct {
-	User   string
-	Stages []string
+	User string
+	// TriageValues is the set of hunt_ratings.triage values that qualify a job for the shortlist.
+	// A job appears if EITHER r.triage = ANY(TriageValues) OR r.stage = ANY(StageValues).
+	TriageValues []string
+	// StageValues is the set of hunt_ratings.stage values that qualify a job for the shortlist.
+	StageValues []string
 	// WhereConds is the pre-rendered SQL boolean expression from admintable.FilterSpec.Where.
 	// Bind arguments are in WhereArgs ($1…$N). Empty → treated as "TRUE".
 	WhereConds string
@@ -859,14 +894,15 @@ const shortlistJoin = `FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'j
 const shortlistDefaultOrder = "j.fit_score DESC NULLS LAST, j.company"
 
 // ListShortlist returns hunt_jobs rows that have a hunt_ratings row for the given
-// user (q.User) whose stage is in q.Stages, applying optional FilterSpec conditions
-// and pagination. Returns the matching rows and the pre-pagination total count.
+// user (q.User) whose triage is in q.TriageValues OR stage is in q.StageValues,
+// applying optional FilterSpec conditions and pagination. Returns the matching rows
+// and the pre-pagination total count.
 //
-// The security-critical user_name and stage isolation guards live here (not in the
+// The security-critical user_name and axis isolation guards live here (not in the
 // caller), so that both the live lister and the isolation test exercise the same code.
 func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]ShortlistRow, int, error) {
 	// Build the full WHERE clause.
-	// q.WhereConds ($1…$N) from FilterSpec precedes the isolation guards at $N+1/$N+2.
+	// q.WhereConds ($1…$N) from FilterSpec precedes the isolation guards at $N+1/$N+2/$N+3.
 	filter := "TRUE"
 	if strings.TrimSpace(q.WhereConds) != "" {
 		filter = q.WhereConds
@@ -874,10 +910,10 @@ func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]Shortlis
 	n := len(q.WhereArgs)
 	//nolint:gosec // filter = q.WhereConds (author-controlled FilterSpec SQLExpr/SQLExprs + literal operators); all URL values are bind args; isolation guards are literal templates.
 	fullWhere := fmt.Sprintf(
-		"%s AND r.user_name = $%d AND r.stage = ANY($%d::text[])",
-		filter, n+1, n+2,
+		"%s AND r.user_name = $%d AND (r.triage = ANY($%d::text[]) OR r.stage = ANY($%d::text[]))",
+		filter, n+1, n+2, n+3,
 	)
-	baseArgs := append(append([]any{}, q.WhereArgs...), q.User, q.Stages)
+	baseArgs := append(append([]any{}, q.WhereArgs...), q.User, q.TriageValues, q.StageValues)
 
 	// COUNT — total matching rows before pagination.
 	var total int
@@ -901,14 +937,14 @@ func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]Shortlis
 		       j.salary_min, j.salary_max,
 		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
 		       j.posted_at, j.scored_at,
-		       r.stage, COALESCE(r.note,''), r.rated_at `
+		       COALESCE(r.triage,''), COALESCE(r.stage,''), COALESCE(r.note,''), r.rated_at `
 
 	var query string
 	queryArgs := append([]any{}, baseArgs...)
 	if q.Limit > 0 {
 		//nolint:gosec // orderBy from admintable.Spec.OrderBy (author-declared SQLExpr + ASC/DESC/NULLS LAST); pagination clause = literal template; no URL input.
 		query = selectCols + shortlistJoin + " WHERE " + fullWhere +
-			fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, n+3, n+4)
+			fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, n+4, n+5)
 		queryArgs = append(queryArgs, q.Limit, q.Offset)
 	} else {
 		//nolint:gosec
@@ -932,7 +968,7 @@ func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]Shortlis
 			&row.SalaryMin, &row.SalaryMax,
 			&row.SalaryCurrency, &row.SalaryInterval,
 			&row.PostedAt, &row.ScoredAt,
-			&row.Stage, &row.Note, &row.RatedAt,
+			&row.Triage, &row.Stage, &row.Note, &row.RatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("hunt: scan shortlist row: %w", err)
 		}
@@ -1292,7 +1328,7 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 
 	args = append(args, limit, f.Offset)
 	q := fmt.Sprintf(`
-		SELECT id, entry_kind, entry_id, user_name, stage, note, rated_at, updated_at
+		SELECT id, entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at
 		FROM hunt_ratings
 		%s
 		ORDER BY updated_at DESC
@@ -1310,7 +1346,7 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 		var note *string
 		if err := rows.Scan(
 			&r.ID, &r.EntryKind, &r.EntryID, &r.UserName,
-			&r.Stage, &note, &r.RatedAt, &r.UpdatedAt,
+			&r.Triage, &r.Stage, &note, &r.RatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("hunt: list ratings scan: %w", err)
 		}
@@ -1326,7 +1362,12 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 }
 
 // TrackedJobRow is the postgres projection for the job_tracker MCP tool.
-// Joins hunt_jobs with hunt_ratings for a given user, optionally filtered by stage.
+// Joins hunt_jobs with hunt_ratings for a given user.
+// After migration 012 it carries BOTH axes:
+//   - Triage: operator interest signal ('' = untriaged)
+//   - Stage:  pipeline position    ('' = not in pipeline)
+//
+// The caller synthesizes a display status as: if Triage != "" → Triage, else Stage.
 type TrackedJobRow struct {
 	ID              int64
 	Title           string
@@ -1337,21 +1378,31 @@ type TrackedJobRow struct {
 	SalaryMax       *int
 	SalaryCurrency  string
 	SalaryInterval  string
-	Stage           string
+	Triage          string // '' = untriaged
+	Stage           string // '' = not in pipeline
 	Note            string
 	FirstSeenAt     time.Time
 	RatingUpdatedAt time.Time
 }
 
 // TrackedFilter is the parameter bag for Store.ListTrackedJobs.
+//
+// Stage vs Triage filtering (post-migration-012):
+//   - Stage="saved" → filter by r.triage='saved' (triage axis)
+//   - Stage=pipeline value → filter by r.stage=value (pipeline axis)
+//   - Stage="" → all rated rows (both axes)
+//
+// The Stage field is kept as-is for backward compatibility with the job_tracker
+// MCP tool, which uses the logical status name regardless of which DB column it maps to.
 type TrackedFilter struct {
 	User  string // defaults to "krolik"
-	Stage string // empty = all stages
+	Stage string // empty = all stages; "saved" routes to triage axis
 	Limit int    // 0 = default 50, max 100
 }
 
 // ListTrackedJobs returns hunt_jobs rows that have a hunt_ratings row for the
-// given user (f.User), optionally filtered by stage. Returns rows and total count.
+// given user (f.User), optionally filtered by stage (with axis routing for "saved").
+// Returns rows and total count.
 func (s *Store) ListTrackedJobs(ctx context.Context, f TrackedFilter) ([]TrackedJobRow, int, error) {
 	if f.User == "" {
 		f.User = "krolik"
@@ -1365,7 +1416,12 @@ func (s *Store) ListTrackedJobs(ctx context.Context, f TrackedFilter) ([]Tracked
 	filter := "r.user_name = $1"
 	args = append(args, f.User)
 	if f.Stage != "" {
-		filter += " AND r.stage = $2"
+		// "saved" lives on the triage axis after migration 012.
+		if f.Stage == StageSaved {
+			filter += " AND r.triage = $2"
+		} else {
+			filter += " AND r.stage = $2"
+		}
 		args = append(args, f.Stage)
 	}
 
@@ -1384,7 +1440,7 @@ func (s *Store) ListTrackedJobs(ctx context.Context, f TrackedFilter) ([]Tracked
 		       COALESCE(j.location,''),
 		       j.salary_min, j.salary_max,
 		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
-		       r.stage, COALESCE(r.note,''),
+		       COALESCE(r.triage,''), COALESCE(r.stage,''), COALESCE(r.note,''),
 		       j.first_seen_at, r.updated_at
 		FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id
 		WHERE `+filter+
@@ -1403,7 +1459,7 @@ func (s *Store) ListTrackedJobs(ctx context.Context, f TrackedFilter) ([]Tracked
 		if err := rows.Scan(
 			&row.ID, &row.Title, &row.Company, &row.URL, &row.Location,
 			&salMin, &salMax, &row.SalaryCurrency, &row.SalaryInterval,
-			&row.Stage, &row.Note, &row.FirstSeenAt, &row.RatingUpdatedAt,
+			&row.Triage, &row.Stage, &row.Note, &row.FirstSeenAt, &row.RatingUpdatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("hunt: scan tracked job: %w", err)
 		}
@@ -1669,27 +1725,17 @@ func (s *Store) CountOpenJobs(ctx context.Context) int {
 }
 
 // CountShortlist returns the number of hunt_jobs rows with a hunt_ratings row
-// for the given user whose stage is in the provided stages slice.
+// for the given user whose triage is in triageValues OR stage is in stageValues.
 // Uses the same shortlistJoin constant as ListShortlist so both paths stay in sync.
 // Errors are silently swallowed (returns 0).
-func (s *Store) CountShortlist(ctx context.Context, user string, stages []string) int {
+func (s *Store) CountShortlist(ctx context.Context, user string, triageValues, stageValues []string) int {
 	var n int
 	_ = s.pool.QueryRow(ctx,
-		"SELECT count(*) "+shortlistJoin+" WHERE r.user_name = $1 AND r.stage = ANY($2::text[])",
-		user, stages,
+		"SELECT count(*) "+shortlistJoin+
+			" WHERE r.user_name = $1 AND (r.triage = ANY($2::text[]) OR r.stage = ANY($3::text[]))",
+		user, triageValues, stageValues,
 	).Scan(&n)
 	return n
-}
-
-// starSoftStages are the stages a star-click can demote to StageNew ("star off").
-// Only these "soft" triage stages are eligible for demotion; advanced pipeline
-// stages (StageApplied, StageInterview, StageOffer) are protected — a star click
-// on an advanced-stage job is a no-op. Single source of truth; passed in from
-// adminui alongside shortlistActiveStages.
-var StarSoftStages = []string{
-	StageInteresting,
-	StageSaved,
-	StageClaimed,
 }
 
 // stageIn returns true when stage is present in the given slice.
@@ -1702,22 +1748,25 @@ func stageIn(stage string, stages []string) bool {
 	return false
 }
 
-// ToggleShortlistStar toggles a job's shortlist membership via hunt_ratings.
+// ToggleShortlistStar toggles a job's shortlist membership.
 //
-// Note preservation: the ON CONFLICT clause does NOT touch the note column, so
-// any existing note survives both star-on and star-off transitions. This
-// diverges intentionally from Store.Rate, which DOES overwrite the note on
-// every call (see Rate for rationale). Do not merge these two paths.
+// After migration 012 the star controls ONLY the triage axis; the pipeline stage
+// is never touched by a star click.
 //
-// Toggle semantics (per adminui.shortlistActiveStages + adminui.StarSoftStages):
-//   - No row / stage ∉ activeStages       → upsert stage=StageSaved → return starred=true (star on)
-//   - stage ∈ softDemotable               → update stage=StageNew   → return starred=false (star off)
-//   - stage ∈ advanced (applied/interview/offer) → NO-OP            → return starred=true (unchanged)
+// Toggle semantics:
+//   - No row, or triage ∉ activeTriage                        → upsert triage=StageSaved → starred=true  (star on)
+//   - triage ∈ softDemotable (interesting, saved)             → update  triage=''         → starred=false (star off)
+//   - triage ∉ softDemotable but ∈ activeTriage (discarded)  → NO-OP                    → starred=true  (unchanged — rare edge)
+//   - stage  ∈ advanced pipeline (applied/interview/offer)    → NO-OP                    → starred=true  (pipeline protection)
 //
-// The advanced-stage protection guarantees a star click can NEVER silently lose
-// an applied/interview/offer pipeline stage. Those stages are managed only via
-// the detail-page stage select.
-func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user string, activeStages, softDemotable []string) (bool, error) {
+// Note preservation: note column is excluded from the ON CONFLICT SET list, so
+// any existing note survives star toggling. This diverges intentionally from
+// Store.Rate, which DOES overwrite note. Do not merge these paths.
+//
+// activePipelineStages is the set of pipeline stages that protect against star-off
+// (typically [claimed,applied,interview,offer]). softDemotable is the set of triage
+// values a star-off is allowed to clear (StarSoftTriageValues).
+func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user string, activePipelineStages, softDemotable []string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("hunt: toggle star: begin tx: %w", err)
@@ -1729,48 +1778,46 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 		}
 	}()
 
-	// Read current stage (if any) — FOR UPDATE to lock the row.
+	// Read current triage + stage — FOR UPDATE to lock the row.
 	// pgx.ErrNoRows → no prior row; treat as star-on. Any other error → surface.
-	var curStage *string
+	var curTriage, curStage *string
 	scanErr := tx.QueryRow(ctx,
-		`SELECT stage FROM hunt_ratings
+		`SELECT triage, stage FROM hunt_ratings
 		  WHERE entry_kind = 'job' AND entry_id = $1 AND user_name = $2
 		  FOR UPDATE`,
 		entryID, user,
-	).Scan(&curStage)
+	).Scan(&curTriage, &curStage)
 	if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
 		txErr = scanErr
-		return false, fmt.Errorf("hunt: toggle star id=%d: read stage: %w", entryID, scanErr)
+		return false, fmt.Errorf("hunt: toggle star id=%d: read triage: %w", entryID, scanErr)
 	}
 
-	// Advanced-stage protection: job at applied/interview/offer → no-op.
-	// The star stays filled; these stages are managed via the detail-page select only.
-	if curStage != nil && stageIn(*curStage, activeStages) && !stageIn(*curStage, softDemotable) {
-		// Commit the read-only transaction cleanly (no writes).
+	// Pipeline protection: job at an advanced pipeline stage → no-op.
+	// A star click can NEVER silently clear an applied/interview/offer position.
+	if curStage != nil && stageIn(*curStage, activePipelineStages) {
 		if txErr = tx.Commit(ctx); txErr != nil {
 			return false, fmt.Errorf("hunt: toggle star id=%d: commit no-op: %w", entryID, txErr)
 		}
-		return true, nil // starred unchanged — advanced stage
+		return true, nil // starred unchanged — advanced pipeline stage
 	}
 
-	isStarred := curStage != nil && stageIn(*curStage, activeStages)
+	// Is the job already starred (triage is non-empty)?
+	isStarred := curTriage != nil && *curTriage != "" && stageIn(*curTriage, softDemotable)
 
-	newStage := StageSaved
-	if isStarred {
-		newStage = StageNew
+	var newTriage string // '' = untriaged (star off)
+	if !isStarred {
+		newTriage = StageSaved // star on
 	}
 
-	// Upsert: note column is excluded from SET → preserved on conflict.
-	// On INSERT (no prior row), note is NULL (nullable field).
-	// NOTE: Store.Rate deliberately overwrites note on every call; this method
-	// deliberately does NOT. Do not unify without understanding the divergence.
+	// Upsert triage; note and stage are NOT touched.
+	// On INSERT (no prior row) stage defaults to '' and note to NULL.
 	if _, txErr = tx.Exec(ctx, `
-		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, stage, rated_at, updated_at)
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, rated_at, updated_at)
 		VALUES ('job', $1, $2, $3, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
-			SET stage      = EXCLUDED.stage,
+			SET triage     = EXCLUDED.triage,
 			    updated_at = NOW()`,
-		entryID, user, newStage,
+		entryID, user, newTriage,
 	); txErr != nil {
 		return false, fmt.Errorf("hunt: toggle star id=%d: upsert: %w", entryID, txErr)
 	}
