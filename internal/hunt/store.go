@@ -799,6 +799,11 @@ func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, tria
 // guarantee coherence — primarily the tracker tool, which enforces a single-observable-
 // status contract (exactly one axis non-empty). Callers that want to touch only ONE
 // axis while preserving the other should use SetTriage, SetStage, or Rate instead.
+//
+// NOTE: RateExact overwrites ALL THREE columns (triage, stage, note) unconditionally.
+// Callers MUST own or reconstruct note before calling, or an empty note will wipe an
+// existing one. trackerRate pre-fetches via GetRating in UpdateTrackedJob; a second
+// caller must implement the same pre-fetch or pass the preserved note explicitly.
 func (s *Store) RateExact(ctx context.Context, kind string, entryID int64, user, triage, stage, note string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at)
@@ -1778,8 +1783,12 @@ func stageIn(stage string, stages []string) bool {
 // Toggle semantics:
 //   - No row, or triage ∉ activeTriage                        → upsert triage=StageSaved → starred=true  (star on)
 //   - triage ∈ softDemotable (interesting, saved)             → update  triage=''         → starred=false (star off)
-//   - triage ∉ softDemotable but ∈ activeTriage (discarded)  → NO-OP                    → starred=true  (unchanged — rare edge)
+//   - triage ∉ softDemotable but ∈ activeTriage (discarded)  → NO-OP                    → starred=false (deliberate negative decision)
 //   - stage  ∈ advanced pipeline (applied/interview/offer)    → NO-OP                    → starred=true  (pipeline protection)
+//
+// Intentional asymmetry: the discarded NO-OP returns false (not a shortlist member)
+// while the pipeline NO-OP returns true (in-pipeline jobs ARE shortlist members).
+// A star click cannot silently undo a negative triage decision.
 //
 // Note preservation: note column is excluded from the ON CONFLICT SET list, so
 // any existing note survives star toggling. This diverges intentionally from
