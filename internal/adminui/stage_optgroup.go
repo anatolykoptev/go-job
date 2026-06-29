@@ -3,6 +3,7 @@ package adminui
 import (
 	"fmt"
 	"html"
+	"slices"
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
@@ -30,7 +31,7 @@ func stageOptgroupHTML(currentStage string) string {
 	var sb strings.Builder
 
 	// Out-of-enum sentinel / placeholder.
-	if !inStageEnum(currentStage) {
+	if !slices.Contains(hunt.AllStages, currentStage) {
 		if currentStage == "" {
 			sb.WriteString(`<option value="" disabled hidden selected>— stage —</option>`)
 		} else {
@@ -70,14 +71,4 @@ func stageOptgroupHTML(currentStage string) string {
 	sb.WriteString(`</optgroup>`)
 
 	return sb.String()
-}
-
-// inStageEnum reports whether s is a member of hunt.AllStages.
-func inStageEnum(s string) bool {
-	for _, v := range hunt.AllStages {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
