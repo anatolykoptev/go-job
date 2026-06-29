@@ -293,6 +293,8 @@ func loadCertifications(ctx context.Context, db *ResumeDB, personID int) []Certi
 func loadDomains(ctx context.Context, db *ResumeDB, personID int) []string {
 	records, err := db.GetAllDomains(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load domains failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]string, 0, len(records))
@@ -305,6 +307,8 @@ func loadDomains(ctx context.Context, db *ResumeDB, personID int) []string {
 func loadMethodologies(ctx context.Context, db *ResumeDB, personID int) []string {
 	records, err := db.GetAllMethodologies(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load methodologies failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]string, 0, len(records))
