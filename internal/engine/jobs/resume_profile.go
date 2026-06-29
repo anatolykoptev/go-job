@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 )
 
@@ -10,13 +11,13 @@ import (
 
 // ExperienceSummary is a compact view of an experience for profile output.
 type ExperienceSummary struct {
-	ID        int      `json:"id"`
-	Title     string   `json:"title"`
-	Company   string   `json:"company"`
-	Location  string   `json:"location,omitempty"`
-	StartDate string   `json:"start_date"`
-	EndDate   string   `json:"end_date"`
-	Domain    string   `json:"domain,omitempty"`
+	ID         int      `json:"id"`
+	Title      string   `json:"title"`
+	Company    string   `json:"company"`
+	Location   string   `json:"location,omitempty"`
+	StartDate  string   `json:"start_date"`
+	EndDate    string   `json:"end_date"`
+	Domain     string   `json:"domain,omitempty"`
 	Highlights []string `json:"highlights,omitempty"`
 }
 
@@ -65,15 +66,15 @@ type CertificationSummary struct {
 
 // ResumeProfileResult is the structured output of resume_profile.
 type ResumeProfileResult struct {
-	PersonID   int               `json:"person_id"`
-	Name       string            `json:"name"`
-	Email      string            `json:"email,omitempty"`
-	Location   string            `json:"location,omitempty"`
-	Links      map[string]string `json:"links,omitempty"`
-	Summary    string            `json:"summary,omitempty"`
-	EnrichedAt string            `json:"enriched_at,omitempty"`
-	Headline        string `json:"headline,omitempty"`
-	HourlyRateCents int64  `json:"hourly_rate_cents,omitempty"`
+	PersonID        int               `json:"person_id"`
+	Name            string            `json:"name"`
+	Email           string            `json:"email,omitempty"`
+	Location        string            `json:"location,omitempty"`
+	Links           map[string]string `json:"links,omitempty"`
+	Summary         string            `json:"summary,omitempty"`
+	EnrichedAt      string            `json:"enriched_at,omitempty"`
+	Headline        string            `json:"headline,omitempty"`
+	HourlyRateCents int64             `json:"hourly_rate_cents,omitempty"`
 
 	Experiences    []ExperienceSummary    `json:"experiences,omitempty"`
 	Skills         []SkillSummary         `json:"skills,omitempty"`
@@ -171,6 +172,8 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 func loadExperiences(ctx context.Context, db *ResumeDB, personID int) []ExperienceSummary {
 	records, err := db.GetAllExperiences(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load experiences failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]ExperienceSummary, 0, len(records))
@@ -192,6 +195,8 @@ func loadExperiences(ctx context.Context, db *ResumeDB, personID int) []Experien
 func loadSkills(ctx context.Context, db *ResumeDB, personID int) []SkillSummary {
 	records, err := db.GetAllSkills(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load skills failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]SkillSummary, 0, len(records))
@@ -209,6 +214,8 @@ func loadSkills(ctx context.Context, db *ResumeDB, personID int) []SkillSummary 
 func loadProjects(ctx context.Context, db *ResumeDB, personID int) []ProjectSummary {
 	records, err := db.GetAllProjects(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load projects failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]ProjectSummary, 0, len(records))
@@ -226,6 +233,8 @@ func loadProjects(ctx context.Context, db *ResumeDB, personID int) []ProjectSumm
 func loadAchievements(ctx context.Context, db *ResumeDB, personID int) []AchievementSummary {
 	records, err := db.GetAllAchievements(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load achievements failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]AchievementSummary, 0, len(records))
@@ -244,6 +253,8 @@ func loadAchievements(ctx context.Context, db *ResumeDB, personID int) []Achieve
 func loadEducations(ctx context.Context, db *ResumeDB, personID int) []EducationSummary {
 	records, err := db.GetAllEducations(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load educations failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]EducationSummary, 0, len(records))
@@ -263,6 +274,8 @@ func loadEducations(ctx context.Context, db *ResumeDB, personID int) []Education
 func loadCertifications(ctx context.Context, db *ResumeDB, personID int) []CertificationSummary {
 	records, err := db.GetAllCertifications(ctx, personID)
 	if err != nil {
+		slog.Error("resume_profile: load certifications failed",
+			slog.Int("person_id", personID), slog.Any("error", err))
 		return nil
 	}
 	out := make([]CertificationSummary, 0, len(records))
