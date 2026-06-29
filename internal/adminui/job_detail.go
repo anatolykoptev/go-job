@@ -71,31 +71,42 @@ type jobDetailRecord struct {
 }
 
 // applicationSectionTmpl is the html/template for the Rate + download section.
-// All DB/user fields are escaped by the template engine. The CSRF token is a
-// hex/base64 value from csrf.Issue — safe to inject as a hidden form field.
-// StageOpts is pre-computed template.HTML from stageOptgroupHTML (P2 dedup).
+// After migration 012 it renders TWO independent forms — one for triage, one for
+// the pipeline stage+note. All DB/user fields are escaped by the template engine.
+// TriageOpts and StageOpts are pre-computed template.HTML (P2 dedup) so the
+// template does not double-escape them.
 var applicationSectionTmpl = template.Must(template.New("app_section").Parse(`<div class="rate-form">
   <h3>Rate</h3>
   {{if .Rating}}
   <div class="current-rating">
-    <span class="stage">Current stage: {{.Rating.Stage}}</span>
+    {{if .Rating.Triage}}<span class="triage">Triage: {{.Rating.Triage}}</span>{{end}}
+    {{if .Rating.Stage}}<span class="stage">Pipeline: {{.Rating.Stage}}</span>{{end}}
     {{if .Rating.Note}}<div class="note">{{.Rating.Note}}</div>{{end}}
   </div>
   {{end}}
+
+  <form method="POST" action="/admin/jobs/{{.ID}}/triage">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <label>
+      <span>Triage</span>
+      <select name="triage">{{.TriageOpts}}</select>
+    </label>
+    <button type="submit">Save triage</button>
+  </form>
+
   <form method="POST" action="/admin/jobs/{{.ID}}/rate">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <label>
       <span>My pipeline</span>
-      {{/* required: browser blocks empty submission; rateHandler 400 stays as defense-in-depth.
-           Do NOT remove required to silence the 400 — that would silently write stage="" to the DB. */}}
-      <select name="stage" required>{{.StageOpts}}</select>
+      <select name="stage">{{.StageOpts}}</select>
     </label>
     <label>
       <span>Note</span>
       <textarea name="note">{{if .Rating}}{{.Rating.Note}}{{end}}</textarea>
     </label>
-    <button type="submit">Save rating</button>
+    <button type="submit">Save pipeline</button>
   </form>
+
   <form method="POST" action="/admin/jobs/{{.ID}}/rescore"
         onsubmit="var b=this.querySelector('.rescore-btn');b.disabled=true;b.textContent='Analyzing…';">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
@@ -118,15 +129,21 @@ type applicationSectionData struct {
 	Rating    *currentRating
 	HasResume bool
 	HasCover  bool
-	// StageOpts is pre-rendered HTML for the stage <select> inner content
-	// (two <optgroup> blocks). Produced by stageOptgroupHTML; typed as
-	// template.HTML so html/template does not double-escape it.
+	// TriageOpts is pre-rendered HTML for the triage <select> inner content.
+	// Produced by triageSelectOptionsHTML; typed as template.HTML so html/template
+	// does not double-escape it.
+	TriageOpts template.HTML
+	// StageOpts is pre-rendered HTML for the pipeline stage <select> inner content.
+	// Produced by pipelineOptgroupHTML; typed as template.HTML so html/template
+	// does not double-escape it.
 	StageOpts template.HTML
 }
 
 // currentRating holds the current hunt_ratings row for a job.
+// After migration 012 it carries both axes: Triage and Stage.
 type currentRating struct {
-	Stage     string
+	Triage    string // '' = untriaged
+	Stage     string // '' = not in pipeline
 	Note      string
 	UpdatedAt time.Time
 }
@@ -210,6 +227,7 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth
 		var rating *currentRating
 		if ratingErr == nil {
 			rating = &currentRating{
+				Triage:    rat.Triage,
 				Stage:     rat.Stage,
 				Note:      rat.Note,
 				UpdatedAt: rat.UpdatedAt,
@@ -331,23 +349,24 @@ func buildOverviewSection(rec jobDetailRecord, salaryDisplay string, id int64, c
 	}
 }
 
-// buildApplicationSectionHTML renders the rate form and download links via
-// html/template (autoescape on all struct fields). The CSRF token is a
-// hex/base64 value from csrf.Issue and is safe as a hidden form value.
-// Stage options are pre-computed via stageOptgroupHTML and passed as
-// template.HTML so html/template does not double-escape them.
+// buildApplicationSectionHTML renders the two-form rate section via html/template
+// (autoescape on all struct fields). The CSRF token is a hex/base64 value from
+// csrf.Issue and is safe as a hidden form value.
+// TriageOpts and StageOpts are pre-computed as template.HTML to avoid double-escape.
 func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRating, hasResume, hasCover bool) (string, error) {
-	var currentStage string
+	var curTriage, curStage string
 	if rating != nil {
-		currentStage = rating.Stage
+		curTriage = rating.Triage
+		curStage = rating.Stage
 	}
 	data := applicationSectionData{
-		ID:        id64,
-		CSRFToken: csrfTok,
-		Rating:    rating,
-		HasResume: hasResume,
-		HasCover:  hasCover,
-		StageOpts: template.HTML(stageOptgroupHTML(currentStage)), //nolint:gosec // G203: stageOptgroupHTML produces only author-constant stage strings; no user text.
+		ID:         id64,
+		CSRFToken:  csrfTok,
+		Rating:     rating,
+		HasResume:  hasResume,
+		HasCover:   hasCover,
+		TriageOpts: template.HTML(triageSelectOptionsHTML(curTriage)),    //nolint:gosec // G203: triageSelectOptionsHTML produces only author-constant triage strings; no user text.
+		StageOpts:  template.HTML(pipelineOptgroupHTML(curStage)),        //nolint:gosec // G203: pipelineOptgroupHTML produces only author-constant stage strings; no user text.
 	}
 	var buf bytes.Buffer
 	if err := applicationSectionTmpl.Execute(&buf, data); err != nil {

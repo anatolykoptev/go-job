@@ -9,39 +9,65 @@ import (
 	"time"
 )
 
-// Stage values for hunt_ratings.stage. Checked in Go, not via SQL CHECK constraint
-// to keep the schema flexible for future stages without migrations.
+// Stage values for hunt_ratings. Validated in Go, not via SQL CHECK constraint.
 //
-// Triage stages (kanban):
+// hunt_ratings has TWO orthogonal axes (ADR-go-job-003 addendum, migration 012):
+//   - triage column: operator's interest signal ('' = untriaged)
+//   - stage  column: application-pipeline position ('' = not in pipeline)
+//
+// Triage-axis constants (hunt_ratings.triage):
 const (
-	StageNew         = "new"
 	StageInteresting = "interesting"
 	StageSaved       = "saved"
 	StageDiscarded   = "discarded"
-	StageClaimed     = "claimed"
 )
 
-// Pipeline stages (application funnel) — added in Phase 1 unification arc
-// (ADR-go-job-002). No new columns; stage has no SQL CHECK constraint.
+// Pipeline-axis constants (hunt_ratings.stage):
 const (
+	StageClaimed   = "claimed"
 	StageApplied   = "applied"
 	StageInterview = "interview"
 	StageOffer     = "offer"
 	StageRejected  = "rejected"
 )
 
-// TriageStages are operator-assessment phases before application.
-// Ordered: earliest decision first.
-var TriageStages = []string{StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed}
+// StageNew is a legacy constant retained for migration 012 backfill only.
+// No new rows are written with this value after migration 012. '' replaces it
+// on both axes (untriaged + not-in-pipeline).
+const StageNew = "new"
 
-// PipelineStages are post-application funnel phases.
-// Ordered: earliest funnel step first.
-var PipelineStages = []string{StageApplied, StageInterview, StageOffer, StageRejected}
+// TriageStages are the valid values for hunt_ratings.triage ('' = untriaged, not listed).
+// Ordered: best signal first.
+var TriageStages = []string{StageInteresting, StageSaved, StageDiscarded}
 
-// AllStages is the canonical ordered list of hunt stages (triage + pipeline).
-// Adding a new stage: edit TriageStages or PipelineStages — AllStages is derived automatically.
-// Order matters for UI presentation (triage first, then funnel stages).
+// PipelineStages are the valid values for hunt_ratings.stage ('' = not in pipeline, not listed).
+// Ordered: earliest pipeline step first.
+var PipelineStages = []string{StageClaimed, StageApplied, StageInterview, StageOffer, StageRejected}
+
+// AllStages is the canonical ordered list used for display (triage first, then pipeline).
+// Adding a stage: edit TriageStages or PipelineStages — AllStages derives automatically.
 var AllStages = append(append([]string{}, TriageStages...), PipelineStages...)
+
+// legacyAllStages is the pre-split 9-value set including 'new'.
+// Used ONLY in migration 012 backfill WHERE clauses and back-compat validation.
+// Never use this for new UI or validation logic.
+var legacyAllStages = []string{ //nolint:unused // referenced by schema/012 comment; kept for back-compat audit trail
+	StageNew, StageInteresting, StageSaved, StageDiscarded, StageClaimed,
+	StageApplied, StageInterview, StageOffer, StageRejected,
+}
+
+// StarSoftTriageValues are the triage values a star click can demote to '' (untriaged).
+// Discarded is excluded: it is a deliberate negative triage decision and should not
+// be silently cleared by a star click.
+// Replaces StarSoftStages after migration 012 split; star now controls triage, not stage.
+var StarSoftTriageValues = []string{StageInteresting, StageSaved}
+
+// StarSoftStages is kept as a package-level alias so existing test code that
+// references hunt.StarSoftStages compiles without churn. It now delegates to
+// StarSoftTriageValues. New code should use StarSoftTriageValues directly.
+//
+// Deprecated: use StarSoftTriageValues.
+var StarSoftStages = StarSoftTriageValues
 
 // Status values for hunt entry lifecycle. Default is "open".
 // "closed" — issue closed without merge; "merged" — PR merged / bounty claimed;
@@ -245,13 +271,17 @@ type scoreRationale struct {
 	SuccessReasoning string   `json:"success_reasoning"`
 }
 
-// Rating is a per-user kanban rating for any hunt entry.
+// Rating is a per-user rating for any hunt entry.
+// After migration 012 the rating carries two orthogonal axes:
+//   - Triage: operator's interest signal ('' = untriaged)
+//   - Stage:  application-pipeline position ('' = not in pipeline)
 type Rating struct {
 	ID        int64     `json:"id"`
 	EntryKind string    `json:"entry_kind"`
 	EntryID   int64     `json:"entry_id"`
 	UserName  string    `json:"user_name"`
-	Stage     string    `json:"stage"`
+	Triage    string    `json:"triage"`            // '' = untriaged
+	Stage     string    `json:"stage"`             // '' = not in pipeline
 	Note      string    `json:"note,omitempty"`
 	RatedAt   time.Time `json:"rated_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -32,7 +32,8 @@ func TestStore_SetStage_PreservesNote(t *testing.T) {
 	const wantNote = "this note must survive stage change"
 
 	// Seed a row with a note via Rate (the detail-page write path).
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageInteresting, wantNote); err != nil {
+	// StageInteresting is a triage-axis value; stage="".
+	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageInteresting, "", wantNote); err != nil {
 		t.Fatalf("Rate (seed): %v", err)
 	}
 	// Now change stage via SetStage (the inline-dropdown write path).
