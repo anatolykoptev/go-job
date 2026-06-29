@@ -239,30 +239,37 @@ var typstThemeDark = typstTheme{preamble: `
 var typstThemeResume = typstTheme{preamble: `
 #set page(
   paper:  "us-letter",
-  margin: (x: 20mm, top: 14mm, bottom: 14mm),
+  margin: (x: 16mm, top: 14mm, bottom: 14mm),
 )
 
-#set text(font: "IBM Plex Sans", size: 10.5pt, fill: rgb("#0f172a"))
-#set par(leading: 0.6em, spacing: 0.7em)
-#set list(indent: 8pt)
-#set enum(indent: 8pt)
+// ligatures: false hardens ATS text extraction (fi/fl ligatures otherwise garble).
+#set text(font: "IBM Plex Sans", size: 10.5pt, fill: rgb("#0f172a"), ligatures: false)
+#show link: set text(fill: rgb("#26428b"))
+// Vertical-rhythm cascade: line leading < item/paragraph spacing < section gap.
+// Each bullet is a clear unit (item gap > line leading) so multi-line bullets read distinctly.
+#set par(leading: 0.68em, spacing: 0.85em)
+#set list(indent: 8pt, spacing: 0.9em)
+#set enum(indent: 8pt, spacing: 0.9em)
 
 #show heading.where(level: 1): it => {
-  v(3mm, weak: true)
-  text(size: 16pt, weight: "semibold", fill: rgb("#0f172a"), tracking: -0.5pt, it.body)
-  v(1mm, weak: true)
-  line(length: 100%, stroke: rgb("#e2e8f0") + 1pt)
-  v(1.5mm, weak: true)
+  v(3.5mm, weak: true)
+  text(size: 19pt, weight: "bold", fill: rgb("#0f172a"), tracking: -0.4pt, it.body)
+  v(1.6mm, weak: true)
+  line(length: 100%, stroke: rgb("#cbd5e1") + 0.6pt)
+  v(2.2mm, weak: true)
 }
 #show heading.where(level: 2): it => {
-  v(2.5mm, weak: true)
-  text(size: 12pt, weight: "semibold", fill: rgb("#1e293b"), it.body)
-  v(0.8mm, weak: true)
+  v(3.8mm, weak: true)
+  block(below: 1.5mm, breakable: false)[
+    #text(size: 11.5pt, weight: "semibold", fill: rgb("#334155"), tracking: 0.4pt, upper(it.body))
+    #v(1mm, weak: true)
+    #line(length: 100%, stroke: rgb("#e2e8f0") + 0.6pt)
+  ]
 }
 #show heading.where(level: 3): it => {
-  v(2mm, weak: true)
+  v(3mm, weak: true)
   text(size: 10.5pt, weight: "semibold", fill: rgb("#334155"), it.body)
-  v(0.5mm, weak: true)
+  v(1.2mm, weak: true)
 }
 #show raw.where(block: true): it => block(
   fill:   rgb("#f8fafc"),
