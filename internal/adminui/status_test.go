@@ -84,6 +84,39 @@ func TestStatusDropdownHTML_ShellTokens(t *testing.T) {
 	}
 }
 
+// TestStatusDropdownHTML_OutOfEnumSentinel verifies that when currentStatus is not
+// in hunt.AllStatuses a disabled/hidden placeholder is prepended, no real option is
+// marked selected, and the raw value is visible (html-escaped) in the placeholder.
+// Red-on-revert: removing the validHuntStatuses[currentStatus] branch → no sentinel,
+// browser defaults to the first option, no-op ✓ save silently clobbers the value.
+func TestStatusDropdownHTML_OutOfEnumSentinel(t *testing.T) {
+	const legacy = "legacy_status"
+	got := statusDropdownHTML(5, legacy, "tok")
+	// Sentinel must be present: disabled, hidden, selected, showing the raw value.
+	if !strings.Contains(got, `value="" disabled hidden selected`) {
+		t.Errorf("out-of-enum: want disabled hidden selected placeholder, got:\n%s", got)
+	}
+	if !strings.Contains(got, "current: "+legacy) {
+		t.Errorf("out-of-enum: want placeholder to contain %q, got:\n%s", "current: "+legacy, got)
+	}
+	// No real option should be marked selected.
+	for _, s := range hunt.AllStatuses {
+		if strings.Contains(got, `value="`+s+`" selected`) {
+			t.Errorf("out-of-enum: real option %q must not be selected, got:\n%s", s, got)
+		}
+	}
+}
+
+// TestStatusDropdownHTML_DoubleSubmitGuard verifies the form has the onsubmit guard
+// that disables the submit button to prevent double-POST.
+// Red-on-revert: removing onsubmit → double-click sends two POSTs.
+func TestStatusDropdownHTML_DoubleSubmitGuard(t *testing.T) {
+	got := statusDropdownHTML(1, "open", "tok")
+	if !strings.Contains(got, `onsubmit="this.querySelector('button[type=submit]').disabled=true"`) {
+		t.Errorf("statusDropdownHTML: want onsubmit double-submit guard, got:\n%s", got)
+	}
+}
+
 // TestStatusDropdownHTML_MalformedMarkup guards against stray ">>" in the output.
 // Red-on-revert: introducing a bare `>` in the template → assertion fails.
 func TestStatusDropdownHTML_MalformedMarkup(t *testing.T) {
