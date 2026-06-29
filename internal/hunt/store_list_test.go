@@ -166,9 +166,9 @@ func TestStore_ListRatings_Basic(t *testing.T) {
 	require.NoError(t, s.Migrate(ctx))
 	truncateRatings(t, pool)
 
-	err := s.Rate(ctx, hunt.KindBounty, 42, "krolik", hunt.StageInteresting, "")
+	err := s.Rate(ctx, hunt.KindBounty, 42, "krolik", hunt.StageInteresting, "", "")
 	require.NoError(t, err)
-	err = s.Rate(ctx, hunt.KindJob, 7, "krolik", hunt.StageSaved, "good fit")
+	err = s.Rate(ctx, hunt.KindJob, 7, "krolik", hunt.StageSaved, "", "good fit")
 	require.NoError(t, err)
 
 	results, err := s.ListRatings(ctx, hunt.RatingFilter{User: "krolik", Limit: 10})

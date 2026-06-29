@@ -569,12 +569,14 @@ func TestStore_Rate_Insert(t *testing.T) {
 	require.NoError(t, s.Migrate(ctx))
 	truncateRatings(t, pool)
 
-	err := s.Rate(ctx, hunt.KindBounty, 1, "krolik", hunt.StageInteresting, "looks good")
+	err := s.Rate(ctx, hunt.KindBounty, 1, "krolik", hunt.StageInteresting, "", "looks good")
 	require.NoError(t, err)
 
 	r, err := s.GetRating(ctx, hunt.KindBounty, 1, "krolik")
 	require.NoError(t, err)
-	assert.Equal(t, hunt.StageInteresting, r.Stage)
+	// After migration 012: StageInteresting is stored in the triage column.
+	assert.Equal(t, hunt.StageInteresting, r.Triage)
+	assert.Equal(t, "", r.Stage)
 	assert.Equal(t, "looks good", r.Note)
 }
 
@@ -585,15 +587,18 @@ func TestStore_Rate_Update(t *testing.T) {
 	require.NoError(t, s.Migrate(ctx))
 	truncateRatings(t, pool)
 
-	err := s.Rate(ctx, hunt.KindBounty, 2, "krolik", hunt.StageNew, "")
+	// Seed with legacy 'new' (pipeline axis, stage col).
+	err := s.Rate(ctx, hunt.KindBounty, 2, "krolik", "", hunt.StageNew, "")
 	require.NoError(t, err)
 
-	err = s.Rate(ctx, hunt.KindBounty, 2, "krolik", hunt.StageSaved, "updated note")
+	// Update: set triage='saved' (triage axis). Stage stays 'new' (CASE guard).
+	err = s.Rate(ctx, hunt.KindBounty, 2, "krolik", hunt.StageSaved, "", "updated note")
 	require.NoError(t, err)
 
 	r, err := s.GetRating(ctx, hunt.KindBounty, 2, "krolik")
 	require.NoError(t, err)
-	assert.Equal(t, hunt.StageSaved, r.Stage)
+	// After migration 012: StageSaved is stored in the triage column.
+	assert.Equal(t, hunt.StageSaved, r.Triage)
 	assert.Equal(t, "updated note", r.Note)
 }
 
@@ -637,13 +642,14 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 		ON CONFLICT (dedup_hash) DO UPDATE SET source='test_sl_iso'
 		RETURNING id`, h).Scan(&jobID))
 
-	// Rate the job under the OTHER user with a curated stage.
-	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, ""))
+	// Rate the job under the OTHER user with a triage-axis value.
+	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, "", ""))
 
 	// The owner user must see zero rows — foreign rater's row must be excluded.
 	rows, _, err := s.ListShortlist(ctx, hunt.ShortlistQuery{
-		User:   ownerUser,
-		Stages: []string{hunt.StageInteresting, hunt.StageSaved, hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
+		User:         ownerUser,
+		TriageValues: []string{hunt.StageInteresting, hunt.StageSaved},
+		StageValues:  []string{hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
 	})
 	require.NoError(t, err)
 	assert.Empty(t, rows, "rating entered by a different user must not appear in the owner's shortlist")
