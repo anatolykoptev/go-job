@@ -286,29 +286,30 @@ func TestStore_ToggleShortlistStar_AdvancedStageNoOp(t *testing.T) {
 	}
 }
 
-// TestStore_ToggleShortlistStar_StarStateReflectsTriageAxis verifies that a job
-// with triage='discarded' (not soft-demotable) is treated as unstarred, and
-// toggling stars it (sets triage='saved').
+// TestStore_ToggleShortlistStar_Discarded_IsNoOp verifies that a star click on a
+// job with triage='discarded' is a deliberate-negative-decision NO-OP: the triage
+// column is NOT overwritten with 'saved', and starred=false is returned.
 //
-// Red-on-revert: reverting the isStarred logic → discarded job treated as starred,
-// toggle goes wrong direction.
-func TestStore_ToggleShortlistStar_StarStateReflectsTriageAxis(t *testing.T) {
+// Design contract (types.go: StarSoftTriageValues excludes discarded):
+// a negative triage decision is explicit — a star click can never silently clear it.
+//
+// Red-on-revert: removing the triage-protection guard in ToggleShortlistStar →
+// triage is overwritten with 'saved'; this test fails on both assertions.
+func TestStore_ToggleShortlistStar_Discarded_IsNoOp(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 
 	id := insertStarTestJob(t, s)
-
-	// discarded is a triage-axis value but NOT in softDemotable → "unstarred" state.
 	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, "", ""); err != nil {
 		t.Fatalf("Rate (seed discarded): %v", err)
 	}
 
 	starred := toggleStar(t, s, id)
-	if !starred {
-		t.Errorf("star on from discarded: want starred=true, got false")
+	if starred {
+		t.Errorf("star click on discarded: want starred=false (no-op), got true")
 	}
-	if got := readTriage(t, s, id); got != hunt.StageSaved {
-		t.Errorf("triage after toggle on discarded: want %q, got %q", hunt.StageSaved, got)
+	if got := readTriage(t, s, id); got != hunt.StageDiscarded {
+		t.Errorf("triage after star click on discarded: want %q (unchanged), got %q", hunt.StageDiscarded, got)
 	}
 }
 

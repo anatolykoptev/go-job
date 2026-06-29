@@ -794,6 +794,28 @@ func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, tria
 	return nil
 }
 
+// RateExact unconditionally sets BOTH triage and stage (no CASE-preserve guards),
+// plus overwrites note. Used when the caller owns the full two-axis state and must
+// guarantee coherence — primarily the tracker tool, which enforces a single-observable-
+// status contract (exactly one axis non-empty). Callers that want to touch only ONE
+// axis while preserving the other should use SetTriage, SetStage, or Rate instead.
+func (s *Store) RateExact(ctx context.Context, kind string, entryID int64, user, triage, stage, note string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
+			SET triage     = EXCLUDED.triage,
+			    stage      = EXCLUDED.stage,
+			    note       = EXCLUDED.note,
+			    updated_at = NOW()`,
+		kind, entryID, user, triage, stage, nullStr(note),
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: rate exact: %w", err)
+	}
+	return nil
+}
+
 // SetTriage updates ONLY the triage column for a hunt_ratings row, preserving the
 // existing pipeline stage and note. Mirrors SetStage's note-preserve discipline but
 // for the triage axis (migration 012).
@@ -1801,7 +1823,18 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 		return true, nil // starred unchanged — advanced pipeline stage
 	}
 
-	// Is the job already starred (triage is non-empty)?
+	// Triage protection: a deliberate negative triage decision (e.g. discarded) is
+	// never silently overwritten by a star click. Only softDemotable values
+	// (interesting, saved) can be starred off; all other ∈ TriageStages values are
+	// treated as protected and produce a no-op → return false (the star stays ☆).
+	if curTriage != nil && *curTriage != "" && !stageIn(*curTriage, softDemotable) {
+		if txErr = tx.Commit(ctx); txErr != nil {
+			return false, fmt.Errorf("hunt: toggle star id=%d: commit triage-protect: %w", entryID, txErr)
+		}
+		return false, nil // triage unchanged — deliberate negative decision
+	}
+
+	// Is the job already starred (triage ∈ softDemotable)?
 	isStarred := curTriage != nil && *curTriage != "" && stageIn(*curTriage, softDemotable)
 
 	var newTriage string // '' = untriaged (star off)
