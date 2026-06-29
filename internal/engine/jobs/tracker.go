@@ -123,6 +123,34 @@ func formatSalary(min, max *int, currency, interval string) string {
 	return sb.String()
 }
 
+// trackerRate routes a status + note write to the correct axis of hunt_ratings
+// (migration 012 split) using RateExact to guarantee single-observable-status
+// coherence. RateExact unconditionally overwrites BOTH axes — the active axis
+// gets the status value, the inactive axis is explicitly cleared to ''.
+//
+// Without this explicit clear a prior triage='saved' row would survive a
+// pipeline transition (applied/interview/offer/rejected) because Rate's CASE
+// guard treats triage="" as PRESERVE; trackerStatusFromRow gives triage
+// precedence → the pipeline state would be forever invisible.
+//
+//   - triage-axis:   status=="saved"  → RateExact(triage="saved", stage="", note)
+//   - pipeline-axis: status∈pipeline  → RateExact(triage="",      stage=status, note)
+func trackerRate(ctx context.Context, store *hunt.Store, id int64, status, note string) error {
+	if status == hunt.StageSaved {
+		return store.RateExact(ctx, hunt.KindJob, id, trackerUser, hunt.StageSaved, "", note)
+	}
+	return store.RateExact(ctx, hunt.KindJob, id, trackerUser, "", status, note)
+}
+
+// trackerStatusFromRow synthesises a single display status from the two-axis row.
+// Triage takes precedence so "saved" is visible even when the job is also in the pipeline.
+func trackerStatusFromRow(triage, stage string) JobStatus {
+	if triage != "" {
+		return JobStatus(triage)
+	}
+	return JobStatus(stage)
+}
+
 // AddTrackedJob saves a new job to the tracker via postgres.
 func AddTrackedJob(ctx context.Context, input JobTrackerAddInput) (*JobTrackerResult, error) {
 	if input.Title == "" || input.Company == "" {
@@ -165,7 +193,7 @@ func AddTrackedJob(ctx context.Context, input JobTrackerAddInput) (*JobTrackerRe
 		}
 	}
 
-	if err := store.Rate(ctx, hunt.KindJob, id, trackerUser, status, note); err != nil {
+	if err := trackerRate(ctx, store, id, status, note); err != nil {
 		return nil, fmt.Errorf("job_tracker_add: rate: %w", err)
 	}
 
@@ -208,7 +236,7 @@ func ListTrackedJobs(ctx context.Context, input JobTrackerListInput) (*JobTracke
 			Title:     r.Title,
 			Company:   r.Company,
 			URL:       r.URL,
-			Status:    JobStatus(r.Stage),
+			Status:    trackerStatusFromRow(r.Triage, r.Stage),
 			Notes:     r.Note,
 			Salary:    formatSalary(r.SalaryMin, r.SalaryMax, r.SalaryCurrency, r.SalaryInterval),
 			Location:  r.Location,
@@ -247,23 +275,23 @@ func UpdateTrackedJob(ctx context.Context, input JobTrackerUpdateInput) (*JobTra
 		}
 	}
 
-	stage := input.Status
+	newStatus := strings.ToLower(input.Status)
 	note := input.Notes
 	if current != nil {
-		if stage == "" {
-			stage = current.Stage
+		// Synthesize effective current status from both axes.
+		if newStatus == "" {
+			newStatus = string(trackerStatusFromRow(current.Triage, current.Stage))
 		}
 		if note == "" {
 			note = current.Note
 		}
 	}
 
-	stage = strings.ToLower(stage)
-	if stage != "" && !validTrackerStatus(stage) {
-		return nil, fmt.Errorf("job_tracker_update: invalid status %q", stage)
+	if newStatus != "" && !validTrackerStatus(newStatus) {
+		return nil, fmt.Errorf("job_tracker_update: invalid status %q", newStatus)
 	}
 
-	if err := store.Rate(ctx, hunt.KindJob, input.ID, trackerUser, stage, note); err != nil {
+	if err := trackerRate(ctx, store, input.ID, newStatus, note); err != nil {
 		return nil, fmt.Errorf("job_tracker_update: %w", err)
 	}
 

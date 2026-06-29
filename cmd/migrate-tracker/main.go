@@ -142,7 +142,12 @@ func run(ctx context.Context, dbPath, dsn string, dryRun bool) error {
 			stage = "saved"
 		}
 
-		if err := store.Rate(ctx, hunt.KindJob, id, "krolik", stage, note); err != nil {
+		// Route to the correct axis after migration 012 split.
+		triage, stageVal := "", stage
+		if stage == hunt.StageSaved {
+			triage, stageVal = hunt.StageSaved, ""
+		}
+		if err := store.Rate(ctx, hunt.KindJob, id, "krolik", triage, stageVal, note); err != nil {
 			slog.Error("rate job", "id", id, "err", err)
 			skipped++
 			continue

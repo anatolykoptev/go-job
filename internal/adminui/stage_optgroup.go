@@ -9,66 +9,77 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
-// stageOptgroupHTML returns the inner HTML for a stage <select> element,
-// structured as two <optgroup> blocks: "Triage" (TriageStages) and
-// "Pipeline" (PipelineStages). Option values are html.EscapeString-wrapped
-// as a matter of style (stage values are author-constant).
+// attrSelected is the HTML attribute fragment appended to an <option> when it
+// is the currently selected value. Extracted as a const to satisfy goconst (4+ uses).
+const attrSelected = ` selected`
+
+// pipelineOptgroupHTML returns inner HTML for a pipeline-only <select> element.
+// Used in the jobs-table inline dropdown (migration 012: triage managed separately).
 //
-// currentStage is used only as an equality key to apply the `selected`
-// attribute — it is never interpolated into HTML as text.
-//
-// Out-of-enum handling:
-//   - currentStage == "" → disabled/hidden placeholder "— stage —" is prepended
-//     and marked selected so the browser shows a prompt rather than defaulting
-//     to the first real option.
-//   - currentStage != "" and not in AllStages → disabled/hidden sentinel
-//     "current: {escaped}" is prepended so the operator sees the real value
-//     without a no-op ✓ save silently overwriting it.
-//
-// CSS: per-option background/color match the parent select's CSS vars
-// (--bg-elevated / --text-primary) for WebKit native-picker compatibility.
-func stageOptgroupHTML(currentStage string) string {
+// currentStage is the hunt_ratings.stage value ('' = not in pipeline).
+func pipelineOptgroupHTML(currentStage string) string {
 	var sb strings.Builder
 
-	// Out-of-enum sentinel / placeholder.
-	if !slices.Contains(hunt.AllStages, currentStage) {
+	if !slices.Contains(hunt.PipelineStages, currentStage) {
 		if currentStage == "" {
-			sb.WriteString(`<option value="" disabled hidden selected>— stage —</option>`)
+			sb.WriteString(`<option value=""` + attrSelected + `>— pipeline —</option>`)
 		} else {
 			fmt.Fprintf(&sb,
-				`<option value="" disabled hidden selected style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">current: %s</option>`,
+				`<option value="" disabled hidden`+attrSelected+` style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">current: %s</option>`,
 				html.EscapeString(currentStage),
 			)
 		}
+	} else {
+		// Blank "clear" option at top so operator can remove job from pipeline.
+		sb.WriteString(`<option value="">— clear —</option>`)
 	}
 
-	// Triage optgroup.
-	sb.WriteString(`<optgroup label="Triage">`)
-	for _, s := range hunt.TriageStages {
-		selected := ""
-		if s == currentStage {
-			selected = ` selected`
-		}
-		fmt.Fprintf(&sb,
-			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
-			html.EscapeString(s), selected, html.EscapeString(s),
-		)
-	}
-	sb.WriteString(`</optgroup>`)
-
-	// Pipeline optgroup.
-	sb.WriteString(`<optgroup label="Pipeline">`)
-	for _, s := range hunt.PipelineStages {
-		selected := ""
-		if s == currentStage {
-			selected = ` selected`
-		}
-		fmt.Fprintf(&sb,
-			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
-			html.EscapeString(s), selected, html.EscapeString(s),
-		)
-	}
-	sb.WriteString(`</optgroup>`)
-
+	appendOptgroup(&sb, "Pipeline", hunt.PipelineStages, currentStage)
 	return sb.String()
+}
+
+// triageSelectOptionsHTML returns inner HTML for a triage-only <select> element.
+// Used in the detail-page Triage form (migration 012).
+//
+// currentTriage is the hunt_ratings.triage value ('' = untriaged).
+// A blank option labelled "— none —" is always prepended so the operator can
+// clear the triage signal.
+func triageSelectOptionsHTML(currentTriage string) string {
+	var sb strings.Builder
+
+	// Always include a blank "clear" option first.
+	selectedBlank := ""
+	if !slices.Contains(hunt.TriageStages, currentTriage) {
+		selectedBlank = attrSelected
+	}
+	fmt.Fprintf(&sb, `<option value=""%s>— none —</option>`, selectedBlank)
+
+	for _, s := range hunt.TriageStages {
+		sel := ""
+		if s == currentTriage {
+			sel = attrSelected
+		}
+		fmt.Fprintf(&sb,
+			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
+			html.EscapeString(s), sel, html.EscapeString(s),
+		)
+	}
+	return sb.String()
+}
+
+// appendOptgroup writes a single <optgroup> block into sb.
+// current is used only as an equality key for the `selected` attribute.
+func appendOptgroup(sb *strings.Builder, label string, stages []string, current string) {
+	fmt.Fprintf(sb, `<optgroup label="%s">`, html.EscapeString(label))
+	for _, s := range stages {
+		sel := ""
+		if s == current {
+			sel = attrSelected
+		}
+		fmt.Fprintf(sb,
+			`<option value="%s"%s style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">%s</option>`,
+			html.EscapeString(s), sel, html.EscapeString(s),
+		)
+	}
+	sb.WriteString(`</optgroup>`)
 }
