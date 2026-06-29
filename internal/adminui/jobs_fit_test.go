@@ -185,24 +185,24 @@ func TestBuildMarketCardHTML_DisclaimerAlwaysPresent(t *testing.T) {
 
 // TestJobsSpec_CellColumnAlignment asserts the cell count in a synthetic row
 // matches the column count in jobsSpec. Guards the "cell order MUST match
-// Columns order" invariant. Cell-0 = Title/Company (plain text).
+// Columns order" invariant. Cell-0 = Title (plain text, Href-linked).
 // RED-on-revert: add a column without a cell, or reorder cells.
 func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	score := 68
 	// MUST match the Lister cell assembly order:
-	// 0=Title, 1=Company, 2=Fit chip, 3=Market chip, 4=Status, 5=Posted,
-	// 6=Location, 7=Source, 8=Docs, 9=Star toggle.
+	// 0=Title, 1=Star toggle, 2=Company, 3=Fit chip, 4=Market chip,
+	// 5=Status, 6=Posted, 7=Location, 8=Source, 9=Docs.
 	cells := []resource.Cell{
-		{Value: "Some Title"},                                       // 0: title — plain text cell-0
-		{Value: "Acme Corp"},                                        // 1: company — plain text
-		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 2: fit chip
-		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 3: market chip
-		{Value: "open"},                                             // 4: status
-		{Value: "2026-06-01"},                                       // 5: posted
-		{Value: "Remote (US)"},                                      // 6: location
-		{Value: "linkedin"},                                         // 7: source
-		{Value: docsChipHTML(1, false, false), HTML: true},          // 8: docs (no resume/cover)
-		{Value: starToggleHTML(1, false, ""), HTML: true},           // 9: star toggle
+		{Value: "Some Title"},                                       // 0: title — plain text cell-0 (Href-linked)
+		{Value: starToggleHTML(1, false, ""), HTML: true},           // 1: star toggle (front after Title)
+		{Value: "Acme Corp"},                                        // 2: company — plain text
+		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 3: fit chip
+		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 4: market chip
+		{Value: "open"},                                             // 5: status
+		{Value: "2026-06-01"},                                       // 6: posted
+		{Value: "Remote (US)"},                                      // 7: location
+		{Value: "linkedin"},                                         // 8: source
+		{Value: docsChipHTML(1, false, false), HTML: true},          // 9: docs (no resume/cover)
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -212,35 +212,38 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	if cells[0].HTML {
 		t.Errorf("cell[0] (Title) must have HTML:false — go-panel template ignores HTML on cell-0 with Href")
 	}
-	// Assert company is at index 1 (plain text).
-	if cells[1].HTML {
-		t.Errorf("cell[1] (Company) must have HTML:false")
+	// Assert star toggle is at index 1 (HTML:true, front after Title).
+	if !cells[1].HTML {
+		t.Errorf("cell[1] (Star toggle) must have HTML:true")
 	}
-	// Assert fit chip is at index 2 (HTML:true, not cell-0).
-	if !cells[2].HTML {
-		t.Errorf("cell[2] (Fit chip) must have HTML:true")
+	// Assert company is at index 2 (plain text).
+	if cells[2].HTML {
+		t.Errorf("cell[2] (Company) must have HTML:false")
 	}
-	// Assert market chip is at index 3 (HTML:true, not cell-0).
+	// Assert fit chip is at index 3 (HTML:true, not cell-0).
 	if !cells[3].HTML {
-		t.Errorf("cell[3] (Market Read chip) must have HTML:true")
+		t.Errorf("cell[3] (Fit chip) must have HTML:true")
 	}
-	// Assert docs chip is at index 8 (HTML:true).
-	if !cells[8].HTML {
-		t.Errorf("cell[8] (Docs chip) must have HTML:true")
+	// Assert market chip is at index 4 (HTML:true, not cell-0).
+	if !cells[4].HTML {
+		t.Errorf("cell[4] (Market Read chip) must have HTML:true")
 	}
-	// Assert star toggle is at index 9 (HTML:true, always last).
+	// Assert docs chip is at index 9 (HTML:true).
 	if !cells[9].HTML {
-		t.Errorf("cell[9] (Star toggle) must have HTML:true")
+		t.Errorf("cell[9] (Docs chip) must have HTML:true")
 	}
-	// Assert column order: Title first, Company second, Star last.
+	// Assert column order: Title first, Star second, Docs last.
 	if jobsSpec.Columns[0].Key != colKeyTitle {
 		t.Errorf("column[0] must be Title (key=%q), got key=%q", colKeyTitle, jobsSpec.Columns[0].Key)
 	}
-	if jobsSpec.Columns[1].Key != "company" {
-		t.Errorf("column[1] must be Company (key=%q), got key=%q", "company", jobsSpec.Columns[1].Key)
+	if jobsSpec.Columns[1].Key != "star" {
+		t.Errorf("column[1] must be Star (key=%q), got key=%q", "star", jobsSpec.Columns[1].Key)
 	}
-	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != "star" {
-		t.Errorf("last column must be Star (key=%q), got key=%q", "star", jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
+	if jobsSpec.Columns[2].Key != colCompany {
+		t.Errorf("column[2] must be Company (key=%q), got key=%q", colCompany, jobsSpec.Columns[2].Key)
+	}
+	if jobsSpec.Columns[len(jobsSpec.Columns)-1].Key != "docs" {
+		t.Errorf("last column must be Docs (key=%q), got key=%q", "docs", jobsSpec.Columns[len(jobsSpec.Columns)-1].Key)
 	}
 }
 

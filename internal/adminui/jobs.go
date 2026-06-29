@@ -94,12 +94,17 @@ const (
 //
 // IMPORTANT: cell index 0 is the Href-linked cell in go-panel's list template.
 // The template wraps cell-0 in <a href=…>{EscapeString(value)}</a> and ignores
-// cell.HTML for that index. Therefore cell-0 MUST be plain text (Title/Company).
-// Fit and Market Read chips are at indices 1 and 2 (i>0 → cell.HTML respected).
-// The star column (★) is last; its filled/empty state comes from hunt_ratings.
+// cell.HTML for that index. Therefore cell-0 MUST be plain text (Title).
+// The star column is at index 1 — immediately after Title — so it appears at
+// the front in practice without displacing the Href-linked cell-0.
+// Fit and Market Read chips are at indices 3 and 4 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: sqlJTitle},
+		// Star toggle at index 1 (front of visible columns after Title).
+		// Cell value is raw HTML (<form> with CSRF) — rendered with HTML: true.
+		// Not sortable: star state is a join expression, not a table column.
+		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: colWidth8rem},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
@@ -108,10 +113,6 @@ var jobsSpec = admintable.Spec{
 		{Key: "location", Label: "Location", Sortable: false},
 		{Key: colSource, Label: lblSource, Sortable: false, Width: "6rem"},
 		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
-		// Star toggle: last column so cell-0 (title) is unaffected.
-		// Cell value is raw HTML (<form> with CSRF) — rendered with HTML: true.
-		// Not sortable: star state is a join expression, not a table column.
-		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
 	},
 	DefaultKey: colKeyFit,
 	DefaultDir: admintable.Desc,
@@ -224,26 +225,23 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title (plain text — go-panel wraps cell-0 in <a href>, ignoring
-			// cell.HTML). Company is a separate sortable column at cell-1; chips at i>1
-			// are rendered with cell.HTML respected.
+			// cell.HTML). Star is at cell-1 (front after Title). Company at cell-2.
+			// HTML: true cells at i>0 are rendered with raw HTML.
 			// Row.Href → /admin/jobs/{id} (go-panel Detailer, natural URL).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(id, 10),
 				Cells: []resource.Cell{
-					{Value: title},
-					{Value: company},
-					{Value: fitChipHTML(fit, fitBand), HTML: true},
-					{Value: marketReadHTML(sucBand, ou), HTML: true},
-					{Value: status},
-					{Value: dateStr(posted)},
-					{Value: location},
-					{Value: source},
-					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},
-					// Star toggle — MUST stay last to preserve 0-based column indices above.
-					// HTML: true is safe: starToggleHTML uses only closed-enum glyphs + id int64 + csrf.Issue output.
-					// starred comes from COALESCE(r.stage = ANY(activeStages), false) in the query.
-					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},
+					{Value: title},                                                        // [0] Title (plain text — Href-linked)
+					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},            // [1] Star (front after Title)
+					{Value: company},                                                      // [2] Company
+					{Value: fitChipHTML(fit, fitBand), HTML: true},                       // [3] Fit chip
+					{Value: marketReadHTML(sucBand, ou), HTML: true},                     // [4] Market chip
+					{Value: status},                                                       // [5] Status
+					{Value: dateStr(posted)},                                              // [6] Posted
+					{Value: location},                                                     // [7] Location
+					{Value: source},                                                       // [8] Source
+					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},           // [9] Docs
 				},
 			})
 		}

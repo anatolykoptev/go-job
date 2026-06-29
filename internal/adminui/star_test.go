@@ -7,7 +7,7 @@ import (
 )
 
 // TestStarToggleHTML_Unstarred verifies the ☆ state: hollow star, correct
-// action URL, CSRF token present, aria-label=Add, aria-pressed=false.
+// action URL, CSRF token present, aria-label=Add, aria-pressed=false, muted color.
 // Red-on-revert: removing starToggleHTML or inverting the star glyph → fails.
 func TestStarToggleHTML_Unstarred(t *testing.T) {
 	got := starToggleHTML(42, false, "test-tok")
@@ -20,6 +20,7 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 		`aria-label="Add to shortlist"`,
 		`aria-pressed="false"`,
 		`outline-offset:2px`,
+		starColorMuted, // unstarred → muted grey
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("starToggleHTML(42, false): want %q in output, got:\n%s", want, got)
@@ -31,6 +32,10 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 	if strings.Contains(got, `aria-label="Remove`) {
 		t.Errorf("starToggleHTML(42, false): aria-label must say Add, not Remove")
 	}
+	// Gold color must NOT appear in the unstarred state.
+	if strings.Contains(got, starColorGold) {
+		t.Errorf("starToggleHTML(42, false): gold color %q must not appear in unstarred state", starColorGold)
+	}
 	// Guard against a malformed tag (e.g. a stray `">>` closing the form),
 	// which renders a literal `>` in every table row. `>>` must never appear.
 	if strings.Contains(got, ">>") {
@@ -39,8 +44,9 @@ func TestStarToggleHTML_Unstarred(t *testing.T) {
 }
 
 // TestStarToggleHTML_Starred verifies the ★ state: filled star, correct action URL,
-// aria-label=Remove, aria-pressed=true.
-// Red-on-revert: inverting the starred branch → ★ missing, aria-pressed="true" missing.
+// aria-label=Remove, aria-pressed=true, gold color.
+// Red-on-revert: inverting the starred branch → ★ missing, aria-pressed="true" missing,
+// or gold color absent.
 func TestStarToggleHTML_Starred(t *testing.T) {
 	got := starToggleHTML(99, true, "another-tok")
 	for _, want := range []string{
@@ -48,6 +54,7 @@ func TestStarToggleHTML_Starred(t *testing.T) {
 		`action="/admin/jobs/99/shortlist"`,
 		`aria-label="Remove from shortlist"`,
 		`aria-pressed="true"`,
+		starColorGold, // starred → gold
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("starToggleHTML(99, true): want %q in output, got:\n%s", want, got)
@@ -58,6 +65,10 @@ func TestStarToggleHTML_Starred(t *testing.T) {
 	}
 	if strings.Contains(got, `aria-pressed="false"`) {
 		t.Errorf("starToggleHTML(99, true): aria-pressed must be true, not false")
+	}
+	// Muted color must NOT appear in the starred state (gold replaced it).
+	if strings.Contains(got, starColorMuted) {
+		t.Errorf("starToggleHTML(99, true): muted color %q must not appear in starred state", starColorMuted)
 	}
 }
 
