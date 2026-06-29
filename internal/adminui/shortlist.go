@@ -51,9 +51,9 @@ var shortlistSpec = admintable.Spec{
 		// Star column at index 1 (front after Title). Every shortlist row is starred
 		// (stage ∈ shortlistActiveStages by query). Clicking demotes to StageNew →
 		// row drops off shortlist on reload.
-		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
+		{Key: colKeyStar, Label: "★", Sortable: false, Width: "3rem"},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
-		{Key: "stage", Label: "Stage", Sortable: true, SQLExpr: "r.stage", Width: colWidth8rem},
+		{Key: colKeyStage, Label: "Stage", Sortable: true, SQLExpr: sqlRStage, Width: colWidth8rem},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
 		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: "comp", Label: "Comp", Sortable: false},
@@ -70,7 +70,7 @@ var shortlistSpec = admintable.Spec{
 // are SQL-backed via the FilterSpec.
 var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{sqlJTitle, sqlJCompany}, Match: admintable.ILike},
-	{Key: "stage", SQLExpr: "r.stage", Match: admintable.Eq, Allowed: shortlistActiveStages},
+	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: shortlistActiveStages},
 }}
 
 func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {

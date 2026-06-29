@@ -89,6 +89,34 @@ const (
 	statusClosed = "closed"
 )
 
+// Job posting lifecycle status filter constants (j.status values).
+// These are different from hunt pipeline stage names (hunt.Stage*),
+// even though some strings coincide ("applied", "rejected", "offer").
+// j.status describes the job board's own posting state; hunt_ratings.stage is operator pipeline.
+const (
+	jobStatusApplied     = "applied"
+	jobStatusInterviewing = "interviewing"
+	jobStatusRejected    = "rejected"
+	jobStatusOffer       = "offer"
+)
+
+// jobStatusFilterAllowed is the allowed set for the j.status filter bar.
+var jobStatusFilterAllowed = []string{statusOpen, jobStatusApplied, jobStatusInterviewing, jobStatusRejected, jobStatusOffer, statusClosed}
+
+// colKeyStar is the column key for the shortlist-star toggle column.
+// Shared between jobsSpec and shortlistSpec (goconst: 4+ occurrences).
+const colKeyStar = "star"
+
+// colKeyStage is the column/filter key for the pipeline stage dropdown.
+// Kept as a constant to avoid goconst warnings (used in jobsSpec + jobsFilter).
+const colKeyStage = "stage"
+
+// colWidthStage is the column width for the inline pipeline stage dropdown.
+const colWidthStage = "9rem"
+
+// sqlRStage is the SQL expression for the joined hunt_ratings.stage column.
+const sqlRStage = "r.stage"
+
 // jobsSpec drives the /admin/jobs table sort/columns. Cell order in the Lister
 // MUST match Columns order.
 //
@@ -97,14 +125,19 @@ const (
 // cell.HTML for that index. Therefore cell-0 MUST be plain text (Title).
 // The star column is at index 1 — immediately after Title — so it appears at
 // the front in practice without displacing the Href-linked cell-0.
-// Fit and Market Read chips are at indices 3 and 4 (i>0 → cell.HTML respected).
+// Stage dropdown is at index 2 (pipeline stage — NOT the job posting status).
+// Fit and Market Read chips are at indices 4 and 5 (i>0 → cell.HTML respected).
 var jobsSpec = admintable.Spec{
 	Columns: []admintable.Column{
 		{Key: colKeyTitle, Label: lblTitle, Sortable: true, SQLExpr: sqlJTitle},
 		// Star toggle at index 1 (front of visible columns after Title).
 		// Cell value is raw HTML (<form> with CSRF) — rendered with HTML: true.
 		// Not sortable: star state is a join expression, not a table column.
-		{Key: "star", Label: "★", Sortable: false, Width: "3rem"},
+		{Key: colKeyStar, Label: "★", Sortable: false, Width: "3rem"},
+		// Stage dropdown at index 2. Inline <form> — POSTs to /admin/jobs/{id}/stage.
+		// NOT the same as colStatus ("status" = job posting open/closed — separate axis).
+		// Sortable via r.stage so operator can sort by pipeline funnel.
+		{Key: colKeyStage, Label: "Stage", Sortable: true, SQLExpr: sqlRStage, NullsLast: true, Width: colWidthStage},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
 		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: colWidth8rem},
 		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
@@ -118,13 +151,30 @@ var jobsSpec = admintable.Spec{
 	DefaultDir: admintable.Desc,
 }
 
+// allHuntStageValues lists every valid stage for the stage filter Allowed list.
+// Mirrors validHuntStages (rate.go) but as a slice for admintable.Filter.Allowed.
+var allHuntStageValues = []string{
+	hunt.StageNew,
+	hunt.StageInteresting,
+	hunt.StageSaved,
+	hunt.StageDiscarded,
+	hunt.StageClaimed,
+	hunt.StageApplied,
+	hunt.StageInterview,
+	hunt.StageOffer,
+	hunt.StageRejected,
+}
+
 // jobsFilter declares the /admin/jobs filter bar. Every SQLExpr is author-constant;
 // request values reach SQL only as bind args (never concatenated). Allowed sets are
 // safe-degrade (an unknown value drops the filter, never an error).
 var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: keyQ, SQLExprs: []string{sqlJTitle, sqlJCompany}, Match: admintable.ILike},
-	{Key: colStatus, SQLExpr: sqlJStatus, Match: admintable.Eq, Allowed: []string{statusOpen, "applied", "interviewing", "rejected", "offer", statusClosed}},
+	{Key: colStatus, SQLExpr: sqlJStatus, Match: admintable.Eq, Allowed: jobStatusFilterAllowed},
 	{Key: colSource, SQLExpr: sqlJSource, Match: admintable.Eq, Allowed: []string{"ashby", "greenhouse", "hn", "indeed", "lever", "yc"}},
+	// Stage filter uses the joined r.stage column — works because jobsLister always
+	// LEFT JOINs hunt_ratings. An unknown stage value is silently ignored (safe-degrade).
+	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: allHuntStageValues},
 }}
 
 func jobsResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
@@ -155,26 +205,32 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 		if strings.TrimSpace(q.WhereConds) != "" {
 			where = q.WhereConds
 		}
-		// Count uses the WHERE clause args only (no user/stages join needed).
+		// Count also uses the LEFT JOIN so that stage filter (on r.stage) works correctly.
+		// Args layout for count: [...whereArgs, adminUser]
+		n := len(q.WhereArgs)
+		countArgs := append(append([]any{}, q.WhereArgs...), adminUser)
 		var total int
 		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM hunt_jobs j WHERE "+where,
-			q.WhereArgs...,
+			fmt.Sprintf(`SELECT count(*) FROM hunt_jobs j
+				LEFT JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
+				WHERE %s`, n+1, where),
+			countArgs...,
 		).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("adminui: count jobs: %w", err)
 		}
 
 		// Args layout: [...whereArgs, adminUser, activeStages, limit, offset]
-		n := len(q.WhereArgs)
 		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistActiveStages, q.Limit, q.Offset)
 		// $n+1 = adminUser, $n+2 = activeStages[], $n+3 = limit, $n+4 = offset.
-		// The LEFT JOIN computes starred per-row from hunt_ratings without a table column.
+		// The LEFT JOIN computes: starred (bool) and stage (text) per-row from hunt_ratings.
+		// Both columns reuse the same single join — no second join added.
 		query := fmt.Sprintf(`
 			SELECT j.id, COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.status,''),
 			       j.fit_score, COALESCE(j.fit_band,''), COALESCE(j.success_band,''), COALESCE(j.over_under,''),
 			       j.posted_at, j.last_seen_at,
 			       COALESCE(j.location,''), COALESCE(j.source,''), COALESCE(j.url,''),
-			       COALESCE(r.stage = ANY($%d::text[]), false) AS starred
+			       COALESCE(r.stage = ANY($%d::text[]), false) AS starred,
+			       COALESCE(r.stage, '') AS stage
 			  FROM hunt_jobs j
 			  LEFT JOIN hunt_ratings r
 			         ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
@@ -198,16 +254,16 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 		var out []resource.Row
 		for rows.Next() {
 			var (
-				id                     int64
-				title, company, status string
-				fitBand, sucBand, ou   string
-				location, source, url  string
-				fit                    *int
-				posted, recent         *time.Time
-				starred                bool
+				id                           int64
+				title, company, status       string
+				fitBand, sucBand, ou         string
+				location, source, url, stage string
+				fit                          *int
+				posted, recent               *time.Time
+				starred                      bool
 			)
 			if err := rows.Scan(&id, &title, &company, &status, &fit, &fitBand, &sucBand, &ou,
-				&posted, &recent, &location, &source, &url, &starred); err != nil {
+				&posted, &recent, &location, &source, &url, &starred, &stage); err != nil {
 				return nil, 0, fmt.Errorf("adminui: scan job: %w", err)
 			}
 
@@ -225,23 +281,24 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 
 			// Cell order MUST match jobsSpec.Columns order.
 			// Cell-0 = Title (plain text — go-panel wraps cell-0 in <a href>, ignoring
-			// cell.HTML). Star is at cell-1 (front after Title). Company at cell-2.
-			// HTML: true cells at i>0 are rendered with raw HTML.
+			// cell.HTML). Star is at cell-1 (front after Title). Stage dropdown at cell-2.
+			// Company at cell-3. HTML: true cells at i>0 are rendered with raw HTML.
 			// Row.Href → /admin/jobs/{id} (go-panel Detailer, natural URL).
 			out = append(out, resource.Row{
 				ID:   strconv.FormatInt(id, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(id, 10),
 				Cells: []resource.Cell{
-					{Value: title},                                                        // [0] Title (plain text — Href-linked)
-					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},            // [1] Star (front after Title)
-					{Value: company},                                                      // [2] Company
-					{Value: fitChipHTML(fit, fitBand), HTML: true},                       // [3] Fit chip
-					{Value: marketReadHTML(sucBand, ou), HTML: true},                     // [4] Market chip
-					{Value: status},                                                       // [5] Status
-					{Value: dateStr(posted)},                                              // [6] Posted
-					{Value: location},                                                     // [7] Location
-					{Value: source},                                                       // [8] Source
-					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},           // [9] Docs
+					{Value: title},                                                         // [0] Title (plain text — Href-linked)
+					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},             // [1] Star (front after Title)
+					{Value: stageDropdownHTML(id, stage, csrfTok), HTML: true},            // [2] Stage dropdown (pipeline stage, NOT job posting status)
+					{Value: company},                                                       // [3] Company
+					{Value: fitChipHTML(fit, fitBand), HTML: true},                        // [4] Fit chip
+					{Value: marketReadHTML(sucBand, ou), HTML: true},                      // [5] Market chip
+					{Value: status},                                                        // [6] Status (job posting open/closed — separate axis from stage)
+					{Value: dateStr(posted)},                                               // [7] Posted
+					{Value: location},                                                      // [8] Location
+					{Value: source},                                                        // [9] Source
+					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},            // [10] Docs
 				},
 			})
 		}
