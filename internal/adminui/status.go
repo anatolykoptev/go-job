@@ -34,6 +34,9 @@ var validHuntStatuses = func() map[string]bool {
 // XSS safety: id is an int64 PK (author-constant), option values are the closed-enum
 // status constants (author-constant), csrfTok is the only caller-supplied string and
 // is wrapped with html.EscapeString. No user-supplied text enters the HTML output.
+// Out-of-enum sentinel: when currentStatus is not in hunt.AllStatuses a disabled/hidden
+// placeholder showing the raw value is prepended so the browser renders it without
+// defaulting to the first real option (which a no-touch ✓ save would silently write).
 //
 // Accessibility: no onchange auto-submit (WCAG 3.2.2 — On Input); the explicit "✓"
 // submit button lets keyboard users confirm the selection without unintended
@@ -45,11 +48,16 @@ var validHuntStatuses = func() map[string]bool {
 //
 // Fallbacks are the hardcoded token values so the select is readable on any host
 // that doesn't inject the shell stylesheet.
+//
+// TODO(status): surface ?err= via a jobs-detail banner (shared with stage.go)
+//
+// NOTE: mirrors stage.go; extract a shared inlineEnumDropdown on the 3rd such field.
 func statusDropdownHTML(id int64, currentStatus, csrfTok string) string {
 	idStr := strconv.FormatInt(id, 10)
 	var sb strings.Builder
+	// Fix 5: double-submit guard — disables the submit button on first click.
 	fmt.Fprintf(&sb,
-		`<form method="POST" action="/admin/jobs/%s/status" style="display:inline;margin:0">`+
+		`<form method="POST" action="/admin/jobs/%s/status" style="display:inline;margin:0" onsubmit="this.querySelector('button[type=submit]').disabled=true">`+
 			`<input type="hidden" name="%s" value="%s">`,
 		idStr,
 		html.EscapeString(csrf.FormField),
@@ -58,6 +66,16 @@ func statusDropdownHTML(id int64, currentStatus, csrfTok string) string {
 	sb.WriteString(`<select name="status" ` +
 		`style="font-size:.8rem;padding:.1rem .2rem;border-radius:3px;border:1px solid var(--border,#1e2d4a);background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5);cursor:pointer" ` +
 		`aria-label="Job posting status">`)
+	// Fix 2: out-of-enum sentinel — when the DB holds a value not in AllStatuses
+	// (legacy row / manual edit), show it as a disabled/hidden placeholder so the
+	// operator sees the real value and a no-op ✓ save doesn't silently clobber it
+	// (validHuntStatuses[""] == false → handler returns 400 on submit without change).
+	if !validHuntStatuses[currentStatus] {
+		fmt.Fprintf(&sb,
+			`<option value="" disabled hidden selected style="background:var(--bg-elevated,#1a2540);color:var(--text-primary,#e8edf5)">current: %s</option>`,
+			html.EscapeString(currentStatus),
+		)
+	}
 	for _, s := range hunt.AllStatuses {
 		selected := ""
 		if s == currentStatus {
@@ -76,7 +94,8 @@ func statusDropdownHTML(id int64, currentStatus, csrfTok string) string {
 
 // statusHandler returns an http.HandlerFunc that updates hunt_jobs.status.
 // CSRF-protected (same pattern as stageHandler / rateHandler / shortlistHandler).
-// Invalid status values → 400, no write. Unknown id → 404.
+// Invalid status values → 400, no write. Unknown id / write failure → 303 redirect
+// with ?err=status-set-failed.
 // On success redirects to Referer (preserving filter state).
 func statusHandler(store *hunt.Store, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
