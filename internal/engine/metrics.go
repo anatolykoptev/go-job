@@ -512,6 +512,43 @@ var validPlatformOutcomes = map[string]bool{
 	outcomeTimeout: true, outcomeNoKey: true, outcomeParseFail: true,
 }
 
+// warmAlertBoundedMetrics pre-registers, at zero value, every label
+// combination backing a Prometheus increase()-based alert rule in
+// alerts-go-job.yml (GojobSourceParseFail, GojobSourceNoKey,
+// GojobDelegationFallback). Called once from Init(), before any connector or
+// discovery traffic.
+//
+// Why this is needed: increase() over a Prometheus counter cannot see a
+// series' FIRST sample — the jump from "series does not exist" to "series
+// exists at value N" is invisible to increase(), which only diffs between
+// existing samples. Without pre-registration, the FIRST parse_fail / no_key
+// outcome (or the first local-fallback) after every restart is silently
+// missed by its alert; only a second occurrence in the same window produces
+// a visible 0→N transition.
+//
+// reg.Add(name, 0) is the established "touch" pattern in this package (see
+// IncrHuntDiscoveryURLs's n=0 case): it seeds the local atomic counter AND,
+// via the prom bridge, calls CounterVec.WithLabelValues(...).Add(0), which
+// creates and permanently registers the zero-value child series on the real
+// Prometheus /metrics endpoint (promhttp over prometheus.DefaultRegisterer).
+// This is distinct from — and fixes the gap left by — FormatMetrics's
+// pre-touch loops, which only fake a zero via a Go map's missing-key default
+// on the hand-rolled flat-text mirror; they never call reg.Add and so never
+// touch the real registry Prometheus actually scrapes.
+//
+// Bounded: 18 platforms × 6 outcomes + 3 discovery sources = 111 series —
+// safe cardinality (mirrors the bound already documented in FormatMetrics).
+func warmAlertBoundedMetrics() {
+	for p := range validPlatforms {
+		for oc := range validPlatformOutcomes {
+			reg.Add(MetricPlatformResults+"{platform="+p+",outcome="+oc+"}", 0)
+		}
+	}
+	for src := range validDiscoverySources {
+		reg.Add(MetricHuntDiscoverySource+"{source="+src+"}", 0)
+	}
+}
+
 // IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.
 // platform ∈ validPlatforms, outcome ∈ {"results","empty","error"} — both bounded.
 // Called ONCE per connector return in the job_search collector fan-in loop,
