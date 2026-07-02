@@ -118,6 +118,11 @@ func Init(c Config) {
 
 	// Metrics registry (Prometheus-bridged under "gojob" namespace).
 	reg = kitmetrics.NewPrometheusRegistry("gojob")
+	// Pre-register the alert-backing bounded matrices (platform×outcome,
+	// discovery source) at zero so increase()-based alerts in
+	// alerts-go-job.yml see a real 0→N transition on the FIRST occurrence
+	// after a restart, not just the second. Must run before any traffic.
+	warmAlertBoundedMetrics()
 	// Pre-configure byte-scale buckets for the oversize histogram before any
 	// Observe call. Must happen at startup (before traffic) — buckets lock at
 	// first Observe. The seconds-shaped default (ExponentialBuckets(0.001,2,16))
