@@ -123,3 +123,46 @@ func TestFilterOpportunitiesAlias(t *testing.T) {
 		t.Errorf("got %d results for 'go', want 2", len(filtered))
 	}
 }
+
+func TestFilterOpportunitiesMultiToken(t *testing.T) {
+	opps := []engine.Opportunity{
+		{Title: "Aiven", Summary: "Aiven for ClickHouse, Aiven for Apache Kafka, Aiven for PostgreSQL"},
+		{Title: "ClickHouse", Summary: "ClickHouse Cloud"},
+		{Title: "Redpanda", Summary: "Kafka-compatible streaming"},
+	}
+
+	// A multi-word query ANDs its tokens: only the program mentioning BOTH
+	// "clickhouse" and "kafka" matches (regression: the whole query used to be
+	// treated as a single literal substring that never matched).
+	filtered := filterOpportunities(opps, "clickhouse kafka")
+	if len(filtered) != 1 {
+		t.Fatalf("got %d results for \"clickhouse kafka\", want 1 (AND across tokens)", len(filtered))
+	}
+	if filtered[0].Title != "Aiven" {
+		t.Errorf("got %q, want Aiven", filtered[0].Title)
+	}
+
+	// Extra whitespace between/around tokens must not change the result.
+	if got := filterOpportunities(opps, "  clickhouse   kafka  "); len(got) != 1 {
+		t.Errorf("got %d results for padded query, want 1", len(got))
+	}
+
+	// A token that matches nothing excludes the opportunity even if another token matches.
+	if got := filterOpportunities(opps, "clickhouse nonexistentterm"); len(got) != 0 {
+		t.Errorf("got %d results, want 0 when one token has no match", len(got))
+	}
+}
+
+func TestFilterOpportunitiesWhitespaceQuery(t *testing.T) {
+	opps := []engine.Opportunity{
+		{Title: "Aiven"},
+		{Title: "ClickHouse"},
+	}
+
+	// A whitespace-only query yields no searchable tokens, so it behaves like an
+	// empty filter (no filtering) and returns the input unchanged — consistent
+	// with the caller, which skips filtering entirely when the query is empty.
+	if got := filterOpportunities(opps, "   "); len(got) != len(opps) {
+		t.Errorf("got %d results for whitespace-only query, want %d (no filter)", len(got), len(opps))
+	}
+}
