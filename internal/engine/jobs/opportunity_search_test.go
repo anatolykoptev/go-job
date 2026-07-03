@@ -152,3 +152,17 @@ func TestFilterOpportunitiesMultiToken(t *testing.T) {
 		t.Errorf("got %d results, want 0 when one token has no match", len(got))
 	}
 }
+
+func TestFilterOpportunitiesWhitespaceQuery(t *testing.T) {
+	opps := []engine.Opportunity{
+		{Title: "Aiven"},
+		{Title: "ClickHouse"},
+	}
+
+	// A whitespace-only query yields no searchable tokens, so it behaves like an
+	// empty filter (no filtering) and returns the input unchanged — consistent
+	// with the caller, which skips filtering entirely when the query is empty.
+	if got := filterOpportunities(opps, "   "); len(got) != len(opps) {
+		t.Errorf("got %d results for whitespace-only query, want %d (no filter)", len(got), len(opps))
+	}
+}
