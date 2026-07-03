@@ -89,16 +89,40 @@ var skillAliases = map[string][]string{
 }
 
 func filterOpportunities(opps []engine.Opportunity, query string) []engine.Opportunity {
-	queries := expandQueryAliases(query)
-	var filtered []engine.Opportunity
+	tokens := strings.Fields(strings.ToLower(query))
+	if len(tokens) == 0 {
+		return opps
+	}
 
+	// Each whitespace-separated token expands to its skill aliases; a token is
+	// satisfied when ANY of its alternatives matches, and an opportunity matches
+	// only when ALL tokens are satisfied. Without this, a multi-word query like
+	// "clickhouse kafka" was tested as one literal substring and never matched.
+	tokenAlts := make([][]string, 0, len(tokens))
+	for _, tok := range tokens {
+		tokenAlts = append(tokenAlts, expandQueryAliases(tok))
+	}
+
+	var filtered []engine.Opportunity
 	for _, o := range opps {
-		if matchesAny(o, queries) {
+		if matchesAllTokens(o, tokenAlts) {
 			filtered = append(filtered, o)
 		}
 	}
 
 	return filtered
+}
+
+// matchesAllTokens reports whether o satisfies every token (AND). Each token is
+// itself a set of alternatives (the term plus its aliases) matched with OR via
+// matchesAny.
+func matchesAllTokens(o engine.Opportunity, tokenAlts [][]string) bool {
+	for _, alts := range tokenAlts {
+		if !matchesAny(o, alts) {
+			return false
+		}
+	}
+	return true
 }
 
 func expandQueryAliases(query string) []string {
