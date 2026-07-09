@@ -25,7 +25,7 @@ func (d formPageData) isEdit() bool {
 
 // multiLocale reports whether more than one locale is configured.
 func (d formPageData) multiLocale() bool {
-	return len(d.Locales.Available) > 1
+	return d.Locales.Multi()
 }
 
 // showLocaleSwitcher reports whether to render the per-locale switcher. Only on
@@ -229,6 +229,20 @@ templ formField(fld Field, value, errMsg, localeBadge string) {
 				id={ "field-" + fld.Key }
 				name={ fld.Key }
 				type="date"
+				value={ value }
+				if fld.Required {
+					required
+				}
+				class="pm7-input"
+				if errMsg != "" {
+					aria-invalid="true"
+				}
+			/>
+		} else if fld.Kind == FieldDateTime {
+			<input
+				id={ "field-" + fld.Key }
+				name={ fld.Key }
+				type="datetime-local"
 				value={ value }
 				if fld.Required {
 					required

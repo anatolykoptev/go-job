@@ -40,15 +40,27 @@ templ listPageContent(d listPageData) {
 		</div>
 	</div>
 	@filterBar(d)
-	@listTable(d)
-	@pagination(d)
+	@listRowsFragment(d)
 }
 
 // listRowsFragment renders only the table + pagination (for htmx row swap).
+// It is ALSO embedded in the full page (listPageContent) so the
+// #{name}-region swap target exists on first paint — without it the first
+// sort/filter/pagination click has no target and htmx silently does nothing.
 templ listRowsFragment(d listPageData) {
 	<div id={ d.Resource.Name + "-region" }>
 		@listTable(d)
 		@pagination(d)
+	</div>
+}
+
+// listRowsAppend renders bare <tr> rows for the Load-more beforeend swap,
+// plus an out-of-band replacement of the pagination block so the page
+// counter and the Load-more link advance with the appended page.
+templ listRowsAppend(d listPageData) {
+	@listRows(d)
+	<div id={ d.Resource.Name + "-pagination" } hx-swap-oob="outerHTML">
+		@paginationInner(d)
 	</div>
 }
 
@@ -128,35 +140,51 @@ templ listTable(d listPageData) {
 					</td>
 				</tr>
 			}
-			for _, row := range d.Rows {
-				<tr>
-					for i, cell := range row.Cells {
-						if i == 0 && row.Href != "" {
-							<td style={ colCellStyle(d, i) }>
-								<a class="row-name" href={ templ.SafeURL(row.Href) }>{ cell.Value }</a>
-							</td>
-						} else if cell.HTML {
-							<td style={ colCellStyle(d, i) }>@templ.Raw(cell.Value)</td>
-						} else {
-							<td style={ colCellStyle(d, i) }>{ cell.Value }</td>
-						}
-					}
-					if d.Resource.Writer != nil {
-						<td style="text-align:right">
-							<a
-								href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + row.ID + "/edit") }
-								style="font-size:.75rem;color:var(--text-secondary);text-decoration:none"
-							>Edit</a>
-						</td>
-					}
-				</tr>
-			}
+			@listRows(d)
 		</tbody>
 	</table>
 }
 
-// pagination renders page navigation links.
+// listRows renders the data <tr> rows shared by the full table body and the
+// Load-more append fragment (parity by construction, edit column included).
+templ listRows(d listPageData) {
+	for _, row := range d.Rows {
+		<tr>
+			for i, cell := range row.Cells {
+				if i == 0 && row.Href != "" {
+					<td style={ colCellStyle(d, i) }>
+						<a class="row-name" href={ templ.SafeURL(row.Href) }>{ cell.Value }</a>
+					</td>
+				} else if cell.HTML {
+					<td style={ colCellStyle(d, i) }>@templ.Raw(cell.Value)</td>
+				} else {
+					<td style={ colCellStyle(d, i) }>{ cell.Value }</td>
+				}
+			}
+			if d.Resource.Writer != nil {
+				<td style="text-align:right">
+					<a
+						href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + row.ID + "/edit") }
+						style="font-size:.75rem;color:var(--text-secondary);text-decoration:none"
+					>Edit</a>
+				</td>
+			}
+		</tr>
+	}
+}
+
+// pagination renders page navigation inside a stable-id wrapper so the
+// Load-more OOB swap can replace it (the wrapper renders even on a single
+// page — the OOB target must always exist).
 templ pagination(d listPageData) {
+	<div id={ d.Resource.Name + "-pagination" }>
+		@paginationInner(d)
+	</div>
+}
+
+// paginationInner renders the page links + Load-more; shared by the normal
+// render and the OOB replacement in listRowsAppend.
+templ paginationInner(d listPageData) {
 	if d.TotalPages > 1 {
 		<div class="pagination">
 			if d.Page > 1 {
@@ -181,6 +209,13 @@ templ pagination(d listPageData) {
 					hx-push-url="true"
 					style="padding:.375rem .75rem;border:1px solid var(--border);border-radius:var(--radius);color:var(--text-secondary);text-decoration:none"
 				>Next &rarr;</a>
+				<a
+					href={ templ.SafeURL(pageURL(d, d.Page+1)) }
+					hx-get={ appendURL(d) }
+					hx-target={ "#" + d.Resource.Name + "-table tbody" }
+					hx-swap="beforeend"
+					style="padding:.375rem .75rem;border:1px solid var(--border);border-radius:var(--radius);color:var(--text-secondary);text-decoration:none"
+				>Load more &darr;</a>
 			}
 		</div>
 	}
@@ -220,6 +255,10 @@ func pageURL(d listPageData, page int) string {
 	// override page + sort/dir so clicking Prev/Next on a filtered list
 	// does not silently drop the filter.
 	vals, _ := url.ParseQuery(d.QueryString)
+	// append is a per-request render mode, never a persistent link param:
+	// carrying it into Prev/Next region-swap links would make them return
+	// bare rows into the region target.
+	vals.Del("append")
 	vals.Set("page", strconv.Itoa(page))
 	if d.SortState.Key != "" {
 		vals.Set("sort", d.SortState.Key)
@@ -230,6 +269,12 @@ func pageURL(d listPageData, page int) string {
 		vals.Del("dir")
 	}
 	return fmt.Sprintf("%s/%s/rows?%s", d.BasePath, d.Resource.Name, vals.Encode())
+}
+
+// appendURL is pageURL for the NEXT page in append render mode (bare rows +
+// OOB pagination), used only by the Load-more control.
+func appendURL(d listPageData) string {
+	return pageURL(d, d.Page+1) + "&append=1"
 }
 
 // colHeaderStyle builds the inline style for a <th> element from Column.Width and Column.Align.
