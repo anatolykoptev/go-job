@@ -91,7 +91,7 @@ func bountiesResource(pool *pgxpool.Pool) resource.Resource {
 		}}, nil
 	}
 	return resource.Resource{Name: "bounties", Title: "Bounties", Icon: "\U0001F3AF", Group: grpHunt,
-		Sort: bountiesSpec, Filter: bountiesFilter, Perms: resource.ReadAny,
+		Sort: bountiesSpec, Filter: bountiesFilter,
 		Lister: huntLister(pool, "hunt_bounties", cols, bountiesSpec, scan)}
 }
 
@@ -132,7 +132,7 @@ func freelanceResource(pool *pgxpool.Pool) resource.Resource {
 		}}, nil
 	}
 	return resource.Resource{Name: "freelance", Title: "Freelance", Icon: "\U0001F4BB", Group: grpHunt,
-		Sort: freelanceSpec, Filter: freelanceFilter, Perms: resource.ReadAny,
+		Sort: freelanceSpec, Filter: freelanceFilter,
 		Lister: huntLister(pool, "hunt_freelance", cols, freelanceSpec, scan)}
 }
 
@@ -173,7 +173,7 @@ func securityResource(pool *pgxpool.Pool) resource.Resource {
 		}}, nil
 	}
 	return resource.Resource{Name: "security", Title: "Security", Icon: "\U0001F512", Group: grpHunt,
-		Sort: securitySpec, Filter: securityFilter, Perms: resource.ReadAny,
+		Sort: securitySpec, Filter: securityFilter,
 		Lister: huntLister(pool, "hunt_security", cols, securitySpec, scan)}
 }
 
@@ -212,7 +212,7 @@ func contestsResource(pool *pgxpool.Pool) resource.Resource {
 		}}, nil
 	}
 	return resource.Resource{Name: "audit-contests", Title: "Audit Contests", Icon: "\U0001F9FE", Group: grpHunt,
-		Sort: contestsSpec, Filter: contestsFilter, Perms: resource.ReadAny,
+		Sort: contestsSpec, Filter: contestsFilter,
 		Lister: huntLister(pool, "hunt_audit_contests", cols, contestsSpec, scan)}
 }
 

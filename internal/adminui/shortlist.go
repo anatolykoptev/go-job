@@ -86,13 +86,12 @@ var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 
 func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
 	return resource.Resource{
-		Name:  navIDShortlist,
-		Title: "Shortlist",
-		Icon:  "★",
-		Group: grpHunt,
-		Sort:  shortlistSpec,
+		Name:   navIDShortlist,
+		Title:  "Shortlist",
+		Icon:   "★",
+		Group:  grpHunt,
+		Sort:   shortlistSpec,
 		Filter: shortlistFilter,
-		Perms: resource.ReadAny,
 		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
 			n := store.CountShortlist(ctx, adminUser, shortlistTriageValues, shortlistPipelineValues)
 			if n == 0 {
@@ -155,9 +154,9 @@ func shortlistLister(store *hunt.Store, adminUser string, authority *application
 				ID:   strconv.FormatInt(row.ID, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(row.ID, 10),
 				Cells: []resource.Cell{
-					{Value: row.Title},                                                                              // [0] Title (plain text — Href-linked)
-					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true},                                     // [1] Star (front after Title; always ★)
-					{Value: row.Company},                                                                            // [2] Company
+					{Value: row.Title}, // [0] Title (plain text — Href-linked)
+					{Value: starToggleHTML(row.ID, true, csrfTok), HTML: true}, // [1] Star (front after Title; always ★)
+					{Value: row.Company}, // [2] Company
 					{Value: triageStageBadgesHTML(row.Triage, row.Stage), HTML: true},                              // [3] Triage + Stage badges
 					{Value: fitChipHTML(row.FitScore, row.FitBand), HTML: true},                                    // [4] Fit
 					{Value: marketReadHTML(row.SuccessBand, row.OverUnder), HTML: true},                            // [5] Market

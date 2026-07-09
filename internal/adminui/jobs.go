@@ -178,7 +178,6 @@ func jobsResource(store *hunt.Store, adminUser string, authority *applications.A
 		Group:  grpHunt,
 		Sort:   jobsSpec,
 		Filter: jobsFilter,
-		Perms:  resource.ReadAny,
 		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
 			n := store.CountOpenJobs(ctx)
 			if n == 0 {
@@ -248,13 +247,13 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 		var out []resource.Row
 		for rows.Next() {
 			var (
-				id                                  int64
-				title, company, status              string
-				fitBand, sucBand, ou                string
+				id                                   int64
+				title, company, status               string
+				fitBand, sucBand, ou                 string
 				location, source, url, triage, stage string
-				fit                                 *int
-				posted, recent                      *time.Time
-				starred                             bool
+				fit                                  *int
+				posted, recent                       *time.Time
+				starred                              bool
 			)
 			if err := rows.Scan(&id, &title, &company, &status, &fit, &fitBand, &sucBand, &ou,
 				&posted, &recent, &location, &source, &url, &starred, &triage, &stage); err != nil {
@@ -283,18 +282,18 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 				ID:   strconv.FormatInt(id, 10),
 				Href: "/admin/jobs/" + strconv.FormatInt(id, 10),
 				Cells: []resource.Cell{
-					{Value: title},                                                         // [0] Title (plain text — Href-linked)
-					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},             // [1] Star (front after Title)
-					{Value: stageBadgeHTML(triage), HTML: true},                           // [2] Triage badge (read-only; editable on detail page)
-					{Value: stageDropdownHTML(id, stage, csrfTok), HTML: true},            // [3] Stage dropdown (pipeline stage only)
-					{Value: company},                                                       // [4] Company
-					{Value: fitChipHTML(fit, fitBand), HTML: true},                        // [5] Fit chip
-					{Value: marketReadHTML(sucBand, ou), HTML: true},                      // [6] Market chip
-					{Value: status},                                                        // [7] Status (job posting open/closed — separate axis from stage)
-					{Value: dateStr(posted)},                                               // [8] Posted
-					{Value: location},                                                      // [9] Location
-					{Value: source},                                                        // [10] Source
-					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true},            // [11] Docs
+					{Value: title}, // [0] Title (plain text — Href-linked)
+					{Value: starToggleHTML(id, starred, csrfTok), HTML: true},  // [1] Star (front after Title)
+					{Value: stageBadgeHTML(triage), HTML: true},                // [2] Triage badge (read-only; editable on detail page)
+					{Value: stageDropdownHTML(id, stage, csrfTok), HTML: true}, // [3] Stage dropdown (pipeline stage only)
+					{Value: company}, // [4] Company
+					{Value: fitChipHTML(fit, fitBand), HTML: true},   // [5] Fit chip
+					{Value: marketReadHTML(sucBand, ou), HTML: true}, // [6] Market chip
+					{Value: status},          // [7] Status (job posting open/closed — separate axis from stage)
+					{Value: dateStr(posted)}, // [8] Posted
+					{Value: location},        // [9] Location
+					{Value: source},          // [10] Source
+					{Value: docsChipHTML(id, hasResume, hasCover), HTML: true}, // [11] Docs
 				},
 			})
 		}

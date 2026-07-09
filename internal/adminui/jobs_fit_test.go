@@ -194,18 +194,18 @@ func TestJobsSpec_CellColumnAlignment(t *testing.T) {
 	// 4=Company, 5=Fit chip, 6=Market chip, 7=Status, 8=Posted,
 	// 9=Location, 10=Source, 11=Docs.
 	cells := []resource.Cell{
-		{Value: "Some Title"},                                        // 0: title — plain text cell-0 (Href-linked)
-		{Value: starToggleHTML(1, false, ""), HTML: true},            // 1: star toggle (front after Title)
-		{Value: stageBadgeHTML("saved"), HTML: true},                 // 2: triage badge (read-only)
-		{Value: stageDropdownHTML(1, "", ""), HTML: true},            // 3: stage dropdown (pipeline stage only)
-		{Value: "Acme Corp"},                                         // 4: company — plain text
-		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},      // 5: fit chip
-		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true},  // 6: market chip
-		{Value: "open"},                                              // 7: status (job posting open/closed)
-		{Value: "2026-06-01"},                                        // 8: posted
-		{Value: "Remote (US)"},                                       // 9: location
-		{Value: "linkedin"},                                          // 10: source
-		{Value: docsChipHTML(1, false, false), HTML: true},           // 11: docs (no resume/cover)
+		{Value: "Some Title"},                                       // 0: title — plain text cell-0 (Href-linked)
+		{Value: starToggleHTML(1, false, ""), HTML: true},           // 1: star toggle (front after Title)
+		{Value: stageBadgeHTML("saved"), HTML: true},                // 2: triage badge (read-only)
+		{Value: stageDropdownHTML(1, "", ""), HTML: true},           // 3: stage dropdown (pipeline stage only)
+		{Value: "Acme Corp"},                                        // 4: company — plain text
+		{Value: fitChipHTML(&score, fitBandStrong), HTML: true},     // 5: fit chip
+		{Value: marketReadHTML(sucBandStrong, ouMatch), HTML: true}, // 6: market chip
+		{Value: "open"},        // 7: status (job posting open/closed)
+		{Value: "2026-06-01"},  // 8: posted
+		{Value: "Remote (US)"}, // 9: location
+		{Value: "linkedin"},    // 10: source
+		{Value: docsChipHTML(1, false, false), HTML: true}, // 11: docs (no resume/cover)
 	}
 	if len(cells) != len(jobsSpec.Columns) {
 		t.Fatalf("cell/column mismatch: %d cells vs %d columns — update one of them",
@@ -383,7 +383,6 @@ func TestJobsListTemplate_FitChipRendered(t *testing.T) {
 		Title:  "Jobs",
 		Sort:   jobsSpec,
 		Filter: jobsFilter,
-		Perms:  resource.ReadAny,
 		Lister: syntheticLister,
 	})
 
