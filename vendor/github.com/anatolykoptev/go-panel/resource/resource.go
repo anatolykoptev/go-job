@@ -108,17 +108,6 @@ type ListQuery struct {
 	Offset     int
 }
 
-// Perms declares who may read or write this resource.
-// Foundations: ReadAny means any authenticated session can read.
-// Write perms are relevant only from Phase 2 (form/edit).
-type Perms struct {
-	// ReadAny allows any authenticated operator to read. Default.
-	ReadAny bool
-}
-
-// ReadAny is the foundations default: any authenticated operator can read.
-var ReadAny = Perms{ReadAny: true}
-
 // Resource is the declarative contract for one admin entity.
 // Declare once, get list + (later) detail + edit + MCP for free.
 //
@@ -133,13 +122,13 @@ type Resource struct {
 	Sort   admintable.Spec
 	Filter admintable.FilterSpec
 	Scope  tenant.Scope // city_slug scope; empty = global
-	Perms  Perms
 
-	// RequiredRole gates every route of this resource behind the named role:
-	// only a session whose role equals RequiredRole (or the "owner" super-role)
-	// may reach the list, detail, and form routes; everyone else gets 403.
-	// Empty (default) = no role gate: any authenticated operator may access,
-	// preserving the foundational behaviour.
+	// RequiredRole is the SOLE authorization lever for this resource, applied
+	// uniformly to every route — read (list, detail) AND write (new/edit/save).
+	// Only a session whose role equals RequiredRole (or the "owner" super-role)
+	// may reach any of them; everyone else gets 403. Empty (default) = no role
+	// gate: any authenticated operator may read and write, preserving the
+	// foundational behaviour.
 	//
 	// A non-empty RequiredRole requires the configured authenticator to
 	// implement RoleAuthenticator; Register panics at startup otherwise
@@ -199,7 +188,7 @@ type Panel struct {
 	nav        []shell.NavItem
 	title      string
 	csrfKey    []byte
-	locales    locale.Set        // configured i18n locales; zero value = single-locale
+	locales    locale.Set          // configured i18n locales; zero value = single-locale
 	profileCfg shell.ProfileConfig // static defaults for the sidebar profile block
 }
 
@@ -532,7 +521,7 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 		layoutComp := shell.Layout(p.title, nav, content)
 		renderCtx := shell.ContextWithChrome(req.Context(), p.chromeStateFrom(req))
 		if err := layoutComp.Render(renderCtx, w); err != nil {
-			slog.Error("resource: render detail page", "resource", r.Name, "id", id, "err", err)
+			slog.Error("resource: render detail page", "resource", r.Name, "id", strconv.Quote(id), "err", err)
 			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	}
@@ -568,7 +557,7 @@ func withResolvedForm(r Resource, ctx context.Context, t tenant.Tenant) (Resourc
 
 // multiLocale reports whether more than one locale is configured.
 func (p *Panel) multiLocale() bool {
-	return len(p.locales.Available) > 1
+	return p.locales.Multi()
 }
 
 // activeLocale resolves the locale to edit from the request's ?locale= query,
@@ -894,7 +883,8 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 
 		rows, total, err := r.Lister(ctx, lq)
 		if err != nil {
-			http.Error(w, "list failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("resource: list failed", "resource", r.Name, "err", err)
+			http.Error(w, "list failed", http.StatusInternalServerError)
 			return
 		}
 
@@ -913,22 +903,34 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 		}
 
 		if fragmentOnly || render.IsHTMX(req) {
-			c := listRowsFragment(data)
-			if err := c.Render(ctx, w); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+			renderListFragment(ctx, w, data, q.Get("append") == "1")
 			return
 		}
 
 		content := listPageContent(data)
 		layoutComp := shell.Layout(p.title, nav, content)
 		if err := layoutComp.Render(shell.ContextWithChrome(ctx, p.chromeStateFrom(req)), w); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			slog.Error("resource: render list page", "resource", r.Name, "err", err)
+			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	}
 }
 
 // --- helpers ---
+
+// renderListFragment writes the htmx response for a list request: bare <tr>
+// rows for a Load-more beforeend swap (append mode, with an OOB pagination
+// replacement) or the full list-region fragment.
+func renderListFragment(ctx context.Context, w http.ResponseWriter, data listPageData, appendMode bool) {
+	c := listRowsFragment(data)
+	if appendMode {
+		c = listRowsAppend(data)
+	}
+	if err := c.Render(ctx, w); err != nil {
+		slog.Error("resource: render list fragment", "resource", data.Resource.Name, "err", err)
+		http.Error(w, "render failed", http.StatusInternalServerError)
+	}
+}
 
 func combineConds(a, b string) string {
 	a = strings.TrimSpace(a)

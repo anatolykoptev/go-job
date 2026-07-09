@@ -63,7 +63,6 @@ func oversizeResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpSystem,
 		Sort:   oversizeSpec,
 		Filter: oversizeFilter,
-		Perms:  resource.ReadAny,
 		Lister: huntLister(pool, tblOversize, oversizeSelectCols, oversizeSpec, scan),
 	}
 }
