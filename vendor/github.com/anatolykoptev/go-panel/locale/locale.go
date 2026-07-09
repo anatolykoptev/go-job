@@ -59,6 +59,13 @@ func NewSet(def Locale, available ...Locale) (Set, error) {
 	return Set{Default: def, Available: append([]Locale(nil), available...)}, nil
 }
 
+// Multi reports whether more than one locale is configured — the deployment
+// is multi-locale (locale switcher, translatable fields) rather than
+// single-locale.
+func (s Set) Multi() bool {
+	return len(s.Available) > 1
+}
+
 // Has reports whether l is one of the configured locales.
 func (s Set) Has(l Locale) bool {
 	for _, a := range s.Available {

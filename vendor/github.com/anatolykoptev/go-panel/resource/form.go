@@ -23,6 +23,10 @@ const (
 	FieldNumber
 	// FieldDate is a date picker (YYYY-MM-DD).
 	FieldDate
+	// FieldDateTime is a date+time picker (datetime-local). Accepts both the
+	// browser's submitted format ("2006-01-02T15:04") and the space-separated
+	// human form ("2006-01-02 15:04").
+	FieldDateTime
 	// FieldSelect is a dropdown with a closed set of options.
 	FieldSelect
 	// FieldCheckbox is a boolean checkbox.
@@ -69,6 +73,10 @@ type Field struct {
 	OptionsFunc func(ctx context.Context, t tenant.Tenant) ([]Option, error)
 	Placeholder string
 	Help        string // optional helper text shown below the field
+	// Validate is an optional per-field hook run after the Kind-based check
+	// passes. Return "" for valid, or a non-empty inline error message.
+	// Lets a consumer add domain rules (e.g. int-only) without a new Kind.
+	Validate func(val string) string
 }
 
 // FormSpec declares the form structure for a Writer.
@@ -176,8 +184,6 @@ type Writer struct {
 	// out the shared columns it never received. Create (id=="") and Default-locale
 	// saves always carry the full field set.
 	Save func(ctx context.Context, t tenant.Tenant, id string, values map[string]string) error
-	// WriteAny allows any authenticated operator to write.
-	WriteAny bool
 }
 
 // formErrors holds per-field validation errors.
@@ -208,15 +214,32 @@ func validateFields(fields []Field, values map[string]string) formErrors {
 func validateField(fld Field, val string) string {
 	switch fld.Kind {
 	case FieldNumber:
-		return validateNumber(fld, val)
+		if msg := validateNumber(fld, val); msg != "" {
+			return msg
+		}
 	case FieldDate:
-		return validateDate(fld, val)
+		if msg := validateDate(fld, val); msg != "" {
+			return msg
+		}
+	case FieldDateTime:
+		if msg := validateDateTime(fld, val); msg != "" {
+			return msg
+		}
 	case FieldSelect:
-		return validateSelect(fld, val)
+		if msg := validateSelect(fld, val); msg != "" {
+			return msg
+		}
 	case FieldJSON:
-		return validateJSON(fld, val)
+		if msg := validateJSON(fld, val); msg != "" {
+			return msg
+		}
 	case FieldCheckbox:
-		return validateCheckbox(fld, val)
+		if msg := validateCheckbox(fld, val); msg != "" {
+			return msg
+		}
+	}
+	if fld.Validate != nil {
+		return fld.Validate(val)
 	}
 	return ""
 }
@@ -234,6 +257,19 @@ func validateDate(fld Field, val string) string {
 		return fld.Label + " must be a valid date (YYYY-MM-DD)"
 	}
 	return ""
+}
+
+// validateDateTime accepts both the browser's datetime-local submission
+// format ("2006-01-02T15:04") and the space-separated human form
+// ("2006-01-02 15:04").
+func validateDateTime(fld Field, val string) string {
+	if _, err := time.Parse("2006-01-02T15:04", val); err == nil {
+		return ""
+	}
+	if _, err := time.Parse("2006-01-02 15:04", val); err == nil {
+		return ""
+	}
+	return fld.Label + " must be a valid date and time (YYYY-MM-DD HH:MM)"
 }
 
 func validateSelect(fld Field, val string) string {
