@@ -53,7 +53,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Fleet policy: latest patched toolchain (go.mod is the minimum,
+          # not the pin) — stdlib CVEs are fixed in patch releases.
+          go-version: stable
+
+      - name: Install postgres client
+        run: |
+          # Unlike the x64 ubuntu images, ubuntu-24.04-arm ships NO postgres
+          # client; the migrations step below shells out to host psql.
+          if ! command -v psql >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
 
       - name: Run migrations
         env:
