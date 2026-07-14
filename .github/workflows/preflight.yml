@@ -1,24 +1,24 @@
 name: preflight
 
-# Pre-merge build/test gate. Runs on the self-hosted runner on krolik — NOT a
-# paid GitHub-hosted runner (operator rule: only self-hosted; free minutes).
+# Pre-merge build/test gate. Runs on GitHub-hosted `ubuntu-24.04-arm` — free
+# unlimited minutes for public repos, and arm64 matches the ARM prod box this
+# service runs on. Moved off the krolik self-hosted runner 2026-07-14: this
+# public repo's old workflow had NO fork-PR guard, so any external PR could
+# execute code on the prod box; GitHub-hosted runners sandbox every job in a
+# throwaway VM, closing that surface outright.
 #
 # DB round-trip tests in internal/engine/jobs are t.Skip'd when DATABASE_URL is
-# unset. This job stands up an ephemeral postgres container for the duration of
-# the job, exports DATABASE_URL pointing at it, then runs `make preflight` so
-# those tests execute live. The container is torn down when the job exits.
+# unset. This job stands up an ephemeral postgres service container for the
+# duration of the job, exports DATABASE_URL pointing at it, then runs
+# `make preflight` so those tests execute live.
 #
-# Shared self-hosted box: krolik's prod postgres already holds host
-# 127.0.0.1:5432, so the service must NOT publish on a fixed host port (it would
-# fail to bind). We publish the container's 5432 to a RANDOM free host port and
-# read it back via job.services.postgres.ports['5432']. Collision-proof against
-# the prod DB and any other concurrent runner job.
+# The service publishes the container's 5432 to a RANDOM free host port, read
+# back via job.services.postgres.ports['5432'] — the VM is ours alone now, but
+# the pattern is collision-proof by construction.
 
 on:
   pull_request:
 
-# One run per ref; cancel in-flight if a new push arrives. Keeps the 4-core
-# prod box free between runs.
 concurrency:
   group: preflight-${{ github.ref }}
   cancel-in-progress: true
@@ -28,7 +28,10 @@ permissions:
 
 jobs:
   preflight:
-    runs-on: [self-hosted, krolik]
+    runs-on: ubuntu-24.04-arm
+    # Steady-state is a few minutes; never let a hung run linger for
+    # GitHub's 6h default.
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -47,6 +50,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          # Fleet policy: latest patched toolchain (go.mod is the minimum,
+          # not the pin) — stdlib CVEs are fixed in patch releases.
+          go-version: stable
+
+      - name: Install postgres client
+        run: |
+          # Unlike the x64 ubuntu images, ubuntu-24.04-arm ships NO postgres
+          # client; the migrations step below shells out to host psql.
+          if ! command -v psql >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
 
       - name: Run migrations
         env:
