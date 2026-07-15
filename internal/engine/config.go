@@ -30,12 +30,10 @@ type Config struct {
 	MaxContentChars           int
 	FetchTimeout              time.Duration
 	GithubToken               string
-	GithubSearchRepos         []string
 	Context7APIKey            string
 	HuggingFaceToken          string
 	YouTubeAPIKey             string
 	YouTubeAPIKeyFallback     string
-	YouTubeTranscriptsEnabled bool
 	CacheMaxEntries           int
 	CacheCleanupInterval      time.Duration
 	ProxyPool                 proxypool.ProxyPool // replaces BrowserClient + HTTPClient

@@ -54,6 +54,14 @@ func main() {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Start periodic Telegram bot token health check (noop when notifier is nil
+	// or not a *notify.ProductNotifier). Validates the token every hour via GetMe
+	// and sets the gojob_hunt_notify_health gauge (1=healthy, 0=revoked).
+	// Alert: gojob_hunt_notify_health == 0 for >5m.
+	if n, ok := huntNotifier.(*notify.ProductNotifier); ok {
+		go startNotifyHealthCheck(sigCtx, n)
+	}
+
 	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED is false or
 	// the hunt store is unavailable).  Must run after initEngine wired the store.
 	// huntNotifier is the same Telegram notifier wired to the store so the worker
@@ -384,7 +392,6 @@ func initEngine() hunt.Notifier {
 					// gojob_hunt_notify_health gauge (1=healthy, 0=revoked).
 					// Alert: gojob_hunt_notify_health == 0 for >5m.
 					engine.SetHuntNotifyHealth(true) // optimistic at startup (GetMe passed in NewBotAPI)
-					go startNotifyHealthCheck(notif)
 				}
 
 				slog.Info("hunt store ready")
@@ -467,19 +474,24 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 // startNotifyHealthCheck runs a periodic Telegram bot token health check.
 // Calls HealthCheck (GetMe) every hour and updates the gojob_hunt_notify_health
 // gauge. If the token is revoked or unreachable, the gauge drops to 0 and the
-// alert fires. The goroutine runs for the lifetime of the process.
-func startNotifyHealthCheck(n *notify.ProductNotifier) {
+// alert fires. The goroutine exits when ctx is cancelled (SIGINT/SIGTERM).
+func startNotifyHealthCheck(ctx context.Context, n *notify.ProductNotifier) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
-	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := n.HealthCheck(ctx)
-		cancel()
-		if err != nil {
-			slog.Warn("hunt notify: health check failed", slog.Any("error", err))
-			engine.SetHuntNotifyHealth(false)
-		} else {
-			engine.SetHuntNotifyHealth(true)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := n.HealthCheck(checkCtx)
+			cancel()
+			if err != nil {
+				slog.Warn("hunt notify: health check failed", slog.Any("error", err))
+				engine.SetHuntNotifyHealth(false)
+			} else {
+				engine.SetHuntNotifyHealth(true)
+			}
 		}
 	}
 }
