@@ -68,11 +68,10 @@ var RawSearcherInstance rawSearcher
 // Idempotent; calling with nil reverts to DIRECT-only mode.
 func SetRawSearcher(r rawSearcher) { RawSearcherInstance = r }
 
-// searchWeb is the unified web-search helper for person/salary research.
-// It replaces direct engine.SearchSearXNG calls with a go-search primary
-// + engine.SearchDirect fallback, mirroring the discoverJobURLs pattern.
-// When RawSearcherInstance is nil (GO_SEARCH_URL unset), uses SearchDirect
-// only. This removes the SearXNG dependency from research paths.
+// searchWeb is the unified web-search helper for person/salary/company research.
+// go-search primary + engine.SearchDirect fallback, mirroring the discoverJobURLs
+// pattern. When RawSearcherInstance is nil (GO_SEARCH_URL unset), uses SearchDirect
+// only.
 func searchWeb(ctx context.Context, query string) []engine.SearxngResult {
 	if RawSearcherInstance != nil {
 		results, err := RawSearcherInstance.RawSearch(ctx, query)
@@ -188,12 +187,7 @@ func discoverJobURLs(ctx context.Context, query string) []engine.SearxngResult {
 
 	// Local path: used when ATSDiscoverer is nil or returned a transport error.
 	direct := engine.SearchDirect(ctx, query, "all")
-	// SearXNG is additive: when unconfigured it returns nil,nil — harmless.
-	searx, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
-	if err != nil {
-		slog.Debug("discover: SearXNG error (additive source)", slog.Any("error", err))
-	}
-	return deduplicateByURL(append(direct, searx...))
+	return deduplicateByURL(direct)
 }
 
 // deduplicateByURL deduplicates SearxngResult by URL, preserving order.

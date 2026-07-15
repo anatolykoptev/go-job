@@ -8,7 +8,6 @@ import (
 	"github.com/anatolykoptev/go-engine/extract"
 	"github.com/anatolykoptev/go-engine/fetch"
 	engllm "github.com/anatolykoptev/go-engine/llm"
-	"github.com/anatolykoptev/go-engine/search"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
@@ -19,7 +18,6 @@ import (
 
 // Config holds all engine configuration, injected from main.
 type Config struct {
-	SearxngURL                string
 	LLMAPIKey                 string
 	LLMAPIKeyFallbacks        []string
 	LLMAPIBase                string
@@ -92,7 +90,6 @@ var (
 	fetcherProxy  *fetch.Fetcher       // with proxy, for web pages
 	fetcherDirect *fetch.Fetcher       // no proxy, for raw content + internal APIs
 	extractorInst *extract.Extractor   // HTML content extraction
-	searxngInst   *search.SearXNG      // SearXNG client
 	llmInst       *engllm.Client       // LLM client
 	reg           *kitmetrics.Registry // metrics counters (Prometheus-bridged)
 	httpClient    *http.Client         // plain HTTP client for GitHub API etc.
@@ -165,11 +162,6 @@ func Init(c Config) {
 
 	// HTML content extractor.
 	extractorInst = extract.New(extract.WithMaxContentLen(c.MaxContentChars))
-
-	// SearXNG client (local, no proxy needed — optional).
-	if c.SearxngURL != "" {
-		searxngInst = search.NewSearXNG(c.SearxngURL, search.WithMetrics(reg))
-	}
 
 	// LLM client.
 	llmOpts := []engllm.Option{

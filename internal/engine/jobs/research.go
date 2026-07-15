@@ -13,14 +13,44 @@ import (
 )
 
 // DefaultCompanyResearchTimeout bounds the OPTIONAL company-research substep on
-// enrichment paths (resume_generate, application_prep). The substep fans out 3
-// SearXNG web searches plus an LLM synthesis call; when SearXNG is slow it can
-// dominate the parent tool's runtime and previously pushed resume_generate past
-// the 90s ToolTimeout (observed: a 1m30s timeout vs a 35s success on the same
-// input). Because the company context only *enriches* the prompt — it is never
-// required to produce a resume — the substep is bounded here so a slow research
-// degrades to "no company context" instead of failing the whole tool.
+// enrichment paths (resume_generate, application_prep). The substep fans out
+// web searches plus an LLM synthesis call; when the search backend is slow it
+// can dominate the parent tool's runtime and previously pushed resume_generate
+// past the 90s ToolTimeout (observed: a 1m30s timeout vs a 35s success on the
+// same input). Because the company context only *enriches* the prompt — it is
+// never required to produce a resume — the substep is bounded here so a slow
+// research degrades to "no company context" instead of failing the whole tool.
 const DefaultCompanyResearchTimeout = 25 * time.Second
+
+// maxConcurrentSearches caps the number of parallel searchWeb goroutines
+// in fanOutSearchWeb. Prevents goroutine explosion when a caller passes many
+// queries; 3 is enough to keep latency low without overwhelming the search
+// backend.
+const maxConcurrentSearches = 3
+
+// fanOutSearchWeb runs searchWeb for each query in parallel, bounded by
+// maxConcurrentSearches. Returns the merged results from all queries.
+// The channel is always fully drained (buffered, blocking send) so no
+// goroutine leaks even on context cancellation.
+func fanOutSearchWeb(ctx context.Context, queries []string) [][]engine.SearxngResult {
+	if len(queries) == 0 {
+		return nil
+	}
+	sem := make(chan struct{}, maxConcurrentSearches)
+	ch := make(chan []engine.SearxngResult, len(queries))
+	for _, q := range queries {
+		go func(query string) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ch <- searchWeb(ctx, query)
+		}(q)
+	}
+	out := make([][]engine.SearxngResult, len(queries))
+	for i := range queries {
+		out[i] = <-ch
+	}
+	return out
+}
 
 // --- Salary Research ---
 
@@ -66,21 +96,11 @@ Return ONLY the JSON object, no markdown, no explanation.`
 func ResearchSalary(ctx context.Context, role, location, experience string) (*SalaryResearchResult, error) {
 	queries := buildSalaryQueries(role, location, experience)
 
-	type searchRes struct {
-		results []engine.SearxngResult
-	}
-	ch := make(chan searchRes, len(queries))
-	for _, q := range queries {
-		go func(query string) {
-			r := searchWeb(ctx, query)
-			ch <- searchRes{r}
-		}(q)
-	}
+	results := fanOutSearchWeb(ctx, queries)
 
 	var allSnippets []string
-	for range queries {
-		res := <-ch
-		for _, r := range res.results {
+	for _, res := range results {
+		for _, r := range res {
 			if r.Content != "" {
 				allSnippets = append(allSnippets, fmt.Sprintf("**%s**\n%s\n%s", r.Title, r.URL, engine.TruncateRunes(r.Content, 300, "...")))
 			}
@@ -203,22 +223,12 @@ func ResearchCompany(ctx context.Context, companyName string) (*CompanyResearchR
 	}
 
 	// Fan out all queries in parallel via searchWeb (go-search primary +
-	// SearchDirect fallback). Mirrors the ResearchSalary pattern.
-	type searchRes struct {
-		results []engine.SearxngResult
-	}
-	ch := make(chan searchRes, len(queries))
-	for _, q := range queries {
-		go func(query string) {
-			r := searchWeb(ctx, query)
-			ch <- searchRes{r}
-		}(q)
-	}
+	// SearchDirect fallback), bounded by maxConcurrentSearches.
+	results := fanOutSearchWeb(ctx, queries)
 
 	var allSnippets []string
-	for range queries {
-		res := <-ch
-		for _, r := range res.results {
+	for _, res := range results {
+		for _, r := range res {
 			if r.Content != "" {
 				allSnippets = append(allSnippets, fmt.Sprintf("**%s**\n%s\n%s", r.Title, r.URL, engine.TruncateRunes(r.Content, 400, "...")))
 			}
