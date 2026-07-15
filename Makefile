@@ -1,5 +1,8 @@
 BINARY = bin/go_job
 SERVICE = go-job
+# Test parallelism: -p 1 on the 4-core prod box (contention inflates per-test
+# times ~30x); CI overrides via GO_TEST_PARALLEL=2 on GitHub-hosted runners.
+GO_TEST_PARALLEL ?= 1
 
 .PHONY: build deploy restart clean lint preflight
 
@@ -21,7 +24,9 @@ lint:
 clean:
 	rm -f $(BINARY)
 
-# preflight — the merge gate. -p 1 caps parallelism for the 4-core ARM box.
+# preflight — the merge gate. GO_TEST_PARALLEL caps test parallelism (default
+# -p 1 for the 4-core ARM prod box; CI sets GO_TEST_PARALLEL=2 on GitHub-hosted
+# runners with 4 cores and no contention).
 # With DATABASE_URL set (e.g. CI ephemeral postgres), the previously
 # t.Skip'd DB round-trip tests run live. Without it they skip cleanly.
 # go vet and go test run on ./internal/... (all internal packages).
@@ -38,5 +43,5 @@ preflight:
 	@echo "OK: copy-block/char-chip CSS is single-sourced in partials.go"
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...
-	@echo "==> go test -p 1 ./internal/..."
-	GOWORK=off go test -p 1 ./internal/...
+	@echo "==> go test -p $(GO_TEST_PARALLEL) ./internal/..."
+	GOWORK=off go test -p $(GO_TEST_PARALLEL) ./internal/...
