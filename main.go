@@ -392,16 +392,20 @@ func initEngine() hunt.Notifier {
 		}
 	}
 
-	// Wire ATS discovery client (delegates URL discovery to go-search's fused
-	// multi-source pipeline — Brave-API + ox-browser-search + DDG, ADR-002).
-	// GO_SEARCH_URL empty → ATSDiscoverer stays nil → local SearchDirect fallback.
+	// Wire ATS discovery client + raw web searcher (both delegate to go-search's
+	// fused multi-source pipeline — Brave-API + ox-browser-search + DDG, ADR-002).
+	// GO_SEARCH_URL empty → both stay nil → local SearchDirect fallback.
+	// The same Client instance serves both roles: DiscoverBoardURLs (ATS host
+	// filtered) for discovery, RawSearch (unfiltered) for person/salary research.
 	if goSearchURL := env.Str("GO_SEARCH_URL", ""); goSearchURL != "" {
-		jobs.SetATSDiscoverer(discovery.NewClient(goSearchURL))
-		slog.Info("ATS discovery client wired",
+		searchClient := discovery.NewClient(goSearchURL)
+		jobs.SetATSDiscoverer(searchClient)
+		jobs.SetRawSearcher(searchClient)
+		slog.Info("go-search client wired (ATS discovery + raw web search)",
 			slog.String("go_search_url", goSearchURL),
 		)
 	} else {
-		slog.Info("ATS discovery: GO_SEARCH_URL unset — using local SearchDirect fallback")
+		slog.Info("go-search: GO_SEARCH_URL unset — using local SearchDirect fallback for discovery and research")
 	}
 
 	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).

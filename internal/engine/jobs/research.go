@@ -62,28 +62,24 @@ Return a JSON object with this exact structure:
 Use annual salary figures. If location is Russia/RU, use RUB. Otherwise use USD by default.
 Return ONLY the JSON object, no markdown, no explanation.`
 
-// ResearchSalary aggregates salary data for a role+location via SearXNG + LLM synthesis.
+// ResearchSalary aggregates salary data for a role+location via go-search/DIRECT + LLM synthesis.
 func ResearchSalary(ctx context.Context, role, location, experience string) (*SalaryResearchResult, error) {
 	queries := buildSalaryQueries(role, location, experience)
 
 	type searchRes struct {
 		results []engine.SearxngResult
-		err     error
 	}
 	ch := make(chan searchRes, len(queries))
 	for _, q := range queries {
 		go func(query string) {
-			r, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
-			ch <- searchRes{r, err}
+			r := searchWeb(ctx, query)
+			ch <- searchRes{r}
 		}(q)
 	}
 
 	var allSnippets []string
 	for range queries {
 		res := <-ch
-		if res.err != nil {
-			continue
-		}
 		for _, r := range res.results {
 			if r.Content != "" {
 				allSnippets = append(allSnippets, fmt.Sprintf("**%s**\n%s\n%s", r.Title, r.URL, engine.TruncateRunes(r.Content, 300, "...")))
