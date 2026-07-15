@@ -385,6 +385,12 @@ func initEngine() hunt.Notifier {
 					// wired to the worker via StartWorker so the worker fires
 					// notifications in runCycle rather than inside UpsertJob.
 					huntNotifier = notif
+					// Start periodic Telegram bot token health check.
+					// Validates the token every hour via GetMe and sets the
+					// gojob_hunt_notify_health gauge (1=healthy, 0=revoked).
+					// Alert: gojob_hunt_notify_health == 0 for >5m.
+					engine.SetHuntNotifyHealth(true) // optimistic at startup (GetMe passed in NewBotAPI)
+					go startNotifyHealthCheck(notif)
 				}
 
 				slog.Info("hunt store ready")
@@ -457,6 +463,26 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 	default:
 		slog.Warn("unknown FETCH_DIRECT_FIRST value, falling back to 'proxy'", slog.String("value", s))
 		return false, true
+	}
+}
+
+// startNotifyHealthCheck runs a periodic Telegram bot token health check.
+// Calls HealthCheck (GetMe) every hour and updates the gojob_hunt_notify_health
+// gauge. If the token is revoked or unreachable, the gauge drops to 0 and the
+// alert fires. The goroutine runs for the lifetime of the process.
+func startNotifyHealthCheck(n *notify.ProductNotifier) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := n.HealthCheck(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("hunt notify: health check failed", slog.Any("error", err))
+			engine.SetHuntNotifyHealth(false)
+		} else {
+			engine.SetHuntNotifyHealth(true)
+		}
 	}
 }
 

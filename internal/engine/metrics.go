@@ -250,6 +250,13 @@ const (
 	// No labels — cardinality guard. Pre-touched at zero in FormatMetrics.
 	// Alert: rate(gojob_hunt_score_persist_failures_total[5m]) > 0 → DB health issues.
 	MetricHuntScorePersistFailures = "hunt_score_persist_failures_total"
+
+	// MetricHuntNotifyHealth is the gauge gojob_hunt_notify_health.
+	// Set to 1 when the Telegram bot token is valid (health check passes),
+	// 0 when the token is revoked or unreachable.
+	// No labels — cardinality guard. Pre-touched at 1 in FormatMetrics.
+	// Alert: gojob_hunt_notify_health == 0 for >5m → Telegram bot token invalid.
+	MetricHuntNotifyHealth = "hunt_notify_health"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -802,6 +809,21 @@ func IncrHuntScoreBreakerTrips() {
 // Called by the worker when SetJobScore fails after all retry attempts.
 func IncrHuntScorePersistFailures() {
 	reg.Incr(MetricHuntScorePersistFailures)
+}
+
+// SetHuntNotifyHealth sets gojob_hunt_notify_health to 1 (healthy) or 0 (unhealthy).
+// Called from main.go after the initial notifier setup (optimistic true) and
+// by the periodic health check goroutine. No-op before engine.Init() (reg is
+// nil; Gauge is nil-safe).
+func SetHuntNotifyHealth(healthy bool) {
+	if reg == nil {
+		return
+	}
+	v := 0.0
+	if healthy {
+		v = 1.0
+	}
+	reg.Gauge(MetricHuntNotifyHealth).Set(v)
 }
 
 // ObserveHuntFitScore records a single fit-score observation into the
