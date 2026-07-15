@@ -165,6 +165,9 @@ func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, score *hunt.Sc
 		return
 	}
 	if w.notifier == nil {
+		if w.notifyMetric != nil {
+			w.notifyMetric("notifier_disabled")
+		}
 		return
 	}
 	if j.Status != hunt.StatusOpen && j.Status != "" {

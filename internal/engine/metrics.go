@@ -369,10 +369,11 @@ func FormatMetrics() string {
 	}
 	// hunt_notify_total pre-touched for all outcomes so rate()-floor alerts see 0
 	// before the first notify fire.
-	// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored"}.
+	// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored","notifier_disabled"}.
 	// "low_fit" — fit gate dropped the job (fit_score < HUNT_NOTIFY_MIN_FIT).
 	// "unscored" — LLM scorer failed, notified with degraded card (fail-open).
-	for _, oc := range []string{"sent", "failed", "stale", "no_date", "low_fit", "unscored"} {
+	// "notifier_disabled" — notifier is nil (bot init failed or token missing).
+	for _, oc := range []string{"sent", "failed", "stale", "no_date", "low_fit", "unscored", "notifier_disabled"} {
 		keys = append(keys, MetricHuntNotify+"{outcome="+oc+"}")
 	}
 	// Discovery variant counters (P1 multi-query union).
@@ -505,11 +506,12 @@ func ObserveOversizeBytes(n int) {
 }
 
 // IncrHuntNotify bumps gojob_hunt_notify_total{outcome=<outcome>}.
-// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored"} — bounded label.
+// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored","notifier_disabled"} — bounded label.
 // "sent"/"failed" — emitted by ProductNotifier.dispatch via its OnSend hook.
 // "stale"/"no_date" — emitted by ProductNotifier.NotifyNewJob recency gate.
 // "low_fit" — emitted by huntworker.maybeNotifyJob fit gate (fit_score < MIN_FIT).
 // "unscored" — emitted by huntworker.maybeNotifyJob for LLM-fail fail-open path.
+// "notifier_disabled" — emitted by huntworker.maybeNotifyJob when notifier is nil.
 func IncrHuntNotify(outcome string) {
 	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
 }

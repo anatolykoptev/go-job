@@ -58,11 +58,20 @@ func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
 	assert.Empty(t, f.jobs, "OutcomeMerged must not notify")
 }
 
-// TestWorker_MaybeNotifyJob_NilNotifier: no panic when notifier is nil.
+// TestWorker_MaybeNotifyJob_NilNotifier: no panic when notifier is nil, and
+// the "notifier_disabled" metric is emitted so operators can alert on it.
 func TestWorker_MaybeNotifyJob_NilNotifier(t *testing.T) {
-	w := &Worker{notifier: nil}
+	var metricOutcomes []string
+	w := &Worker{
+		notifier: nil,
+		notifyMetric: func(outcome string) {
+			metricOutcomes = append(metricOutcomes, outcome)
+		},
+	}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
 	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil) // must not panic
+	assert.Contains(t, metricOutcomes, "notifier_disabled",
+		"nil notifier must emit notifier_disabled metric so operators can alert")
 }
 
 // TestWorker_MaybeNotifyJob_Closed_NoNotify: closed job must not notify even on create.
