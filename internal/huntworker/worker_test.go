@@ -1,11 +1,14 @@
 package huntworker
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/hunt/score"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,4 +175,50 @@ func TestNoCompanyTargetingInDefaults(t *testing.T) {
 				q, forbidden)
 		}
 	}
+}
+
+// fakeScoreSetter records SetJobScore calls for scoring tests.
+type fakeScoreSetter struct {
+	mu       sync.Mutex
+	calls    []int64
+	scoredAt []time.Time
+}
+
+func (f *fakeScoreSetter) SetJobScore(_ context.Context, id int64, sr hunt.ScoreResult) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, id)
+	f.scoredAt = append(f.scoredAt, sr.ScoredAt)
+	return nil
+}
+
+func (f *fakeScoreSetter) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt verifies
+// that when the LLM circuit breaker trips (llmCallsThisCycle >= maxLLM), the
+// job is NOT persisted via SetJobScore — leaving scored_at=NULL so the sweep
+// can retry it in the next cycle. Previously, the breaker-tripped path called
+// SetJobScore with ScoredAt=NOW(), permanently stranding the job outside the
+// unscored pool.
+//
+// RED-on-revert: restoring the SetJobScore call in the breaker-tripped branch
+// makes this test fail (callCount > 0).
+func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testing.T) {
+	store := &fakeScoreSetter{}
+	llmCalls := score.MaxLLMPerCycle() // breaker tripped: at capacity
+
+	job := hunt.Job{ID: 42}
+	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
+
+	// The result pointer is still returned for notification/metric purposes.
+	require.NotNil(t, result, "breaker-tripped result must be returned for notification")
+	assert.Equal(t, hunt.FitBandUnscored, result.FitBand, "breaker-tripped result must be unscored")
+
+	// Critical: SetJobScore must NOT be called — scored_at stays NULL so the
+	// sweep can pick up the job in the next cycle.
+	assert.Equal(t, 0, store.callCount(), "SetJobScore must NOT be called when circuit breaker trips — job must stay in unscored pool (scored_at IS NULL)")
 }

@@ -378,14 +378,13 @@ func scoreJobWithLimit(
 
 	maxLLM := score.MaxLLMPerCycle()
 	if *llmCallsThisCycle >= maxLLM {
-		// Circuit breaker tripped: persist unscored, do not call LLM.
-		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored, ScoredAt: time.Now()}
-		if err := store.SetJobScore(ctx, job.ID, result); err != nil {
-			slog.WarnContext(ctx, "hunt worker: SetJobScore (circuit-breaker unscored) failed",
-				slog.Int64("job_id", job.ID),
-				slog.Any("error", err),
-			)
-		}
+		// Circuit breaker tripped: return unscored result in-memory only.
+		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
+		// the job from the `scored_at IS NULL` unscored pool, permanently
+		// stranding it without LLM scoring. The sweep (runUnscoredSweep)
+		// will pick it up in the next cycle when budget is available.
+		engine.IncrHuntScoreBreakerTrips()
+		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored}
 		return &result
 	}
 
