@@ -165,10 +165,12 @@ func TestIntegration_SearchGreenhouseJobs(t *testing.T) {
 	defer cancel()
 
 	// This uses SearXNG to find slugs first, so SearXNG must be running.
+	// SearXNG is provisioned in preflight.yml — t.Skip is intentionally NOT
+	// used here: if SearXNG is down, the test must FAIL (surface the problem),
+	// not skip (synthetic-green, shipped go-job #135).
 	results, err := SearchGreenhouseJobs(ctx, "software engineer golang", "", 10)
 	if err != nil {
-		t.Logf("SearchGreenhouseJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available for slug discovery")
+		t.Fatalf("SearchGreenhouseJobs error (SearXNG slug discovery failed — SearXNG is provisioned in preflight.yml): %v", err)
 	}
 	t.Logf("✓ SearchGreenhouseJobs('software engineer golang'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {
@@ -239,8 +241,7 @@ func TestIntegration_SearchLeverJobs(t *testing.T) {
 
 	results, err := SearchLeverJobs(ctx, "product designer", "", 10)
 	if err != nil {
-		t.Logf("SearchLeverJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available for slug discovery")
+		t.Fatalf("SearchLeverJobs error (SearXNG slug discovery failed — SearXNG is provisioned in preflight.yml): %v", err)
 	}
 	t.Logf("✓ SearchLeverJobs('product designer'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {
@@ -260,8 +261,7 @@ func TestIntegration_SearchYCJobs(t *testing.T) {
 
 	results, err := SearchYCJobs(ctx, "software engineer", "remote", 10)
 	if err != nil {
-		t.Logf("SearchYCJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available")
+		t.Fatalf("SearchYCJobs error (SearXNG slug discovery failed — SearXNG is provisioned in preflight.yml): %v", err)
 	}
 	t.Logf("✓ SearchYCJobs('software engineer', 'remote'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {

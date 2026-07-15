@@ -12,6 +12,10 @@ name: preflight
 # duration of the job, exports DATABASE_URL pointing at it, then runs
 # `make preflight` so those tests execute live.
 #
+# SearXNG is provisioned as a second service container for ATS slug-discovery
+# integration tests (//go:build integration). Per CLAUDE.md: a test that t.Skip's
+# for a missing dep gets that dep provisioned in preflight.yml, not skipped.
+#
 # The service publishes the container's 5432 to a RANDOM free host port, read
 # back via job.services.postgres.ports['5432'] — the VM is ours alone now, but
 # the pattern is collision-proof by construction.
@@ -47,6 +51,21 @@ jobs:
           --health-retries=5
         ports:
           - 5432
+
+      # SearXNG for ATS slug-discovery tests (integration-tagged). Provisioned
+      # here so the dep is available when tests run with -tags=integration.
+      # Per CLAUDE.md: a test that t.Skip's for a missing dep gets that dep
+      # provisioned in preflight.yml, not skipped (green-over-skipped =
+      # synthetic-green, shipped go-job #135).
+      searxng:
+        image: searxng/searxng:latest
+        options: >-
+          --health-cmd="wget --spider -q http://localhost:8080/healthz 2>/dev/null || wget --spider -q http://localhost:8080/ 2>/dev/null"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+        ports:
+          - 8080
 
     steps:
       - uses: actions/checkout@v5
