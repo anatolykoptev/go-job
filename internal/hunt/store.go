@@ -773,10 +773,13 @@ func (s *Store) GetAuditContest(ctx context.Context, id int64) (*AuditContest, e
 // the Pipeline form POSTs to /rate with ("", stage, note).
 //
 // Single-axis callers: pass "" for the axis they do not own; the CASE guard
-// in the ON CONFLICT clause preserves the existing DB value.
+// in the ON CONFLICT clause preserves the existing DB value. The same CASE
+// guard applies to note: passing note="" (which becomes NULL via nullStr)
+// preserves the existing note, while a non-empty note overwrites it.
 //
-// Contrast with SetTriage and SetStage, which each preserve ALL other fields including
-// note. Do not unify these paths without understanding the divergence.
+// Contrast with SetTriage and SetStage, which each preserve ALL other fields
+// including note by not touching them at all. Do not unify these paths without
+// understanding the divergence.
 func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, triage, stage, note string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, stage, note, rated_at, updated_at)
@@ -784,7 +787,7 @@ func (s *Store) Rate(ctx context.Context, kind string, entryID int64, user, tria
 		ON CONFLICT (entry_kind, entry_id, user_name) DO UPDATE
 			SET triage     = CASE WHEN EXCLUDED.triage = '' THEN hunt_ratings.triage ELSE EXCLUDED.triage END,
 			    stage      = CASE WHEN EXCLUDED.stage  = '' THEN hunt_ratings.stage  ELSE EXCLUDED.stage  END,
-			    note       = EXCLUDED.note,
+			    note       = CASE WHEN EXCLUDED.note IS NULL THEN hunt_ratings.note ELSE EXCLUDED.note END,
 			    updated_at = NOW()`,
 		kind, entryID, user, triage, stage, nullStr(note),
 	)
@@ -1338,7 +1341,12 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 		argN++
 	}
 	if f.Stage != "" {
-		conds = append(conds, fmt.Sprintf("stage = $%d", argN))
+		// "saved" lives on the triage axis after migration 012.
+		if f.Stage == StageSaved {
+			conds = append(conds, fmt.Sprintf("triage = $%d", argN))
+		} else {
+			conds = append(conds, fmt.Sprintf("stage = $%d", argN))
+		}
 		args = append(args, f.Stage)
 		argN++
 	}
@@ -1872,7 +1880,9 @@ func (s *Store) ToggleShortlistStar(ctx context.Context, entryID int64, user str
 // existing note. This is the correct write path for the inline stage dropdown in
 // the jobs table, where the operator changes stage without touching the note field.
 //
-// Contrast with Rate, which ALWAYS overwrites the note. Do not unify these paths.
+// Contrast with Rate, which now also preserves note via a CASE guard when note
+// is empty. SetStage is still preferred for axis-only updates because it does
+// not touch note at all (no CASE overhead). Do not unify these paths.
 //
 // If no row exists, a new one is inserted with an empty note (NULL).
 func (s *Store) SetStage(ctx context.Context, kind string, entryID int64, user, stage string) error {
