@@ -192,7 +192,7 @@ func TestIntegration_FetchLeverPostings_Plaid(t *testing.T) {
 		t.Fatalf("fetchLeverPostings(plaid) error: %v", err)
 	}
 	if len(postings) == 0 {
-		t.Error("expected >0 postings from Plaid Lever, got 0")
+		t.Fatalf("expected >0 postings from Plaid Lever, got 0 — Plaid may have moved off Lever or stopped hiring")
 	}
 	t.Logf("✓ Lever Plaid: %d postings", len(postings))
 	for _, p := range postings[:min(3, len(postings))] {
