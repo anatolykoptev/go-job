@@ -238,12 +238,6 @@ func initEngine() hunt.Notifier {
 		DatabaseURL:          env.Str("DATABASE_URL", ""),
 		EmbedURL:             env.Str("EMBED_URL", ""),
 		OxBrowserURL:         env.Str("OX_BROWSER_URL", ""),
-		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
-		BountyHighConfGap:    float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
-		BountyHighConfMax:    env.Int("BOUNTY_HIGH_CONF_MAX", 10),
-		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
-		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
-		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
 		// VaelorNotifyURL and BountyNotifyChatID removed — notifications now go via
 		// the go-kit ProductSink bot (TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID).
 		DirectDDG:              env.Bool("DIRECT_DDG", false),

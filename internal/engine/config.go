@@ -68,14 +68,6 @@ type Config struct {
 	// location, so a future move to the pillow mesh is a one-line env change.
 	OxBrowserURL string // OX_BROWSER_URL
 
-	// Bounty search tuning.
-	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
-	BountyHighConfGap    float32 // max gap from best in high-confidence tier (default 0.04)
-	BountyHighConfMax    int     // max results in high-confidence tier (default 10)
-	BountyMedConfMax     int     // max results in medium-confidence tier (default 3)
-	BountySkillBoost     float32 // boost when query matches bounty skills (default 0.05)
-	BountyMinRelevance   float32 // minimum best-score to return results (default 0.75)
-
 	// Bounty notify: env vars are read directly by go-kit's NewProductSinkFromEnv.
 	// TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID are required at deploy.
 	// VaelorNotifyURL and BountyNotifyChatID removed — no longer used.
