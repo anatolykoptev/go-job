@@ -92,7 +92,15 @@ const (
 
 	// MetricHuntNotify is the labelled counter gojob_hunt_notify_total{outcome}.
 	// Incremented by the Telegram notifier after each send attempt or recency-gate
-	// decision. outcome ∈ {"sent", "failed", "stale", "no_date"}.
+	// decision. outcome ∈ {"sent", "failed", "stale", "no_date", "low_fit",
+	// "unscored", "notifier_disabled"}.
+	//
+	// Alert thresholds:
+	//   - rate(hunt_notify_total{outcome=low_fit}[10m]) > 0 → jobs dropped by fit
+	//     gate — check HUNT_NOTIFY_MIN_FIT setting (may be set too high).
+	//   - rate(hunt_notify_total{outcome=notifier_disabled}[5m]) > 0 → notifier
+	//     is nil — Telegram bot not configured or init failed.
+	//   - gojob_hunt_notify_health == 0 for >5m → bot token revoked/unreachable.
 	MetricHuntNotify = "hunt_notify_total"
 
 	// MetricCompanyResearch is the labelled counter
