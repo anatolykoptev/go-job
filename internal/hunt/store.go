@@ -231,7 +231,22 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 		args = append(args, f.Skills)
 		argN++
 	}
-	// TODO(phase2): wire f.Stage via hunt_ratings join
+
+	// Stage filter via LEFT JOIN hunt_ratings. "saved" lives on the triage
+	// axis after migration 012; other stages are on the stage column.
+	// The JOIN is only added when f.Stage is set (LEFT JOIN so bounties
+	// without ratings are still returned when Stage is empty).
+	joinClause := ""
+	if f.Stage != "" {
+		joinClause = "LEFT JOIN hunt_ratings r ON r.entry_kind = 'bounty' AND r.entry_id = hunt_bounties.id"
+		if f.Stage == StageSaved {
+			conds = append(conds, fmt.Sprintf("r.triage = $%d", argN))
+		} else {
+			conds = append(conds, fmt.Sprintf("r.stage = $%d", argN))
+		}
+		args = append(args, f.Stage)
+		argN++
+	}
 
 	where := ""
 	if len(conds) > 0 {
@@ -245,8 +260,9 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 		       first_seen_at, last_seen_at, status, closed_at, last_checked_at
 		FROM hunt_bounties
 		%s
+		%s
 		ORDER BY last_seen_at DESC
-		LIMIT $%d OFFSET $%d`, where, argN, argN+1)
+		LIMIT $%d OFFSET $%d`, joinClause, where, argN, argN+1)
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
