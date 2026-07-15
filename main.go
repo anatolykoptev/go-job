@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -353,11 +354,16 @@ func initEngine() hunt.Notifier {
 				slog.Info("oversize store ready")
 			}
 
-			// Wire hunt store on the same pool (fails-soft: search results persist only when DB is available).
+			// Wire hunt store on the same pool.
+			// FATAL: when DATABASE_URL is set, hunt persistence is a core dependency —
+			// without it, hunt_list/hunt_match MCP tools are broken and jobs are
+			// silently ingested without persistence (data loss). Fail-fast rather
+			// than degrade silently. When DATABASE_URL is unset, hunt is optional
+			// and the graceful disable at line 334 is correct.
 			hStore := hunt.NewStore(rdb.Pool())
 			if err := hStore.Migrate(context.Background()); err != nil {
-				slog.Error("hunt migrate failed", slog.Any("error", err))
-				engine.SetHuntPersistEnabled(false)
+				slog.Error("hunt migrate failed — exiting (DATABASE_URL is set, hunt persistence is required)", slog.Any("error", err))
+				os.Exit(1)
 			} else {
 				engine.SetHuntStore(hStore)
 				engine.SetHuntPersistEnabled(true)
