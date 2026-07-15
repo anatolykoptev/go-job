@@ -244,6 +244,12 @@ const (
 	// Pre-touched at zero in FormatMetrics so rate()-floor alerts see 0 before first trip.
 	// Alert: rate(gojob_hunt_score_breaker_trips_total[5m]) > 0 → LLM budget exhausted.
 	MetricHuntScoreBreakerTrips = "hunt_score_breaker_trips_total"
+
+	// MetricHuntScorePersistFailures is the counter gojob_hunt_score_persist_failures_total.
+	// Incremented when SetJobScore fails after all retry attempts are exhausted.
+	// No labels — cardinality guard. Pre-touched at zero in FormatMetrics.
+	// Alert: rate(gojob_hunt_score_persist_failures_total[5m]) > 0 → DB health issues.
+	MetricHuntScorePersistFailures = "hunt_score_persist_failures_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -396,6 +402,9 @@ func FormatMetrics() string {
 	// Circuit breaker trips counter pre-touched so rate()-floor alerts see 0
 	// before the first trip.
 	keys = append(keys, MetricHuntScoreBreakerTrips)
+	// Score persist failures counter pre-touched so rate()-floor alerts see 0
+	// before the first failure.
+	keys = append(keys, MetricHuntScorePersistFailures)
 	// vacancy_ingest_total{result} pre-touched so rate()-floor alerts see 0
 	// before the first operator call. 3 results = 3 series (bounded enum).
 	for _, result := range []string{"ok", "weak", "skipped_store"} {
@@ -787,6 +796,12 @@ func IncrHuntScoreLLM(result string) {
 // Called by the worker when the LLM circuit breaker trips (budget exhausted).
 func IncrHuntScoreBreakerTrips() {
 	reg.Incr(MetricHuntScoreBreakerTrips)
+}
+
+// IncrHuntScorePersistFailures bumps gojob_hunt_score_persist_failures_total.
+// Called by the worker when SetJobScore fails after all retry attempts.
+func IncrHuntScorePersistFailures() {
+	reg.Incr(MetricHuntScorePersistFailures)
 }
 
 // ObserveHuntFitScore records a single fit-score observation into the
