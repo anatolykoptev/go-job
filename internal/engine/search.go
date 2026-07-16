@@ -7,18 +7,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// DefaultSearchEngine is the SearXNG engine used for site: queries.
-const DefaultSearchEngine = "bing"
-
-// SearchSearXNG queries the SearXNG instance and returns raw results.
-// Returns nil, nil when SearXNG is not configured (searxngInst == nil).
-func SearchSearXNG(ctx context.Context, query, language, timeRange, engines string) ([]SearxngResult, error) {
-	if searxngInst == nil {
-		return nil, nil
-	}
-	return searxngInst.Search(ctx, query, language, timeRange, engines)
-}
-
 // FilterByScore removes results below minScore, keeping at least minKeep.
 func FilterByScore(results []SearxngResult, minScore float64, minKeep int) []SearxngResult {
 	return search.FilterByScore(results, minScore, minKeep)

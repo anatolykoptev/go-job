@@ -13,9 +13,9 @@ type SearchQuery struct {
 
 // PipelineOpts configures the reusable search pipeline.
 type PipelineOpts struct {
-	Queries      []SearchQuery       // parallel SearXNG queries
+	Queries      []SearchQuery       // parallel search queries (SearchDirect)
 	Language     string              // language code ("all" default)
-	TimeRange    string              // time filter
+	TimeRange    string              // time filter (unused by SearchDirect, kept for compat)
 	Instruction  string              // LLM system instruction (ignored in raw mode)
 	Mode         string              // "summary" (default) or "raw"
 	Depth        string              // "fast" (snippets only), "" default, "deep" (more sources + rich prompt)
@@ -57,22 +57,19 @@ func runSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (Sm
 		maxFetchURLs = maxFetchURLs * 3 / 2 // ×1.5
 	}
 
-	// --- Parallel search (SearXNG, skipped when not configured) ---
+	// --- Parallel search (SearchDirect, one goroutine per query) ---
 	type searchResult struct {
 		results []SearxngResult
 		err     error
 	}
-	var channels []chan searchResult
-	if cfg.SearxngURL != "" {
-		channels = make([]chan searchResult, len(opts.Queries))
-		for i, sq := range opts.Queries {
-			ch := make(chan searchResult, 1)
-			channels[i] = ch
-			go func(sq SearchQuery, ch chan searchResult) {
-				r, err := SearchSearXNG(ctx, sq.Query, lang, opts.TimeRange, sq.Engines)
-				ch <- searchResult{r, err}
-			}(sq, ch)
-		}
+	channels := make([]chan searchResult, len(opts.Queries))
+	for i, sq := range opts.Queries {
+		ch := make(chan searchResult, 1)
+		channels[i] = ch
+		go func(sq SearchQuery, ch chan searchResult) {
+			r := SearchDirect(ctx, sq.Query, lang)
+			ch <- searchResult{r, nil}
+		}(sq, ch)
 	}
 
 	// --- Merge ---
