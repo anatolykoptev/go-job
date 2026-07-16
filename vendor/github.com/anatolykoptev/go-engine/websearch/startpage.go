@@ -1,3 +1,4 @@
+//nolint:goconst
 package websearch
 
 import (
@@ -60,12 +61,19 @@ func (sp *Startpage) Search(ctx context.Context, query string, opts SearchOpts) 
 		lang = opts.Language
 	}
 
+	withDate := timeRangeToStartpage(opts.TimeRange)
 	formBody := fmt.Sprintf("query=%s&cat=web&language=%s", url.QueryEscape(query), url.QueryEscape(lang))
+	if withDate != "" {
+		formBody += "&with_date=" + withDate
+	}
 
 	headers := ChromeHeaders()
 	headers["referer"] = startpageReferer
 	headers["content-type"] = "application/x-www-form-urlencoded"
 	headers["accept"] = acceptHTML
+	if withDate != "" {
+		headers["cookie"] = "date_time=world"
+	}
 
 	data, _, status, err := sp.browser.Do(http.MethodPost, startpageEndpoint, headers, strings.NewReader(formBody))
 	if err != nil {
