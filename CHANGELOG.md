@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.8.0](https://github.com/anatolykoptev/go-job/compare/v1.7.1...v1.8.0) (2026-07-16)
+
+
+### Features
+
+* **adminui:** adopt go-panel v0.20.1 MountAction for CSRF-verified POST routes ([#227](https://github.com/anatolykoptev/go-job/issues/227)) ([ecb62ac](https://github.com/anatolykoptev/go-job/commit/ecb62acc8ed8af899621d64ae77025e52228fa85))
+
 ## [1.7.1](https://github.com/anatolykoptev/go-job/compare/v1.7.0...v1.7.1) (2026-07-16)
 
 
