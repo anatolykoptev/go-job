@@ -52,9 +52,9 @@ func TestDiscoverJobURLs_GoSearchError_FallsBackToLocal(t *testing.T) {
 	ATSDiscoverer = &fakeDiscoverer{err: errors.New("connection refused")}
 
 	// discoverJobURLs must not panic and must not propagate the error.
-	// In a test environment both SearchDirect and SearchSearXNG return empty
-	// (no live services configured), so we just assert it returns without
-	// panicking and that go-search error didn't propagate.
+	// In a test environment SearchDirect returns empty (no live services
+	// configured), so we just assert it returns without panicking and
+	// that go-search error didn't propagate.
 	got := discoverJobURLs(context.Background(), "golang engineer site:boards.greenhouse.io")
 	// Result is nil or empty because local search has no live backend in tests —
 	// the important invariant is we got here without error.

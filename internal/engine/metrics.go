@@ -92,7 +92,15 @@ const (
 
 	// MetricHuntNotify is the labelled counter gojob_hunt_notify_total{outcome}.
 	// Incremented by the Telegram notifier after each send attempt or recency-gate
-	// decision. outcome ∈ {"sent", "failed", "stale", "no_date"}.
+	// decision. outcome ∈ {"sent", "failed", "stale", "no_date", "low_fit",
+	// "unscored", "notifier_disabled"}.
+	//
+	// Alert thresholds:
+	//   - rate(hunt_notify_total{outcome=low_fit}[10m]) > 0 → jobs dropped by fit
+	//     gate — check HUNT_NOTIFY_MIN_FIT setting (may be set too high).
+	//   - rate(hunt_notify_total{outcome=notifier_disabled}[5m]) > 0 → notifier
+	//     is nil — Telegram bot not configured or init failed.
+	//   - gojob_hunt_notify_health == 0 for >5m → bot token revoked/unreachable.
 	MetricHuntNotify = "hunt_notify_total"
 
 	// MetricCompanyResearch is the labelled counter
@@ -237,6 +245,26 @@ const (
 	// MetricVacancyIngest is the labelled counter gojob_vacancy_ingest_total{result}.
 	// result bounded: ok, weak, skipped_store.
 	MetricVacancyIngest = "vacancy_ingest_total"
+
+	// MetricHuntScoreBreakerTrips is the counter gojob_hunt_score_breaker_trips_total.
+	// Incremented when the LLM circuit breaker trips (llmCallsThisCycle >= maxLLM),
+	// preventing LLM calls for the rest of the cycle. No labels — cardinality guard.
+	// Pre-touched at zero in FormatMetrics so rate()-floor alerts see 0 before first trip.
+	// Alert: rate(gojob_hunt_score_breaker_trips_total[5m]) > 0 → LLM budget exhausted.
+	MetricHuntScoreBreakerTrips = "hunt_score_breaker_trips_total"
+
+	// MetricHuntScorePersistFailures is the counter gojob_hunt_score_persist_failures_total.
+	// Incremented when SetJobScore fails after all retry attempts are exhausted.
+	// No labels — cardinality guard. Pre-touched at zero in FormatMetrics.
+	// Alert: rate(gojob_hunt_score_persist_failures_total[5m]) > 0 → DB health issues.
+	MetricHuntScorePersistFailures = "hunt_score_persist_failures_total"
+
+	// MetricHuntNotifyHealth is the gauge gojob_hunt_notify_health.
+	// Set to 1 when the Telegram bot token is valid (health check passes),
+	// 0 when the token is revoked or unreachable.
+	// No labels — cardinality guard. Pre-touched at 1 in FormatMetrics.
+	// Alert: gojob_hunt_notify_health == 0 for >5m → Telegram bot token invalid.
+	MetricHuntNotifyHealth = "hunt_notify_health"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -349,10 +377,11 @@ func FormatMetrics() string {
 	}
 	// hunt_notify_total pre-touched for all outcomes so rate()-floor alerts see 0
 	// before the first notify fire.
-	// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored"}.
+	// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored","notifier_disabled"}.
 	// "low_fit" — fit gate dropped the job (fit_score < HUNT_NOTIFY_MIN_FIT).
 	// "unscored" — LLM scorer failed, notified with degraded card (fail-open).
-	for _, oc := range []string{"sent", "failed", "stale", "no_date", "low_fit", "unscored"} {
+	// "notifier_disabled" — notifier is nil (bot init failed or token missing).
+	for _, oc := range []string{"sent", "failed", "stale", "no_date", "low_fit", "unscored", "notifier_disabled"} {
 		keys = append(keys, MetricHuntNotify+"{outcome="+oc+"}")
 	}
 	// Discovery variant counters (P1 multi-query union).
@@ -386,6 +415,12 @@ func FormatMetrics() string {
 	for _, result := range []string{scoreLLMOk, scoreLLMEnumClamp, scoreLLMParseFail, scoreLLMError} {
 		keys = append(keys, MetricHuntScoreLLM+"{result="+result+"}")
 	}
+	// Circuit breaker trips counter pre-touched so rate()-floor alerts see 0
+	// before the first trip.
+	keys = append(keys, MetricHuntScoreBreakerTrips)
+	// Score persist failures counter pre-touched so rate()-floor alerts see 0
+	// before the first failure.
+	keys = append(keys, MetricHuntScorePersistFailures)
 	// vacancy_ingest_total{result} pre-touched so rate()-floor alerts see 0
 	// before the first operator call. 3 results = 3 series (bounded enum).
 	for _, result := range []string{"ok", "weak", "skipped_store"} {
@@ -479,11 +514,12 @@ func ObserveOversizeBytes(n int) {
 }
 
 // IncrHuntNotify bumps gojob_hunt_notify_total{outcome=<outcome>}.
-// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored"} — bounded label.
+// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored","notifier_disabled"} — bounded label.
 // "sent"/"failed" — emitted by ProductNotifier.dispatch via its OnSend hook.
 // "stale"/"no_date" — emitted by ProductNotifier.NotifyNewJob recency gate.
 // "low_fit" — emitted by huntworker.maybeNotifyJob fit gate (fit_score < MIN_FIT).
 // "unscored" — emitted by huntworker.maybeNotifyJob for LLM-fail fail-open path.
+// "notifier_disabled" — emitted by huntworker.maybeNotifyJob when notifier is nil.
 func IncrHuntNotify(outcome string) {
 	reg.Incr(MetricHuntNotify + "{outcome=" + outcome + "}")
 }
@@ -771,6 +807,33 @@ func IncrHuntScoreLLM(result string) {
 		return
 	}
 	reg.Incr(MetricHuntScoreLLM + "{result=" + result + "}")
+}
+
+// IncrHuntScoreBreakerTrips bumps gojob_hunt_score_breaker_trips_total.
+// Called by the worker when the LLM circuit breaker trips (budget exhausted).
+func IncrHuntScoreBreakerTrips() {
+	reg.Incr(MetricHuntScoreBreakerTrips)
+}
+
+// IncrHuntScorePersistFailures bumps gojob_hunt_score_persist_failures_total.
+// Called by the worker when SetJobScore fails after all retry attempts.
+func IncrHuntScorePersistFailures() {
+	reg.Incr(MetricHuntScorePersistFailures)
+}
+
+// SetHuntNotifyHealth sets gojob_hunt_notify_health to 1 (healthy) or 0 (unhealthy).
+// Called from main.go after the initial notifier setup (optimistic true) and
+// by the periodic health check goroutine. No-op before engine.Init() (reg is
+// nil; Gauge is nil-safe).
+func SetHuntNotifyHealth(healthy bool) {
+	if reg == nil {
+		return
+	}
+	v := 0.0
+	if healthy {
+		v = 1.0
+	}
+	reg.Gauge(MetricHuntNotifyHealth).Set(v)
 }
 
 // ObserveHuntFitScore records a single fit-score observation into the

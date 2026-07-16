@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -52,6 +53,14 @@ func main() {
 
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Start periodic Telegram bot token health check (noop when notifier is nil
+	// or not a *notify.ProductNotifier). Validates the token every hour via GetMe
+	// and sets the gojob_hunt_notify_health gauge (1=healthy, 0=revoked).
+	// Alert: gojob_hunt_notify_health == 0 for >5m.
+	if n, ok := huntNotifier.(*notify.ProductNotifier); ok {
+		go startNotifyHealthCheck(sigCtx, n)
+	}
 
 	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED is false or
 	// the hunt store is unavailable).  Must run after initEngine wired the store.
@@ -219,7 +228,6 @@ func initEngine() hunt.Notifier {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
-		SearxngURL:           env.Str("SEARXNG_URL", ""),
 		LLMAPIKey:            env.Str("LLM_API_KEY", ""),
 		LLMAPIKeyFallbacks:   env.List("LLM_API_KEY_FALLBACKS", ""),
 		LLMAPIBase:           env.Str("LLM_API_BASE", "http://127.0.0.1:8317/v1"),
@@ -237,12 +245,6 @@ func initEngine() hunt.Notifier {
 		DatabaseURL:          env.Str("DATABASE_URL", ""),
 		EmbedURL:             env.Str("EMBED_URL", ""),
 		OxBrowserURL:         env.Str("OX_BROWSER_URL", ""),
-		BountyHighConfidence: float32(env.Float("BOUNTY_HIGH_CONF", 0.82)),
-		BountyHighConfGap:    float32(env.Float("BOUNTY_HIGH_CONF_GAP", 0.04)),
-		BountyHighConfMax:    env.Int("BOUNTY_HIGH_CONF_MAX", 10),
-		BountyMedConfMax:     env.Int("BOUNTY_MED_CONF_MAX", 3),
-		BountySkillBoost:     float32(env.Float("BOUNTY_SKILL_BOOST", 0.05)),
-		BountyMinRelevance:   float32(env.Float("BOUNTY_MIN_RELEVANCE", 0.75)),
 		// VaelorNotifyURL and BountyNotifyChatID removed — notifications now go via
 		// the go-kit ProductSink bot (TELEGRAM_BOT_TOKEN + HUNT_NOTIFY_CHAT_ID).
 		DirectDDG:              env.Bool("DIRECT_DDG", false),
@@ -353,11 +355,16 @@ func initEngine() hunt.Notifier {
 				slog.Info("oversize store ready")
 			}
 
-			// Wire hunt store on the same pool (fails-soft: search results persist only when DB is available).
+			// Wire hunt store on the same pool.
+			// FATAL: when DATABASE_URL is set, hunt persistence is a core dependency —
+			// without it, hunt_list/hunt_match MCP tools are broken and jobs are
+			// silently ingested without persistence (data loss). Fail-fast rather
+			// than degrade silently. When DATABASE_URL is unset, hunt is optional
+			// and the graceful disable at line 334 is correct.
 			hStore := hunt.NewStore(rdb.Pool())
 			if err := hStore.Migrate(context.Background()); err != nil {
-				slog.Error("hunt migrate failed", slog.Any("error", err))
-				engine.SetHuntPersistEnabled(false)
+				slog.Error("hunt migrate failed — exiting (DATABASE_URL is set, hunt persistence is required)", slog.Any("error", err))
+				os.Exit(1)
 			} else {
 				engine.SetHuntStore(hStore)
 				engine.SetHuntPersistEnabled(true)
@@ -379,6 +386,11 @@ func initEngine() hunt.Notifier {
 					// wired to the worker via StartWorker so the worker fires
 					// notifications in runCycle rather than inside UpsertJob.
 					huntNotifier = notif
+					// Start periodic Telegram bot token health check.
+					// Validates the token every hour via GetMe and sets the
+					// gojob_hunt_notify_health gauge (1=healthy, 0=revoked).
+					// Alert: gojob_hunt_notify_health == 0 for >5m.
+					engine.SetHuntNotifyHealth(true) // optimistic at startup (GetMe passed in NewBotAPI)
 				}
 
 				slog.Info("hunt store ready")
@@ -386,16 +398,20 @@ func initEngine() hunt.Notifier {
 		}
 	}
 
-	// Wire ATS discovery client (delegates URL discovery to go-search's fused
-	// multi-source pipeline — Brave-API + ox-browser-search + DDG, ADR-002).
-	// GO_SEARCH_URL empty → ATSDiscoverer stays nil → local SearchDirect fallback.
+	// Wire ATS discovery client + raw web searcher (both delegate to go-search's
+	// fused multi-source pipeline — Brave-API + ox-browser-search + DDG, ADR-002).
+	// GO_SEARCH_URL empty → both stay nil → local SearchDirect fallback.
+	// The same Client instance serves both roles: DiscoverBoardURLs (ATS host
+	// filtered) for discovery, RawSearch (unfiltered) for person/salary research.
 	if goSearchURL := env.Str("GO_SEARCH_URL", ""); goSearchURL != "" {
-		jobs.SetATSDiscoverer(discovery.NewClient(goSearchURL))
-		slog.Info("ATS discovery client wired",
+		searchClient := discovery.NewClient(goSearchURL)
+		jobs.SetATSDiscoverer(searchClient)
+		jobs.SetRawSearcher(searchClient)
+		slog.Info("go-search client wired (ATS discovery + raw web search)",
 			slog.String("go_search_url", goSearchURL),
 		)
 	} else {
-		slog.Info("ATS discovery: GO_SEARCH_URL unset — using local SearchDirect fallback")
+		slog.Info("go-search: GO_SEARCH_URL unset — using local SearchDirect fallback for discovery and research")
 	}
 
 	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).
@@ -451,6 +467,31 @@ func resolveFetchMode(s string) (directFirst, initPool bool) {
 	default:
 		slog.Warn("unknown FETCH_DIRECT_FIRST value, falling back to 'proxy'", slog.String("value", s))
 		return false, true
+	}
+}
+
+// startNotifyHealthCheck runs a periodic Telegram bot token health check.
+// Calls HealthCheck (GetMe) every hour and updates the gojob_hunt_notify_health
+// gauge. If the token is revoked or unreachable, the gauge drops to 0 and the
+// alert fires. The goroutine exits when ctx is cancelled (SIGINT/SIGTERM).
+func startNotifyHealthCheck(ctx context.Context, n *notify.ProductNotifier) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := n.HealthCheck(checkCtx)
+			cancel()
+			if err != nil {
+				slog.Warn("hunt notify: health check failed", slog.Any("error", err))
+				engine.SetHuntNotifyHealth(false)
+			} else {
+				engine.SetHuntNotifyHealth(true)
+			}
+		}
 	}
 }
 

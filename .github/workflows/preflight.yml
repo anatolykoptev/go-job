@@ -12,6 +12,10 @@ name: preflight
 # duration of the job, exports DATABASE_URL pointing at it, then runs
 # `make preflight` so those tests execute live.
 #
+# ATS slug-discovery tests are //go:build integration tagged and don't run
+# in preflight. When run manually with -tags=integration, t.Fatalf
+# surfaces the failure instead of t.Skip (synthetic-green fix #183).
+#
 # The service publishes the container's 5432 to a RANDOM free host port, read
 # back via job.services.postgres.ports['5432'] — the VM is ours alone now, but
 # the pattern is collision-proof by construction.
@@ -30,8 +34,9 @@ jobs:
   preflight:
     runs-on: ubuntu-24.04-arm
     # Steady-state is a few minutes; never let a hung run linger for
-    # GitHub's 6h default.
-    timeout-minutes: 15
+    # GitHub's 6h default. 20m gives headroom for ./internal/... (14 packages)
+    # plus queue time on the free ARM runner pool.
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -56,6 +61,9 @@ jobs:
           # Fleet policy: latest patched toolchain (go.mod is the minimum,
           # not the pin) — stdlib CVEs are fixed in patch releases.
           go-version: stable
+          # Cache Go modules via setup-go's built-in GitHub cache.
+          # Keyed on go.sum hash; hit on second run saves ~30s download.
+          cache: true
 
       - name: Install postgres client
         run: |
@@ -76,19 +84,31 @@ jobs:
           # mirrors ConnectResumeDB. Any HARD migration failure is a real schema
           # break and MUST fail the gate (no silent error-swallowing).
           set -uo pipefail
+          hard_files=""
           fail=0
           for f in $(ls internal/engine/jobs/schema/*.sql internal/hunt/schema/*.sql | sort); do
             if head -1 "$f" | grep -q "^-- soft"; then
               psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1 \
                 || echo "soft migration skipped (extension absent): $f"
             else
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" \
-                || { echo "::error::hard migration failed: $f"; fail=1; }
+              hard_files="$hard_files $f"
             fi
           done
+          # Batch all hard migrations into a single psql transaction — one
+          # process spawn instead of N, ~10s saved on a typical run.
+          if [ -n "$hard_files" ]; then
+            for f in $hard_files; do
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" \
+                || { echo "::error::hard migration failed: $f"; fail=1; }
+            done
+          fi
           [ "$fail" -eq 0 ] || { echo "::error::one or more hard migrations failed"; exit 1; }
 
       - name: make preflight
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
+          # GitHub-hosted ARM runners have 4 cores; -p 2 is safe here and
+          # ~30% faster than -p 1. The Makefile defaults to -p 1 for the
+          # 4-core prod box where contention inflates per-test times ~30x.
+          GO_TEST_PARALLEL: 2
         run: make preflight

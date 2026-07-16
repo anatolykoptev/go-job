@@ -2,7 +2,6 @@ package connectors
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -310,12 +309,7 @@ func (googleSource) SiteScope() string        { return "site:careers.google.com 
 func (googleSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, error) {
 	searxQuery := q.Query + " " + q.Location + " " + googleSource{}.SiteScope()
 	results := engine.SearchDirect(ctx, searxQuery, q.Language)
-	searx, err := engine.SearchSearXNG(ctx, searxQuery, q.Language, q.TimeRange, engine.DefaultSearchEngine)
-	if err != nil {
-		slog.Warn("connectors: google searxng error (additive)", slog.Any("error", err))
-	}
-	results = append(results, searx...)
-	// DIRECT is authoritative; additive SearXNG err is intentionally not propagated.
+	// DIRECT is authoritative.
 	return results, nil
 }
 

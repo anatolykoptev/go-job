@@ -172,9 +172,11 @@ func TestMaxLLMPerCycle_CircuitBreaker(t *testing.T) {
 
 	assert.Equal(t, int64(2), llmCalls.Load(),
 		"circuit breaker must stop LLM calls at HUNT_SCORE_MAX_LLM_PER_CYCLE=2")
-	// SetJobScore is still called for all 5 (unscored for the 3 that hit the breaker).
-	assert.Equal(t, int64(5), scoreStore.setCount.Load(),
-		"SetJobScore must be called for all OutcomeCreated jobs (even unscored ones)")
+	// SetJobScore is called only for the 2 LLM-scored jobs. The 3 breaker-tripped
+	// jobs are NOT persisted (scored_at stays NULL) so the sweep can retry them
+	// in the next cycle — persisting scored_at=NOW() would permanently strand them.
+	assert.Equal(t, int64(2), scoreStore.setCount.Load(),
+		"SetJobScore must be called only for LLM-scored jobs — breaker-tripped jobs stay in unscored pool")
 }
 
 // TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget verifies that

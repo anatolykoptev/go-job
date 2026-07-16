@@ -8,7 +8,6 @@ import (
 	"github.com/anatolykoptev/go-engine/extract"
 	"github.com/anatolykoptev/go-engine/fetch"
 	engllm "github.com/anatolykoptev/go-engine/llm"
-	"github.com/anatolykoptev/go-engine/search"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
@@ -19,7 +18,6 @@ import (
 
 // Config holds all engine configuration, injected from main.
 type Config struct {
-	SearxngURL                string
 	LLMAPIKey                 string
 	LLMAPIKeyFallbacks        []string
 	LLMAPIBase                string
@@ -30,12 +28,10 @@ type Config struct {
 	MaxContentChars           int
 	FetchTimeout              time.Duration
 	GithubToken               string
-	GithubSearchRepos         []string
 	Context7APIKey            string
 	HuggingFaceToken          string
 	YouTubeAPIKey             string
 	YouTubeAPIKeyFallback     string
-	YouTubeTranscriptsEnabled bool
 	CacheMaxEntries           int
 	CacheCleanupInterval      time.Duration
 	ProxyPool                 proxypool.ProxyPool // replaces BrowserClient + HTTPClient
@@ -68,14 +64,6 @@ type Config struct {
 	// location, so a future move to the pillow mesh is a one-line env change.
 	OxBrowserURL string // OX_BROWSER_URL
 
-	// Bounty search tuning.
-	BountyHighConfidence float32 // cosine threshold for high-confidence tier (default 0.82)
-	BountyHighConfGap    float32 // max gap from best in high-confidence tier (default 0.04)
-	BountyHighConfMax    int     // max results in high-confidence tier (default 10)
-	BountyMedConfMax     int     // max results in medium-confidence tier (default 3)
-	BountySkillBoost     float32 // boost when query matches bounty skills (default 0.05)
-	BountyMinRelevance   float32 // minimum best-score to return results (default 0.75)
-
 	// Bounty notify: env vars are read directly by go-kit's NewProductSinkFromEnv.
 	// TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID are required at deploy.
 	// VaelorNotifyURL and BountyNotifyChatID removed — no longer used.
@@ -102,7 +90,6 @@ var (
 	fetcherProxy  *fetch.Fetcher       // with proxy, for web pages
 	fetcherDirect *fetch.Fetcher       // no proxy, for raw content + internal APIs
 	extractorInst *extract.Extractor   // HTML content extraction
-	searxngInst   *search.SearXNG      // SearXNG client
 	llmInst       *engllm.Client       // LLM client
 	reg           *kitmetrics.Registry // metrics counters (Prometheus-bridged)
 	httpClient    *http.Client         // plain HTTP client for GitHub API etc.
@@ -175,11 +162,6 @@ func Init(c Config) {
 
 	// HTML content extractor.
 	extractorInst = extract.New(extract.WithMaxContentLen(c.MaxContentChars))
-
-	// SearXNG client (local, no proxy needed — optional).
-	if c.SearxngURL != "" {
-		searxngInst = search.NewSearXNG(c.SearxngURL, search.WithMetrics(reg))
-	}
 
 	// LLM client.
 	llmOpts := []engllm.Option{

@@ -188,20 +188,17 @@ func TestBuildCompanyContext_NilResearchYieldsEmpty(t *testing.T) {
 // "no results found" invariant — the function must never silently return a nil
 // result alongside a nil error when it has nothing to synthesize.
 //
-// When engine.Init is NOT called, both SearchDirect (no scrapers enabled,
-// fetcherProxy==nil guard fires) and SearchSearXNG (searxngInst==nil) return empty.
-// ResearchCompany must return an error in this state.
+// When engine.Init is NOT called, searchWeb returns empty (SearchDirect guard
+// fires: fetcherProxy==nil, RawSearcherInstance==nil). ResearchCompany must
+// return an error in this state.
 //
-// Note: this test cannot directly verify that SearchDirect is the PRIMARY search path
-// (vs SearchSearXNG) because ResearchCompany calls engine.SearchDirect as a
-// package-level function with no injection seam. The routing change is covered by the
-// structural change in research.go (SearchDirect fan-out runs unconditionally;
-// SearXNG fan-out runs additively). The live probe verifies the end-to-end behavior:
-// gojob_company_research_total{outcome=ok} must increment after deploy.
+// Note: this test cannot directly verify the search routing because ResearchCompany
+// calls searchWeb as a package-level function with no injection seam. The live
+// probe verifies the end-to-end behavior: gojob_company_research_total{outcome=ok}
+// must increment after deploy.
 func TestResearchCompany_ErrorsWhenNoSnippets(t *testing.T) {
 	// engine.Init is NOT called — package-level vars stay zero/nil.
-	// SearchDirect returns nil (fetcherProxy==nil guard fires in directSearchConfig).
-	// SearchSearXNG returns nil, nil (searxngInst==nil).
+	// searchWeb returns nil (SearchDirect guard fires, RawSearcherInstance==nil).
 	// All allSnippets channels stay empty → error path.
 	ctx := context.Background()
 	res, err := ResearchCompany(ctx, "SomeCompanyThatNeverExists12345XYZ")
@@ -213,15 +210,15 @@ func TestResearchCompany_ErrorsWhenNoSnippets(t *testing.T) {
 	}
 }
 
-// TestResearchCompany_SearXNGChannelsDrained verifies that the SearXNG goroutines
+// TestResearchCompany_ChannelsDrained verifies that the searchWeb goroutines
 // are always drained (preventing goroutine leaks) even when the context is already
-// cancelled. The searxCh channel is sized len(queries); all goroutines MUST send
-// before ResearchCompany returns (blocking send on buffered channel, bounded by
-// context cancellation in the SearXNG client). This test goes RED if the final
-// drain loop ("for range queries { res := <-searxCh }") is removed from ResearchCompany.
-func TestResearchCompany_SearXNGChannelsDrained(t *testing.T) {
-	// Use an already-cancelled context. SearchSearXNG (searxngInst==nil) returns
-	// immediately. SearchDirect guard fires (fetcherProxy==nil). All goroutines
+// cancelled. The channel is sized len(queries); all goroutines MUST send before
+// ResearchCompany returns (blocking send on buffered channel). This test goes RED
+// if the drain loop ("for range queries { res := <-ch }") is removed from
+// ResearchCompany.
+func TestResearchCompany_ChannelsDrained(t *testing.T) {
+	// Use an already-cancelled context. searchWeb returns immediately (both
+	// RawSearcherInstance==nil and SearchDirect guard fires). All goroutines
 	// send and exit. ResearchCompany must return promptly, not block.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

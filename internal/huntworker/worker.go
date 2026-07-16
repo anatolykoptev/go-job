@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
@@ -164,6 +165,9 @@ func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, score *hunt.Sc
 		return
 	}
 	if w.notifier == nil {
+		if w.notifyMetric != nil {
+			w.notifyMetric("notifier_disabled")
+		}
 		return
 	}
 	if j.Status != hunt.StatusOpen && j.Status != "" {
@@ -378,14 +382,13 @@ func scoreJobWithLimit(
 
 	maxLLM := score.MaxLLMPerCycle()
 	if *llmCallsThisCycle >= maxLLM {
-		// Circuit breaker tripped: persist unscored, do not call LLM.
-		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored, ScoredAt: time.Now()}
-		if err := store.SetJobScore(ctx, job.ID, result); err != nil {
-			slog.WarnContext(ctx, "hunt worker: SetJobScore (circuit-breaker unscored) failed",
-				slog.Int64("job_id", job.ID),
-				slog.Any("error", err),
-			)
-		}
+		// Circuit breaker tripped: return unscored result in-memory only.
+		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
+		// the job from the `scored_at IS NULL` unscored pool, permanently
+		// stranding it without LLM scoring. The sweep (runUnscoredSweep)
+		// will pick it up in the next cycle when budget is available.
+		engine.IncrHuntScoreBreakerTrips()
+		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored}
 		return &result
 	}
 
@@ -404,7 +407,12 @@ func scoreJobWithLimit(
 // It is extracted as a separate function for unit testability (injected store + deps).
 // No-op for any outcome other than OutcomeCreated — returns zero ScoreResult.
 //
-// Write failures from SetJobScore are logged but do not abort the cycle.
+// Write failures from SetJobScore are retried up to 3 times with exponential
+// backoff (go-kit/retry.Do). Transient DB errors (connection blips, timeouts)
+// are retried; permanent errors (ErrNotFound — job deleted between UpsertJob
+// and SetJobScore) are not retried. After all retries are exhausted, the
+// failure is logged and a metric is incremented — the job stays in the
+// unscored pool (scored_at IS NULL) for the sweep to retry in the next cycle.
 // The returned ScoreResult carries LLMCalled so the caller can update the
 // per-cycle circuit-breaker counter only when an actual LLM call occurred.
 func scoreJobIfCreated(
@@ -421,12 +429,29 @@ func scoreJobIfCreated(
 
 	result := score.Score(ctx, profile, job, deps)
 
-	if err := store.SetJobScore(ctx, job.ID, result); err != nil {
-		slog.WarnContext(ctx, "hunt worker: SetJobScore failed",
+	_, err := retry.Do(ctx, retry.Options{
+		MaxAttempts:  3,
+		InitialDelay: 500 * time.Millisecond,
+		MaxDelay:     5 * time.Second,
+		Jitter:       true,
+		AbortOn:      []error{hunt.ErrNotFound},
+		OnRetry: func(attempt int, err error) {
+			slog.WarnContext(ctx, "hunt worker: SetJobScore retry",
+				slog.Int64("job_id", job.ID),
+				slog.Int("attempt", attempt),
+				slog.Any("error", err),
+			)
+		},
+	}, func() (struct{}, error) {
+		return struct{}{}, store.SetJobScore(ctx, job.ID, result)
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "hunt worker: SetJobScore failed after retries",
 			slog.Int64("job_id", job.ID),
 			slog.String("fit_band", result.FitBand),
 			slog.Any("error", err),
 		)
+		engine.IncrHuntScorePersistFailures()
 	}
 	return result
 }

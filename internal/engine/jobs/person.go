@@ -114,11 +114,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, subject+" site:linkedin.com/in", "all", "", engine.DefaultSearchEngine)
-		if err != nil {
-			ch <- sourceData{name: sourceLinkedIn}
-			return
-		}
+		results := searchWeb(ctx, subject+" site:linkedin.com/in")
 		var snippets []string
 		for _, r := range results {
 			if strings.Contains(r.URL, "linkedin.com") {
@@ -135,11 +131,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, subject+" site:github.com", "all", "", engine.DefaultSearchEngine)
-		if err != nil {
-			ch <- sourceData{name: "github"} //nolint:goconst
-			return
-		}
+		results := searchWeb(ctx, subject+" site:github.com")
 		var snippets []string
 		for _, r := range results {
 			if strings.Contains(r.URL, "github.com") {
@@ -160,11 +152,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		if company != "" {
 			query = name + " " + company
 		}
-		results, err := engine.SearchSearXNG(ctx, query, "all", "", engine.DefaultSearchEngine)
-		if err != nil {
-			ch <- sourceData{name: "web"}
-			return
-		}
+		results := searchWeb(ctx, query)
 		var snippets []string
 		for i, r := range results {
 			if i >= 5 {
@@ -179,11 +167,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		results, err := engine.SearchSearXNG(ctx, name+" site:habr.com", "ru", "", engine.DefaultSearchEngine)
-		if err != nil {
-			ch <- sourceData{name: sourceHabr}
-			return
-		}
+		results := searchWeb(ctx, name+" site:habr.com")
 		var snippets []string
 		for i, r := range results {
 			if i >= 3 {
@@ -199,7 +183,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 	go func() {
 		defer wg.Done()
 		// First find their Twitter handle via web search
-		twResults, _ := engine.SearchSearXNG(ctx, subject+" twitter OR x.com", "all", "", engine.DefaultSearchEngine)
+		twResults := searchWeb(ctx, subject+" twitter OR x.com")
 		var handle string
 		for _, r := range twResults {
 			if h := extractTwitterHandle(r.URL); h != "" {

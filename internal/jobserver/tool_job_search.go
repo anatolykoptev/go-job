@@ -162,15 +162,9 @@ func registerJobSearch(server *mcp.Server) {
 				} else {
 					searxQuery = input.Query + " jobs"
 				}
-				// go-engine DIRECT (primary, always-on via DIRECT_* env) + SearXNG (additive).
+				// go-engine DIRECT (primary, always-on via DIRECT_* env).
 				results := engine.SearchDirect(ctx, searxQuery, lang)
-				searx, err := engine.SearchSearXNG(ctx, searxQuery, lang, input.TimeRange, engine.DefaultSearchEngine)
-				if err != nil {
-					slog.Warn("job_search: searxng error (additive)", slog.Any("error", err))
-				}
-				results = append(results, searx...)
-				// DIRECT is authoritative; additive SearXNG err is intentionally not
-				// propagated — the result set reflects what DIRECT returned regardless.
+				// DIRECT is authoritative.
 				ch <- sourceResult{name: "searxng", results: results, err: nil}
 			}()
 		}

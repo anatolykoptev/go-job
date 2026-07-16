@@ -79,6 +79,18 @@ type Discoverer interface {
 	DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error)
 }
 
+// RawSearcher is the interface for general-purpose web search via go-search.
+// Unlike Discoverer, it does NOT filter results to ATS board hosts — it
+// returns all raw_web_search results (DDG-redirect-unwrapped only).
+// Used by person research and salary research as the primary search source,
+// replacing the former SearXNG dependency.
+type RawSearcher interface {
+	// RawSearch calls go-search's raw_web_search with the given query and
+	// returns all results (no host filtering). Returns (nil, err) on
+	// transport/degraded errors so callers can fall back to SearchDirect.
+	RawSearch(ctx context.Context, query string) ([]engine.SearxngResult, error)
+}
+
 // rawSearchRequest is the body sent to POST /api/tools/raw_web_search.
 type rawSearchRequest struct {
 	Query string `json:"query"`
@@ -145,8 +157,97 @@ func NewClient(baseURL string) *Client {
 // Returns (nil, err) on any transport or decode failure — callers fall back to
 // local SearchDirect.
 func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.SearxngResult, error) {
-	// Per-call budget on top of the parent ctx so we never block longer than
-	// defaultDiscoveryTimeout regardless of the parent deadline.
+	out, err := c.callRawWebSearch(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Clean zero: go-search answered with no results. Return nil,nil —
+	// caller treats this as authoritative empty (no local fallback).
+	if len(out.Results) == 0 {
+		return nil, nil
+	}
+
+	results := make([]engine.SearxngResult, 0, len(out.Results))
+	nonEmptyURLCount := 0
+
+	for _, r := range out.Results {
+		if r.URL == "" {
+			continue
+		}
+		nonEmptyURLCount++
+
+		clean, ok := unwrapDDG(r.URL)
+		if !ok {
+			continue
+		}
+		if !isATSBoardHost(clean) {
+			continue
+		}
+		results = append(results, engine.SearxngResult{
+			URL:     clean,
+			Title:   r.Title,
+			Content: r.Description,
+		})
+	}
+
+	// Schema-drift guard: results present but ALL have empty URL.
+	if nonEmptyURLCount == 0 {
+		return nil, fmt.Errorf("discovery: raw_web_search returned %d result(s) but all had empty URL (malformed response)", len(out.Results))
+	}
+
+	if len(results) == 0 {
+		slog.Debug("discovery: no ATS board URLs after filtering",
+			slog.String("query", query), slog.Int("raw", len(out.Results)))
+		return nil, nil
+	}
+
+	slog.Debug("discovery: raw_web_search results",
+		slog.String("query", query),
+		slog.Int("raw", len(out.Results)),
+		slog.Int("board", len(results)))
+	return results, nil
+}
+
+// RawSearch implements RawSearcher by calling go-search's raw_web_search
+// REST bridge WITHOUT ATS board host filtering. Results are DDG-redirect
+// unwrapped only — all web results are returned. Used by person research
+// and salary research as the primary search source (replacing SearXNG).
+// Returns (nil, err) on transport/degraded errors so callers fall back
+// to engine.SearchDirect.
+func (c *Client) RawSearch(ctx context.Context, query string) ([]engine.SearxngResult, error) {
+	out, err := c.callRawWebSearch(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]engine.SearxngResult, 0, len(out.Results))
+	for _, r := range out.Results {
+		if r.URL == "" {
+			continue
+		}
+		clean, ok := unwrapDDG(r.URL)
+		if !ok {
+			continue
+		}
+		results = append(results, engine.SearxngResult{
+			URL:     clean,
+			Title:   r.Title,
+			Content: r.Description,
+		})
+	}
+
+	slog.Debug("discovery: raw_web_search (unfiltered)",
+		slog.String("query", query),
+		slog.Int("results", len(results)))
+	return results, nil
+}
+
+// callRawWebSearch is the shared HTTP round-trip to go-search's raw_web_search
+// REST bridge. Handles envelope decoding, degraded signal, and clean-zero
+// detection. Returns the raw output for caller-specific post-processing
+// (ATS host filtering for DiscoverBoardURLs, no filtering for RawSearch).
+func (c *Client) callRawWebSearch(ctx context.Context, query string) (*rawSearchOutput, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -160,9 +261,6 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, fmt.Errorf("discovery: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// REST bridge uses an in-process InMemoryTransport — no StreamableHTTP
-	// Accept negotiation required (unlike POST /mcp which requires both
-	// "application/json" and "text/event-stream" per go-sdk streamable.go:284).
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -188,10 +286,9 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, errors.New("discovery: go-search reported is_error=true")
 	}
 
-	// raw_web_search encodes all results in content[0].text as a JSON string.
 	if len(envelope.Content) == 0 {
 		slog.Debug("discovery: go-search returned empty content", slog.String("query", query))
-		return nil, nil
+		return &rawSearchOutput{}, nil
 	}
 
 	var out rawSearchOutput
@@ -199,71 +296,19 @@ func (c *Client) DiscoverBoardURLs(ctx context.Context, query string) ([]engine.
 		return nil, fmt.Errorf("discovery: decode raw_web_search output: %w", err)
 	}
 
-	// Degraded=true means the result set cannot be trusted: all broad-web legs
-	// failed or the context deadline fired.  Fall back to local scrapers so we
-	// never short-circuit on a broken fan-out masquerading as a clean zero.
-	// The DegradeReason is logged for observability and included in the error so
-	// callers can emit a metric or alert on the specific failure class.
 	if out.Degraded {
 		slog.Warn("discovery: raw_web_search degraded, falling back to local",
 			slog.String("query", query),
 			slog.String("degrade_reason", out.DegradeReason))
-		// Wrap engine.ErrDiscoveryDegraded so callers can errors.Is-detect this
-		// class and emit source="degraded-fallback" rather than "local-fallback".
 		return nil, fmt.Errorf("discovery: raw_web_search degraded (%s): %w", out.DegradeReason, engine.ErrDiscoveryDegraded)
 	}
 
-	// Clean zero: Degraded=false with no results means the sources answered and
-	// genuinely found nothing.  Return (nil, nil) — no fallback, no alert.
 	if len(out.Results) == 0 {
 		slog.Debug("discovery: go-search returned no results", slog.String("query", query))
-		return nil, nil
+		return &rawSearchOutput{}, nil
 	}
 
-	results := make([]engine.SearxngResult, 0, len(out.Results))
-	nonEmptyURLCount := 0
-
-	for _, r := range out.Results {
-		if r.URL == "" {
-			continue
-		}
-		nonEmptyURLCount++
-
-		// Unwrap DDG redirect (duckduckgo.com/l/?uddg=<url>); drop DDG ad URLs.
-		clean, ok := unwrapDDG(r.URL)
-		if !ok {
-			continue
-		}
-		// Filter to ATS board hosts — drops general web results and ad noise.
-		if !isATSBoardHost(clean) {
-			continue
-		}
-		results = append(results, engine.SearxngResult{
-			URL:     clean,
-			Title:   r.Title,
-			Content: r.Description,
-		})
-	}
-
-	// Schema-drift guard: if every result had an empty URL field, the response
-	// is malformed (raw_web_search always populates url).  Return an error so
-	// callers fall back to local scrapers rather than short-circuiting on a
-	// trusted-empty answer.
-	if nonEmptyURLCount == 0 {
-		return nil, fmt.Errorf("discovery: raw_web_search returned %d result(s) but all had empty URL (malformed response)", len(out.Results))
-	}
-
-	if len(results) == 0 {
-		slog.Debug("discovery: no ATS board URLs after filtering",
-			slog.String("query", query), slog.Int("raw", len(out.Results)))
-		return nil, nil
-	}
-
-	slog.Debug("discovery: raw_web_search results",
-		slog.String("query", query),
-		slog.Int("raw", len(out.Results)),
-		slog.Int("board", len(results)))
-	return results, nil
+	return &out, nil
 }
 
 // unwrapDDG handles DDG redirect URLs of the form:

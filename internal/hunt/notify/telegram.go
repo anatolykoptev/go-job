@@ -22,9 +22,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/env"
 	kit "github.com/anatolykoptev/go-kit/telegram"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -41,6 +43,7 @@ type ProductNotifier struct {
 	sink    kitnotify.ProductSink
 	chatIDs []int64       // explicit recipient list; empty = use sink's defaultChatIDs
 	maxAge  time.Duration // recency gate for NotifyNewJob; 0 means use default (48h)
+	token   string        // bot token for health checks (empty when constructed via NewFromSink)
 	OnSend  func(outcome string) // optional metric hook
 }
 
@@ -64,15 +67,13 @@ func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hunt notify: %w", err)
 	}
-	maxAge := defaultMaxAge
-	if raw, ok := os.LookupEnv("HUNT_NOTIFY_MAX_AGE"); ok {
-		d, err := time.ParseDuration(raw)
-		if err != nil {
-			return nil, fmt.Errorf("hunt notify: invalid HUNT_NOTIFY_MAX_AGE %q: %w", raw, err)
-		}
-		maxAge = d
-	}
-	return &ProductNotifier{sink: sink, maxAge: maxAge}, nil
+	// Use go-kit's env.Duration for consistent parsing with scorer.go.
+	// env.Duration accepts Go duration strings ("48h") AND falls back to
+	// float seconds ("48" → 48s) for backward compat. On parse failure or
+	// unset, it silently falls back to the default — no startup crash.
+	maxAge := env.Duration("HUNT_NOTIFY_MAX_AGE", defaultMaxAge)
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	return &ProductNotifier{sink: sink, maxAge: maxAge, token: token}, nil
 }
 
 // NewFromSink constructs a ProductNotifier from a pre-built ProductSink.
@@ -164,6 +165,24 @@ func (n *ProductNotifier) dispatch(msg string) {
 			}
 		}
 	}()
+}
+
+// HealthCheck validates the Telegram bot token by calling GetMe.
+// Returns nil if the token is valid, an error otherwise.
+// Returns nil (no-op) when the notifier was constructed without a token
+// (e.g. via NewFromSink in tests).
+func (n *ProductNotifier) HealthCheck(ctx context.Context) error {
+	if n.token == "" {
+		return nil // no token to validate (test constructor)
+	}
+	bot, err := tgbotapi.NewBotAPI(n.token)
+	if err != nil {
+		return fmt.Errorf("hunt notify: health check create bot: %w", err)
+	}
+	if _, err := bot.GetMeWithContext(ctx); err != nil {
+		return fmt.Errorf("hunt notify: health check GetMe: %w", err)
+	}
+	return nil
 }
 
 // Compile-time check: *ProductNotifier satisfies hunt.Notifier.

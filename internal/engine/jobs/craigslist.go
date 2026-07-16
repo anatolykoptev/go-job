@@ -162,9 +162,8 @@ func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) 
 
 // SearchCraigslistJobs searches Craigslist job listings.
 // Primary: RSS feed via BrowserClient (structured data, more results).
-// Fallback: discoverJobURLs (go-engine DIRECT primary + SearXNG additive) when
-// BrowserClient is unavailable or RSS fails. SEARXNG_URL is unset in prod, so
-// a bare SearchSearXNG-only fallback would return nil,nil silently — same class
+// Fallback: discoverJobURLs (go-search primary + SearchDirect fallback) when
+// BrowserClient is unavailable or RSS fails. Same discovery-loss class
 // fixed in #53 for ATS/YC/Indeed.
 func SearchCraigslistJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrCraigslistRequests()
