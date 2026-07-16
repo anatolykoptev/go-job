@@ -64,11 +64,6 @@ type ytSearchResult struct {
 	} `json:"videoRenderer"`
 }
 
-// YouTubeTranscriptsEnabled reports whether transcript fetching is enabled in config.
-func YouTubeTranscriptsEnabled() bool {
-	return engine.Cfg.YouTubeTranscriptsEnabled
-}
-
 // SearchYouTube searches YouTube videos.
 // Uses YouTube Data API v3 when a key is configured; otherwise scrapes ytInitialData.
 func SearchYouTube(ctx context.Context, query, language string, limit int) ([]engine.YouTubeVideo, error) {

@@ -7,7 +7,6 @@ Type=simple
 ExecStart=/home/krolik/go_job/bin/go_job
 EnvironmentFile=/home/krolik/go-search/deploy/go-search.env
 EnvironmentFile=/home/krolik/krolik-server/.env
-Environment=SEARXNG_URL=http://127.0.0.1:8888
 EnvironmentFile=/home/krolik/go_job/deploy/go_job.env
 Environment=LLM_API_BASE=http://127.0.0.1:8317/v1
 Environment=LLM_MODEL=gemini-3.1-flash-lite-preview

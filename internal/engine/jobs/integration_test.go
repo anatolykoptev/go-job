@@ -13,8 +13,7 @@ import (
 )
 
 func initTestEngine() {
-	Init(Config{
-		SearxngURL:      "http://127.0.0.1:8888",
+	engine.Init(engine.Config{
 		MaxContentChars: 4000,
 		FetchTimeout:    15 * time.Second,
 		HTTPClient: &http.Client{
@@ -25,7 +24,7 @@ func initTestEngine() {
 			},
 		},
 	})
-	InitCache("", 15*time.Minute, 100, 5*time.Minute)
+	engine.InitCache("", 15*time.Minute, 100, 5*time.Minute)
 }
 
 // --- HN Who is Hiring ---
@@ -164,11 +163,12 @@ func TestIntegration_SearchGreenhouseJobs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// This uses SearXNG to find slugs first, so SearXNG must be running.
+	// This uses go-search/SearchDirect to find slugs first.
+	// t.Skip is intentionally NOT used here: if discovery fails, the test
+	// must FAIL (surface the problem), not skip (synthetic-green, go-job #135).
 	results, err := SearchGreenhouseJobs(ctx, "software engineer golang", "", 10)
 	if err != nil {
-		t.Logf("SearchGreenhouseJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available for slug discovery")
+		t.Fatalf("SearchGreenhouseJobs error (slug discovery failed): %v", err)
 	}
 	t.Logf("✓ SearchGreenhouseJobs('software engineer golang'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {
@@ -192,7 +192,7 @@ func TestIntegration_FetchLeverPostings_Plaid(t *testing.T) {
 		t.Fatalf("fetchLeverPostings(plaid) error: %v", err)
 	}
 	if len(postings) == 0 {
-		t.Error("expected >0 postings from Plaid Lever, got 0")
+		t.Fatalf("expected >0 postings from Plaid Lever, got 0 — Plaid may have moved off Lever or stopped hiring")
 	}
 	t.Logf("✓ Lever Plaid: %d postings", len(postings))
 	for _, p := range postings[:min(3, len(postings))] {
@@ -239,8 +239,7 @@ func TestIntegration_SearchLeverJobs(t *testing.T) {
 
 	results, err := SearchLeverJobs(ctx, "product designer", "", 10)
 	if err != nil {
-		t.Logf("SearchLeverJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available for slug discovery")
+		t.Fatalf("SearchLeverJobs error (slug discovery failed): %v", err)
 	}
 	t.Logf("✓ SearchLeverJobs('product designer'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {
@@ -260,8 +259,7 @@ func TestIntegration_SearchYCJobs(t *testing.T) {
 
 	results, err := SearchYCJobs(ctx, "software engineer", "remote", 10)
 	if err != nil {
-		t.Logf("SearchYCJobs error (SearXNG may not be available): %v", err)
-		t.Skip("SearXNG not available")
+		t.Fatalf("SearchYCJobs error (slug discovery failed): %v", err)
 	}
 	t.Logf("✓ SearchYCJobs('software engineer', 'remote'): %d results", len(results))
 	for _, r := range results[:min(3, len(results))] {
@@ -287,6 +285,6 @@ func TestIntegration_Summary(t *testing.T) {
 	t.Log("  HN jobs: FindWhoIsHiringThread → FetchHNJobComments → FilterHNJobComments")
 	t.Log("  Greenhouse: fetchGreenhouseJobs (stripe, anthropic) + 404 handling")
 	t.Log("  Lever: fetchLeverPostings (figma) + 404 handling")
-	t.Log("  YC: SearchYCJobs (SearXNG-based)")
+	t.Log("  YC: SearchYCJobs (go-search/DIRECT-based)")
 	t.Log(fmt.Sprintf("  Test time: %s", time.Now().Format("2006-01-02 15:04:05")))
 }
