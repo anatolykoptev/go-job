@@ -9,13 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/breaker"
+	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/ratelimit"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -85,24 +85,14 @@ func searchWeb(ctx context.Context, query string) []engine.SearxngResult {
 }
 
 func getATSMaxConcurrent() int {
-	if v := os.Getenv("GO_JOB_ATS_MAX_CONCURRENT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 3
+	return env.MustInt("GO_JOB_ATS_MAX_CONCURRENT", 3)
 }
 
 // getDiscoveryQueryVariants returns the number of query variants to fan out
 // per platform in unionDiscoverSlugs. Configurable via DISCOVERY_QUERY_VARIANTS
 // (range 1–5, default 3).
 func getDiscoveryQueryVariants() int {
-	if v := os.Getenv("DISCOVERY_QUERY_VARIANTS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
-			return n
-		}
-	}
-	return 3
+	return env.MustInt("DISCOVERY_QUERY_VARIANTS", 3)
 }
 
 // Per-provider circuit breakers. After FailThreshold consecutive failures the

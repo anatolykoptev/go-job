@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
@@ -332,12 +333,7 @@ func shouldRunGenericSearxng(platform string) bool {
 var perSourceTimeout = getPerSourceTimeout()
 
 func getPerSourceTimeout() time.Duration {
-	if v := os.Getenv("PER_SOURCE_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 90 * time.Second
+	return env.MustDuration("PER_SOURCE_TIMEOUT", 90*time.Second)
 }
 
 // runSource executes a single Source in a goroutine, recovering from panics so
