@@ -2,6 +2,15 @@
 
 All notable changes to go_job are documented here.
 
+## [1.7.0](https://github.com/anatolykoptev/go-job/compare/v1.6.0...v1.7.0) (2026-07-16)
+
+
+### Features
+
+* **esc2:** add scoring observability gauges and Prometheus alert rules ([#197](https://github.com/anatolykoptev/go-job/issues/197)) ([d0de1f4](https://github.com/anatolykoptev/go-job/commit/d0de1f40d440d61cab6a8103b7b3ac865bafcee2))
+* **huntworker:** PF-2 cross-cycle LLM circuit breaker via go-kit/breaker ([#198](https://github.com/anatolykoptev/go-job/issues/198)) ([f40e7db](https://github.com/anatolykoptev/go-job/commit/f40e7db1fd9ca21f5f578cab22cb6d425155fd7a))
+* **pf6:** redact Telegram bot token via transport + slog handler ([#196](https://github.com/anatolykoptev/go-job/issues/196)) ([8ca1671](https://github.com/anatolykoptev/go-job/commit/8ca167187a041ac1952228a793f0f00bd191827e))
+
 ## [1.6.0](https://github.com/anatolykoptev/go-job/compare/v1.5.0...v1.6.0) (2026-07-16)
 
 
