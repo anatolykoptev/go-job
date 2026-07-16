@@ -2,6 +2,17 @@
 
 All notable changes to go_job are documented here.
 
+## [1.7.1](https://github.com/anatolykoptev/go-job/compare/v1.7.0...v1.7.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **ats:** log fetch errors at WARN instead of DEBUG ([ac669c6](https://github.com/anatolykoptev/go-job/commit/ac669c6bbdce68147713929d72ff34b21265a5b2))
+* **pf-2:** add total safety cap on scheduled ingest to prevent OOM ([#223](https://github.com/anatolykoptev/go-job/issues/223)) ([0c6cbcf](https://github.com/anatolykoptev/go-job/commit/0c6cbcf47a743025519d6651218e3835f970674f))
+* **pf-3,pf-4:** log ERROR on empty LLM_API_KEY and DDG-without-ox-browser ([#224](https://github.com/anatolykoptev/go-job/issues/224)) ([4f38d3a](https://github.com/anatolykoptev/go-job/commit/4f38d3a083f637def92326e44b03f4b4fe9ae855))
+* **pf-5:** panic-safe breaker Record via defer in ATS fetchers ([#225](https://github.com/anatolykoptev/go-job/issues/225)) ([93ea78d](https://github.com/anatolykoptev/go-job/commit/93ea78d99afa4e57633974a76ba36cca8708a07f))
+* **pf6:** pass nil base to NewRedactingSlogHandler to avoid slog deadlock ([1715ad7](https://github.com/anatolykoptev/go-job/commit/1715ad733ab8250e123e587facbfece4383cb4c8))
+
 ## [1.7.0](https://github.com/anatolykoptev/go-job/compare/v1.6.0...v1.7.0) (2026-07-16)
 
 
