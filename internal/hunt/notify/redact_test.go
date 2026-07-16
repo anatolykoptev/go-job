@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 
@@ -84,6 +85,41 @@ func TestRedactingSlogHandler_RedactsTokenFromLog(t *testing.T) {
 	}
 	if !strings.Contains(output, "[REDACTED]") {
 		t.Errorf("log output does not contain [REDACTED]: %q", output)
+	}
+}
+
+// TestRedactingSlogHandler_NoDeadlockWithDefaultHandler is a regression test for
+// a deadlock that occurred when wrapping slog.Default().Handler() in
+// NewRedactingSlogHandler and installing it as the default via slog.SetDefault.
+//
+// The default handler writes via log.Logger.output, which calls back into
+// slog.Default().Handler() — if that's our wrapper, infinite recursion → deadlock.
+// The fix: pass nil as base so a standalone TextHandler is created instead.
+//
+// This test reproduces the exact production wiring (slog.SetDefault) and verifies
+// it does not deadlock within a reasonable timeout.
+func TestRedactingSlogHandler_NoDeadlockWithDefaultHandler(t *testing.T) {
+	token := "123:ABCsecret"
+
+	// Reproduce the exact production wiring from main.go:
+	//   slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(nil, token)))
+	// The nil base creates a standalone TextHandler, avoiding the recursion.
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+
+	slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(nil, token)))
+
+	// This must not deadlock. If it does, the test goroutine hangs and the
+	// timeout fires.
+	done := make(chan struct{})
+	go func() {
+		slog.Info("test message after SetDefault", slog.String("url", "https://api.telegram.org/bot"+token+"/getMe"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: slog.Info did not return within 5s after SetDefault with RedactingSlogHandler")
 	}
 }
 
