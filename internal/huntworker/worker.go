@@ -520,6 +520,7 @@ func scoreJobIfCreated(
 // Metric routing:
 //   - FitBand==FitBandStale   → IncrHuntScoreFiltered("recency")
 //   - FitBand==FitBandReject  → IncrHuntScoreFiltered("jaccard")
+//   - FitBand==FitBandQuality → IncrHuntScoreFiltered("quality")
 //   - LLMResult != ""         → IncrHuntScoreLLM(sr.LLMResult)
 //   - LLMResult=="ok"|"enum_clamp" → ObserveHuntFitScore(sr.FitScore)
 //
@@ -534,6 +535,8 @@ func observeScore(sr hunt.ScoreResult) {
 		engine.IncrHuntScoreFiltered("recency")
 	case hunt.FitBandReject:
 		engine.IncrHuntScoreFiltered("jaccard")
+	case hunt.FitBandQuality:
+		engine.IncrHuntScoreFiltered("quality")
 	}
 	if sr.LLMResult != "" {
 		engine.IncrHuntScoreLLM(sr.LLMResult)
