@@ -187,6 +187,11 @@ func Init(c Config) {
 	extractorInst = extract.New(extract.WithMaxContentLen(c.MaxContentChars))
 
 	// LLM client.
+	if c.LLMAPIKey == "" {
+		slog.Error("engine: LLM_API_KEY is empty — LLM-dependent features (hunt scoring, " +
+			"query expansion, summarization) will fail with auth errors. Set LLM_API_KEY " +
+			"or LLM_PROXY_KEYS to enable LLM features.")
+	}
 	llmOpts := []engllm.Option{
 		engllm.WithAPIBase(c.LLMAPIBase),
 		engllm.WithAPIKey(c.LLMAPIKey),
@@ -258,7 +263,7 @@ func Init(c Config) {
 	// collapsed discovery on 2026-06-22. Make it visible at startup rather than
 	// letting the operator discover it via an empty hunt table.
 	if c.DirectDDG && c.OxBrowserURL == "" {
-		slog.Warn("engine: DDG discovery enabled WITHOUT an ox-browser anti-bot tier — " +
+		slog.Error("engine: DDG discovery enabled WITHOUT an ox-browser anti-bot tier — " +
 			"a datacenter-IP 202 wall will silently zero discovery; set OX_BROWSER_URL")
 	}
 }
