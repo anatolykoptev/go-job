@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
 	"github.com/stretchr/testify/assert"
@@ -18,10 +19,10 @@ type fakeHuntNotifier struct {
 	jobs []hunt.Job
 }
 
-func (f *fakeHuntNotifier) NotifyNewBounty(b hunt.Bounty)                    {}
-func (f *fakeHuntNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult)     { f.jobs = append(f.jobs, j) }
-func (f *fakeHuntNotifier) NotifyNewFreelance(fr hunt.Freelance)             {}
-func (f *fakeHuntNotifier) NotifyNewSecurity(s hunt.Security)                {}
+func (f *fakeHuntNotifier) NotifyNewBounty(b hunt.Bounty)                {}
+func (f *fakeHuntNotifier) NotifyNewJob(j hunt.Job, _ *hunt.ScoreResult) { f.jobs = append(f.jobs, j) }
+func (f *fakeHuntNotifier) NotifyNewFreelance(fr hunt.Freelance)         {}
+func (f *fakeHuntNotifier) NotifyNewSecurity(s hunt.Security)            {}
 
 // TestWorker_SetNotifier_Wires verifies SetNotifier assigns the notifier field.
 func TestWorker_SetNotifier_Wires(t *testing.T) {
@@ -230,4 +231,203 @@ func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testi
 	// Critical: SetJobScore must NOT be called — scored_at stays NULL so the
 	// sweep can pick up the job in the next cycle.
 	assert.Equal(t, 0, store.callCount(), "SetJobScore must NOT be called when circuit breaker trips — job must stay in unscored pool (scored_at IS NULL)")
+}
+
+// fakeUnscoredJobStore implements unscoredJobStore for sweep tests.
+// It returns a fixed set of jobs from UnscoredOpenJobs and records SetJobScore
+// calls via the embedded fakeScoreSetter.
+type fakeUnscoredJobStore struct {
+	fakeScoreSetter
+	jobs []hunt.Job
+	err  error
+}
+
+func (f *fakeUnscoredJobStore) UnscoredOpenJobs(_ context.Context, _ int, _ bool) ([]hunt.Job, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.jobs, nil
+}
+
+// TestRunUnscoredSweep_SetsGauges verifies that runUnscoredSweep sets the
+// gojob_hunt_unscored_jobs_count and gojob_hunt_unscored_jobs_max_age_seconds
+// gauges from the UnscoredOpenJobs result (no extra SQL query).
+//
+// RED-on-revert: remove the gauge-setting block in runUnscoredSweep → gauges
+// stay at 0 (or missing) and this test fails.
+func TestRunUnscoredSweep_SetsGauges(t *testing.T) {
+	engine.InitTestRegistry()
+
+	// Two unscored jobs with different first_seen_at timestamps.
+	oldest := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-30 * time.Minute)
+	jobs := []hunt.Job{
+		{ID: 1, FirstSeenAt: oldest},
+		{ID: 2, FirstSeenAt: newer},
+	}
+
+	store := &fakeUnscoredJobStore{
+		jobs: jobs,
+	}
+	llmCalls := 0
+
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
+
+	// Count gauge must reflect the number of jobs returned.
+	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
+	assert.Equal(t, float64(2), countVal,
+		"unscored jobs count gauge must be set to the number of jobs returned by UnscoredOpenJobs")
+
+	// Max-age gauge must reflect the age of the OLDEST job (min first_seen_at).
+	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge)
+	expectedAge := time.Since(oldest).Seconds()
+	// Allow a small tolerance for execution time between setting and checking.
+	assert.InDelta(t, expectedAge, maxAgeVal, 5.0,
+		"unscored jobs max-age gauge must be set to the age of the oldest unscored job (≈ %v seconds)", expectedAge)
+}
+
+// TestScoringDegraded_LLMError_SetsGauge verifies that when scoreJobIfCreated
+// encounters an LLM error (LLM returns error), the fail-open path is taken and
+// engine.SetHuntScoringDegraded(true) is called — the gojob_hunt_scoring_degraded
+// gauge becomes 1.
+//
+// This exercises the REAL code path in scoreJobIfCreated → score.Score →
+// runLLMStage → failOpen("llm_error"), not a hand-copy.
+//
+// RED-on-revert: remove the SetHuntScoringDegraded(true) call in the
+// llm_error/parse_fail branch of scoreJobIfCreated → gauge stays 0, test fails.
+func TestScoringDegraded_LLMError_SetsGauge(t *testing.T) {
+	engine.InitTestRegistry()
+	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+	t.Setenv("HUNT_SCORE_MIN_JACCARD", "0") // pass Jaccard gate so LLM stage is reached
+
+	store := &fakeScoreSetter{}
+	postedAt := time.Now().Add(-1 * time.Hour)
+	job := hunt.Job{
+		ID:          77,
+		Title:       "Senior Go Engineer",
+		Description: "Go Rust PostgreSQL distributed systems",
+		PostedAt:    &postedAt,
+	}
+	prof := &score.ScoringProfile{
+		Seniority:  "Staff",
+		CoreSkills: []string{"Go", "Rust"},
+	}
+	deps := score.ScorerDeps{
+		Jaccard: func(kw, text string) float64 { return 50 },
+		LLM: func(_ context.Context, _ string) (string, error) {
+			return "", assert.AnError // LLM returns error → llm_error fail-open path
+		},
+	}
+
+	result := scoreJobIfCreated(context.Background(), hunt.OutcomeCreated, job, prof, deps, store)
+
+	assert.Equal(t, "llm_error", result.LLMResult,
+		"LLM error must produce LLMResult='llm_error' (fail-open path)")
+	assert.Equal(t, hunt.FitBandUnscored, result.FitBand,
+		"llm_error fail-open must land as unscored")
+
+	got := engine.GetGaugeValue(engine.MetricHuntScoringDegraded)
+	assert.Equal(t, float64(1), got,
+		"gojob_hunt_scoring_degraded gauge must be 1 when the llm_error fail-open path is taken in scoreJobIfCreated")
+}
+
+// TestScoringDegraded_ParseFail_SetsGauge verifies that when scoreJobIfCreated
+// encounters a JSON parse failure (LLM returns non-JSON), the fail-open path is
+// taken and engine.SetHuntScoringDegraded(true) is called — the
+// gojob_hunt_scoring_degraded gauge becomes 1.
+//
+// RED-on-revert: remove the SetHuntScoringDegraded(true) call in the
+// llm_error/parse_fail branch of scoreJobIfCreated → gauge stays 0, test fails.
+func TestScoringDegraded_ParseFail_SetsGauge(t *testing.T) {
+	engine.InitTestRegistry()
+	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+	t.Setenv("HUNT_SCORE_MIN_JACCARD", "0") // pass Jaccard gate so LLM stage is reached
+
+	store := &fakeScoreSetter{}
+	postedAt := time.Now().Add(-1 * time.Hour)
+	job := hunt.Job{
+		ID:          78,
+		Title:       "Senior Go Engineer",
+		Description: "Go Rust PostgreSQL distributed systems",
+		PostedAt:    &postedAt,
+	}
+	prof := &score.ScoringProfile{
+		Seniority:  "Staff",
+		CoreSkills: []string{"Go", "Rust"},
+	}
+	deps := score.ScorerDeps{
+		Jaccard: func(kw, text string) float64 { return 50 },
+		LLM: func(_ context.Context, _ string) (string, error) {
+			return "Sorry, I cannot score this job.", nil // non-JSON → parse_fail fail-open path
+		},
+	}
+
+	result := scoreJobIfCreated(context.Background(), hunt.OutcomeCreated, job, prof, deps, store)
+
+	assert.Equal(t, "parse_fail", result.LLMResult,
+		"non-JSON LLM response must produce LLMResult='parse_fail' (fail-open path)")
+	assert.Equal(t, hunt.FitBandUnscored, result.FitBand,
+		"parse_fail fail-open must land as unscored")
+
+	got := engine.GetGaugeValue(engine.MetricHuntScoringDegraded)
+	assert.Equal(t, float64(1), got,
+		"gojob_hunt_scoring_degraded gauge must be 1 when the parse_fail fail-open path is taken in scoreJobIfCreated")
+}
+
+// TestScoringDegraded_HealthyLLM_DoesNotSetGauge verifies that a successful LLM
+// score does NOT set the degraded gauge (it stays 0). This is the negative
+// control for the two tests above.
+func TestScoringDegraded_HealthyLLM_DoesNotSetGauge(t *testing.T) {
+	engine.InitTestRegistry()
+	t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
+	t.Setenv("HUNT_SCORE_MIN_JACCARD", "0")
+
+	store := &fakeScoreSetter{}
+	postedAt := time.Now().Add(-1 * time.Hour)
+	job := hunt.Job{
+		ID:          79,
+		Title:       "Senior Go Engineer",
+		Description: "Go Rust PostgreSQL distributed systems",
+		PostedAt:    &postedAt,
+	}
+	prof := &score.ScoringProfile{
+		Seniority:  "Staff",
+		CoreSkills: []string{"Go", "Rust"},
+	}
+	deps := score.ScorerDeps{
+		Jaccard: func(kw, text string) float64 { return 50 },
+		LLM: func(_ context.Context, _ string) (string, error) {
+			return `{"fit_score":80,"fit_reasons":["Go match"],"fit_gaps":[],"success_band":"MODERATE","success_reasoning":"good match","over_under":"well_matched"}`, nil
+		},
+	}
+
+	result := scoreJobIfCreated(context.Background(), hunt.OutcomeCreated, job, prof, deps, store)
+
+	assert.Equal(t, "ok", result.LLMResult, "successful LLM must produce LLMResult='ok'")
+
+	got := engine.GetGaugeValue(engine.MetricHuntScoringDegraded)
+	assert.Equal(t, float64(0), got,
+		"gojob_hunt_scoring_degraded gauge must stay 0 when LLM scoring succeeds (no fail-open)")
+}
+
+// TestRunUnscoredSweep_SetsGauges_EmptyResult verifies the gauges are set to 0
+// when UnscoredOpenJobs returns no jobs.
+func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
+	engine.InitTestRegistry()
+
+	store := &fakeUnscoredJobStore{
+		jobs: nil,
+	}
+	llmCalls := 0
+
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
+
+	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
+	assert.Equal(t, float64(0), countVal,
+		"unscored jobs count gauge must be 0 when no unscored jobs are found")
+
+	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge)
+	assert.Equal(t, float64(0), maxAgeVal,
+		"unscored jobs max-age gauge must be 0 when no unscored jobs are found")
 }

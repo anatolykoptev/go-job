@@ -260,6 +260,10 @@ func (w *Worker) runCycle(ctx context.Context) {
 	start := time.Now()
 	slog.Info("hunt worker: cycle start", slog.Int("queries", len(w.queries)))
 
+	// ESC-2: reset scoring degradation flag at cycle start. Set to 1 during the
+	// cycle when the circuit breaker trips or the fail-open path is taken.
+	engine.SetHuntScoringDegraded(false)
+
 	platforms := []struct {
 		name   string
 		search func(ctx context.Context, query, loc string, limit int) ([]engine.SearxngResult, error)
@@ -388,6 +392,8 @@ func scoreJobWithLimit(
 		// stranding it without LLM scoring. The sweep (runUnscoredSweep)
 		// will pick it up in the next cycle when budget is available.
 		engine.IncrHuntScoreBreakerTrips()
+		// ESC-2: breaker open = scoring degraded.
+		engine.SetHuntScoringDegraded(true)
 		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored}
 		return &result
 	}
@@ -428,6 +434,12 @@ func scoreJobIfCreated(
 	}
 
 	result := score.Score(ctx, profile, job, deps)
+
+	// ESC-2: signal scoring degradation when the fail-open path is taken
+	// (LLM error or JSON parse failure → job lands as unscored).
+	if result.LLMResult == "llm_error" || result.LLMResult == "parse_fail" {
+		engine.SetHuntScoringDegraded(true)
+	}
 
 	_, err := retry.Do(ctx, retry.Options{
 		MaxAttempts:  3,
@@ -535,6 +547,24 @@ func runUnscoredSweep(
 		slog.WarnContext(ctx, "hunt worker: sweep UnscoredOpenJobs failed", slog.Any("error", err))
 		return
 	}
+
+	// ESC-2: set unscored-jobs gauges from the sweep result (no extra SQL query).
+	// Aggregate count and oldest first_seen_at in Go from the UnscoredOpenJobs
+	// result (which returns first_seen_at and is ordered ASC by first_seen_at).
+	count := float64(len(jobs))
+	var maxAge float64
+	if count > 0 {
+		var oldest time.Time
+		for _, j := range jobs {
+			if oldest.IsZero() || j.FirstSeenAt.Before(oldest) {
+				oldest = j.FirstSeenAt
+			}
+		}
+		maxAge = time.Since(oldest).Seconds()
+	}
+	engine.SetHuntUnscoredJobsCount(count)
+	engine.SetHuntUnscoredJobsMaxAge(maxAge)
+
 	if len(jobs) == 0 {
 		return
 	}
