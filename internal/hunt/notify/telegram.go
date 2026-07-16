@@ -17,16 +17,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/anatolykoptev/go-kit/env"
-	kit "github.com/anatolykoptev/go-kit/telegram"
-	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
-	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"github.com/anatolykoptev/go-kit/env"
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
+	kit "github.com/anatolykoptev/go-kit/telegram"
+	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
+	"github.com/anatolykoptev/go-kit/telegram/tgapi5"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -41,39 +41,68 @@ import (
 // PASSES recency (so it never overlaps a terminal "stale"/"no_date" drop).
 type ProductNotifier struct {
 	sink    kitnotify.ProductSink
-	chatIDs []int64       // explicit recipient list; empty = use sink's defaultChatIDs
-	maxAge  time.Duration // recency gate for NotifyNewJob; 0 means use default (48h)
-	token   string        // bot token for health checks (empty when constructed via NewFromSink)
+	chatIDs []int64              // explicit recipient list; empty = use sink's defaultChatIDs
+	maxAge  time.Duration        // recency gate for NotifyNewJob; 0 means use default (48h)
+	token   string               // bot token for health checks (empty when constructed via NewFromSink)
 	OnSend  func(outcome string) // optional metric hook
 }
 
 // defaultMaxAge is the recency gate applied when HUNT_NOTIFY_MAX_AGE is not set.
 const defaultMaxAge = 48 * time.Hour
 
-// NewFromEnv constructs a ProductNotifier using go-kit's NewProductSinkFromEnv.
+// NewFromEnv constructs a ProductNotifier with a redacting HTTP client so the
+// bot token is never leaked in *url.Error messages (PF-6).
+//
+// Instead of calling kitnotify.NewProductSinkFromEnv (which creates its own bot
+// via tgbotapi.NewBotAPI with a plain http.Client), we build the bot locally
+// with a RedactingTransport-wrapped client and then hand the bot to
+// kitnotify.NewProductSink.
 //
 // Required env:
-//   - TELEGRAM_BOT_TOKEN   — bot token (read by go-kit)
-//   - HUNT_NOTIFY_CHAT_ID  — default recipient chat ID (prefix="HUNT")
+//   - TELEGRAM_BOT_TOKEN    — bot token (env.Required; fatal if missing)
+//   - HUNT_NOTIFY_CHAT_ID   — default recipient chat ID (parsed via
+//     telegram.ParseChatID; optional but recommended)
 //
 // Optional env:
-//   - HUNT_NOTIFY_MAX_AGE  — max posting age for job notifications (default 48h);
+//   - HUNT_NOTIFY_MAX_AGE   — max posting age for job notifications (default 48h);
 //     postings older than this are silently skipped; nil PostedAt is also skipped.
 //
 // m may be nil (go-kit/metrics.Registry is nil-safe).
 // Returns an error if TELEGRAM_BOT_TOKEN is missing or the BotAPI handshake fails.
 func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
-	sink, err := kitnotify.NewProductSinkFromEnv("HUNT", m)
+	token, err := env.Required("TELEGRAM_BOT_TOKEN")
 	if err != nil {
 		return nil, fmt.Errorf("hunt notify: %w", err)
 	}
-	// Use go-kit's env.Duration for consistent parsing with scorer.go.
-	// env.Duration accepts Go duration strings ("48h") AND falls back to
-	// float seconds ("48" → 48s) for backward compat. On parse failure or
-	// unset, it silently falls back to the default — no startup crash.
+
+	// Build the bot with a redacting HTTP client so *url.Error failures never
+	// expose the token in their URL field.
+	redactingClient := newRedactingClient(token)
+	bot, err := tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, redactingClient)
+	if err != nil {
+		return nil, fmt.Errorf("hunt notify: create bot: %w", err)
+	}
+
+	sender := tgapi5.NewSender(bot, m)
+
+	opts := []kitnotify.ProductOption{kitnotify.WithProductMetrics(m)}
+	sink := kitnotify.NewProductSink(sender, opts...)
+
+	// Read HUNT_NOTIFY_CHAT_ID and inject it as the notifier's explicit
+	// recipient list. go-kit's withDefaultChatIDs is unexported, so we set
+	// chatIDs on the ProductNotifier instead — dispatch passes them as
+	// Product.ChatIDs which takes precedence over the sink's default.
+	var chatIDs []int64
+	if raw := env.Str("HUNT_NOTIFY_CHAT_ID", ""); raw != "" {
+		id, parseErr := kit.ParseChatID(raw)
+		if parseErr != nil {
+			return nil, fmt.Errorf("hunt notify: parse HUNT_NOTIFY_CHAT_ID=%q: %w", raw, parseErr)
+		}
+		chatIDs = []int64{id}
+	}
+
 	maxAge := env.Duration("HUNT_NOTIFY_MAX_AGE", defaultMaxAge)
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
-	return &ProductNotifier{sink: sink, maxAge: maxAge, token: token}, nil
+	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge, token: token}, nil
 }
 
 // NewFromSink constructs a ProductNotifier from a pre-built ProductSink.
@@ -175,7 +204,7 @@ func (n *ProductNotifier) HealthCheck(ctx context.Context) error {
 	if n.token == "" {
 		return nil // no token to validate (test constructor)
 	}
-	bot, err := tgbotapi.NewBotAPI(n.token)
+	bot, err := tgbotapi.NewBotAPIWithClient(n.token, tgbotapi.APIEndpoint, newRedactingClient(n.token))
 	if err != nil {
 		return fmt.Errorf("hunt notify: health check create bot: %w", err)
 	}
