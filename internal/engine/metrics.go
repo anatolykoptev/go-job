@@ -265,6 +265,28 @@ const (
 	// No labels — cardinality guard. Pre-touched at 1 in FormatMetrics.
 	// Alert: gojob_hunt_notify_health == 0 for >5m → Telegram bot token invalid.
 	MetricHuntNotifyHealth = "hunt_notify_health"
+
+	// MetricHuntUnscoredJobsCount is the gauge gojob_hunt_unscored_jobs_count.
+	// Set by the hunt worker's end-of-cycle unscored sweep to the number of open
+	// jobs with scored_at IS NULL (aggregated from the UnscoredOpenJobs result).
+	// No labels — cardinality guard. Pre-touched at 0 in FormatMetrics.
+	// Alert: sustained non-zero + rising max-age → scoring pipeline stalled.
+	MetricHuntUnscoredJobsCount = "hunt_unscored_jobs_count"
+
+	// MetricHuntUnscoredJobsMaxAge is the gauge
+	// gojob_hunt_unscored_jobs_max_age_seconds. Set by the hunt worker's unscored
+	// sweep to the age (in seconds) of the oldest unscored open job.
+	// No labels — cardinality guard. Pre-touched at 0 in FormatMetrics.
+	// Alert: > 7200 (2h) for 5m → scoring freeze/stall (GojobHuntScoringFreezeStall).
+	MetricHuntUnscoredJobsMaxAge = "hunt_unscored_jobs_max_age_seconds"
+
+	// MetricHuntScoringDegraded is the gauge gojob_hunt_scoring_degraded.
+	// 0 = healthy, 1 = degraded (circuit breaker open or fail-open path taken:
+	// llm_error / parse_fail in scoreJobIfCreated). Reset to 0 at the start of
+	// each hunt worker cycle. No labels — cardinality guard.
+	// Pre-touched at 0 in FormatMetrics.
+	// Alert: == 1 for 10m → GojobHuntScoringDegraded (silent_downgrade).
+	MetricHuntScoringDegraded = "hunt_scoring_degraded"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -303,6 +325,16 @@ func GetMetrics() map[string]int64 {
 	m["cache_hits_total"] = hits
 	m["cache_misses_total"] = misses
 	return m
+}
+
+// GetGaugeValue returns the current value of a gauge metric by name.
+// Returns 0 if the registry is not initialised or the gauge has not been set.
+// Exported for test verification from sub-packages (e.g. huntworker).
+func GetGaugeValue(name string) float64 {
+	if reg == nil {
+		return 0
+	}
+	return reg.GaugeSnapshot()[name]
 }
 
 // FormatMetrics returns metrics as a simple text format for HTTP endpoint.
@@ -426,6 +458,11 @@ func FormatMetrics() string {
 	for _, result := range []string{"ok", "weak", "skipped_store"} {
 		keys = append(keys, MetricVacancyIngest+"{result="+result+"}")
 	}
+	// ESC-2 observability gauges pre-touched at 0 so they appear on the flat
+	// text endpoint before the first sweep/cycle. No labels — single series each.
+	keys = append(keys, MetricHuntUnscoredJobsCount)
+	keys = append(keys, MetricHuntUnscoredJobsMaxAge)
+	keys = append(keys, MetricHuntScoringDegraded)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -695,10 +732,13 @@ var ErrDiscoveryDegraded = errors.New("discovery: raw_web_search degraded")
 // validDiscoverySources bounds the source label for hunt_discovery_source_total.
 // "go-search"        = fused multi-source path (Brave-API + ox-browser + DDG via go-search).
 // "local-fallback"   = degraded DDG/Marginalia-only path (go-job's own SearchDirect);
-//                      triggered by a transport/connection error from go-search.
+//
+//	triggered by a transport/connection error from go-search.
+//
 // "degraded-fallback"= go-search returned HTTP 200 + Degraded=true (partial fan-out
-//                      failure); also falls back to local but is observably distinct
-//                      from a transport error and separable in dashboards/alerts.
+//
+//	failure); also falls back to local but is observably distinct
+//	from a transport error and separable in dashboards/alerts.
 var validDiscoverySources = map[string]bool{
 	"go-search": true, "local-fallback": true, "degraded-fallback": true,
 }
@@ -834,6 +874,42 @@ func SetHuntNotifyHealth(healthy bool) {
 		v = 1.0
 	}
 	reg.Gauge(MetricHuntNotifyHealth).Set(v)
+}
+
+// SetHuntUnscoredJobsCount sets gojob_hunt_unscored_jobs_count to val.
+// Called by the hunt worker's unscored sweep after fetching UnscoredOpenJobs
+// (aggregated from the result in Go — no extra SQL query).
+// No-op before engine.Init() (reg is nil; Gauge is nil-safe).
+func SetHuntUnscoredJobsCount(val float64) {
+	if reg == nil {
+		return
+	}
+	reg.Gauge(MetricHuntUnscoredJobsCount).Set(val)
+}
+
+// SetHuntUnscoredJobsMaxAge sets gojob_hunt_unscored_jobs_max_age_seconds to val.
+// Called by the hunt worker's unscored sweep with the age (in seconds) of the
+// oldest unscored open job. No-op before engine.Init() (reg is nil; Gauge is nil-safe).
+func SetHuntUnscoredJobsMaxAge(val float64) {
+	if reg == nil {
+		return
+	}
+	reg.Gauge(MetricHuntUnscoredJobsMaxAge).Set(val)
+}
+
+// SetHuntScoringDegraded sets gojob_hunt_scoring_degraded to 1 (degraded) or
+// 0 (healthy). Called by the hunt worker: reset to 0 at cycle start, set to 1
+// when the circuit breaker trips or the fail-open path is taken (llm_error or
+// parse_fail in scoreJobIfCreated). No-op before engine.Init() (reg is nil).
+func SetHuntScoringDegraded(degraded bool) {
+	if reg == nil {
+		return
+	}
+	v := 0.0
+	if degraded {
+		v = 1.0
+	}
+	reg.Gauge(MetricHuntScoringDegraded).Set(v)
 }
 
 // ObserveHuntFitScore records a single fit-score observation into the
