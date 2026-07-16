@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.9.0](https://github.com/anatolykoptev/go-job/compare/v1.8.0...v1.9.0) (2026-07-16)
+
+
+### Features
+
+* **quality:** add deterministic job quality score (0-100, no LLM) ([#229](https://github.com/anatolykoptev/go-job/issues/229)) ([9aa5d8c](https://github.com/anatolykoptev/go-job/commit/9aa5d8c746d4d5d93be924d99a9a178f021cd620))
+
 ## [1.8.0](https://github.com/anatolykoptev/go-job/compare/v1.7.1...v1.8.0) (2026-07-16)
 
 
