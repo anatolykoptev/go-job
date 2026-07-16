@@ -26,22 +26,22 @@ const (
 
 // Client is an OpenAI-compatible LLM client with retry and fallback key support.
 type Client struct {
-	baseURL           string
-	apiKey            string
-	model             string
-	maxTokens         int
-	temperature       *float64 // nil = omit from request (some models reject it)
-	httpClient        *http.Client
-	fallbackKeys      []string
-	maxRetries        int
-	endpoints         []Endpoint
-	middleware        []Middleware
-	endpointObserver  EndpointAttemptObserver
-	perAttemptTimeout time.Duration  // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
-	cooldown           *modelCooldown   // nil = disabled; no per-model cooldown, behavior byte-identical to pre-feature
-	selectionStrategy  SelectionStrategy // default SelectionPriority
-	rander            *rand.Rand        // nil = global source; injectable for deterministic tests
-	modelWeights       map[string]int    // nil = all models default weight 1 (SelectionWeighted)
+	baseURL               string
+	apiKey                string
+	model                 string
+	maxTokens             int
+	temperature           *float64 // nil = omit from request (some models reject it)
+	httpClient            *http.Client
+	fallbackKeys          []string
+	maxRetries            int
+	endpoints             []Endpoint
+	middleware            []Middleware
+	endpointObserver      EndpointAttemptObserver
+	perAttemptTimeout     time.Duration     // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
+	cooldown              *modelCooldown    // nil = disabled; no per-model cooldown, behavior byte-identical to pre-feature
+	selectionStrategy     SelectionStrategy // default SelectionPriority
+	rander                *rand.Rand        // nil = global source; injectable for deterministic tests
+	modelWeights          map[string]int    // nil = all models default weight 1 (SelectionWeighted)
 	reasoningEffortModels []string          // nil = pass-through; non-empty = per-endpoint allowlist gating in attemptEndpoint
 }
 

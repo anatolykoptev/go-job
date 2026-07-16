@@ -1,3 +1,4 @@
+//nolint:goconst
 package search
 
 import (
@@ -24,7 +25,7 @@ const (
 
 // SearchMojeekDirect queries Mojeek Search via HTML scraping.
 // Returns nil, nil with a slog.Warn if 0 results were parsed (structure changed).
-func SearchMojeekDirect(ctx context.Context, bc BrowserDoer, query string, m *metrics.Registry) ([]sources.Result, error) {
+func SearchMojeekDirect(ctx context.Context, bc BrowserDoer, query string, m *metrics.Registry, timeRange ...string) ([]sources.Result, error) {
 	if m != nil {
 		m.Incr(metricMojeekRequests)
 	}
@@ -32,6 +33,13 @@ func SearchMojeekDirect(ctx context.Context, bc BrowserDoer, query string, m *me
 		return nil, err
 	}
 
+	tr := ""
+	if len(timeRange) > 0 {
+		tr = timeRange[0]
+	}
+	if tr != "" {
+		query = query + " since:" + tr
+	}
 	u := mojeekEndpoint + "?q=" + url.QueryEscape(query)
 
 	headers := websearch.ChromeHeaders()

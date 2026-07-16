@@ -1,3 +1,4 @@
+//nolint:goconst
 package search
 
 import (
@@ -5,11 +6,19 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/anatolykoptev/go-engine/fetch"
 	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/websearch"
 )
+
+// defaultOxRenderDeadline is the per-render-call timeout applied in runOxEngine
+// when DirectConfig.OxRenderDeadline is zero. 8 s bounds a stuck stealth render
+// (e.g. DDG anti-bot navigation stall ~20 s) so a hung engine never blocks the
+// synchronous search response for the full go-wowa navigation deadline.
+const defaultOxRenderDeadline = 8 * time.Second
 
 // runDDG waits on the optional rate limiter then fetches DDG results.
 func runDDG(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
@@ -20,7 +29,7 @@ func runDDG(ctx context.Context, cfg DirectConfig, query string) ([]sources.Resu
 		}
 	}
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchDDGDirect(ctx, cfg.Browser, query, "wt-wt", cfg.Metrics)
+		return SearchDDGDirect(ctx, cfg.Browser, query, "wt-wt", cfg.Metrics, cfg.TimeRange)
 	})
 }
 
@@ -33,7 +42,7 @@ func runStartpage(ctx context.Context, cfg DirectConfig, query, language string)
 		}
 	}
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchStartpageDirect(ctx, cfg.Browser, query, language, cfg.Metrics)
+		return SearchStartpageDirect(ctx, cfg.Browser, query, language, cfg.Metrics, cfg.TimeRange)
 	})
 }
 
@@ -46,7 +55,7 @@ func runBrave(ctx context.Context, cfg DirectConfig, query string) ([]sources.Re
 		}
 	}
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchBraveDirect(ctx, cfg.Browser, query, cfg.Metrics)
+		return SearchBraveDirect(ctx, cfg.Browser, query, cfg.Metrics, cfg.TimeRange)
 	})
 }
 
@@ -197,7 +206,7 @@ func runReddit(ctx context.Context, cfg DirectConfig, query string) ([]sources.R
 
 	// LEGACY PATH (all tier fields nil): unchanged behaviour.
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchRedditDirect(ctx, cfg.Browser, query, cfg.Metrics)
+		return SearchRedditDirect(ctx, cfg.Browser, query, cfg.Metrics, cfg.TimeRange)
 	})
 }
 
@@ -210,7 +219,7 @@ func runBing(ctx context.Context, cfg DirectConfig, query string) ([]sources.Res
 		}
 	}
 	return fetch.RetryDo(ctx, cfg.Retry, func() ([]sources.Result, error) {
-		return SearchBingDirect(ctx, cfg.Browser, query, cfg.Metrics)
+		return SearchBingDirect(ctx, cfg.Browser, query, cfg.Metrics, cfg.TimeRange)
 	})
 }
 
@@ -245,5 +254,196 @@ func runMojeek(ctx context.Context, cfg DirectConfig, query string) ([]sources.R
 	if !isNilInterface(cfg.MojeekBrowser) {
 		browser = cfg.MojeekBrowser
 	}
-	return SearchMojeekDirect(ctx, browser, query, cfg.Metrics)
+	return SearchMojeekDirect(ctx, browser, query, cfg.Metrics, cfg.TimeRange)
+}
+
+// runOxEscalation is the post-fan-out captcha-escalation tier that routes
+// captcha-blocked search engines through the ox-browser stealth Chromium (/fetch).
+//
+// Dormant-by-default invariant (CRITICAL): when OxBrowserFetch, OxEscalate, or
+// BlockCache are nil/empty, this function returns nil with zero ox-browser calls —
+// byte-identical to the pre-P2 SearchDirect path.
+//
+// Post-fan-out placement: ox-browser /fetch is ~30s; runSourceWithTimeout cancels
+// sources at 6s, so escalation MUST run after collectResults, on the original ctx.
+//
+// EarlyReturnAt short-circuit: if the fan-out already produced ≥earlyAt results,
+// skip escalation (existing results suffice — no need to burn Chromium).
+//
+// Concurrency: a channel-based TryAcquire semaphore (cap=OxConcurrency, default 2)
+// bounds concurrent Chromium calls within one SearchDirect invocation. Excess
+// requests are skipped (not queued) to avoid stacking on the shared 4-core resource.
+//
+// Allowlist v1 = {ddg, brave} — GET-fetchable. Startpage is POST-only → excluded
+// (ADR-6: widening /fetch to method+body is a guarded one-way SSRF door).
+func runOxEscalation(ctx context.Context, cfg DirectConfig, query string, mergedLen, earlyAt int) []sources.Result {
+	if cfg.OxBrowserFetch == nil || len(cfg.OxEscalate) == 0 || cfg.BlockCache == nil {
+		return nil
+	}
+	if mergedLen >= earlyAt {
+		slog.Debug("ox escalation: fan-out threshold met, skipping",
+			slog.Int("merged", mergedLen), slog.Int("earlyAt", earlyAt))
+		return nil
+	}
+
+	var eligible []string
+	for _, label := range cfg.OxEscalate {
+		if cfg.BlockCache.IsBlocked(label) {
+			eligible = append(eligible, label)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+
+	slog.Info("ox escalation: starting", slog.Int("engines", len(eligible)))
+
+	concurrency := cfg.OxConcurrency
+	if concurrency <= 0 {
+		concurrency = 2
+	}
+	// Channel-based TryAcquire semaphore: send = acquire, recv = release.
+	sem := make(chan struct{}, concurrency)
+
+	type oxOut struct{ results []sources.Result }
+	resultCh := make(chan oxOut, len(eligible))
+	var wg sync.WaitGroup
+
+	for _, label := range eligible {
+		// TryAcquire: non-blocking — skip if semaphore full to avoid queuing
+		// on the shared Chromium resource (go-wowa ContextPool is the authoritative
+		// server-side bound; client TryAcquire is a courtesy first-line cap).
+		select {
+		case sem <- struct{}{}:
+		default:
+			slog.Debug("ox escalation: semaphore full, skipping engine", slog.String("engine", label))
+			recordOxEscalation(cfg.Metrics, label, "skipped")
+			continue
+		}
+		wg.Add(1)
+		go func(l string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if cfg.Metrics != nil {
+				cfg.Metrics.Gauge(metricOxInflight).Inc()
+				defer cfg.Metrics.Gauge(metricOxInflight).Dec()
+			}
+			res, outcome := runOxEngine(ctx, cfg, query, l)
+			recordOxEscalation(cfg.Metrics, l, outcome)
+			if len(res) > 0 {
+				resultCh <- oxOut{res}
+			} else {
+				// Render did not revive the engine (outcome=empty or fail).
+				// Unmark so the next direct fan-out re-probes instead of
+				// staying pinned for the full 10 m TTL. If render had
+				// returned results, the Mark stays — engine is genuinely
+				// blocked and render is the working path.
+				cfg.BlockCache.Unmark(l)
+			}
+		}(label)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	var all []sources.Result
+	for r := range resultCh {
+		all = append(all, r.results...)
+	}
+	return all
+}
+
+// runOxEngine dispatches to the engine-specific ox-browser SERP runner.
+// Returns (results, outcome) where outcome is "ok", "empty", or "fail".
+//
+// Per-render deadline: a context.WithTimeout is applied before each OxBrowserFetch
+// call so a hung render (e.g. DDG anti-bot stall ~20 s) fails fast and returns
+// outcome="fail" instead of blocking the synchronous SearchDirect response.
+// Each engine's call is independently bounded, so one slow engine cannot eat the
+// deadline of a fast one. On deadline expiry OxBrowserFetch returns an error →
+// outcome="fail" → runOxEscalation records fail + Unmarks the engine (self-heal).
+func runOxEngine(ctx context.Context, cfg DirectConfig, query, label string) ([]sources.Result, string) {
+	deadline := cfg.OxRenderDeadline
+	if deadline <= 0 {
+		deadline = defaultOxRenderDeadline
+	}
+	rctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	switch label {
+	case "ddg":
+		return runOxDDG(rctx, cfg, query)
+	case "brave":
+		return runOxBrave(rctx, cfg, query)
+	case "bing":
+		return runOxBing(rctx, cfg, query)
+	default:
+		slog.Warn("ox escalation: unsupported engine", slog.String("engine", label))
+		return nil, "fail"
+	}
+}
+
+// runOxDDG fetches and parses a DuckDuckGo HTML SERP via ox-browser stealth Chromium.
+// URL built by websearch.DDGHTMLURL (single-owned in websearch per ADR-8).
+// Parsed by websearch.ParseDDGHTML (proven in prod via searchViaOxBrowser).
+func runOxDDG(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, string) {
+	u := websearch.DDGHTMLURL(query, websearch.SearchOpts{TimeRange: cfg.TimeRange})
+	html, err := cfg.OxBrowserFetch(ctx, u)
+	if err != nil {
+		slog.Warn("ox escalation ddg: fetch error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	results, err := websearch.ParseDDGHTML([]byte(html))
+	if err != nil {
+		slog.Warn("ox escalation ddg: parse error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	if len(results) == 0 {
+		return nil, "empty"
+	}
+	return results, "ok"
+}
+
+// runOxBrave fetches and parses a Brave Search HTML SERP via ox-browser stealth Chromium.
+// URL built by websearch.BraveSearchURL; parsed by websearch.ParseBraveHTML.
+// Brave is GET-fetchable (ADR-6); Startpage excluded (POST-only → SSRF risk).
+func runOxBrave(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, string) {
+	u := websearch.BraveSearchURL(query, websearch.SearchOpts{TimeRange: cfg.TimeRange})
+	html, err := cfg.OxBrowserFetch(ctx, u)
+	if err != nil {
+		slog.Warn("ox escalation brave: fetch error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	results, err := websearch.ParseBraveHTML([]byte(html))
+	if err != nil {
+		slog.Warn("ox escalation brave: parse error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	if len(results) == 0 {
+		return nil, "empty"
+	}
+	return results, "ok"
+}
+
+// runOxBing fetches and parses a Bing HTML SERP via ox-browser stealth Chromium.
+// URL built by websearch.BingSearchURL (single-owned in websearch per ADR-8).
+// Parsed by websearch.ParseBingHTML (reused from the Bing scraper path).
+// Bing is GET-fetchable (ADR-6); Startpage excluded (POST-only → SSRF risk).
+func runOxBing(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, string) {
+	u := websearch.BingSearchURL(query, websearch.SearchOpts{TimeRange: cfg.TimeRange})
+	html, err := cfg.OxBrowserFetch(ctx, u)
+	if err != nil {
+		slog.Warn("ox escalation bing: fetch error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	results, err := websearch.ParseBingHTML([]byte(html))
+	if err != nil {
+		slog.Warn("ox escalation bing: parse error", slog.Any("error", err))
+		return nil, "fail"
+	}
+	if len(results) == 0 {
+		return nil, "empty"
+	}
+	return results, "ok"
 }

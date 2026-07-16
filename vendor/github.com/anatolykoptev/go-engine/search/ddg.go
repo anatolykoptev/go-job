@@ -13,7 +13,7 @@ const metricDDGRequests = "ddg_requests"
 // SearchDDGDirect queries DuckDuckGo directly using browser TLS fingerprint.
 // Uses the HTML lite endpoint as primary, falls back to d.js JSON API.
 // Delegates to websearch.DDG.
-func SearchDDGDirect(ctx context.Context, bc BrowserDoer, query, region string, m *metrics.Registry) ([]sources.Result, error) {
+func SearchDDGDirect(ctx context.Context, bc BrowserDoer, query, region string, m *metrics.Registry, timeRange ...string) ([]sources.Result, error) {
 	if m != nil {
 		m.Incr(metricDDGRequests)
 	}
@@ -25,7 +25,11 @@ func SearchDDGDirect(ctx context.Context, bc BrowserDoer, query, region string, 
 	if err != nil {
 		return nil, err
 	}
-	ws, err := ddg.Search(ctx, query, websearch.SearchOpts{})
+	tr := ""
+	if len(timeRange) > 0 {
+		tr = timeRange[0]
+	}
+	ws, err := ddg.Search(ctx, query, websearch.SearchOpts{TimeRange: tr})
 	if err != nil {
 		return nil, err
 	}

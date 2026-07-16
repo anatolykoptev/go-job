@@ -34,12 +34,12 @@ var reHTMLTag = regexp.MustCompile(
 
 // reMDHeuristics holds individual markdown signals, each sufficient for detection.
 var reMDHeuristics = []*regexp.Regexp{
-	regexp.MustCompile(`\*\*\w`),                // **word
-	regexp.MustCompile(`__\w`),                  // __word
-	regexp.MustCompile(`\[[^\]]+\]\([^)]+\)`),   // [text](url)
-	regexp.MustCompile("(?m)^```"),              // fenced code block
-	regexp.MustCompile(`(?m)^# `),              // ATX heading
-	regexp.MustCompile(`(?m)^- `),              // list item
+	regexp.MustCompile(`\*\*\w`),              // **word
+	regexp.MustCompile(`__\w`),                // __word
+	regexp.MustCompile(`\[[^\]]+\]\([^)]+\)`), // [text](url)
+	regexp.MustCompile("(?m)^```"),            // fenced code block
+	regexp.MustCompile(`(?m)^# `),             // ATX heading
+	regexp.MustCompile(`(?m)^- `),             // list item
 }
 
 // Detect heuristically identifies the markup format of text.

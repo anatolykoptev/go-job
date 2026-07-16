@@ -166,7 +166,6 @@ func parseModelWeights(s string) map[string]int {
 	return m
 }
 
-
 // parseCSV splits a comma-separated string into trimmed, non-empty tokens.
 // Used by NewClient to parse LLM_REASONING_EFFORT_MODELS and similar list env vars.
 func parseCSV(s string) []string {

@@ -18,42 +18,42 @@ import (
 
 // Config holds all engine configuration, injected from main.
 type Config struct {
-	LLMAPIKey                 string
-	LLMAPIKeyFallbacks        []string
-	LLMAPIBase                string
-	LLMModel                  string
-	LLMTemperature            float64
-	LLMMaxTokens              int
-	MaxFetchURLs              int
-	MaxContentChars           int
-	FetchTimeout              time.Duration
-	GithubToken               string
-	Context7APIKey            string
-	HuggingFaceToken          string
-	YouTubeAPIKey             string
-	YouTubeAPIKeyFallback     string
-	CacheMaxEntries           int
-	CacheCleanupInterval      time.Duration
-	ProxyPool                 proxypool.ProxyPool // replaces BrowserClient + HTTPClient
-	DirectDDG                 bool                // enable DuckDuckGo direct scraper
-	DirectStartpage           bool                // enable Startpage direct scraper
-	DirectBrave               bool                // enable Brave direct scraper
-	DirectReddit              bool                // enable Reddit direct scraper
-	DirectWikipedia           bool                // enable Wikipedia direct scraper (DIRECT_WIKIPEDIA)
-	DirectMarginalia          bool                // enable Marginalia direct scraper (DIRECT_MARGINALIA)
-	SearchEarlyReturnAt       int                 // SEARCH_EARLY_RETURN_AT: soft result cap; 0 = go-engine default (10)
-	SearchPerSourceTimeout    time.Duration       // SEARCH_PER_SOURCE_TIMEOUT: per-source cap; 0 = go-engine default (6s)
+	LLMAPIKey              string
+	LLMAPIKeyFallbacks     []string
+	LLMAPIBase             string
+	LLMModel               string
+	LLMTemperature         float64
+	LLMMaxTokens           int
+	MaxFetchURLs           int
+	MaxContentChars        int
+	FetchTimeout           time.Duration
+	GithubToken            string
+	Context7APIKey         string
+	HuggingFaceToken       string
+	YouTubeAPIKey          string
+	YouTubeAPIKeyFallback  string
+	CacheMaxEntries        int
+	CacheCleanupInterval   time.Duration
+	ProxyPool              proxypool.ProxyPool // replaces BrowserClient + HTTPClient
+	DirectDDG              bool                // enable DuckDuckGo direct scraper
+	DirectStartpage        bool                // enable Startpage direct scraper
+	DirectBrave            bool                // enable Brave direct scraper
+	DirectReddit           bool                // enable Reddit direct scraper
+	DirectWikipedia        bool                // enable Wikipedia direct scraper (DIRECT_WIKIPEDIA)
+	DirectMarginalia       bool                // enable Marginalia direct scraper (DIRECT_MARGINALIA)
+	SearchEarlyReturnAt    int                 // SEARCH_EARLY_RETURN_AT: soft result cap; 0 = go-engine default (10)
+	SearchPerSourceTimeout time.Duration       // SEARCH_PER_SOURCE_TIMEOUT: per-source cap; 0 = go-engine default (6s)
 	// FetchDirectFirst enables go-engine v1.12+ direct-first tiered fallback.
 	// When true, the fetcher tries Chrome-TLS direct first and escalates to proxy
 	// only on anti-bot signals (HTTP 401/403/429/503, Cloudflare/PerimeterX/DataDome
 	// markers, soft-block heuristic, TLS errors). Controlled by FETCH_DIRECT_FIRST env var.
-	FetchDirectFirst   bool
-	IndeedAPIKey       string           // overrideable via INDEED_API_KEY env
-	TwitterClient      *twitter.Client  // nil = Twitter search disabled
-	SocialClient       *social.Client   // nil = go-social disabled, use local twitter
-	LinkedInClient     *linkedin.Client // nil = LinkedIn tools disabled
-	DatabaseURL        string           // DATABASE_URL for PostgreSQL (resume graph)
-	EmbedURL           string           // EMBED_URL for direct embedding server
+	FetchDirectFirst bool
+	IndeedAPIKey     string           // overrideable via INDEED_API_KEY env
+	TwitterClient    *twitter.Client  // nil = Twitter search disabled
+	SocialClient     *social.Client   // nil = go-social disabled, use local twitter
+	LinkedInClient   *linkedin.Client // nil = LinkedIn tools disabled
+	DatabaseURL      string           // DATABASE_URL for PostgreSQL (resume graph)
+	EmbedURL         string           // EMBED_URL for direct embedding server
 
 	// OxBrowserURL is the base URL of the self-hosted ox-browser solver
 	// (e.g. "http://ox-browser:8901"). When non-empty, the proxy fetcher gains
@@ -78,6 +78,29 @@ type Config struct {
 	// internally) disables key rotation. Set either, not both.
 	// Env: LLM_MODEL_FALLBACK (mounted via config/llm.env).
 	LLMModelFallback string
+
+	// LLMProxyURLs is a CSV of LLM proxy base URLs for multi-proxy rotation
+	// (go-engine v1.51.5+ / go-kit v0.97.1+). When len > 1, the LLM client
+	// builds a cross-product of proxies × models: local proxy tried first
+	// for every model, remote as fallback. Proxy-level redundancy on top
+	// of model-level fallback.
+	//
+	// Takes precedence over LLMAPIBase when len > 1. When len <= 1 (or
+	// empty), behavior is identical to single-proxy mode (LLMAPIBase +
+	// LLMAPIKey).
+	//
+	// MUTEX with LLMModelFallback: WithProxyURLs uses WithEndpoints
+	// internally, which disables key rotation via WithAPIKeyFallbacks.
+	// Use proxy rotation OR key rotation, not both.
+	// Env: LLM_PROXY_URLS (mounted via config/llm.env).
+	LLMProxyURLs []string
+
+	// LLMProxyKeys is a CSV of API keys matching LLMProxyURLs (same length,
+	// same order). If a proxy uses the same key as the primary, pass an
+	// empty string at that position (it defaults to LLMAPIKey). If shorter
+	// than LLMProxyURLs, missing keys default to LLMAPIKey.
+	// Env: LLM_PROXY_KEYS (mounted via config/llm.env).
+	LLMProxyKeys []string
 
 	// Computed fields — populated by Init(), not set by caller.
 	HTTPClient    *http.Client   // plain HTTP client for API calls
@@ -171,6 +194,18 @@ func Init(c Config) {
 		engllm.WithTemperature(c.LLMTemperature),
 		engllm.WithMaxTokens(c.LLMMaxTokens),
 		engllm.WithMetrics(reg),
+	}
+	// Multi-proxy rotation (go-engine v1.51.5+): when >1 proxy URL is
+	// configured AND a model fallback chain is set, the LLM client builds
+	// a cross-product of proxies × models — local proxy first per model,
+	// remote as fallback. Proxy-level redundancy on top of model-level
+	// fallback. When <=1 proxy URL, behavior is identical to single-proxy
+	// mode (WithAPIBase + WithAPIKey).
+	if len(c.LLMProxyURLs) > 1 {
+		llmOpts = append(llmOpts, engllm.WithProxyURLs(c.LLMProxyURLs))
+		llmOpts = append(llmOpts, engllm.WithProxyKeys(c.LLMProxyKeys))
+		slog.Info("llm: multi-proxy rotation enabled",
+			slog.Int("proxies", len(c.LLMProxyURLs)))
 	}
 	if chain := engllm.ParseModelFallbackChain(c.LLMModelFallback); len(chain) > 0 {
 		// Cross-provider model chain: primary model → each chain entry on retryable

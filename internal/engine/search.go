@@ -20,11 +20,24 @@ func DedupByDomain(results []SearxngResult, maxPerDomain int) []SearxngResult {
 // SearchDirect queries enabled direct scrapers in parallel.
 // Returns merged results from all direct sources. Failures are non-fatal.
 // Returns nil when the engine is not initialized (fetcherProxy == nil).
+//
+// Discards per-leg DirectStats — use SearchDirectWithStats if you need
+// the degraded-mode signal (Attempted > 0 && OK == 0).
 func SearchDirect(ctx context.Context, query, language string) []SearxngResult {
+	results, _ := SearchDirectWithStats(ctx, query, language)
+	return results
+}
+
+// SearchDirectWithStats is like SearchDirect but also returns DirectStats
+// from the upstream fan-out. The primary signal: Attempted > 0 && OK == 0
+// means every launched leg was blocked or failed (DC-IP / censorship
+// degraded mode), distinguishable from genuine zero results.
+func SearchDirectWithStats(ctx context.Context, query, language string) ([]SearxngResult, search.DirectStats) {
 	if fetcherProxy == nil {
-		return nil
+		return nil, search.DirectStats{}
 	}
-	return search.SearchDirect(ctx, directSearchConfig(), query, language)
+	results, stats := search.SearchDirect(ctx, directSearchConfig(), query, language)
+	return results, stats
 }
 
 // directBrowser returns the best available BrowserDoer for direct scrapers.
