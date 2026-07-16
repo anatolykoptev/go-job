@@ -220,15 +220,17 @@ type AuditContest struct {
 // distinct from the numeric display bands ("strong"/"moderate"/"low"/"reject").
 const FitBandUnscored = "unscored"
 
-// FitBandStale and FitBandReject are the pre-LLM short-circuit bands.
+// FitBandStale, FitBandReject, and FitBandQuality are the pre-LLM short-circuit bands.
 // FitBandStale: job PostedAt nil or older than HUNT_NOTIFY_MAX_AGE.
 // FitBandReject: job failed the Jaccard keyword-overlap pre-filter.
-// Both are keyed by observeScore (worker) and the scorer to route the
+// FitBandQuality: job failed the deterministic quality-score pre-filter (issue #192).
+// All three are keyed by observeScore (worker) and the scorer to route the
 // hunt_score_filtered_total metric. Centralised here so a rename cannot
 // silently diverge scorer.go from worker.go.
 const (
-	FitBandStale  = "stale"
-	FitBandReject = "reject"
+	FitBandStale   = "stale"
+	FitBandReject  = "reject"
+	FitBandQuality = "quality"
 )
 
 type ScoreResult struct {
@@ -245,8 +247,12 @@ type ScoreResult struct {
 	LLMCalled bool `json:"-"`
 	// LLMResult is a transient signal (not persisted) for the scorer-outcome metric.
 	// One of "ok" | "enum_clamp" | "parse_fail" | "llm_error"; empty for pre-LLM
-	// short-circuits (stale/reject) which are counted via FitBand + the filter metric.
+	// short-circuits (stale/reject/quality) which are counted via FitBand + the filter metric.
 	LLMResult string `json:"-"`
+	// QualityScore is the deterministic 0-100 posting-quality score (issue #192).
+	// Transient (not persisted) — used as a pre-LLM gate and for diagnostic logging.
+	// Set by Stage 2.5 of the cascade scorer before the LLM call.
+	QualityScore int `json:"-"`
 }
 
 // scoreRationale is the JSON shape stored in the score_rationale JSONB column.

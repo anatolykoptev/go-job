@@ -44,7 +44,7 @@ func TestMetricHuntScoreLLM_ConstDefined(t *testing.T) {
 }
 
 // TestIncrHuntScoreFiltered_LabelBounded verifies that:
-//   - the two valid stages {"recency","jaccard"} land in the registry
+//   - the three valid stages {"recency","jaccard","quality"} land in the registry
 //   - an arbitrary stage is dropped (no cardinality leak)
 func TestIncrHuntScoreFiltered_LabelBounded(t *testing.T) {
 	orig := reg
@@ -53,10 +53,11 @@ func TestIncrHuntScoreFiltered_LabelBounded(t *testing.T) {
 
 	IncrHuntScoreFiltered("recency")
 	IncrHuntScoreFiltered("jaccard")
+	IncrHuntScoreFiltered("quality")
 	IncrHuntScoreFiltered("bogus") // must be dropped
 
 	snap := reg.Snapshot()
-	for _, stage := range []string{"recency", "jaccard"} {
+	for _, stage := range []string{"recency", "jaccard", "quality"} {
 		key := MetricHuntScoreFiltered + "{stage=" + stage + "}"
 		if snap[key] != 1 {
 			t.Errorf("%s = %d, want 1", key, snap[key])
@@ -68,9 +69,9 @@ func TestIncrHuntScoreFiltered_LabelBounded(t *testing.T) {
 }
 
 // TestValidHuntScoreFilterStages_ExactSet asserts the bounded stage set is
-// exactly {"recency","jaccard"} — no additions or removals without updating tests.
+// exactly {"recency","jaccard","quality"} — no additions or removals without updating tests.
 func TestValidHuntScoreFilterStages_ExactSet(t *testing.T) {
-	want := map[string]bool{"recency": true, "jaccard": true}
+	want := map[string]bool{"recency": true, "jaccard": true, "quality": true}
 	for v := range want {
 		if !validHuntScoreFilterStages[v] {
 			t.Errorf("filter stage %q missing from validHuntScoreFilterStages", v)

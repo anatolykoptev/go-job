@@ -56,8 +56,9 @@ const (
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
-	scoreFilterRecency = "recency"
-	scoreFilterJaccard = "jaccard"
+	scoreFilterRecency  = "recency"
+	scoreFilterJaccard  = "jaccard"
+	scoreFilterQuality  = "quality"
 
 	// Fit-scoring LLM result labels (hunt_score_llm_total{result}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
@@ -437,9 +438,9 @@ func FormatMetrics() string {
 			keys = append(keys, MetricHuntPostedAt+"{platform="+p+",present="+present+"}")
 		}
 	}
-	// Fit-scoring filter counters (P6): pre-touch both stages so rate()-floor alerts
-	// see 0 before the first ingest cycle. 2 stages = 2 series.
-	for _, stage := range []string{scoreFilterRecency, scoreFilterJaccard} {
+	// Fit-scoring filter counters (P6): pre-touch all stages so rate()-floor alerts
+	// see 0 before the first ingest cycle. 3 stages = 3 series.
+	for _, stage := range []string{scoreFilterRecency, scoreFilterJaccard, scoreFilterQuality} {
 		keys = append(keys, MetricHuntScoreFiltered+"{stage="+stage+"}")
 	}
 	// Fit-scoring LLM result counters (P6): pre-touch all four results so
@@ -813,8 +814,8 @@ func ObserveHuntCycleDuration(d float64) {
 }
 
 // validHuntScoreFilterStages bounds the stage label for hunt_score_filtered_total.
-// stage ∈ {"recency","jaccard"} — the two pre-LLM drop points in the cascade scorer.
-var validHuntScoreFilterStages = map[string]bool{scoreFilterRecency: true, scoreFilterJaccard: true}
+// stage ∈ {"recency","jaccard","quality"} — the three pre-LLM drop points in the cascade scorer.
+var validHuntScoreFilterStages = map[string]bool{scoreFilterRecency: true, scoreFilterJaccard: true, scoreFilterQuality: true}
 
 // validHuntScoreLLMResults bounds the result label for hunt_score_llm_total.
 // result ∈ {"ok","enum_clamp","parse_fail","llm_error"}.
@@ -827,9 +828,9 @@ var validHuntScoreLLMResults = map[string]bool{
 }
 
 // IncrHuntScoreFiltered bumps gojob_hunt_score_filtered_total{stage=<s>}.
-// stage ∈ {scoreFilterRecency,scoreFilterJaccard} — bounded enum.
+// stage ∈ {scoreFilterRecency,scoreFilterJaccard,scoreFilterQuality} — bounded enum.
 // Called by the worker after scoreJobWithLimit when the result short-circuited
-// before the LLM (stale → recency, sub-Jaccard → jaccard).
+// before the LLM (stale → recency, sub-Jaccard → jaccard, low-quality → quality).
 // Unknown values are silently dropped (cardinality guard).
 func IncrHuntScoreFiltered(stage string) {
 	if !validHuntScoreFilterStages[stage] {
