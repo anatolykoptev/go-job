@@ -13,6 +13,7 @@ func RegisterTools(server *mcp.Server, authority *applications.Authority) {
 	// Search
 	registerJobSearch(server)
 	registerJobMatchScore(server)
+	registerJobQualityScore(server)
 	// Research
 	registerResearch(server)
 	// Resume

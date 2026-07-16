@@ -1,18 +1,21 @@
 package score
 
-// scorer.go implements the hybrid Jaccard→LLM fit+success cascade scorer
-// (Phase 4 of the hunt fit-scoring plan).
+// scorer.go implements the hybrid Jaccard→quality→LLM fit+success cascade scorer
+// (Phase 4 of the hunt fit-scoring plan, extended with deterministic quality gate
+// in issue #192).
 //
-// Import-cycle guard: this package imports only stdlib + go-kit/env + hunt types.
-// It does NOT import internal/engine or internal/engine/jobs — those packages
-// already import internal/hunt, creating a cycle. The wiring of engine.CallLLM
-// and jobs.ScoreJobMatchCoverage happens in huntworker, which imports all three.
+// Import-cycle guard: this package imports only stdlib + go-kit/env + hunt types
+// + internal/quality (which imports nothing from this repo). It does NOT import
+// internal/engine or internal/engine/jobs — those packages already import
+// internal/hunt, creating a cycle. The wiring of engine.CallLLM and
+// jobs.ScoreJobMatchCoverage happens in huntworker, which imports all three.
 //
 // Cascade order (cheapest rejection first):
 //  1. nil profile        → unscored (scoring disabled)
 //  2. Recency pre-gate   → stale (no LLM)
 //  3. Jaccard pre-filter → reject (no LLM)
-//  4. LLM scorer         → full two-axis result
+//  4. Quality pre-filter → quality (no LLM) [issue #192]
+//  5. LLM scorer         → full two-axis result
 
 import (
 	"context"
@@ -25,6 +28,7 @@ import (
 
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/quality"
 )
 
 // defaultMinJaccard is the Jaccard pre-filter threshold (0–100).
@@ -32,6 +36,12 @@ import (
 // Kept LOW because ScoreJobMatchCoverage (overlap-coefficient) can return
 // low values on verbose JDs — a threshold of 8 only kills true non-matches.
 const defaultMinJaccard = 8.0
+
+// defaultMinQuality is the deterministic quality-score pre-filter threshold
+// (0–100). Below this, the posting is too low-quality to warrant an LLM call
+// (no salary, no direct apply, agency, stub description). Set via
+// HUNT_SCORE_MIN_QUALITY env. A value of 0 disables the gate.
+const defaultMinQuality = 30
 
 // percentageRE matches any token of the form [~][digits][.digits]% so we can
 // strip fake precision from LLM text before it is persisted. The leading
@@ -82,7 +92,8 @@ type llmScoreResponse struct {
 //  1. nil profile → FitBand="unscored" (scoring disabled — no LLM)
 //  2. PostedAt nil or > HUNT_NOTIFY_MAX_AGE → FitBand="stale" (no LLM)
 //  3. Jaccard < HUNT_SCORE_MIN_JACCARD → FitBand="reject" (no LLM)
-//  4. LLM call → full result; on failure, fail-open if HUNT_SCORE_FAIL_OPEN=true
+//  4. Quality < HUNT_SCORE_MIN_QUALITY → FitBand="quality" (no LLM) [issue #192]
+//  5. LLM call → full result; on failure, fail-open if HUNT_SCORE_FAIL_OPEN=true
 func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps ScorerDeps) hunt.ScoreResult {
 	// --- Stage 0: nil profile means scoring disabled ---
 	if profile == nil {
@@ -109,13 +120,41 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 		}
 	}
 
-	// --- Stage 3: LLM precision scorer ---
-	return runLLMStage(ctx, profile, job, deps, int(jaccardScore))
+	// --- Stage 3: deterministic quality pre-filter (issue #192) ---
+	// Computes a free 0-100 posting-quality score (no LLM, no network) and
+	// short-circuits if it falls below HUNT_SCORE_MIN_QUALITY. This saves
+	// LLM calls on low-quality postings (no salary, agency, stub description)
+	// before the expensive Stage 4 LLM precision scorer runs.
+	minQuality := env.Int("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
+	qr := quality.Score(quality.FromHuntJob(quality.JobInput{
+		Title:       job.Title,
+		Company:     job.Company,
+		URL:         job.URL,
+		Description: job.Description,
+		Source:      job.Source,
+		SalaryMin:   job.SalaryMin,
+		SalaryMax:   job.SalaryMax,
+		PostedAt:    job.PostedAt,
+	}))
+	if minQuality > 0 && qr.Score < minQuality {
+		return hunt.ScoreResult{
+			FitScore:     int(jaccardScore),
+			FitBand:      hunt.FitBandQuality,
+			QualityScore: qr.Score,
+			ScoredAt:     time.Now(),
+		}
+	}
+
+	// --- Stage 4: LLM precision scorer ---
+	result := runLLMStage(ctx, profile, job, deps, int(jaccardScore))
+	result.QualityScore = qr.Score
+	return result
 }
 
 // ScoreForce runs the LLM precision scorer unconditionally, bypassing Stage 1
-// (recency pre-gate) and Stage 2 (Jaccard pre-filter). Use for on-demand
-// re-scoring of stale or previously-rejected jobs via the admin UI.
+// (recency pre-gate), Stage 2 (Jaccard pre-filter), and Stage 3 (quality
+// pre-filter). Use for on-demand re-scoring of stale or previously-rejected
+// jobs via the admin UI.
 //
 // Stage 0 (nil profile guard) still applies: a nil profile returns FitBandUnscored.
 // ScorerDeps.Jaccard is accepted for API parity with Score but is never called.
@@ -481,6 +520,13 @@ func ScoringEnabled() bool {
 // Exported for huntworker diagnostic logging.
 func MinJaccard() float64 {
 	return env.Float("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
+}
+
+// MinQuality returns the configured quality-score pre-filter threshold.
+// A value of 0 disables the quality gate. Exported for huntworker
+// diagnostic logging.
+func MinQuality() int {
+	return env.Int("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 }
 
 // MaxLLMPerCycle returns the HUNT_SCORE_MAX_LLM_PER_CYCLE circuit-breaker limit.
