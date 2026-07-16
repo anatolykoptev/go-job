@@ -49,7 +49,12 @@ func main() {
 	// bot token is never written to logs. When TELEGRAM_BOT_TOKEN is unset,
 	// redaction is a no-op and the default handler is kept as-is.
 	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
-		slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(slog.Default().Handler(), token)))
+		// Pass nil as the base handler so NewRedactingSlogHandler creates a
+		// standalone TextHandler on os.Stderr with ReplaceAttr redaction.
+		// Wrapping slog.Default().Handler() causes a deadlock: the default
+		// handler writes via log.Logger.output, which calls back into the
+		// installed slog default (our wrapper) → infinite recursion.
+		slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(nil, token)))
 	}
 
 	huntNotifier := initEngine()

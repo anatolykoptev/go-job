@@ -1,0 +1,36 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: go-job
+  title: go-job — jobs / freelance / bounty aggregator
+  description: |
+    Job search + tracker + LinkedIn integration + Algora bounty pipeline. Скрапит,
+    ранжирует, генерит resume tailored, cover letters, interview prep. Webshare
+    proxy pool для bypass rate limits. MCP-native.
+  annotations:
+    github.com/project-slug: anatolykoptev/go-job
+    likec4.dev/diagrams: /c4/go-job/
+    krolik.run/dozor: go-job
+    krolik.run/port: "8891"
+  links:
+    - url: https://m.krolik.run/c4/go-job/
+      title: Architecture diagrams
+    - url: https://github.com/anatolykoptev/go-job
+  tags:
+    - go
+    - jobs
+    - mcp
+    - linkedin
+    - bounty
+    - resume
+spec:
+  type: service
+  lifecycle: production
+  owner: platform
+  system: search
+  tier: 2
+  providesApis:
+    - go-job-mcp
+  consumesApis:
+    - go-search-mcp
+    - memdb-rest-api
