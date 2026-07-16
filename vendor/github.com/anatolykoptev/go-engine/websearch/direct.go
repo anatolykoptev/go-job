@@ -106,7 +106,7 @@ func SearchDirect(ctx context.Context, cfg DirectConfig, query, language string)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results, err := SearchYandexAPI(ctx, cfg.Yandex, query, "")
+			results, err := SearchYandexAPI(ctx, cfg.Yandex, query, "", "")
 			collect(results, err, "yandex")
 		}()
 	}

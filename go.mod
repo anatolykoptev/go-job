@@ -5,18 +5,18 @@ go 1.26
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
-	github.com/anatolykoptev/go-engine v1.42.0
-	github.com/anatolykoptev/go-kit v0.94.0
+	github.com/anatolykoptev/go-engine v1.51.5
+	github.com/anatolykoptev/go-kit v0.97.1
 	github.com/anatolykoptev/go-linkedin v0.4.2
 	github.com/anatolykoptev/go-mcpserver v0.15.0
 	github.com/anatolykoptev/go-panel v0.16.0
-	github.com/anatolykoptev/go-stealth v1.16.0
+	github.com/anatolykoptev/go-stealth v1.18.0
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/net v0.56.0
+	golang.org/x/net v0.57.0
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.46.1
 )
@@ -85,12 +85,12 @@ require (
 	github.com/yuin/goldmark v1.8.2 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.68.0 // indirect

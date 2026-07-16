@@ -1,3 +1,4 @@
+//nolint:goconst
 package search
 
 import (
@@ -13,12 +14,16 @@ const metricRedditRequests = "reddit_requests"
 
 // SearchRedditDirect queries Reddit JSON API using browser TLS fingerprint.
 // Delegates to websearch.Reddit.
-func SearchRedditDirect(ctx context.Context, bc BrowserDoer, query string, m *metrics.Registry) ([]sources.Result, error) {
+func SearchRedditDirect(ctx context.Context, bc BrowserDoer, query string, m *metrics.Registry, timeRange ...string) ([]sources.Result, error) {
 	if m != nil {
 		m.Incr(metricRedditRequests)
 	}
+	tr := ""
+	if len(timeRange) > 0 {
+		tr = timeRange[0]
+	}
 	r := websearch.NewReddit(websearch.WithRedditBrowser(bc))
-	ws, err := r.Search(ctx, query, websearch.SearchOpts{Limit: 10})
+	ws, err := r.Search(ctx, query, websearch.SearchOpts{Limit: 10, TimeRange: tr})
 	if err != nil {
 		return nil, err
 	}
