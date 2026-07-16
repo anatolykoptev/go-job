@@ -37,7 +37,7 @@ var cycleSecurityHook func()
 // NewOppWorker builds an OppWorker from env vars.
 func NewOppWorker() *OppWorker {
 	return &OppWorker{
-		interval: env.Duration("HUNT_OPP_INGEST_INTERVAL", 12*time.Hour),
+		interval: env.MustDuration("HUNT_OPP_INGEST_INTERVAL", 12*time.Hour),
 	}
 }
 
@@ -127,7 +127,7 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 // store is available (non-nil — DB configured). Noop otherwise.
 // Must be called after engine.SetHuntStore.
 func StartOpportunityWorker(ctx context.Context, store *hunt.Store) {
-	if !env.Bool("HUNT_OPP_INGEST_ENABLED", true) {
+	if !env.MustBool("HUNT_OPP_INGEST_ENABLED", true) {
 		slog.Debug("opp worker: disabled (HUNT_OPP_INGEST_ENABLED=false)")
 		return
 	}
