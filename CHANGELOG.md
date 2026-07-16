@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.10.0](https://github.com/anatolykoptev/go-job/compare/v1.9.0...v1.10.0) (2026-07-16)
+
+
+### Features
+
+* **quality:** parse salary from text, detect JD structure, add spam penalty ([#234](https://github.com/anatolykoptev/go-job/issues/234)) ([5a54f1d](https://github.com/anatolykoptev/go-job/commit/5a54f1d127e23badb1428b495cfae5d1ddb75281))
+
 ## [1.9.0](https://github.com/anatolykoptev/go-job/compare/v1.8.0...v1.9.0) (2026-07-16)
 
 
