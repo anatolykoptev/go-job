@@ -219,11 +219,9 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 // resume_persons.headline/hourly_rate remain the general resume fields.
 // Categories are read-modify-write: existing values are preserved unless
 // a future categories editor is added.
-func upworkOverviewEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkOverviewEditHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -255,11 +253,9 @@ func upworkOverviewEditHandler(a auth.Authenticator, csrfKey []byte) http.Handle
 }
 
 // upworkSkillCreateHandler handles POST /admin/upwork/skill.
-func upworkSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkSkillCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -279,11 +275,9 @@ func upworkSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 }
 
 // upworkSkillDeleteHandler handles POST /admin/upwork/skill/{id}/delete.
-func upworkSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkSkillDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -501,11 +495,9 @@ const upworkTmplSrc = `<style>
 
 // upworkCatalogCreateHandler handles POST /admin/upwork/catalog.
 // Inserts a new catalog item for the current person (person-scoped).
-func upworkCatalogCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkCatalogCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -527,11 +519,9 @@ func upworkCatalogCreateHandler(a auth.Authenticator, csrfKey []byte) http.Handl
 
 // upworkCatalogDeleteHandler handles POST /admin/upwork/catalog/{id}/delete.
 // Deletes the catalog item identified by {id}, scoped to the current person.
-func upworkCatalogDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkCatalogDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -552,11 +542,9 @@ func upworkCatalogDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handl
 // upworkCatalogReorderHandler handles POST /admin/upwork/catalog/reorder.
 // Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
 // Normalizes upwork_catalog_items positions to contiguous 1..N per person.
-func upworkCatalogReorderHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkCatalogReorderHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -582,11 +570,9 @@ func upworkCatalogReorderHandler(a auth.Authenticator, csrfKey []byte) http.Hand
 // upworkSkillReorderHandler handles POST /admin/upwork/skill/reorder.
 // Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
 // Normalizes upwork_skills positions to contiguous 1..N per person.
-func upworkSkillReorderHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkSkillReorderHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -613,11 +599,9 @@ func upworkSkillReorderHandler(a auth.Authenticator, csrfKey []byte) http.Handle
 // Read-modify-write: preserves existing title/overview/hourly_rate/availability
 // and does a full-replace of categories from repeated "category" form fields.
 // This is the single source of truth for categories (#118 invariant).
-func upworkCategoriesEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkCategoriesEditHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return

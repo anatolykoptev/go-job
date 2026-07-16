@@ -1,6 +1,9 @@
 package resource
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -89,4 +92,32 @@ func (p *Panel) chromeStateFrom(r *http.Request) shell.ChromeState {
 // other provably safe HTML renderers.
 func (p *Panel) RenderPageHTML(w http.ResponseWriter, r *http.Request, title, activeID, htmlContent string) error {
 	return p.RenderPage(w, r, title, activeID, templ.Raw(htmlContent))
+}
+
+// RenderError renders content inside the panel shell (title+nav+content via
+// shell.Layout) into an internal buffer, and writes it to w in ONE shot only
+// once rendering has fully succeeded — so a render failure can never leak a
+// partial body ahead of the error response. On failure it logs server-side
+// (label identifies which page failed; err is never included in the client
+// response, only in the log) and writes message as the client-facing 500
+// body; on success it sets the HTML content-type and writes the buffered
+// bytes.
+//
+// This is the extraction of go-grad's cabinet/overview.go renderLayoutPage
+// (buffer-then-write, no partial write on a Render error), generalized for
+// any go-panel consumer. nav is a caller-supplied parameter — exactly how
+// go-grad computes it today, via its own closure — RenderError does not call
+// navItemsFor or otherwise substitute its own nav computation, so a future
+// PR can replace go-grad's renderLayoutPage with a direct call to
+// RenderError, passing the same title/nav/content/label and its own
+// (currently Russian) message string verbatim.
+func (p *Panel) RenderError(ctx context.Context, w http.ResponseWriter, title string, nav []shell.NavItem, content templ.Component, label, message string) {
+	var buf bytes.Buffer
+	if err := shell.Layout(title, nav, content).Render(ctx, &buf); err != nil {
+		slog.ErrorContext(ctx, "resource: render failed", "label", label, "err", err)
+		http.Error(w, message, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
 }

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -109,7 +108,7 @@ func starToggleHTML(id int64, starred bool, csrfTok string) string {
 // as rateHandler). On success redirects to Referer to preserve filter state.
 // On toggle error redirects to Referer with ?err=star-toggle-failed so the
 // operator stays in the admin UI (no dead-end error page).
-func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func shortlistHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -118,20 +117,7 @@ func shortlistHandler(store *hunt.Store, adminUser string, a auth.Authenticator,
 			return
 		}
 
-		const maxBody = 4096
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		// CSRF verification: token must be bound to the current session cookie.
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 
 		// activePipelineStages: protect advanced pipeline stages from star-off.
 		// softDemotable: triage values a star-off is allowed to clear (StarSoftTriageValues).

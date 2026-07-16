@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
@@ -157,34 +156,9 @@ func TestStatusEnumSync(t *testing.T) {
 	})
 }
 
-// TestStatusHandler_CSRFReject verifies that a missing/invalid CSRF token
-// returns 403, same pattern as TestRateHandler_CSRFReject.
-// Red-on-revert: removing csrf.Verify from statusHandler → returns 400/500.
-func TestStatusHandler_CSRFReject(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := statusHandler(nil, a, key)
-
-	form := url.Values{"status": {"open"}}
-	// _csrf intentionally omitted → must get 403.
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/1/status",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "1")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("statusHandler: want 403 for missing CSRF, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
 // TestStatusHandler_BadID verifies a non-numeric id returns 400.
 func TestStatusHandler_BadID(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := statusHandler(nil, a, key)
+	handler := statusHandler(nil)
 
 	form := url.Values{"status": {"open"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/abc/status",
@@ -204,23 +178,16 @@ func TestStatusHandler_BadID(t *testing.T) {
 // returns 400 without writing to the store (nil store → panic if write attempted).
 // Red-on-revert: removing validHuntStatuses check → invalid value reaches store call.
 func TestStatusHandler_RejectsInvalidStatus(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
 	// nil store — any write attempt panics, proving the guard fires first.
-	handler := statusHandler(nil, a, key)
-
-	const sessVal = "test-session-value"
-	tok := csrf.Issue(key, sessVal, csrf.DefaultTTL)
+	handler := statusHandler(nil)
 
 	form := url.Values{
-		csrf.FormField: {tok},
-		"status":       {"hacked'; DROP TABLE hunt_jobs;--"},
+		"status": {"hacked'; DROP TABLE hunt_jobs;--"},
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/1/status",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("id", "1")
-	req.AddCookie(&http.Cookie{Name: a.SessionCookieName(), Value: sessVal})
 
 	rr := httptest.NewRecorder()
 	handler(rr, req)

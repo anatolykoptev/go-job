@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -97,7 +96,7 @@ func statusDropdownHTML(id int64, currentStatus, csrfTok string) string {
 // Invalid status values → 400, no write. Unknown id / write failure → 303 redirect
 // with ?err=status-set-failed.
 // On success redirects to Referer (preserving filter state).
-func statusHandler(store *hunt.Store, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func statusHandler(store *hunt.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -106,21 +105,7 @@ func statusHandler(store *hunt.Store, a auth.Authenticator, csrfKey []byte) http
 			return
 		}
 
-		const maxBody = 4096
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		// CSRF verification bound to the session cookie.
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		status := r.FormValue("status")
 		if !validHuntStatuses[status] {
 			http.Error(w, "invalid status", http.StatusBadRequest)
