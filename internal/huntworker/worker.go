@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -89,6 +90,16 @@ type Worker struct {
 	queries        []string
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
 	scorerDeps     score.ScorerDeps
+	// llmBreaker is the cross-cycle LLM circuit breaker (PF-2). When non-nil,
+	// every scorerDeps.LLM call is routed through breaker.Execute so that a
+	// sustained LLM failure storm trips the breaker and fast-fails subsequent
+	// calls with breaker.ErrOpen (→ llm_error fail-open path in scoreJobIfCreated)
+	// instead of issuing more failing calls. nil when HUNT_SCORE_BREAKER_ENABLED=false.
+	llmBreaker *breaker.Breaker
+	// llmFn is the underlying LLM call function (engine.CallLLM in production).
+	// Held as a field so the breaker wrapper can route to it; tests override it
+	// with a fake to exercise the real breaker wrapping path without a live LLM.
+	llmFn func(ctx context.Context, prompt string) (string, error)
 }
 
 // NewWorker builds a Worker from env vars.  Returns nil if the store is nil
@@ -99,21 +110,57 @@ func NewWorker(store *hunt.Store) *Worker {
 		return nil
 	}
 	queries := parseQueries(env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries))
-	return &Worker{
+	w := &Worker{
 		store:        store,
 		interval:     env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
 		queries:      queries,
 		notifyMetric: engine.IncrHuntNotify,
 		// scoringProfile is loaded lazily on first Run (requires DB + context).
-		// scorerDeps wired with concrete engine functions.
+		llmFn: engine.CallLLM,
 		scorerDeps: score.ScorerDeps{
 			Jaccard: func(profileKW, jobText string) float64 {
 				kw := jobs.ExtractResumeKeywords(profileKW)
 				return jobs.ScoreJobMatchCoverage(kw, jobText)
 			},
-			LLM: engine.CallLLM,
 		},
 	}
+	// PF-2: cross-cycle LLM circuit breaker. Wraps every scorerDeps.LLM call so
+	// a sustained LLM failure storm trips the breaker (FailThreshold consecutive
+	// errors) and fast-fails subsequent calls with breaker.ErrOpen instead of
+	// issuing more failing calls. ErrOpen surfaces as an LLM error in
+	// scoreJobIfCreated → llm_error fail-open path (degraded but not dead).
+	// Disabled when HUNT_SCORE_BREAKER_ENABLED=false (LLM calls go direct).
+	if env.Bool("HUNT_SCORE_BREAKER_ENABLED", true) {
+		w.llmBreaker = newLLMBreaker()
+		w.scorerDeps.LLM = func(ctx context.Context, prompt string) (string, error) {
+			return breaker.Execute(w.llmBreaker, func() (string, error) {
+				return w.llmFn(ctx, prompt)
+			})
+		}
+	} else {
+		w.scorerDeps.LLM = w.llmFn
+	}
+	return w
+}
+
+// newLLMBreaker builds the cross-cycle LLM circuit breaker with the PF-2
+// policy: trip after 3 consecutive LLM errors, stay open for 30m before a
+// half-open probe. OnTrip sets the scoring_degraded gauge (silent-downgrade
+// signal); OnRecover clears it. The hooks fire in a goroutine (breaker.go).
+func newLLMBreaker() *breaker.Breaker {
+	return breaker.New(breaker.Options{
+		Name:          "llm-cross-cycle",
+		FailThreshold: 3,
+		OpenDuration:  30 * time.Minute,
+		OnTrip: func(name string) {
+			slog.Warn("hunt LLM cross-cycle breaker tripped", slog.String("breaker", name))
+			engine.SetHuntScoringDegraded(true)
+		},
+		OnRecover: func(name string) {
+			slog.Info("hunt LLM cross-cycle breaker recovered", slog.String("breaker", name))
+			engine.SetHuntScoringDegraded(false)
+		},
+	})
 }
 
 // SetNotifier wires the Telegram notifier into the worker.
