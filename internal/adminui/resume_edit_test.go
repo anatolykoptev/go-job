@@ -10,105 +10,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
-// TestResumeEditHandler_CSRFReject_Person asserts that POST /admin/resume/person
-// returns 403 when the CSRF token is missing.
-// Red-on-revert: remove verifyCSRF call in resumePersonEditHandler → returns 404/500.
-func TestResumeEditHandler_CSRFReject_Person(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumePersonEditHandler(a, key)
-
-	form := url.Values{}
-	form.Set("name", "Alice")
-	// _csrf omitted → expect 403
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/resume/person",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403 for missing CSRF, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
-// TestResumeEditHandler_CSRFReject_Experience asserts POST /admin/resume/experience
-// returns 403 on missing CSRF.
-func TestResumeEditHandler_CSRFReject_Experience(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeExperienceCreateHandler(a, key)
-
-	form := url.Values{"title": {"SWE"}, "company": {"Acme"}}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/resume/experience",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403, got %d", rr.Code)
-	}
-}
-
-// TestResumeEditHandler_CSRFReject_Skill asserts POST /admin/resume/skill
-// returns 403 on missing CSRF.
-func TestResumeEditHandler_CSRFReject_Skill(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeSkillCreateHandler(a, key)
-
-	form := url.Values{"name": {"Go"}}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/resume/skill",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403, got %d", rr.Code)
-	}
-}
-
-// TestResumeEditHandler_CSRFReject_SkillLevel asserts POST /admin/resume/skill/{id}/level
-// returns 403 on missing CSRF.
-func TestResumeEditHandler_CSRFReject_SkillLevel(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeSkillLevelHandler(a, key)
-
-	form := url.Values{"level": {"advanced"}}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/resume/skill/1/level",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "1")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403, got %d", rr.Code)
-	}
-}
-
 // TestResumeEditHandler_BadID_Numeric asserts that id=0 returns 400
-// (after a valid CSRF token passes verification, before any DB call).
+// (before any DB call).
 // Red-on-revert: remove parseIDParam check → nil pointer on db.GetLatestPersonID.
 func TestResumeEditHandler_BadID_Numeric(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeSkillDeleteHandler(a, key)
+	handler := resumeSkillDeleteHandler()
 
-	tok := csrf.Issue(key, "", csrf.DefaultTTL)
 	form := url.Values{}
-	form.Set(csrf.FormField, tok)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 		"/admin/resume/skill/0/delete", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -124,13 +35,9 @@ func TestResumeEditHandler_BadID_Numeric(t *testing.T) {
 
 // TestResumeEditHandler_BadID_NonNumeric asserts that a non-numeric id returns 400.
 func TestResumeEditHandler_BadID_NonNumeric(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeExperienceDeleteHandler(a, key)
+	handler := resumeExperienceDeleteHandler()
 
-	tok := csrf.Issue(key, "", csrf.DefaultTTL)
 	form := url.Values{}
-	form.Set(csrf.FormField, tok)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 		"/admin/resume/experience/abc/delete", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -147,13 +54,9 @@ func TestResumeEditHandler_BadID_NonNumeric(t *testing.T) {
 // TestResumeEditHandler_InvalidSkillLevel asserts that an invalid level returns 400.
 // Red-on-revert: remove IsValidSkillLevel check → any level accepted silently.
 func TestResumeEditHandler_InvalidSkillLevel(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumeSkillLevelHandler(a, key)
+	handler := resumeSkillLevelHandler()
 
-	tok := csrf.Issue(key, "", csrf.DefaultTTL)
 	form := url.Values{}
-	form.Set(csrf.FormField, tok)
 	form.Set("level", "master") // not in allowlist
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
 		"/admin/resume/skill/1/level", strings.NewReader(form.Encode()))
@@ -163,7 +66,7 @@ func TestResumeEditHandler_InvalidSkillLevel(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
-	// CSRF passes, id valid → invalid level must 400 before any DB call.
+	// id valid → invalid level must 400 before any DB call.
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("want 400 for invalid level, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -322,13 +225,9 @@ func TestResumeEditTmpl_RendersWithData(t *testing.T) {
 // hourly_rate returns HTTP 400 rather than silently writing 0.
 // Red-on-revert: remove the parseErr != nil check → returns 303 (redirect) and writes 0.
 func TestResumePersonEditHandler_BadHourlyRate(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := resumePersonEditHandler(a, key)
+	handler := resumePersonEditHandler()
 
-	tok := csrf.Issue(key, "", csrf.DefaultTTL)
 	form := url.Values{}
-	form.Set(csrf.FormField, tok)
 	form.Set("name", "Alice")        // required field
 	form.Set("hourly_rate", "not-a-number")
 
@@ -339,7 +238,7 @@ func TestResumePersonEditHandler_BadHourlyRate(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
-	// CSRF OK, name present, but hourly_rate is garbage → must 400 before any DB call.
+	// name present, but hourly_rate is garbage → must 400 before any DB call.
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("want 400 for invalid hourly_rate, got %d: %s", rr.Code, rr.Body.String())
 	}

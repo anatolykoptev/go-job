@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -58,7 +57,7 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 // hunt_ratings.stage. CSRF-protected. Uses Store.SetStage so the existing note is
 // preserved. Pipeline-only: rejects any triage-axis value.
 // On success redirects to Referer (preserving filter state).
-func stageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func stageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -67,21 +66,7 @@ func stageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csr
 			return
 		}
 
-		const maxBody = 4096
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		// CSRF verification bound to the session cookie.
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		stage := r.FormValue("stage")
 		// stage=="" is the explicit "— clear —" option (SetStage("") blanks the column).
 		// Only reject non-empty values that are not in the pipeline enum.

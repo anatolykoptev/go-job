@@ -34,8 +34,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/csrf"
@@ -55,6 +57,12 @@ const (
 	// request. It is rejected with 404 on detail/edit routes (which require an
 	// existing record) and treated as a create signal by the save handler.
 	idNew = "new"
+	// tenantAuthzDefaultWarning is the stable, greppable message New logs
+	// once at construction when Config.TenantAuthorizer is left nil
+	// (defaulting to tenant.GlobalOnlyAuthorizer) — the only runtime signal
+	// against a silent cross-tenant exposure once a second tenant becomes
+	// resolvable. Keep this string stable: Loki/dozor alerting keys off it.
+	tenantAuthzDefaultWarning = "panel: tenant authorization not configured, defaulting to GlobalOnlyAuthorizer"
 )
 
 // Cell is one table cell value.
@@ -177,19 +185,40 @@ type Resource struct {
 // It holds the mux, authenticator, tenant resolver, and the registered nav.
 // Consumers create it via New() and call Handler() to get the http.Handler.
 type Panel struct {
+	// mux is the internal ServeMux. The index route is registered lazily, in
+	// finalize() on the first Handler() call — so mux must never be exposed
+	// except via Handler(); a future accessor handing out p.mux directly
+	// (without routing through Handler()) would serve a 404 at the index.
 	mux  *http.ServeMux
-	auth interface {
-		Require(http.HandlerFunc) http.HandlerFunc
-		LoginHandler() http.Handler
-		LogoutHandler() http.Handler
-	}
-	resolver   tenant.Resolver
-	basePath   string
-	nav        []shell.NavItem
-	title      string
-	csrfKey    []byte
-	locales    locale.Set          // configured i18n locales; zero value = single-locale
-	profileCfg shell.ProfileConfig // static defaults for the sidebar profile block
+	auth baseAuthenticator
+	// resolver resolves the per-request Tenant; read by withTenantResolution
+	// in Handler() — the one place tenant resolution happens (see the tenant
+	// package doc's routing-mutation note).
+	resolver tenant.Resolver
+	// tenantAuthz decides whether the resolved Tenant may be accessed by the
+	// current session; composed into every guarded route via requireTenant.
+	// Never nil after New() — defaults to tenant.GlobalOnlyAuthorizer{}
+	// (fail-closed: allow the global tenant, deny every other one).
+	tenantAuthz tenant.Authorizer
+	basePath    string
+	nav         []shell.NavItem
+	title       string
+	csrfKey     []byte
+	locales     locale.Set          // configured i18n locales; zero value = single-locale
+	profileCfg  shell.ProfileConfig // static defaults for the sidebar profile block
+
+	// indexOverride is set once via MountPage(PageSpec{Path: ""}) before the
+	// mux is finalized; it replaces the default handleIndex at GET {basePath}/{$}.
+	// Written only during setup (MountPage); read exactly once, in finalize().
+	indexOverride http.HandlerFunc
+	// finalizeOnce guards the one-time index-route mount performed by
+	// finalize(), invoked on the first Handler() call.
+	finalizeOnce sync.Once
+	// finalized is set true once finalize() has run. MountPage panics if
+	// called after finalized is true: pages must be mounted before the first
+	// Handler() call, so the routes the mux serves are fixed for its whole
+	// lifetime (fail-closed rather than silently accepting a too-late mount).
+	finalized bool
 }
 
 // SetProfile configures the static defaults for the sidebar profile block.
@@ -200,6 +229,21 @@ type Panel struct {
 // (backward-compatible default).
 func (p *Panel) SetProfile(cfg shell.ProfileConfig) {
 	p.profileCfg = cfg
+}
+
+// baseAuthenticator is the minimal session-auth contract Panel.auth and
+// Config.Auth require: Require gates a handler behind a valid session,
+// LoginHandler/LogoutHandler are mounted directly onto the panel mux in
+// New() (cfg.Auth.LoginHandler() / cfg.Auth.LogoutHandler()). It is
+// deliberately NOT auth.Authenticator — a 4-method superset that also
+// demands Verified — because widening Config.Auth to that shape would
+// silently reject any implementation (real or test double) that only
+// provides these 3 methods. Keep this exactly 3 methods: New()'s mux-dispatch
+// mount and guard()'s p.auth.Require() call depend on this shape resolving.
+type baseAuthenticator interface {
+	Require(http.HandlerFunc) http.HandlerFunc
+	LoginHandler() http.Handler
+	LogoutHandler() http.Handler
 }
 
 // sessionCookier is the optional interface implemented by authenticators that
@@ -231,12 +275,17 @@ type RoleAuthenticator interface {
 type Config struct {
 	Title    string
 	BasePath string // e.g. "/admin". Defaults to "/admin".
-	Auth     interface {
-		Require(http.HandlerFunc) http.HandlerFunc
-		LoginHandler() http.Handler
-		LogoutHandler() http.Handler
-	}
+	Auth     baseAuthenticator
 	Resolver tenant.Resolver // nil = PathResolver{Segment:2}
+	// TenantAuthorizer decides whether a resolved Tenant may be accessed by
+	// the current session. nil (the default) resolves to
+	// tenant.GlobalOnlyAuthorizer{} — fail-closed: allows the global tenant
+	// (today's only reachable one) and denies every other tenant. New logs a
+	// construction-time WARN when this defaults (see
+	// tenantAuthzDefaultWarning) — the only runtime signal against a
+	// silently permissive state once a second tenant becomes resolvable. A
+	// real multi-tenant deployment must configure an explicit Authorizer.
+	TenantAuthorizer tenant.Authorizer
 	// CSRFKey is the HMAC signing key for CSRF double-submit tokens.
 	// Required when any Resource has a non-nil Writer; omitting it causes
 	// a panic at Register time (fail-closed configuration).
@@ -266,28 +315,114 @@ func New(cfg Config) *Panel {
 	if resolver == nil {
 		resolver = tenant.PathResolver{Segment: 2}
 	}
+	tenantAuthz := cfg.TenantAuthorizer
+	if tenantAuthz == nil {
+		tenantAuthz = tenant.GlobalOnlyAuthorizer{}
+		// resolver is always set above (defaulted to PathResolver{Segment:2}
+		// when unconfigured), and every Resolver this repo ships can
+		// plausibly resolve a non-global tenant — there is no "resolver
+		// incapable of non-global" case to gate on, so an unconfigured
+		// TenantAuthorizer is loud unconditionally rather than only for some
+		// resolver configurations.
+		slog.Warn(tenantAuthzDefaultWarning, "resolver", fmt.Sprintf("%T", resolver))
+	}
 	p := &Panel{
-		mux:      http.NewServeMux(),
-		auth:     cfg.Auth,
-		resolver: resolver,
-		basePath: bp,
-		title:    title,
-		csrfKey:  cfg.CSRFKey,
-		locales:  cfg.Locales,
+		mux:         http.NewServeMux(),
+		auth:        cfg.Auth,
+		resolver:    resolver,
+		tenantAuthz: tenantAuthz,
+		basePath:    bp,
+		title:       title,
+		csrfKey:     cfg.CSRFKey,
+		locales:     cfg.Locales,
 	}
 	// Mount standard routes.
 	p.mux.Handle(bp+"/static/", http.StripPrefix(bp+"/static", shell.StaticHandler()))
 	p.mux.Handle(bp+"/login", cfg.Auth.LoginHandler())
 	p.mux.Handle(bp+"/logout", cfg.Auth.LogoutHandler())
-	// Index route: redirect to the first real resource (or show a minimal page).
-	p.mux.HandleFunc("GET "+bp+"/{$}", p.auth.Require(p.handleIndex))
+	// Index route (GET bp+"/{$}") is registered by finalize(), on the first
+	// Handler() call — not here. A MountPage(PageSpec{Path: ""}) custom index
+	// must be able to claim that pattern before it's mounted; registering it
+	// eagerly here would collide with MountPage's own registration (the mux
+	// panics on a duplicate "GET {$}" pattern).
 	return p
 }
 
 // Handler returns the http.Handler for the entire admin surface.
 // Mount at the admin path (e.g. /admin/) in your app mux.
+//
+// The first call finalizes the mux: it mounts the index route (a MountPage
+// custom index if one was registered via PageSpec{Path: ""}, otherwise the
+// default handleIndex). MountPage calls after Handler() has been called panic.
+//
+// The returned handler is wrapped with withTenantResolution — the single
+// composition point where p.resolver actually runs (see the tenant package
+// doc's routing-mutation note). Tenant AUTHORIZATION is enforced separately,
+// per-route, by guard (via requireTenant); resolution here only decides which
+// tenant a request names.
 func (p *Panel) Handler() http.Handler {
-	return p.mux
+	p.finalize()
+	return withTenantResolution(p.resolver, p.mux)
+}
+
+// withTenantResolution wraps next with the panel's single tenant-resolution
+// composition point: resolve a Tenant from the request via resolver, strip a
+// concrete tenant.PathResolver's /tenant/{slug} marker pair from the path so
+// the mux can match the underlying resource route (mirrors the
+// http.StripPrefix idiom used for the static-asset mount in New — shallow-copy
+// the request and URL rather than mutate the caller's), store the resolved
+// Tenant on the request context via tenant.WithTenant, then serve.
+//
+// Resolve runs BEFORE strip, on the UNSTRIPPED path, which makes this
+// idempotent: wrapping an already-resolved request a second time (e.g.
+// go-grad's outer tenant.Middleware during the Phase 1a/1b rollout interim)
+// re-derives the identical Tenant from the same marker-guarded path shape,
+// and the second strip is a no-op on the already-stripped path.
+//
+// Only a concrete tenant.PathResolver is stripped — a type-switch, not a new
+// exported interface, since exactly two Resolver implementations exist
+// repo-wide (see the P1a ADR). tenant.SubdomainResolver carries no path
+// prefix to remove.
+//
+// Matches both tenant.PathResolver and *tenant.PathResolver: Resolve has a
+// value receiver, so a config-time &tenant.PathResolver{...} also satisfies
+// tenant.Resolver and is a realistic construction — matching the value form
+// only would silently skip the strip step for it (tenant-prefixed routes
+// would 404 at mux dispatch instead of matching; fail-closed, but a latent
+// footgun worth avoiding outright).
+func withTenantResolution(resolver tenant.Resolver, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t := resolver.Resolve(r)
+		ctx := tenant.WithTenant(r.Context(), t)
+
+		var pr tenant.PathResolver
+		switch v := resolver.(type) {
+		case tenant.PathResolver:
+			pr = v
+		case *tenant.PathResolver:
+			if v == nil {
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			pr = *v
+		default:
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		stripped, changed := pr.StripPrefix(r.URL.Path)
+		if !changed {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		// Shallow-copy r and r.URL before rewriting Path — never mutate the
+		// caller's *http.Request (mirrors net/http.StripPrefix).
+		r2 := new(http.Request)
+		*r2 = *r
+		r2.URL = new(url.URL)
+		*r2.URL = *r.URL
+		r2.URL.Path = stripped
+		next.ServeHTTP(w, r2.WithContext(ctx))
+	})
 }
 
 // handleIndex serves GET {basePath}/{$} (the bare base path).
@@ -422,18 +557,42 @@ func Register(p *Panel, r Resource) {
 	}
 }
 
+// validateCSRFConfig panics (fail-closed) unless p is configured for
+// CSRF-protected write routes: Config.CSRFKey at least minCSRFKeyLen bytes,
+// and an authenticator implementing SessionCookieName() (CSRF tokens bind to
+// the session cookie). Shared by validateWriterConfig (Register's Writer
+// path) and MountAction (action.go) — both ran this identical three-check
+// gate, in the identical order, independently before this extraction.
+//
+// label identifies the caller in every panic, already %q-formatted by the
+// caller (e.g. `resource.Register "items"`, `resource: MountAction
+// "widget"`); qualifier is an optional caller-specific lead-in clause
+// ("Writer is set but ", or "" for MountAction, which has no separate
+// Writer concept); purpose completes "set CSRFKey to enable <purpose>"
+// (e.g. "write forms", "actions").
+//
+// MountTOTPEnrollment (totp.go) enforces the same underlying invariant —
+// CSRF needs a real key and a session-bound authenticator — but was written
+// independently, with its own check order (SessionCookieName before key
+// length) and its own message wording; it is intentionally NOT routed
+// through this helper rather than force a shared order/wording onto code
+// that was never actually copy-pasted from either caller here.
+func validateCSRFConfig(p *Panel, label, qualifier, purpose string) {
+	if len(p.csrfKey) == 0 {
+		panic(fmt.Sprintf("%s: %sConfig.CSRFKey is empty — set CSRFKey to enable %s (fail-closed)", label, qualifier, purpose))
+	}
+	if len(p.csrfKey) < minCSRFKeyLen {
+		panic(fmt.Sprintf("%s: Config.CSRFKey must be at least %d bytes, got %d (fail-closed, SEC-CR-001)", label, minCSRFKeyLen, len(p.csrfKey)))
+	}
+	if _, ok := p.auth.(sessionCookier); !ok {
+		panic(fmt.Sprintf("%s: %sthe authenticator does not implement SessionCookieName() — CSRF tokens cannot be bound to the session cookie (fail-closed)", label, qualifier))
+	}
+}
+
 // validateWriterConfig panics if the Writer configuration is invalid.
 // Called at Register time — all checks are fail-closed.
 func validateWriterConfig(p *Panel, r Resource) {
-	if len(p.csrfKey) == 0 {
-		panic(fmt.Sprintf("resource.Register %q: Writer is set but Config.CSRFKey is empty — set CSRFKey to enable write forms (fail-closed)", r.Name))
-	}
-	if len(p.csrfKey) < minCSRFKeyLen {
-		panic(fmt.Sprintf("resource.Register %q: Config.CSRFKey must be at least %d bytes, got %d (fail-closed, SEC-CR-001)", r.Name, minCSRFKeyLen, len(p.csrfKey)))
-	}
-	if _, ok := p.auth.(sessionCookier); !ok {
-		panic(fmt.Sprintf("resource.Register %q: Writer is set but the authenticator does not implement SessionCookieName() — CSRF tokens cannot be bound to the session cookie (fail-closed)", r.Name))
-	}
+	validateCSRFConfig(p, fmt.Sprintf("resource.Register %q", r.Name), "Writer is set but ", "write forms")
 	if err := r.Writer.Form.Valid(); err != nil {
 		panic(fmt.Sprintf("resource.Register %q: invalid Writer.Form: %v", r.Name, err))
 	}
@@ -454,22 +613,64 @@ func validateRoleConfig(p *Panel, r Resource) {
 
 // guard wraps h with the panel's authentication and, when requiredRole is
 // non-empty, additionally enforces the role via the RoleAuthenticator
-// capability. For an empty role it is exactly p.auth.Require — no behaviour
-// change for resources that declare no RequiredRole.
+// capability. For an empty role it is exactly p.auth.Require(requireTenant(h))
+// — no auth-flow behaviour change for resources that declare no RequiredRole,
+// tenant-authz composed identically for every route regardless of role.
 //
-// A non-empty role requires p.auth to implement RoleAuthenticator. That is
-// guaranteed at Register time by validateRoleConfig, so the assertion here is
-// defence-in-depth: a failure means the guarantee was bypassed, and we fail
-// closed (panic at mount) rather than fail open.
+// A non-empty role requires p.auth to implement RoleAuthenticator. guard has
+// two callers: Register, which pre-validates this via validateRoleConfig (so
+// the panic below is defence-in-depth there — a failure means that guarantee
+// was bypassed), and MountPage, which has no separate pre-check and relies on
+// guard itself to validate eagerly at mount time. Either way we fail closed
+// (panic at mount) rather than fail open.
+//
+// requireTenant is composed here as the innermost wrap around h — the LAST
+// check before the resource handler runs. For an empty role it runs right
+// after auth.Require's session check (there is no role check). For a
+// role-gated route it runs AFTER the role check too: guard hands
+// requireTenant(h) to RequireRole as RequireRole's OWN "next", so
+// RequireRole's session+role checks execute first and only reach
+// requireTenant (then h) once both pass. A single straight-line call —
+// deliberately not inlined — so guard's own cyclomatic complexity is
+// unchanged by tenant-authz; mirrors how role-gating is delegated to a
+// separate RequireRole call rather than inlined branching.
 func (p *Panel) guard(requiredRole string, h http.HandlerFunc) http.HandlerFunc {
+	h = p.requireTenant(h)
 	if requiredRole == "" {
 		return p.auth.Require(h)
 	}
 	ra, ok := p.auth.(RoleAuthenticator)
 	if !ok {
-		panic(fmt.Sprintf("resource: guard called with role %q but the authenticator does not implement RoleAuthenticator (validateRoleConfig bypassed — fail-closed)", requiredRole))
+		panic(fmt.Sprintf("resource: guard called with role %q but the authenticator does not implement RoleAuthenticator (fail-closed)", requiredRole))
 	}
 	return ra.RequireRole(requiredRole, h)
+}
+
+// requireTenant returns a handler that enforces p.tenantAuthz against the
+// Tenant resolved onto the request context (by withTenantResolution, which
+// runs before mux dispatch — see Handler), denying with 403 when Authorized
+// returns false OR a non-nil error. The two are treated identically: a
+// transient authorizer failure must fail closed, never fail open.
+//
+// Composed by guard for every route (list/detail/rows-fragment/new/edit/save)
+// regardless of RequiredRole — tenant-authz and role-authz are orthogonal
+// gates, both must pass.
+func (p *Panel) requireTenant(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		t := tenant.From(r.Context())
+		ok, err := p.tenantAuthz.Authorized(r.Context(), t)
+		if err != nil || !ok {
+			slog.WarnContext(r.Context(), "resource: tenant-denied",
+				"tenant", t.CitySlug,
+				"path", r.URL.Path,
+				"method", r.Method,
+				"err", err,
+			)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ErrDetailNotFound may be returned by Detailer to signal a 404.
@@ -662,11 +863,7 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 			return
 		}
 
-		// CSRF check — generic error body; detail logged server-side.
-		token := req.FormValue(csrf.FormField)
-		if err := csrf.Verify(p.csrfKey, p.sessionValue(req), token); err != nil {
-			slog.Warn("resource: CSRF verification failed", "resource", r.Name, "err", err)
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		if !p.verifyCSRFToken(w, req, "resource: CSRF verification failed", "resource", r.Name) {
 			return
 		}
 
@@ -707,8 +904,18 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 			return
 		}
 
-		// Persist — generic error body; detail logged server-side.
+		// Persist — a *SaveError is a domain validation failure (e.g. a
+		// booking-overlap check in the Writer's own store): re-render the
+		// form at 422 with the message on its field, same as field-level
+		// validation above. Any other error is a genuine internal failure —
+		// generic 500 body, detail logged server-side, never masked as a
+		// user error.
 		if err := rr.Writer.Save(ctx, t, id, values); err != nil {
+			var se *SaveError
+			if errors.As(err, &se) {
+				renderValidationErrors(w, req, p, rr, id, loc, values, formErrors{se.Field: se.Message})
+				return
+			}
 			slog.Error("resource: save failed", "resource", r.Name, "err", err)
 			http.Error(w, "save failed", http.StatusInternalServerError)
 			return
@@ -779,6 +986,33 @@ func (p *Panel) sessionValue(r *http.Request) string {
 		return ""
 	}
 	return c.Value
+}
+
+// verifyCSRFToken checks r's submitted CSRF token (csrf.FormField) against
+// p.csrfKey and the session bound to r's session cookie — the verification
+// core every write path in the framework shares (saveHandler, MountAction's
+// csrfProtect in action.go, and the TOTP enrollment lifecycle's verifyCSRF
+// in totp_handlers.go). r must already be through a successful ParseForm;
+// callers parse (and cap) the body themselves first — the cap varies
+// (saveHandler and csrfProtect both use a 1MB ceiling; TOTP's parseForm
+// uses the much smaller maxTOTPFormBytes = 4096, deliberately, see its own
+// doc) — so parsing stays each caller's own responsibility.
+//
+// Returns true when the token is valid. On failure it writes the response
+// itself (403, a generic body — detail logged server-side) and returns
+// false; the caller must stop processing immediately. logMsg and logFields
+// let each caller keep its own log identity — e.g. saveHandler logs
+// "resource"=Resource.Name, csrfProtect logs "path"=r.URL.Path, TOTP's logs
+// neither extra field — verifyCSRFToken always appends "err" itself, last,
+// matching every existing call site's field order.
+func (p *Panel) verifyCSRFToken(w http.ResponseWriter, r *http.Request, logMsg string, logFields ...any) bool {
+	token := r.FormValue(csrf.FormField) //nolint:gosec // G120 false positive: every caller (saveHandler, csrfProtect, totpEnrollment.verifyCSRF) already wraps r.Body in http.MaxBytesReader via ParseForm/parseForm before calling verifyCSRFToken; gosec's check doesn't trace through the caller
+	if err := csrf.Verify(p.csrfKey, p.sessionValue(r), token); err != nil {
+		slog.WarnContext(r.Context(), logMsg, append(logFields, "err", err)...)
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // navItemsFor returns the context-filtered, active-marked nav list for rendering.

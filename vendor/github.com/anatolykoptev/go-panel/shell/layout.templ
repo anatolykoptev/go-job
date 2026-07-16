@@ -203,19 +203,23 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 									<span class="sidebar-tooltip">Settings</span>
 								</a>
 							}
-							<a class="sidebar-item sidebar-item--logout" href={ templ.SafeURL(profileLogoutURL(prof)) } aria-label="Logout">
-								<span class="sidebar-icon">&#x2192;</span>
-								<span class="sidebar-label">Logout</span>
-								<span class="sidebar-tooltip">Logout</span>
-							</a>
+							<form method="POST" action={ templ.SafeURL(profileLogoutURL(prof)) } style="margin:0;padding:0;display:block">
+								<button type="submit" class="sidebar-item sidebar-item--logout" aria-label="Logout" style="anchor-name: --nav-logout">
+									<span class="sidebar-icon">&#x2192;</span>
+									<span class="sidebar-label">Logout</span>
+									<span class="sidebar-tooltip" style="position-anchor: --nav-logout">Logout</span>
+								</button>
+							</form>
 						} else {
 							// Bare Logout — backward-compat for single-user consumers (HMACAuth)
 							// or when Profile.Name is empty.
-							<a class="sidebar-item" href="/admin/logout" aria-label="Logout" style="anchor-name: --nav-logout">
-								<span class="sidebar-icon">&#x2192;</span>
-								<span class="sidebar-label">Logout</span>
-								<span class="sidebar-tooltip" style="position-anchor: --nav-logout">Logout</span>
-							</a>
+							<form method="POST" action="/admin/logout" style="margin:0;padding:0;display:block">
+								<button type="submit" class="sidebar-item" aria-label="Logout" style="anchor-name: --nav-logout">
+									<span class="sidebar-icon">&#x2192;</span>
+									<span class="sidebar-label">Logout</span>
+									<span class="sidebar-tooltip" style="position-anchor: --nav-logout">Logout</span>
+								</button>
+							</form>
 						}
 					</div>
 				</aside>
