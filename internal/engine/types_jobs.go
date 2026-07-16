@@ -38,6 +38,7 @@ type JobListing struct {
 	Skills         []string `json:"skills"`
 	Description    string   `json:"description"`
 	Posted         string   `json:"posted"`
+	QualityScore   int      `json:"quality_score,omitempty"` // 0-100 deterministic posting-quality score (no LLM)
 }
 
 // JobSearchOutput is the structured output for job_search.
@@ -126,6 +127,30 @@ type JobMatchScoreOutput struct {
 	Query   string           `json:"query"`
 	Jobs    []JobMatchResult `json:"jobs"`
 	Summary string           `json:"summary"`
+}
+
+// --- Job quality score types ---
+
+// JobQualityScoreInput is the input for the job_quality_score tool.
+// Either a job_url (to fetch + parse) or a job_description (inline) must be
+// provided. When both are given, the URL is fetched and its content is used
+// alongside the inline description.
+type JobQualityScoreInput struct {
+	JobURL         string `json:"job_url,omitempty" jsonschema:"URL of the job posting to score"`
+	JobDescription string `json:"job_description,omitempty" jsonschema:"Inline job description text to score (used when no URL is available)"`
+	JobTitle       string `json:"job_title,omitempty" jsonschema:"Job title (improves agency detection accuracy)"`
+	Company        string `json:"company,omitempty" jsonschema:"Company name (improves agency detection accuracy)"`
+	Source         string `json:"source,omitempty" jsonschema:"Job source platform (e.g. greenhouse, linkedin, indeed)"`
+	SalaryMin      int    `json:"salary_min,omitempty" jsonschema:"Minimum salary (annual, in currency units)"`
+	SalaryMax      int    `json:"salary_max,omitempty" jsonschema:"Maximum salary (annual, in currency units)"`
+}
+
+// JobQualityScoreOutput is the structured output for job_quality_score.
+type JobQualityScoreOutput struct {
+	Score     int                   `json:"score"`     // 0-100 deterministic quality score
+	Verdict   string                `json:"verdict"`   // "high" | "medium" | "low" | "skip"
+	Breakdown map[string]int        `json:"breakdown"` // per-factor point contributions
+	Summary   string                `json:"summary"`
 }
 
 // SalaryResearchInput is the input for salary_research.

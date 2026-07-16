@@ -288,6 +288,12 @@ func registerJobSearch(server *mcp.Server) {
 					j.Posted = lj.Posted
 				}
 			}
+			// Annotate each result with a deterministic quality score (no LLM).
+			// Source is inferred from the URL when the listing has no Source field.
+			if j.Source == "" {
+				j.Source = extractSourceForQuality(j.URL)
+			}
+			j.QualityScore = qualityScoreFromListing(*j).Score
 		}
 
 		persistJobListings(ctx, jobOut.Jobs)

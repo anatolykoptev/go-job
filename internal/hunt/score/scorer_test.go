@@ -639,3 +639,116 @@ func TestScoreForce_BypassesRecencyAndJaccard(t *testing.T) {
 			"nil profile must return unscored — Stage 0 guard still applies")
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Test_Scorer_QualityGate (issue #192)
+// ---------------------------------------------------------------------------
+//
+// Stage 3 quality pre-filter: a job that passes recency + Jaccard but has a
+// low deterministic quality score must be short-circuited with
+// FitBand="quality" and must NOT call the LLM.
+//
+// RED-on-revert: remove the quality gate stage → low-quality job calls LLM.
+
+func Test_Scorer_QualityGate(t *testing.T) {
+	prof := freshProfile()
+
+	// --- low-quality job: passes Jaccard but is an agency posting with stub desc ---
+	t.Run("low_quality_no_llm_call", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 }, // above Jaccard threshold
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		job := hunt.Job{
+			Title:       "Senior Go Engineer",
+			Company:     "Tech Staffing Solutions",                // agency → not_agency=0
+			Description: "Go Rust PostgreSQL distributed systems", // short desc, no salary, no URL
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_MIN_QUALITY", "30")
+		result := Score(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(0), llm.calls.Load(), "low-quality job must NOT call LLM")
+		assert.Equal(t, hunt.FitBandQuality, result.FitBand,
+			"low-quality job FitBand must be 'quality'")
+		assert.Less(t, result.QualityScore, 30,
+			"QualityScore must be below threshold")
+	})
+
+	// --- high-quality job: passes quality gate → LLM called ---
+	t.Run("high_quality_calls_llm", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		desc := strings.Repeat("We need a Go engineer with Rust and PostgreSQL experience. ", 50)
+		job := hunt.Job{
+			Title:       "Senior Go Engineer",
+			Company:     "Acme Corp",
+			URL:         "https://boards.greenhouse.io/acme/jobs/123",
+			Description: desc, // > 2000 chars
+			Source:      "greenhouse",
+			SalaryMin:   150000,
+			SalaryMax:   200000,
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_MIN_QUALITY", "30")
+		result := Score(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(1), llm.calls.Load(), "high-quality job must call LLM")
+		assert.NotEqual(t, hunt.FitBandQuality, result.FitBand,
+			"high-quality job must NOT be quality-filtered")
+		assert.GreaterOrEqual(t, result.QualityScore, 30,
+			"QualityScore must be >= threshold")
+	})
+
+	// --- quality gate disabled via HUNT_SCORE_MIN_QUALITY=0 ---
+	t.Run("disabled_gate_calls_llm", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 50 },
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		job := hunt.Job{
+			Title:       "Senior Go Engineer",
+			Description: "Go Rust PostgreSQL", // would be low-quality
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_MIN_QUALITY", "0")
+		result := Score(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(1), llm.calls.Load(), "disabled quality gate must let LLM run")
+		assert.NotEqual(t, hunt.FitBandQuality, result.FitBand,
+			"disabled gate must not produce quality band")
+	})
+
+	// --- quality gate runs AFTER Jaccard: sub-Jaccard job still gets "reject" ---
+	t.Run("sub_jaccard_still_rejects_before_quality", func(t *testing.T) {
+		llm := &stubLLM{}
+		deps := ScorerDeps{
+			Jaccard: func(kw, text string) float64 { return 5 }, // below Jaccard
+			LLM:     llm.call,
+		}
+		postedAt := time.Now().Add(-1 * time.Hour)
+		job := hunt.Job{
+			Title:       "Marketing Manager",
+			Description: "Sales event",
+			PostedAt:    &postedAt,
+		}
+
+		t.Setenv("HUNT_SCORE_MIN_QUALITY", "30")
+		result := Score(context.Background(), prof, job, deps)
+
+		assert.Equal(t, int64(0), llm.calls.Load(), "sub-Jaccard must not call LLM")
+		assert.Equal(t, hunt.FitBandReject, result.FitBand,
+			"sub-Jaccard must be 'reject', not 'quality'")
+	})
+}
