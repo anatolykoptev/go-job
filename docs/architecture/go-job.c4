@@ -1,0 +1,33 @@
+specification {
+  element person { style { shape: person } }
+  element system
+  element container
+}
+
+model {
+  user = person "User" "Caller / consumer."
+
+  go_job = system "go-job" {
+    description '''
+      Job, Remote & Freelance Search MCP server. Exposes 4 MCP tools for structured job discovery across major platforms.
+
+      **TODO**: расширить описание. Добавить containers + components.
+    '''
+
+    main = container "go-job" {
+      description "Main container. Tech: Go, port :8891."
+      technology "Go"
+      icon tech:go
+    }
+  }
+
+  user -> go_job.main "calls"
+}
+
+views {
+  view index {
+    title "Top level"
+    include user, go_job, go_job.main
+    autoLayout LeftRight
+  }
+}
