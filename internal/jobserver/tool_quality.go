@@ -52,21 +52,22 @@ func registerJobQualityScore(server *mcp.Server) {
 		result := quality.Score(qIn)
 
 		breakdown := map[string]int{
-			"salary":             result.Breakdown.Salary,
-			"direct_apply":       result.Breakdown.DirectApply,
-			"freshness":          result.Breakdown.Freshness,
-			"description_length": result.Breakdown.DescriptionLength,
-			"not_agency":         result.Breakdown.NotAgency,
-			"source_quality":     result.Breakdown.SourceQuality,
-			"has_description":    result.Breakdown.HasDescription,
+			"salary":              result.Breakdown.Salary,
+			"direct_apply":        result.Breakdown.DirectApply,
+			"freshness":           result.Breakdown.Freshness,
+			"description_quality": result.Breakdown.DescriptionLength,
+			"not_agency":          result.Breakdown.NotAgency,
+			"source_quality":      result.Breakdown.SourceQuality,
+			"has_description":     result.Breakdown.HasDescription,
+			"spam_penalty":        result.Breakdown.SpamPenalty,
 		}
 
-		summary := fmt.Sprintf("Quality score: %d/100 (%s). Breakdown: salary=%d, direct_apply=%d, freshness=%d, description_length=%d, not_agency=%d, source_quality=%d, has_description=%d.",
+		summary := fmt.Sprintf("Quality score: %d/100 (%s). Breakdown: salary=%d, direct_apply=%d, freshness=%d, description_quality=%d, not_agency=%d, source_quality=%d, has_description=%d, spam_penalty=%d.",
 			result.Score, result.Verdict,
 			result.Breakdown.Salary, result.Breakdown.DirectApply,
 			result.Breakdown.Freshness, result.Breakdown.DescriptionLength,
 			result.Breakdown.NotAgency, result.Breakdown.SourceQuality,
-			result.Breakdown.HasDescription)
+			result.Breakdown.HasDescription, result.Breakdown.SpamPenalty)
 
 		return nil, engine.JobQualityScoreOutput{
 			Score:     result.Score,
