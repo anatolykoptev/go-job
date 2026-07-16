@@ -3,9 +3,11 @@ package huntworker
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -117,8 +119,13 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 		jobs.PersistFreelanceJobs(ctx, freelance)
 	}()
 
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	engine.SetOpportunityIngestMemory(mem.Alloc)
+
 	slog.Info("opp worker: cycle complete",
 		slog.Duration("elapsed", time.Since(start)),
+		slog.Uint64("memory_bytes", mem.Alloc),
 	)
 }
 

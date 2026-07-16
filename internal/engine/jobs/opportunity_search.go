@@ -120,13 +120,30 @@ func fetchAllBounties(ctx context.Context) []engine.BountyListing {
 	return fetchAllBountiesImpl(ctx, 50, true)
 }
 
+// opportunityIngestPerSourceCap bounds the contribution of any one upstream
+// during scheduled opportunity ingest. With the current source counts, the
+// aggregate upper bounds are 30,000 bounties, 25,000 security programs, and
+// 10,000 freelance jobs.
+const opportunityIngestPerSourceCap = 5000
+
+func appendOpportunitySource[T any](dst, src []T, applyCap bool) []T {
+	if !applyCap && len(src) > opportunityIngestPerSourceCap {
+		src = src[:opportunityIngestPerSourceCap]
+	}
+	return append(dst, src...)
+}
+
 // fetchAllBountiesImpl is the shared aggregator for both the on-demand search path
-// (limit=50, applyCap=true) and the scheduled ingest path (limit=10000, applyCap=false).
-// When applyCap is true the combined result is capped to limit items.
+// (limit=50, applyCap=true) and the scheduled ingest path (limit=10000,
+// applyCap=false). Scheduled ingest caps each source before appending; on-demand
+// search caps the combined result to limit items.
 func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engine.BountyListing {
 	var all []engine.BountyListing
 
 	if bvecs, err := SearchAlgoraEnriched(ctx, limit); err == nil {
+		if !applyCap && len(bvecs) > opportunityIngestPerSourceCap {
+			bvecs = bvecs[:opportunityIngestPerSourceCap]
+		}
 		for _, bv := range bvecs {
 			all = append(all, bv.Bounty)
 		}
@@ -152,7 +169,7 @@ func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engin
 			continue
 		}
 
-		all = append(all, bounties...)
+		all = appendOpportunitySource(all, bounties, applyCap)
 	}
 
 	if applyCap && len(all) > limit {
@@ -180,7 +197,7 @@ func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engin
 		if err != nil {
 			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
 		} else {
-			all = append(all, btd...)
+			all = appendOpportunitySource(all, btd, applyCap)
 		}
 	} else {
 		// Scheduled path: bypass cache to get the full live dataset.
@@ -188,7 +205,7 @@ func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engin
 		if err != nil {
 			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
 		} else {
-			all = append(all, btd...)
+			all = appendOpportunitySource(all, btd, applyCap)
 		}
 	}
 
@@ -196,28 +213,28 @@ func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engin
 	if err != nil {
 		slog.Warn("opportunity_search: immunefi error", slog.Any("error", err))
 	} else {
-		all = append(all, imm...)
+		all = appendOpportunitySource(all, imm, applyCap)
 	}
 
 	shr, err := SearchSherlock(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: sherlock error", slog.Any("error", err))
 	} else {
-		all = append(all, shr...)
+		all = appendOpportunitySource(all, shr, applyCap)
 	}
 
 	cantina, err := SearchCantina(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: cantina error", slog.Any("error", err))
 	} else {
-		all = append(all, cantina...)
+		all = appendOpportunitySource(all, cantina, applyCap)
 	}
 
 	c4r, err := SearchCode4rena(ctx, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: code4rena error", slog.Any("error", err))
 	} else {
-		all = append(all, c4r...)
+		all = appendOpportunitySource(all, c4r, applyCap)
 	}
 
 	if applyCap && len(all) > limit {
@@ -232,8 +249,8 @@ func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
 }
 
 // fetchAllFreelanceImpl is the shared aggregator for both paths.
-// When applyCap is true the combined result is capped to 50 items (on-demand);
-// when false no cap is applied (scheduled ingest).
+// When applyCap is true the combined result is capped to 50 items (on-demand).
+// Scheduled ingest caps each source before appending.
 func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engine.FreelanceJob {
 	var all []engine.FreelanceJob
 
@@ -241,14 +258,14 @@ func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engi
 	if err != nil {
 		slog.Warn("opportunity_search: remoteok error", slog.Any("error", err))
 	} else {
-		all = append(all, rok...)
+		all = appendOpportunitySource(all, rok, applyCap)
 	}
 
 	him, err := SearchHimalayas(ctx, langAliasGolang, limit)
 	if err != nil {
 		slog.Warn("opportunity_search: himalayas error", slog.Any("error", err))
 	} else {
-		all = append(all, him...)
+		all = appendOpportunitySource(all, him, applyCap)
 	}
 
 	const capFreelance = 50

@@ -6,6 +6,22 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
+func TestAppendOpportunitySourceCapsScheduledIngestPerSource(t *testing.T) {
+	src := make([]int, opportunityIngestPerSourceCap+1234)
+	got := appendOpportunitySource([]int{1, 2}, src, false)
+	if want := 2 + opportunityIngestPerSourceCap; len(got) != want {
+		t.Fatalf("scheduled source length = %d, want %d", len(got), want)
+	}
+}
+
+func TestAppendOpportunitySourceDoesNotChangeOnDemandSource(t *testing.T) {
+	src := make([]int, opportunityIngestPerSourceCap+1)
+	got := appendOpportunitySource[int](nil, src, true)
+	if len(got) != len(src) {
+		t.Fatalf("on-demand source length = %d, want %d", len(got), len(src))
+	}
+}
+
 func TestBountyToOpportunity(t *testing.T) {
 	b := engine.BountyListing{
 		Title:  "Fix auth bug",
@@ -62,8 +78,8 @@ func TestFreelanceToOpportunity(t *testing.T) {
 		SalaryMin: 80000,
 		SalaryMax: 120000,
 		Source:    "remoteok",
-		Tags:     []string{"golang", "postgres"},
-		Posted:   "2026-03-01",
+		Tags:      []string{"golang", "postgres"},
+		Posted:    "2026-03-01",
 	}
 
 	o := freelanceToOpportunity(f)

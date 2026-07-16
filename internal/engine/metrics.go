@@ -266,6 +266,12 @@ const (
 	// Alert: gojob_hunt_notify_health == 0 for >5m → Telegram bot token invalid.
 	MetricHuntNotifyHealth = "hunt_notify_health"
 
+	// MetricOpportunityIngestMemory is the gauge
+	// gojob_opportunity_ingest_memory_bytes. It records process heap allocation
+	// after each scheduled opportunity ingest cycle. No labels.
+	// Alert: > 100 MiB for 5m → opportunity ingest memory pressure.
+	MetricOpportunityIngestMemory = "opportunity_ingest_memory_bytes"
+
 	// MetricHuntUnscoredJobsCount is the gauge gojob_hunt_unscored_jobs_count.
 	// Set by the hunt worker's end-of-cycle unscored sweep to the number of open
 	// jobs with scored_at IS NULL (aggregated from the UnscoredOpenJobs result).
@@ -874,6 +880,16 @@ func SetHuntNotifyHealth(healthy bool) {
 		v = 1.0
 	}
 	reg.Gauge(MetricHuntNotifyHealth).Set(v)
+}
+
+// SetOpportunityIngestMemory sets gojob_opportunity_ingest_memory_bytes to the
+// process heap allocation observed after a scheduled opportunity ingest cycle.
+// No-op before engine.Init().
+func SetOpportunityIngestMemory(bytes uint64) {
+	if reg == nil {
+		return
+	}
+	reg.Gauge(MetricOpportunityIngestMemory).Set(float64(bytes))
 }
 
 // SetHuntUnscoredJobsCount sets gojob_hunt_unscored_jobs_count to val.

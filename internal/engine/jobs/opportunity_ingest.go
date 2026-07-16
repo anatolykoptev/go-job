@@ -181,21 +181,21 @@ func summaryTitle(kind string, count int, topName string) string {
 	return s
 }
 
-// FetchAllBountiesUnlimited fetches ALL bounties (no per-call cap) for scheduled ingest.
-// Delegates to fetchAllBountiesImpl with a large limit and no total-result cap.
+// FetchAllBountiesUnlimited fetches bounties for scheduled ingest. Each source
+// is capped at opportunityIngestPerSourceCap before it joins the aggregate.
 func FetchAllBountiesUnlimited(ctx context.Context) []engine.BountyListing {
 	return fetchAllBountiesImpl(ctx, 10000, false)
 }
 
-// FetchAllSecurityUnlimited fetches ALL security programs (no cap) for scheduled ingest.
-// Delegates to fetchAllSecurityImpl with a large limit and no total-result cap;
-// applyCap=false also bypasses the result cache to pull the full live dataset.
+// FetchAllSecurityUnlimited fetches security programs for scheduled ingest.
+// applyCap=false bypasses the result cache, while each live source is bounded
+// by opportunityIngestPerSourceCap before it joins the aggregate.
 func FetchAllSecurityUnlimited(ctx context.Context) []engine.SecurityProgram {
 	return fetchAllSecurityImpl(ctx, 10000, false)
 }
 
-// FetchAllFreelanceUnlimited fetches ALL freelance items (no cap) for scheduled ingest.
-// Delegates to fetchAllFreelanceImpl with a large limit and no total-result cap.
+// FetchAllFreelanceUnlimited fetches freelance items for scheduled ingest. Each
+// source is capped at opportunityIngestPerSourceCap before aggregation.
 func FetchAllFreelanceUnlimited(ctx context.Context) []engine.FreelanceJob {
 	return fetchAllFreelanceImpl(ctx, 10000, false)
 }
