@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/anatolykoptev/go-panel/auth"
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
@@ -81,8 +79,8 @@ func rescoreJob(
 // On profile-nil (scoring disabled): redirect without change, log WARN.
 // On transient LLM fail-open: prior score preserved, operator redirected back.
 //
-// Wrap with a.Require() before mounting on the mux.
-func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+// Mount via p.MountAction (auth guard + CSRF verify + form parse).
+func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -91,21 +89,7 @@ func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter, a auth.Authenticat
 			return
 		}
 
-		const maxBody = 512
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		// CSRF verification: token must be bound to the current session cookie.
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		ctx := r.Context()
 
 		// Load the job row using the same query as the detail page.

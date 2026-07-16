@@ -9,15 +9,15 @@
 // Usage:
 //
 //	func MyHandler(w http.ResponseWriter, r *http.Request) {
-//	    content, _ := render.Component(ctx, MyComponent())
-//	    render.Page(w, r, p, "my-page", content)
+//	    if render.IsHTMX(r) {
+//	        _ = render.Fragment(w, r, MyComponent())
+//	        return
+//	    }
+//	    _ = shell.Layout(title, nav, MyComponent()).Render(r.Context(), w)
 //	}
 package render
 
 import (
-	"bytes"
-	"context"
-	"html/template"
 	"net/http"
 
 	"github.com/a-h/templ"
@@ -26,16 +26,6 @@ import (
 // IsHTMX reports whether the request was made by htmx.
 func IsHTMX(r *http.Request) bool {
 	return r.Header.Get("HX-Request") == "true"
-}
-
-// Component renders a templ component to an HTML string.
-// Returns template.HTML for safe embedding in other templates or responses.
-func Component(ctx context.Context, c templ.Component) (template.HTML, error) {
-	var buf bytes.Buffer
-	if err := c.Render(ctx, &buf); err != nil {
-		return "", err
-	}
-	return template.HTML(buf.String()), nil //nolint:gosec // content is templ-rendered, inherently escaped
 }
 
 // Fragment writes a templ component directly to the response as an HTML fragment.

@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/anatolykoptev/go-panel/auth"
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
@@ -35,8 +33,8 @@ var validTriageStages = func() map[string]bool {
 // rateHandler returns an http.HandlerFunc that upserts the PIPELINE axis of a
 // hunt_ratings row (hunt_ratings.stage + note). The triage axis is untouched
 // (passed as "" to Store.Rate, which preserves the existing DB value).
-// CSRF-protected. Wrap with a.Require() before mounting on the mux.
-func rateHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+// CSRF-protected. Mount via p.MountAction (auth guard + CSRF verify + form parse).
+func rateHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -45,21 +43,7 @@ func rateHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrf
 			return
 		}
 
-		const maxBody = 4096
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		// CSRF verification: token must be bound to the current session cookie.
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		stage := r.FormValue("stage")
 		note := r.FormValue("note")
 
@@ -83,8 +67,8 @@ func rateHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrf
 // triageHandler returns an http.HandlerFunc that upserts ONLY the triage axis of a
 // hunt_ratings row (hunt_ratings.triage). The pipeline stage and note are preserved
 // (Store.SetTriage does not touch them). CSRF-protected.
-// POSTs to /admin/jobs/{id}/triage. Wrap with a.Require() before mounting.
-func triageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+// POSTs to /admin/jobs/{id}/triage. Mount via p.MountAction.
+func triageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -93,20 +77,7 @@ func triageHandler(store *hunt.Store, adminUser string, a auth.Authenticator, cs
 			return
 		}
 
-		const maxBody = 4096
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad form", http.StatusBadRequest)
-			return
-		}
-
-		tok := r.FormValue(csrf.FormField)
-		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-		if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		triage := r.FormValue("triage")
 		// Allow empty triage (clears interest signal) but reject unknown non-empty values.
 		if triage != "" && !validTriageStages[triage] {

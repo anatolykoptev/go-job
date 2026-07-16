@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
 )
@@ -149,66 +148,14 @@ func TestRescoreJob_Success_CallsSetJobScore(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// rescoreHandler HTTP-layer tests (CSRF + bad-ID)
+// rescoreHandler HTTP-layer tests (bad-ID)
 // ---------------------------------------------------------------------------
 
-// TestRescoreHandler_CSRFReject verifies that a missing CSRF token returns 403
-// before any DB call is made.
-// RED-on-revert: remove the csrf.Verify call in rescoreHandler → 400 or 500.
-func TestRescoreHandler_CSRFReject(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") // 32 bytes
-	a := buildTestAuth(key)
-	// nil pool + nil store — expect 403 before any DB access.
-	handler := rescoreHandler(nil, nil, a, key)
-
-	form := url.Values{}
-	// _csrf intentionally omitted → should get 403.
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/1/rescore",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "1")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403 for missing CSRF, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
-// TestRescoreHandler_CSRFBadMAC verifies that a token with an invalid MAC
-// returns 403. (Token format is "<expiry>|<mac>"; this tests MAC rejection,
-// not clock-based expiry. Renamed from TestRescoreHandler_CSRFExpired because
-// "1|invalidmac" fails on MAC mismatch, not expiry.)
-func TestRescoreHandler_CSRFBadMAC(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := rescoreHandler(nil, nil, a, key)
-
-	// Far-future expiry to avoid clock sensitivity; wrong MAC is what triggers 403.
-	badMACToken := "9999999999|deadbeefdeadbeef"
-
-	form := url.Values{}
-	form.Set(csrf.FormField, badMACToken)
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/1/rescore",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "1")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("want 403 for bad MAC, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
 // TestRescoreHandler_BadID verifies that a non-numeric id returns 400
-// before CSRF validation or any DB call.
+// before any DB call.
 func TestRescoreHandler_BadID(t *testing.T) {
-	key := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	a := buildTestAuth(key)
-	handler := rescoreHandler(nil, nil, a, key)
+	// nil pool + nil store — expect 400 before any DB access.
+	handler := rescoreHandler(nil, nil)
 
 	form := url.Values{}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/abc/rescore",

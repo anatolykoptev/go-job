@@ -110,11 +110,9 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 }
 
 // resumePersonEditHandler handles POST /admin/resume/person.
-func resumePersonEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumePersonEditHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		// Validate form inputs before any DB call.
 		if r.FormValue("name") == "" {
 			http.Error(w, "name is required", http.StatusBadRequest)
@@ -161,11 +159,9 @@ func resumePersonEditHandler(a auth.Authenticator, csrfKey []byte) http.HandlerF
 }
 
 // resumeExperienceCreateHandler handles POST /admin/resume/experience.
-func resumeExperienceCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeExperienceCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -195,11 +191,9 @@ func resumeExperienceCreateHandler(a auth.Authenticator, csrfKey []byte) http.Ha
 
 // resumeExperienceDeleteHandler handles POST /admin/resume/experience/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeExperienceDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeExperienceDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -218,11 +212,9 @@ func resumeExperienceDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Ha
 }
 
 // resumeSkillCreateHandler handles POST /admin/resume/skill.
-func resumeSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeSkillCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -252,11 +244,9 @@ func resumeSkillCreateHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 
 // resumeSkillDeleteHandler handles POST /admin/resume/skill/{id}/delete.
 // parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeSkillDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -276,11 +266,9 @@ func resumeSkillDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handler
 
 // resumeSkillLevelHandler handles POST /admin/resume/skill/{id}/level.
 // parseIDParam + level validation run BEFORE requireResumeDB for early rejection.
-func resumeSkillLevelHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeSkillLevelHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -306,11 +294,9 @@ func resumeSkillLevelHandler(a auth.Authenticator, csrfKey []byte) http.HandlerF
 // resumeAchievementCreateHandler handles POST /admin/resume/achievement.
 //
 //nolint:dupl
-func resumeAchievementCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeAchievementCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -336,11 +322,9 @@ func resumeAchievementCreateHandler(a auth.Authenticator, csrfKey []byte) http.H
 }
 
 // resumeAchievementDeleteHandler handles POST /admin/resume/achievement/{id}/delete.
-func resumeAchievementDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeAchievementDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -359,11 +343,9 @@ func resumeAchievementDeleteHandler(a auth.Authenticator, csrfKey []byte) http.H
 }
 
 // resumeDomainCreateHandler handles POST /admin/resume/domain.
-func resumeDomainCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeDomainCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -383,11 +365,9 @@ func resumeDomainCreateHandler(a auth.Authenticator, csrfKey []byte) http.Handle
 }
 
 // resumeDomainDeleteHandler handles POST /admin/resume/domain/{id}/delete.
-func resumeDomainDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeDomainDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -406,11 +386,9 @@ func resumeDomainDeleteHandler(a auth.Authenticator, csrfKey []byte) http.Handle
 }
 
 // resumeMethodologyCreateHandler handles POST /admin/resume/methodology.
-func resumeMethodologyCreateHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeMethodologyCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		db, personID, ok := requireResumeDB(w, r)
 		if !ok {
 			return
@@ -430,11 +408,9 @@ func resumeMethodologyCreateHandler(a auth.Authenticator, csrfKey []byte) http.H
 }
 
 // resumeMethodologyDeleteHandler handles POST /admin/resume/methodology/{id}/delete.
-func resumeMethodologyDeleteHandler(a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeMethodologyDeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !verifyCSRF(w, r, a, csrfKey) {
-			return
-		}
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
 		if !ok {
 			return
@@ -468,24 +444,6 @@ func requireResumeDB(w http.ResponseWriter, r *http.Request) (*jobs.ResumeDB, in
 		return nil, 0, false
 	}
 	return db, personID, true
-}
-
-// verifyCSRF parses the request form, verifies the CSRF token, and writes
-// the appropriate error response on failure. Returns false when invalid.
-func verifyCSRF(w http.ResponseWriter, r *http.Request, a auth.Authenticator, csrfKey []byte) bool {
-	const maxBody = 8192
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
-		return false
-	}
-	tok := r.FormValue(csrf.FormField)
-	sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
-	if err := csrf.Verify(csrfKey, sessVal, tok); err != nil {
-		http.Error(w, "invalid CSRF token", http.StatusForbidden)
-		return false
-	}
-	return true
 }
 
 // parseIDParam extracts and validates the {id} path value (must be positive int).

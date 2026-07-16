@@ -50,6 +50,12 @@ templ layoutStyles() {
 			--pm7-warning:#f59e0b;
 			--pm7-error:#ef4444;
 			--pm7-radius:.625rem;
+			--pm7-surface:var(--bg-surface);
+			--pm7-surface-hover:var(--bg-elevated);
+			--pm7-surface-active:var(--bg-elevated);
+			--accent-light:#93c5fd;
+			--green-light:#6ee7b7;
+			--red-light:#fca5a5;
 		}
 		*{margin:0;padding:0;box-sizing:border-box}
 		body{background:var(--bg-deep);color:var(--text-primary);font-family:var(--font-sans);min-height:100vh;font-size:.875rem;line-height:1.5}
@@ -79,6 +85,7 @@ templ layoutStyles() {
 		/* in icon-rail mode group-collapse is meaningless (labels hidden, pointer-events:none); force all groups expanded */
 		.sidebar.collapsed .sidebar-group-items{max-height:none;visibility:visible}
 		.sidebar-item{display:flex;align-items:center;gap:.625rem;padding:.4375rem 1.25rem;color:var(--text-secondary);text-decoration:none;font-size:.8125rem;font-weight:500;border-left:2px solid transparent;transition:color .15s,background-color .15s,border-color .15s;white-space:nowrap;cursor:pointer}
+		button.sidebar-item{width:100%;font:inherit;background:transparent;color:inherit;border:none;text-align:left}
 		.sidebar-item:hover{color:var(--text-primary);background:var(--accent-glow)}
 		.sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-glow)}
 		.sidebar-icon{font-size:.9375rem;width:1.25rem;text-align:center;flex-shrink:0}
@@ -88,7 +95,7 @@ templ layoutStyles() {
 		   Collapsed (icon-rail) mode hides name/role via label opacity rule above.
 		   Avatar circle: fixed 28px, accent blue, mono initial. */
 		.sidebar-profile{display:flex;align-items:center;gap:.625rem;padding:.5rem 1.25rem .25rem;min-width:0}
-		.sidebar-profile-avatar{flex-shrink:0;width:1.75rem;height:1.75rem;border-radius:50%;background:var(--accent-dim);color:#93c5fd;font-family:var(--font-mono);font-size:.6875rem;font-weight:700;display:flex;align-items:center;justify-content:center;text-transform:uppercase;line-height:1}
+		.sidebar-profile-avatar{flex-shrink:0;width:1.75rem;height:1.75rem;border-radius:50%;background:var(--accent-dim);color:var(--accent-light);font-family:var(--font-mono);font-size:.6875rem;font-weight:700;display:flex;align-items:center;justify-content:center;text-transform:uppercase;line-height:1}
 		.sidebar-profile-info{min-width:0;flex:1}
 		.sidebar-profile-name{font-size:.8125rem;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 		.sidebar-profile-role{font-size:.6875rem;font-family:var(--font-mono);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.0625rem}
@@ -127,9 +134,9 @@ templ layoutStyles() {
 		.crm-th-sort{display:inline-flex;align-items:center;gap:.25rem;color:var(--text-secondary);text-decoration:none;transition:color .12s}
 		.crm-th-sort:hover,.crm-th-sort.active{color:var(--text-primary)}
 		.badge{display:inline-flex;align-items:center;padding:.1875rem .5rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:500;letter-spacing:.02em;white-space:nowrap;background:var(--bg-elevated);color:var(--text-secondary)}
-		.badge-blue{background:var(--accent-dim);color:#93c5fd}
-		.badge-green{background:var(--green-dim);color:#6ee7b7}
-		.badge-red{background:var(--red-dim);color:#fca5a5}
+		.badge-blue{background:var(--accent-dim);color:var(--accent-light)}
+		.badge-green{background:var(--green-dim);color:var(--green-light)}
+		.badge-red{background:var(--red-dim);color:var(--red-light)}
 		.badge-gray{background:var(--bg-elevated);color:#9dafc8;border:1px solid var(--border-subtle)}
 		.crm-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
 		.crm-table thead th{text-align:left;padding:.5rem 1rem;color:var(--text-muted);font-family:var(--font-mono);font-size:.625rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border);background:var(--bg-deep);white-space:nowrap}
@@ -139,6 +146,8 @@ templ layoutStyles() {
 		.crm-table td{padding:.625rem 1rem;border-bottom:1px solid var(--border-subtle);vertical-align:middle}
 		.crm-table td:first-child{padding-left:1.25rem}
 		.crm-table tbody tr:last-child td{border-bottom:none}
+		.crm-table a{color:var(--text-primary);text-decoration:none}
+		.crm-table a:hover{text-decoration:underline}
 		.row-name{font-weight:600;font-size:.875rem;color:var(--text-primary)}
 		.row-sub{font-size:.6875rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:.1rem;display:block}
 		.page-header{margin-bottom:1.25rem}
@@ -170,12 +179,12 @@ templ layoutStyles() {
 		.fit-chip{display:inline-flex;align-items:center;gap:.3125rem;padding:.1875rem .4375rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:600;white-space:nowrap;line-height:1}
 		.fit-num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 		.fit-label{font-weight:400;font-size:.625rem;letter-spacing:.03em}
-		.fit-strong{background:#0d3a26;color:#6ee7b7}
+		.fit-strong{background:#0d3a26;color:var(--green-light)}
 		.fit-moderate{background:#2c2308;color:#fcd34d}
 		.fit-weak{background:#2a1a08;color:#fb923c}
 		.fit-low{background:#1f1215;color:#f87171}
-		.fit-reject{background:#18181e;color:#4a5b78}
-		.fit-unscored{background:#141b2d;color:#4a5b78;font-style:italic}
+		.fit-reject{background:#18181e;color:var(--text-muted)}
+		.fit-unscored{background:#141b2d;color:var(--text-muted);font-style:italic}
 		/* ── Success / Market Read chips ──────────────────────────────────── */
 		/* Purple diamond family — deliberately orthogonal to fit-* green/amber/red.
 		   Shape (◆/◇/◈) communicates band without color dependency (a11y). */
@@ -183,11 +192,11 @@ templ layoutStyles() {
 		.suc-strong{background:#1a1a3d;color:#a78bfa}
 		.suc-moderate{background:#1a2030;color:#94a3b8}
 		.suc-longshot{background:#2a1a2a;color:#c084fc;opacity:.75}
-		.suc-none{color:#4a5b78}
+		.suc-none{color:var(--text-muted)}
 		/* ── Over/under qualification glyphs ──────────────────────────────── */
 		.ou-glyph{font-family:var(--font-mono);font-size:.75rem;font-weight:700}
 		.ou-over{color:#f97316}
-		.ou-match{color:#4a5b78}
+		.ou-match{color:var(--text-muted)}
 		.ou-under{color:#f87171}
 		/* ── Detail page layout ────────────────────────────────────────────── */
 		.detail-page{display:flex;flex-direction:column;gap:.75rem}
@@ -206,12 +215,12 @@ templ layoutStyles() {
 		.fit-col-list li{font-size:.8125rem;color:var(--text-secondary);line-height:1.4;padding-left:.875rem;position:relative}
 		.fit-col-list li::before{content:"·";position:absolute;left:0;color:var(--text-muted)}
 		/* ── Detail view: market read card (consumer-supplied via RawHTML) ── */
-		.market-card{background:#111827;border:1px solid var(--border);border-radius:var(--radius-lg);padding:1rem 1.25rem}
+		.market-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1rem 1.25rem}
 		.market-card-header{display:flex;align-items:center;gap:.625rem;margin-bottom:.625rem}
 		.market-card-label{font-family:var(--font-mono);font-size:.5625rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted)}
 		.market-reasoning{font-size:.8125rem;color:var(--text-secondary);line-height:1.55;margin-bottom:.625rem}
 		.market-disclaimer{font-size:.6875rem;color:var(--text-muted);font-family:var(--font-mono);line-height:1.4}
-		.market-disclaimer::before{content:"⚠ ";color:#4a5b78}
+		.market-disclaimer::before{content:"⚠ ";color:var(--text-muted)}
 		/* ── Detail view: job header (consumer-supplied via RawHTML) ────────── */
 		.job-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.25rem}
 		.job-detail-title{font-size:1.0625rem;font-weight:700;color:var(--text-primary);line-height:1.3}
@@ -245,9 +254,9 @@ templ layoutStyles() {
 		   .delta-down uses var(--red-dim) instead of rgba(239,68,68,.15) so it
 		   tracks the existing --red-dim:#7f1d1d token rather than a hardcoded value. */
 		.delta{display:inline-block;margin-left:.4rem;font-family:var(--font-mono);font-size:.625rem;font-weight:600;padding:.125rem .4rem;border-radius:999px;vertical-align:middle}
-		.delta-up{color:#6ee7b7;background:var(--green-dim)}
-		.delta-down{color:#fca5a5;background:var(--red-dim)}
-		.delta-new{color:#93c5fd;background:var(--accent-glow)}
+		.delta-up{color:var(--green-light);background:var(--green-dim)}
+		.delta-down{color:var(--red-light);background:var(--red-dim)}
+		.delta-new{color:var(--accent-light);background:var(--accent-glow)}
 		.delta-flat{color:var(--text-secondary);background:var(--bg-elevated)}
 		/* ── Sparkline (components.Sparkline) ──────────────────────────────────
 		   Ported VERBATIM from oxpulse-admin internal/admin/templates/layout.html:131-133.

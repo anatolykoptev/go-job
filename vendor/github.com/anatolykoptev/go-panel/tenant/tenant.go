@@ -5,6 +5,16 @@
 // "Single instance + city slug" (KudaGo runs 17 cities this way).
 // Anything heavier (per-tenant DB, per-tenant schema) is out of scope.
 //
+// Routing mutation: PathResolver.StripPrefix is the one function in this
+// package that is NOT pure-read — it rewrites a request path, removing the
+// /tenant/{slug} segment pair the marker guard requires, so the underlying
+// mux pattern (e.g. "GET /admin/{name}") can match. Callers must invoke it
+// exactly once, before mux dispatch (resource.Panel.Handler does this via its
+// withTenantResolution wrap) — calling it later, or from more than one
+// composition point, risks stripping a segment the mux has already routed
+// on. StripPrefix itself never mutates a shared *http.Request/*url.URL; the
+// caller owns cloning before assigning the rewritten path back.
+//
 // Usage:
 //
 //	// At request entry (via Middleware):
@@ -105,21 +115,65 @@ type PathResolver struct {
 // (empirically hit in go-grad on 2026-06-11).
 const tenantPathMarker = "tenant"
 
+// markerSlug locates the tenant slug in path: the segment at pr.Segment,
+// honoured ONLY when the immediately preceding segment is the literal
+// tenantPathMarker and the slug segment itself is non-empty (the documented
+// /admin/tenant/{slug}/... shape).
+//
+// Resolve and StripPrefix both call this — it is the ONE split+guard
+// expression behind both, so they share a single source of truth by
+// construction rather than two independently written copies of the same
+// condition kept in sync only by convention (+ the twin regression tests).
+//
+// Returns the located slug and its segment index when ok is true; when ok is
+// false, slug/idx are zero-valued and the caller falls back to its own
+// "no tenant" behaviour (Resolve: the global tenant; StripPrefix: the
+// unchanged path).
+func (pr PathResolver) markerSlug(path string) (slug string, idx int, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if pr.Segment >= 1 && pr.Segment < len(parts) && parts[pr.Segment-1] == tenantPathMarker {
+		if s := parts[pr.Segment]; s != "" {
+			return s, pr.Segment, true
+		}
+	}
+	return "", 0, false
+}
+
 // Resolve implements Resolver. The slug at Segment is honoured ONLY when the
 // preceding segment is the literal "tenant" (the documented
 // /admin/tenant/{slug}/... shape); any other URL falls back to the global
 // default tenant.
 func (pr PathResolver) Resolve(r *http.Request) Tenant {
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if pr.Segment >= 1 && pr.Segment < len(parts) && parts[pr.Segment-1] == tenantPathMarker {
-		if slug := parts[pr.Segment]; slug != "" {
-			return Tenant{
-				CitySlug:    slug,
-				CountryCode: global.CountryCode,
-			}
+	if slug, _, ok := pr.markerSlug(r.URL.Path); ok {
+		return Tenant{
+			CitySlug:    slug,
+			CountryCode: global.CountryCode,
 		}
 	}
 	return global
+}
+
+// StripPrefix removes the /tenant/{slug} segment pair from path, using
+// markerSlug — the SAME guard Resolve calls — so resolution and stripping
+// share one source of truth and cannot diverge by construction.
+//
+// Returns (path, false) unchanged — byte-for-byte, not merely equivalent —
+// whenever markerSlug finds no marker, mirroring Resolve's own
+// fallback-to-global guard exactly. Returns (rewritten, true) when the pair
+// is removed.
+//
+// Pure: StripPrefix never mutates a shared *http.Request or *url.URL. The
+// caller (resource.Panel's withTenantResolution) is responsible for cloning
+// before assigning the returned path back onto a request — see the package
+// doc's routing-mutation note.
+func (pr PathResolver) StripPrefix(path string) (string, bool) {
+	_, idx, ok := pr.markerSlug(path)
+	if !ok {
+		return path, false
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	rest := append(append([]string{}, parts[:idx-1]...), parts[idx+1:]...)
+	return "/" + strings.Join(rest, "/"), true
 }
 
 // SubdomainResolver resolves a Tenant from the Host header subdomain:

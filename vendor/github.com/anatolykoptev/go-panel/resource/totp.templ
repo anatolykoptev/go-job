@@ -1,0 +1,117 @@
+package resource
+
+// totpErrorBanner is the shared inline error-message style used by every
+// totp* form page below (matches formField's inline-style convention in
+// form.templ -- this package has no separate stylesheet for form chrome).
+templ totpErrorBanner(msg string) {
+	if msg != "" {
+		<div style="margin-bottom:1rem;padding:.5rem .75rem;border-radius:.375rem;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);color:#ef4444;font-size:.8125rem">{ msg }</div>
+	}
+}
+
+// totpEnrollContent renders the enrollment page: manual-entry secret,
+// otpauth:// URI (via the QR image alt text and the visible secret text --
+// the CSP-safe fallback for a device without a camera), and the
+// code-confirmation form. d.ErrorMsg is shown when re-rendered after a
+// failed Confirm.
+templ totpEnrollContent(d totpEnrollPageData) {
+	<div class="page-header">
+		<h2>Set Up Two-Factor Authentication</h2>
+	</div>
+	@totpErrorBanner(d.ErrorMsg)
+	<div class="pm7-card" style="max-width:28rem;padding:1.5rem;margin-bottom:1.5rem">
+		<p style="font-size:.8125rem;color:var(--pm7-muted-foreground);margin-top:0">Scan this code with your authenticator app (Google Authenticator, 1Password, Authy, …):</p>
+		<img
+			src={ d.QRImageURL }
+			width={ d.QRPixels }
+			height={ d.QRPixels }
+			alt="TOTP enrollment QR code -- scan with your authenticator app, or use the manual-entry code below"
+			style="display:block;margin:0 auto 1rem;border-radius:.5rem"
+		/>
+		<p style="font-size:.8125rem;color:var(--pm7-muted-foreground)">Can't scan? Enter this code manually:</p>
+		<code style="display:block;padding:.5rem .75rem;background:var(--pm7-muted);border-radius:.375rem;font-size:.875rem;letter-spacing:.05em;user-select:all;word-break:break-all">{ d.Secret }</code>
+		<p style="font-size:.75rem;color:var(--pm7-muted-foreground);margin-bottom:.25rem">Full setup URI (some apps accept pasting this directly):</p>
+		<code style="display:block;padding:.5rem .75rem;background:var(--pm7-muted);border-radius:.375rem;font-size:.75rem;user-select:all;word-break:break-all">{ d.OTPAuthURI }</code>
+	</div>
+	<form method="POST" action={ templ.SafeURL(d.ConfirmURL) } style="max-width:20rem">
+		<input type="hidden" name="_csrf" value={ d.CSRFToken }/>
+		<div style="margin-bottom:1rem">
+			<label for="totp-code" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Enter the 6-digit code from your app</label>
+			<input id="totp-code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" required autofocus class="pm7-input"/>
+		</div>
+		<button type="submit" class="pm7-button pm7-button--primary">Verify &amp; Enable</button>
+	</form>
+}
+
+// totpAlreadyEnabledContent is shown when GET /enroll is hit for an account
+// that already has a CONFIRMED TOTP enrollment.
+templ totpAlreadyEnabledContent(basePath, disableURL string) {
+	<div class="page-header">
+		<h2>Two-Factor Authentication</h2>
+	</div>
+	<p>Two-factor authentication is already enabled on this account.</p>
+	<div style="display:flex;gap:.75rem;margin-top:1rem">
+		<a href={ templ.SafeURL(disableURL) } class="pm7-button pm7-button--outline" style="text-decoration:none">Disable 2FA</a>
+		<a href={ templ.SafeURL(basePath + "/") } style="align-self:center;font-size:.8125rem;color:var(--pm7-muted-foreground)">&larr; Back to dashboard</a>
+	</div>
+}
+
+// totpRecoveryCodesList renders a plaintext, one-time recovery-code display
+// -- shared by the Confirm-success and Regenerate-success pages. Every code
+// is HashRecoveryCode's PLAINTEXT input, shown here and ONLY here: neither
+// page's handler persists these strings anywhere but the caller's response.
+templ totpRecoveryCodesList(codes []string) {
+	<div class="pm7-card" style="max-width:24rem;padding:1.5rem;margin:1rem 0">
+		<p style="margin-top:0;font-weight:600">Save these recovery codes now.</p>
+		<p style="font-size:.8125rem;color:var(--pm7-muted-foreground)">Each code works once, if you lose access to your authenticator app. They will not be shown again.</p>
+		<ul style="list-style:none;padding:0;margin:1rem 0;font-family:monospace;font-size:.875rem;line-height:1.8">
+			for _, c := range codes {
+				<li style="user-select:all">{ c }</li>
+			}
+		</ul>
+	</div>
+}
+
+templ totpConfirmSuccessContent(basePath string, codes []string) {
+	<div class="page-header">
+		<h2>Two-Factor Authentication Enabled</h2>
+	</div>
+	<p>Your account is now protected with two-factor authentication.</p>
+	@totpRecoveryCodesList(codes)
+	<a href={ templ.SafeURL(basePath + "/") } class="pm7-button pm7-button--primary" style="text-decoration:none">Continue to dashboard</a>
+}
+
+// totpReauthFormContent is the shared password re-auth form for Disable and
+// Regenerate -- identical shape, parameterized by action URL, title, and
+// submit-button label.
+templ totpReauthFormContent(action, csrfToken, errMsg, title, submitLabel string) {
+	<div class="page-header">
+		<h2>{ title }</h2>
+	</div>
+	@totpErrorBanner(errMsg)
+	<form method="POST" action={ templ.SafeURL(action) } style="max-width:20rem">
+		<input type="hidden" name="_csrf" value={ csrfToken }/>
+		<div style="margin-bottom:1rem">
+			<label for="totp-reauth-password" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Confirm your current password</label>
+			<input id="totp-reauth-password" name="current_password" type="password" autocomplete="current-password" required autofocus class="pm7-input"/>
+		</div>
+		<button type="submit" class="pm7-button pm7-button--primary">{ submitLabel }</button>
+	</form>
+}
+
+templ totpDisabledContent(basePath string) {
+	<div class="page-header">
+		<h2>Two-Factor Authentication Disabled</h2>
+	</div>
+	<p>Two-factor authentication has been turned off for this account.</p>
+	<a href={ templ.SafeURL(basePath + "/") } class="pm7-button pm7-button--outline" style="text-decoration:none">Back to dashboard</a>
+}
+
+templ totpRegenerateSuccessContent(basePath string, codes []string) {
+	<div class="page-header">
+		<h2>Recovery Codes Regenerated</h2>
+	</div>
+	<p>Your previous recovery codes no longer work.</p>
+	@totpRecoveryCodesList(codes)
+	<a href={ templ.SafeURL(basePath + "/") } class="pm7-button pm7-button--primary" style="text-decoration:none">Continue to dashboard</a>
+}
