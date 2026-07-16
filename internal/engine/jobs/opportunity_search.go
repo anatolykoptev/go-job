@@ -11,6 +11,14 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
 
+// maxIngestTotal is the hard safety ceiling on total items fetched across all
+// sources during a scheduled ingest cycle (applyCap=false path). The per-source
+// limit is 10000, but actual data is orders of magnitude smaller (BTD ~3000
+// programs, bounty platforms <100 each). This cap prevents theoretical OOM if
+// a source suddenly returns an unexpectedly large dataset, while being high
+// enough to never affect normal operation.
+const maxIngestTotal = 10000
+
 // SearchOpportunities aggregates bounties, security programs, and freelance jobs
 // into a unified Opportunity slice. Filters by type and query.
 func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInput) (engine.OpportunitySearchOutput, error) {
@@ -157,6 +165,10 @@ func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engin
 
 	if applyCap && len(all) > limit {
 		all = all[:limit]
+	} else if !applyCap && len(all) > maxIngestTotal {
+		slog.Warn("opportunity_search: bounty ingest total exceeds safety cap, truncating",
+			slog.Int("total", len(all)), slog.Int("cap", maxIngestTotal))
+		all = all[:maxIngestTotal]
 	}
 
 	return all
@@ -222,6 +234,10 @@ func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engin
 
 	if applyCap && len(all) > limit {
 		all = all[:limit]
+	} else if !applyCap && len(all) > maxIngestTotal {
+		slog.Warn("opportunity_search: security ingest total exceeds safety cap, truncating",
+			slog.Int("total", len(all)), slog.Int("cap", maxIngestTotal))
+		all = all[:maxIngestTotal]
 	}
 
 	return all
@@ -254,6 +270,10 @@ func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engi
 	const capFreelance = 50
 	if applyCap && len(all) > capFreelance {
 		all = all[:capFreelance]
+	} else if !applyCap && len(all) > maxIngestTotal {
+		slog.Warn("opportunity_search: freelance ingest total exceeds safety cap, truncating",
+			slog.Int("total", len(all)), slog.Int("cap", maxIngestTotal))
+		all = all[:maxIngestTotal]
 	}
 
 	return all
