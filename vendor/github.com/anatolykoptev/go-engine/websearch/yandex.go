@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -46,8 +47,10 @@ func yandexCheckLimit(limit int) bool {
 }
 
 // SearchYandexAPI queries Yandex Search API v2 (async) and returns results.
+// timeRange is an optional SearXNG-style recency filter (day/week/month/year)
+// appended to the query using Yandex's date: operator.
 func SearchYandexAPI(
-	ctx context.Context, cfg YandexConfig, query, region string,
+	ctx context.Context, cfg YandexConfig, query, region, timeRange string,
 ) ([]Result, error) {
 	if cfg.APIKey == "" || cfg.FolderID == "" {
 		return nil, errors.New("yandex: api key and folder_id required")
@@ -60,6 +63,10 @@ func SearchYandexAPI(
 
 	if region == "" {
 		region = yandexDefaultRegion
+	}
+
+	if dateFilter := timeRangeToYandexDate(timeRange); dateFilter != "" {
+		query = strings.TrimSpace(query + " " + dateFilter)
 	}
 
 	// 1. Start async search operation.

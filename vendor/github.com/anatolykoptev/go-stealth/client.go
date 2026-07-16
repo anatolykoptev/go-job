@@ -1,6 +1,8 @@
 package stealth
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,6 +32,12 @@ type BrowserClient struct {
 	handler      Handler // lazy-built from middlewares + base handler
 	debug        bool
 	blockRetries int // extra retry attempts on 403/429 (requires proxyPool)
+
+	// requestURLGuard is the pre-request (tier-3) SSRF check on the initial
+	// target URL, evaluated before the (possibly proxied) fetch. nil = no
+	// pre-request guard (WithoutSSRFGuard). This is the only tier that guards
+	// a proxied fetch's initial target.
+	requestURLGuard func(ctx context.Context, u *url.URL) error
 }
 
 // ProxyPoolProvider returns the next proxy URL for rotation.
@@ -53,6 +61,8 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 		TimeoutSeconds:  cfg.timeout,
 		FollowRedirects: cfg.followRedirs,
 		HTTP3:           cfg.http3,
+		DialControl:     cfg.dialControl,
+		RedirectGuard:   cfg.redirectGuard,
 	}
 
 	factory := cfg.backend
@@ -71,11 +81,12 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	}
 
 	bc := &BrowserClient{
-		doer:         doer,
-		headerOrder:  order,
-		proxyPool:    cfg.proxyPool,
-		debug:        cfg.debug,
-		blockRetries: cfg.blockRetries,
+		doer:            doer,
+		headerOrder:     order,
+		proxyPool:       cfg.proxyPool,
+		debug:           cfg.debug,
+		blockRetries:    cfg.blockRetries,
+		requestURLGuard: cfg.requestURLGuard,
 	}
 	if cfg.debug {
 		bc.Use(LoggingMiddleware)
@@ -121,8 +132,20 @@ func (bc *BrowserClient) buildHandler() Handler {
 }
 
 // baseHandler returns the core Handler that delegates to the backend.
+// It runs the pre-request (tier-3) SSRF guard on the final target URL before
+// handing off to the backend — the only tier that guards a proxied fetch's
+// initial target (tier-1 dial control sees only the proxy there).
 func (bc *BrowserClient) baseHandler(order []string) Handler {
 	return func(req *Request) (*Response, error) {
+		if bc.requestURLGuard != nil {
+			u, err := url.Parse(req.URL)
+			if err != nil {
+				return nil, fmt.Errorf("%w: parse %q: %w", ErrSSRFBlocked, req.URL, err)
+			}
+			if err := bc.requestURLGuard(context.Background(), u); err != nil {
+				return nil, err
+			}
+		}
 		req.HeaderOrder = order
 		return bc.doer.Do(req)
 	}
@@ -202,6 +225,14 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 
 		resp, err := handler(req)
 		if err != nil {
+			// An SSRF-blocked target is a verdict about the URL/address, not
+			// about the proxy in use — every retry would re-block identically
+			// (tier-3's pre-request check runs before SetProxy on the next
+			// attempt too). Return immediately instead of burning the proxy
+			// pool on a request that can never succeed.
+			if errors.Is(err, ErrSSRFBlocked) {
+				return nil, nil, 0, err
+			}
 			// Retry on proxy errors (502, connection refused, etc.) with a new proxy.
 			if attempt < maxAttempts-1 && bc.proxyPool != nil {
 				slog.Debug("request error, retrying with new proxy",

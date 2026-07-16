@@ -213,8 +213,8 @@ const errTypeUnknown = "unknown"
 //   - context_overflow   — 413 (TPM/payload too large) or 400 context_length_exceeded
 //   - empty_completion   — 200 with no usable content (reasoning truncated by max_tokens)
 //   - model_unavailable  — 422 (any body); or 400 with a model-not-found marker
-//                          (param=model or body marker). Operator signal: a chain
-//                          model is listed in /v1/models but dead on actual call.
+//     (param=model or body marker). Operator signal: a chain
+//     model is listed in /v1/models but dead on actual call.
 //   - transient          — retryable 5xx / network (not quota-class)
 //   - client             — non-auth, non-overflow, non-model 4xx (bad request, etc.)
 //   - unknown            — non-APIError errors or anything unclassified

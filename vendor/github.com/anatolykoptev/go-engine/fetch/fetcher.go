@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	kithttputil "github.com/anatolykoptev/go-kit/httputil"
 	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 )
@@ -180,12 +181,18 @@ func New(opts ...Option) *Fetcher {
 	}
 
 	// Build BrowserClient after all options are applied (order-independent).
+	// Proxied tier: the dial target is always the proxy's vantage point, so
+	// WithDialControl would only ever see the proxy IP (proxy-blind) — not
+	// wired here. WithRequestURLGuard (tier-3) still upgrades the pre-request
+	// check on the initial URL from go-stealth's stdlib floor to go-kit's
+	// fuller policy (CGNAT / NAT64 / alt-encoded-IP rejection).
 	if f.proxyPool != nil {
 		stealthOpts := []stealth.ClientOption{
 			stealth.WithTimeout(browserClientTimeoutSec),
 			stealth.WithProxyPool(f.proxyPool),
 			stealth.WithFollowRedirects(),
 			stealth.WithRetryOnBlock(2),
+			stealth.WithRequestURLGuard(kithttputil.CheckURL),
 		}
 		if f.cookieProvider != nil {
 			stealthOpts = append(stealthOpts, stealth.WithCookieSolver(f.cookieProvider))
@@ -197,11 +204,20 @@ func New(opts ...Option) *Fetcher {
 	}
 
 	// Build a no-proxy Chrome-TLS client for the direct tier (directFirst mode only).
+	// Direct tier dials the target from this container itself, so it gets the
+	// full three-tier go-kit SSRF policy: DialControl (connect-time,
+	// rebind-proof) + RedirectGuard (per-hop pre-resolve) + RequestURLGuard
+	// (initial URL). See go-stealth v1.18.0's stdlib default-deny floor,
+	// which this wiring upgrades to go-kit's richer IsBlockedIP policy.
 	// Skip if directClient was already injected (e.g. in tests).
 	if f.directFirst && f.directClient == nil {
+		redirectGuard, dialControl := kithttputil.SSRFGuards()
 		if dc, err := stealth.NewClient(
 			stealth.WithTimeout(browserClientTimeoutSec),
 			stealth.WithFollowRedirects(),
+			stealth.WithDialControl(dialControl),
+			stealth.WithRedirectGuard(redirectGuard),
+			stealth.WithRequestURLGuard(kithttputil.CheckURL),
 		); err == nil {
 			f.directClient = dc
 		}

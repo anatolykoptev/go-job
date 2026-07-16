@@ -3,8 +3,8 @@ package tgapi5
 import (
 	"strings"
 
-	"github.com/anatolykoptev/go-kit/metrics"
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"github.com/anatolykoptev/go-kit/metrics"
 )
 
 // MetricDeleteTotal is the counter name incremented on every DeleteMessage call.
@@ -12,7 +12,7 @@ import (
 //
 //   - ok         — message deleted successfully.
 //   - too_old    — Telegram rejected the delete because the message is too old
-//                  (error text contains "message can't be deleted" or "MESSAGE_TOO_OLD").
+//     (error text contains "message can't be deleted" or "MESSAGE_TOO_OLD").
 //   - other_error — any other failure.
 const MetricDeleteTotal = "tgapi5.delete.total"
 

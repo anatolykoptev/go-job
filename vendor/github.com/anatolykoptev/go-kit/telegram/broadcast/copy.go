@@ -3,8 +3,8 @@ package broadcast
 import (
 	"context"
 
-	"github.com/anatolykoptev/go-kit/telegram"
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"github.com/anatolykoptev/go-kit/telegram"
 )
 
 // batchChunkSize is the maximum number of message IDs per copyMessages or

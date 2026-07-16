@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"slices"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -170,19 +170,28 @@ func (c *Client) recordCooldownOutcome(ep Endpoint, err error) {
 // stay observably identical (same observer + cooldown side effects). It does NOT
 // classify the error for chain advancement (DeadlineExceeded / failover /
 // retryable); that loop-control logic stays in executeInner.
-func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequest) (*ChatResponse, error) {
+// prepareEndpointRequest applies per-endpoint request transformations that
+// must be identical on both the non-stream (attemptEndpoint) and stream
+// (Stream) paths: the per-endpoint model override and the reasoning_effort
+// allowlist gate. Returns a shallow copy of req with the overrides applied;
+// the original req is never mutated.
+func (c *Client) prepareEndpointRequest(ep Endpoint, req *ChatRequest) ChatRequest {
 	epReq := *req
 	if ep.Model != "" {
 		epReq.Model = ep.Model
 	}
-
-	// Per-endpoint reasoning_effort gate: strip from endpoints NOT in the allowlist.
-	// Empty allowlist = pass-through (existing behavior preserved).
+	// Per-endpoint reasoning_effort gate: strip from endpoints NOT in the
+	// allowlist. Empty allowlist = pass-through (existing behavior preserved).
 	if epReq.ReasoningEffort != "" && len(c.reasoningEffortModels) > 0 {
 		if !slices.Contains(c.reasoningEffortModels, epReq.Model) {
 			epReq.ReasoningEffort = ""
 		}
 	}
+	return epReq
+}
+
+func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequest) (*ChatResponse, error) {
+	epReq := c.prepareEndpointRequest(ep, req)
 
 	// Per-attempt timeout: derive a child ctx bounded by d, but only when
 	// d > 0 and WithEndpoints is in use. The outer ctx remains the absolute
@@ -270,12 +279,15 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 			}
 			lastErr = err
 
-			// A per-attempt DeadlineExceeded where the outer ctx is still alive
-			// means this endpoint was slow (not a genuine give-up by the caller).
-			// Treat it as retryable-advance: continue to the next endpoint.
-			// If the outer ctx is also done, fall through to the asRetryable gate,
-			// which will return non-retryable → abort the chain (correct).
-			if c.perAttemptTimeout > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// A DeadlineExceeded where the outer ctx is still alive means this
+			// endpoint was slow (not a genuine give-up by the caller). The
+			// deadline could come from either the per-attempt timeout (when
+			// configured) or the HTTP client's own timeout (default 90s). In
+			// both cases the endpoint is too slow — treat it as retryable-
+			// advance: continue to the next endpoint.
+			// If the outer ctx is also done, fall through to the asRetryable
+			// gate, which will return non-retryable → abort the chain (correct).
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 				continue
 			}
 

@@ -1,3 +1,4 @@
+//nolint:goconst
 package websearch
 
 import (
@@ -12,10 +13,10 @@ import (
 )
 
 const (
-	ddgDefaultRegion = "wt-wt"
-	ddgHTMLEndpoint  = "https://html.duckduckgo.com/html/"
-	ddgDJSEndpoint   = "https://links.duckduckgo.com/d.js"
-	ddgHomepage      = "https://duckduckgo.com/"
+	ddgDefaultRegion  = "wt-wt"
+	ddgHTMLEndpoint   = "https://html.duckduckgo.com/html/"
+	ddgDJSEndpoint    = "https://links.duckduckgo.com/d.js"
+	ddgHomepage       = "https://duckduckgo.com/"
 	directResultScore = 1.0
 )
 
@@ -23,6 +24,19 @@ var vqdPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`vqd='([^']+)'`),
 	regexp.MustCompile(`vqd="([^"]+)"`),
 	regexp.MustCompile(`vqd=([a-zA-Z0-9_-]+)`),
+}
+
+// DDGHTMLURL returns the GET URL for the DuckDuckGo HTML SERP endpoint.
+// P2 feeds this URL to ox-browser /fetch so the SERP request shape stays
+// single-owned in websearch (ADR-8: const host + url.QueryEscape only).
+func DDGHTMLURL(query string, opts ...SearchOpts) string {
+	u := ddgHTMLEndpoint + "?q=" + url.QueryEscape(query)
+	if len(opts) > 0 {
+		if df := timeRangeToDDG(opts[0].TimeRange); df != "" {
+			u += "&df=" + df
+		}
+	}
+	return u
 }
 
 // DDG searches DuckDuckGo using HTML lite + d.js fallback.
@@ -63,7 +77,7 @@ func (d *DDG) Search(ctx context.Context, query string, opts SearchOpts) ([]Resu
 		region = opts.Region
 	}
 
-	results, err := d.searchHTML(ctx, query, region)
+	results, err := d.searchHTML(ctx, query, region, opts.TimeRange)
 	if err == nil && len(results) > 0 {
 		slog.Debug("ddg results (html)", slog.Int("count", len(results)))
 		return applyLimit(results, opts.Limit), nil
@@ -77,7 +91,7 @@ func (d *DDG) Search(ctx context.Context, query string, opts SearchOpts) ([]Resu
 		return nil, fmt.Errorf("ddg vqd: %w", err)
 	}
 
-	results, err = d.searchDJS(ctx, query, vqd, region)
+	results, err = d.searchDJS(ctx, query, vqd, region, opts.TimeRange)
 	if err != nil {
 		return nil, fmt.Errorf("ddg d.js: %w", err)
 	}
@@ -86,12 +100,13 @@ func (d *DDG) Search(ctx context.Context, query string, opts SearchOpts) ([]Resu
 	return applyLimit(results, opts.Limit), nil
 }
 
-func (d *DDG) searchHTML(ctx context.Context, query, region string) ([]Result, error) {
+func (d *DDG) searchHTML(ctx context.Context, query, region, timeRange string) ([]Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	formBody := fmt.Sprintf("q=%s&kl=%s&df=", url.QueryEscape(query), url.QueryEscape(region))
+	df := timeRangeToDDG(timeRange)
+	formBody := fmt.Sprintf("q=%s&kl=%s&df=%s", url.QueryEscape(query), url.QueryEscape(region), url.QueryEscape(df))
 
 	headers := ChromeHeaders()
 	headers["referer"] = "https://html.duckduckgo.com/"
@@ -138,14 +153,18 @@ func (d *DDG) getVQD(ctx context.Context, query string) (string, error) {
 	return "", fmt.Errorf("vqd token not found (%d bytes)", len(data))
 }
 
-func (d *DDG) searchDJS(ctx context.Context, query, vqd, region string) ([]Result, error) {
+func (d *DDG) searchDJS(ctx context.Context, query, vqd, region, timeRange string) ([]Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
+	df := timeRangeToDDG(timeRange)
 	params := url.Values{
 		"q": {query}, "vqd": {vqd}, "kl": {region},
-		"df": {""}, "l": {"us-en"}, "o": {"json"},
+		"l": {"us-en"}, "o": {"json"},
+	}
+	if df != "" {
+		params.Set("df", df)
 	}
 	u := ddgDJSEndpoint + "?" + params.Encode()
 

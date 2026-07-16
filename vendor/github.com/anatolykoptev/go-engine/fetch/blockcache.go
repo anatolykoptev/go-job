@@ -75,6 +75,34 @@ func (c *DirectBlockCache) Mark(host string) {
 	c.items[host] = time.Now().Add(c.ttl)
 }
 
+// Unmark removes host from the block cache immediately (before TTL expiry).
+// If host is not present, this is a no-op.
+//
+// Called by runOxEscalation when the render escalation for an engine returns no
+// results (outcome empty or fail), so the next direct fan-out re-probes the
+// engine instead of staying pinned for the full 10 m TTL.
+//
+// Both items and order are pruned: the self-heal cycle (Mark on timeout →
+// render empty/fail → Unmark → next fan-out re-Marks) oscillates
+// len(items) between 0 and ~2, never reaching cap(1024), so evictOldest is
+// never called. Without pruning order here, the slice grows for the process
+// lifetime — one entry per cycle, unbounded.
+func (c *DirectBlockCache) Unmark(host string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[host]; !ok {
+		return
+	}
+	delete(c.items, host)
+	// Remove the host from the insertion-order slice (linear scan; len ≤ cap = 1024).
+	for i, h := range c.order {
+		if h == host {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+}
+
 // Len returns the current number of tracked hosts.
 func (c *DirectBlockCache) Len() int {
 	c.mu.Lock()

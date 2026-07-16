@@ -41,6 +41,8 @@ type Option func(*config)
 type config struct {
 	apiBase           string
 	apiKey            string
+	proxyURLs         []string
+	proxyKeys         []string
 	fallbacks         []string
 	model             string
 	modelChain        []string
@@ -63,6 +65,29 @@ func WithAPIBase(url string) Option {
 // WithAPIKey sets the primary API key.
 func WithAPIKey(key string) Option {
 	return func(c *config) { c.apiKey = key }
+}
+
+// WithProxyURLs sets multiple proxy URLs for multi-proxy rotation. When set
+// (together with WithProxyKeys), the client builds a cross-product of
+// proxies × models: local proxy is tried first for every model, then remote.
+// This gives proxy-level redundancy on top of model-level fallback.
+//
+// If proxyURLs has 0 or 1 entry, behavior is identical to single-proxy mode
+// (WithAPIBase + WithAPIKey). WithProxyURLs takes precedence over WithAPIBase
+// when len > 1.
+//
+// Keys must be provided via WithProxyKeys (same length, same order). If
+// proxyKeys is shorter, missing keys default to apiKey (the primary key).
+func WithProxyURLs(urls []string) Option {
+	return func(c *config) { c.proxyURLs = urls }
+}
+
+// WithProxyKeys sets API keys matching WithProxyURLs. If a proxy uses the
+// same key as the primary, pass an empty string at that position (it will
+// default to apiKey). If proxyKeys is shorter than proxyURLs, missing keys
+// default to apiKey.
+func WithProxyKeys(keys []string) Option {
+	return func(c *config) { c.proxyKeys = keys }
 }
 
 // WithAPIKeyFallbacks sets fallback API keys for quota rotation.
@@ -260,7 +285,30 @@ func New(opts ...Option) *Client {
 	}
 
 	var kitOpts []kitllm.Option
-	if len(cfg.modelChain) > 0 {
+	if len(cfg.modelChain) > 0 && len(cfg.proxyURLs) > 1 {
+		// Multi-proxy mode: build cross-product of proxies × models.
+		// Local proxy first, remote as fallback for each model.
+		proxies := buildProxySpecs(cfg.proxyURLs, cfg.proxyKeys, cfg.apiKey)
+		reg := kitllm.NewModelRegistry()
+		eps := kitllm.BuildMultiProxyEndpointsFiltered(
+			context.Background(), reg,
+			proxies, cfg.model, cfg.modelChain,
+			cfg.filterObserver,
+		)
+		kitOpts = append(kitOpts, kitllm.WithEndpoints(eps))
+		kitOpts = append(kitOpts, kitllm.WithModelCooldown(kitllm.CooldownConfig{
+			Default: resolveCooldownDuration(cfg.cooldownDuration),
+		}))
+		if cfg.cooldownObserver != nil {
+			kitOpts = append(kitOpts, kitllm.WithModelCooldownObserver(cfg.cooldownObserver))
+		}
+		if cfg.chainObserver != nil {
+			kitOpts = append(kitOpts, kitllm.WithEndpointAttemptObserver(cfg.chainObserver))
+		}
+		if cfg.perAttemptTimeout > 0 {
+			kitOpts = append(kitOpts, kitllm.WithPerAttemptTimeout(cfg.perAttemptTimeout))
+		}
+	} else if len(cfg.modelChain) > 0 {
 		// Model chain takes precedence: kit's WithEndpoints disables
 		// WithFallbackKeys rotation, so the chain wins when both are set.
 		//
@@ -377,6 +425,21 @@ func stripFences(s string) string {
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+// buildProxySpecs pairs proxy URLs with their keys. If proxyKeys is shorter
+// than proxyURLs, missing keys default to the primary apiKey (cliproxyapi
+// uses the same CLI_PROXY_API_KEY on both instances).
+func buildProxySpecs(urls, keys []string, primaryKey string) []kitllm.ProxySpec {
+	proxies := make([]kitllm.ProxySpec, len(urls))
+	for i, u := range urls {
+		k := primaryKey
+		if i < len(keys) && keys[i] != "" {
+			k = keys[i]
+		}
+		proxies[i] = kitllm.ProxySpec{URL: u, Key: k}
+	}
+	return proxies
 }
 
 // ExtractJSON extracts a JSON object from LLM output that may be wrapped

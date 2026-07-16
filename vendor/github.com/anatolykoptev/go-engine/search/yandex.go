@@ -18,8 +18,9 @@ type YandexConfig struct {
 }
 
 // SearchYandexAPI queries Yandex Search API v2 (async) and returns results.
-// Delegates to websearch.SearchYandexAPI.
-func SearchYandexAPI(ctx context.Context, cfg YandexConfig, query, region string, m *metrics.Registry) ([]sources.Result, error) {
+// Delegates to websearch.SearchYandexAPI. timeRange is an optional SearXNG-style
+// recency filter forwarded as Yandex's date: operator.
+func SearchYandexAPI(ctx context.Context, cfg YandexConfig, query, region, timeRange string, m *metrics.Registry) ([]sources.Result, error) {
 	if m != nil {
 		m.Incr(metricYandexRequests)
 	}
@@ -28,7 +29,7 @@ func SearchYandexAPI(ctx context.Context, cfg YandexConfig, query, region string
 		FolderID:     cfg.FolderID,
 		MonthlyLimit: cfg.MonthlyLimit,
 	}
-	ws, err := websearch.SearchYandexAPI(ctx, wcfg, query, region)
+	ws, err := websearch.SearchYandexAPI(ctx, wcfg, query, region, timeRange)
 	if err != nil {
 		return nil, err
 	}
