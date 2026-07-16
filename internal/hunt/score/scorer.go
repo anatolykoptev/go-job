@@ -101,13 +101,13 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	}
 
 	// --- Stage 1: recency pre-gate ---
-	maxAge := env.Duration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour)
+	maxAge := env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour)
 	if job.PostedAt == nil || time.Since(*job.PostedAt) > maxAge {
 		return hunt.ScoreResult{FitBand: hunt.FitBandStale, ScoredAt: time.Now()}
 	}
 
 	// --- Stage 2: Jaccard pre-filter ---
-	minJaccard := env.Float("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
+	minJaccard := env.MustFloat("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
 	profileKW := buildProfileKeywords(profile)
 	jobText := job.Title + " " + job.Description
 	jaccardScore := deps.Jaccard(profileKW, jobText)
@@ -125,7 +125,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	// short-circuits if it falls below HUNT_SCORE_MIN_QUALITY. This saves
 	// LLM calls on low-quality postings (no salary, agency, stub description)
 	// before the expensive Stage 4 LLM precision scorer runs.
-	minQuality := env.Int("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
+	minQuality := env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 	qr := quality.Score(quality.FromHuntJob(quality.JobInput{
 		Title:       job.Title,
 		Company:     job.Company,
@@ -226,7 +226,7 @@ func failOpen(ctx context.Context, jaccardScore int, llmResult string) hunt.Scor
 
 // scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default true).
 func scoringFailOpen() bool {
-	return env.Bool("HUNT_SCORE_FAIL_OPEN", true)
+	return env.MustBool("HUNT_SCORE_FAIL_OPEN", true)
 }
 
 // buildProfileKeywords concatenates CoreSkills + AdjacentSkills + TargetDomains
@@ -513,24 +513,24 @@ func truncate(s string, n int) string {
 // scoringEnabled reads HUNT_SCORE_ENABLED (default true).
 // Exported for use by huntworker when deciding whether to load the profile.
 func ScoringEnabled() bool {
-	return env.Bool("HUNT_SCORE_ENABLED", true)
+	return env.MustBool("HUNT_SCORE_ENABLED", true)
 }
 
 // MinJaccard returns the configured Jaccard pre-filter threshold.
 // Exported for huntworker diagnostic logging.
 func MinJaccard() float64 {
-	return env.Float("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
+	return env.MustFloat("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
 }
 
 // MinQuality returns the configured quality-score pre-filter threshold.
 // A value of 0 disables the quality gate. Exported for huntworker
 // diagnostic logging.
 func MinQuality() int {
-	return env.Int("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
+	return env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 }
 
 // MaxLLMPerCycle returns the HUNT_SCORE_MAX_LLM_PER_CYCLE circuit-breaker limit.
 // Exported for use in huntworker.runCycle.
 func MaxLLMPerCycle() int {
-	return env.Int("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
+	return env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
 }

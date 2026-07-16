@@ -25,7 +25,7 @@ func isUrgentBounty(b hunt.Bounty) bool {
 	if b.AmountCents == 0 {
 		return false
 	}
-	minCents := int64(env.Int("HUNT_NOTIFY_MIN_BOUNTY_USD", defaultNotifyMinBountyUSD)) * 100
+	minCents := int64(env.MustInt("HUNT_NOTIFY_MIN_BOUNTY_USD", defaultNotifyMinBountyUSD)) * 100
 	if minCents <= 0 {
 		return true
 	}
@@ -42,7 +42,7 @@ func isUrgentSecurity(s hunt.Security) bool {
 	if s.MaxBounty == 0 {
 		return false
 	}
-	minUSD := env.Int("HUNT_NOTIFY_MIN_SECURITY_USD", defaultNotifyMinSecurityUSD)
+	minUSD := env.MustInt("HUNT_NOTIFY_MIN_SECURITY_USD", defaultNotifyMinSecurityUSD)
 	if minUSD <= 0 {
 		return true
 	}
@@ -55,7 +55,7 @@ func isUrgentFreelance(f hunt.Freelance) bool {
 	if f.BudgetMax == 0 {
 		return false
 	}
-	minUSD := env.Int("HUNT_NOTIFY_MIN_FREELANCE_USD", defaultNotifyMinFreelanceUSD)
+	minUSD := env.MustInt("HUNT_NOTIFY_MIN_FREELANCE_USD", defaultNotifyMinFreelanceUSD)
 	if minUSD <= 0 {
 		return true
 	}
@@ -65,7 +65,7 @@ func isUrgentFreelance(f hunt.Freelance) bool {
 // notifyBackfillThreshold returns the per-kind threshold above which a single
 // summary card is sent instead of individual cards.
 func notifyBackfillThreshold() int {
-	return env.Int("HUNT_NOTIFY_BACKFILL_THRESHOLD", defaultNotifyBackfillThreshold)
+	return env.MustInt("HUNT_NOTIFY_BACKFILL_THRESHOLD", defaultNotifyBackfillThreshold)
 }
 
 // applyBountyNotifyPolicy implements the shared notify policy for one ingest cycle
