@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.10.1](https://github.com/anatolykoptev/go-job/compare/v1.10.0...v1.10.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **harden-before-prod:** increase scoring retries, slug cache double-checked locking, fail-fast env parsing ([#237](https://github.com/anatolykoptev/go-job/issues/237)) ([9a46b7f](https://github.com/anatolykoptev/go-job/commit/9a46b7feab19efce74245e336ba30b90dc8867e5))
+
 ## [1.10.0](https://github.com/anatolykoptev/go-job/compare/v1.9.0...v1.10.0) (2026-07-16)
 
 
