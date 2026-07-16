@@ -405,6 +405,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 
 //nolint:gochecknoglobals // var (not const) to allow test substitution
 var greenhouseBoardsAPI = "https://boards-api.greenhouse.io/v1/boards/%s/jobs"
+
 const greenhouseSiteSearch = "site:boards.greenhouse.io"
 
 // maxATSSlugsPerSearch caps how many company slugs we fan-out to per ATS source per query.
@@ -415,9 +416,9 @@ var greenhouseSlugRe = regexp.MustCompile(`boards\.greenhouse\.io/([^/?#]+)`)
 
 // greenhouseJob is a single job from the Greenhouse public API.
 type greenhouseJob struct {
-	ID         int64  `json:"id"`
-	Title      string `json:"title"`
-	Location   struct {
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Location struct {
 		Name string `json:"name"`
 	} `json:"location"`
 	UpdatedAt   string `json:"updated_at"`
@@ -497,7 +498,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
-			slog.Debug("greenhouse: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
+			slog.Warn("greenhouse: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
 			continue
 		}
 		for _, job := range r.jobs {
@@ -622,6 +623,7 @@ func extractGreenhouseSlugs(results []engine.SearxngResult) []string {
 
 //nolint:gochecknoglobals // var (not const) to allow test substitution
 var leverAPIBase = "https://api.lever.co/v0/postings/%s?mode=json"
+
 const leverSiteSearch = "site:jobs.lever.co"
 
 // leverSlugRe extracts company slug from jobs.lever.co URLs.
@@ -629,10 +631,10 @@ var leverSlugRe = regexp.MustCompile(`jobs\.lever\.co/([^/?#]+)`)
 
 // leverPosting is a single job from the Lever public API.
 type leverPosting struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
-	HostedURL string `json:"hostedUrl"`
-	ApplyURL  string `json:"applyUrl"`
+	ID         string `json:"id"`
+	Text       string `json:"text"`
+	HostedURL  string `json:"hostedUrl"`
+	ApplyURL   string `json:"applyUrl"`
 	Categories struct {
 		Location     string   `json:"location"`
 		AllLocations []string `json:"allLocations"`
@@ -683,7 +685,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
-			slog.Debug("lever: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
+			slog.Warn("lever: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
 			continue
 		}
 		for _, p := range r.postings {
@@ -829,11 +831,11 @@ var ashbySlugRe = regexp.MustCompile(`jobs\.ashbyhq\.com/([^/?#]+)`)
 
 // ashbyJob is a single job from the Ashby public board API.
 type ashbyJob struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Location      string `json:"location"`
-	IsRemote      bool   `json:"isRemote"`
-	WorkplaceType string `json:"workplaceType"`
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Location           string `json:"location"`
+	IsRemote           bool   `json:"isRemote"`
+	WorkplaceType      string `json:"workplaceType"`
 	SecondaryLocations []struct {
 		Location string `json:"location"`
 	} `json:"secondaryLocations"`
@@ -882,7 +884,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
-			slog.Debug("ashby: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
+			slog.Warn("ashby: fetch error", slog.String("slug", r.slug), slog.Any("error", r.err))
 			continue
 		}
 		for _, j := range r.jobs {
@@ -1151,9 +1153,9 @@ type ATSJob struct {
 // FetchATSBoardInput controls the direct board fetch.
 type FetchATSBoardInput struct {
 	Org                string `json:"org"`
-	Platform           string `json:"platform"`             // "greenhouse"|"ashby"|"lever"
-	Limit              int    `json:"limit,omitempty"`      // default 100, max 500
-	Query              string `json:"query,omitempty"`      // optional case-insensitive title substring
+	Platform           string `json:"platform"`                      // "greenhouse"|"ashby"|"lever"
+	Limit              int    `json:"limit,omitempty"`               // default 100, max 500
+	Query              string `json:"query,omitempty"`               // optional case-insensitive title substring
 	IncludeDescription bool   `json:"include_description,omitempty"` // default false
 }
 
