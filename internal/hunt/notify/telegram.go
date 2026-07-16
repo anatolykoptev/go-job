@@ -101,7 +101,7 @@ func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
 		chatIDs = []int64{id}
 	}
 
-	maxAge := env.Duration("HUNT_NOTIFY_MAX_AGE", defaultMaxAge)
+	maxAge := env.MustDuration("HUNT_NOTIFY_MAX_AGE", defaultMaxAge)
 	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge, token: token}, nil
 }
 

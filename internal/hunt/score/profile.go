@@ -260,9 +260,11 @@ func applyEnvOverrides(prof *ScoringProfile) {
 	}
 
 	if v := os.Getenv("HUNT_SCORE_COMP_FLOOR"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			prof.CompFloorUSD = n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(fmt.Sprintf("HUNT_SCORE_COMP_FLOOR: invalid integer %q: %v", v, err))
 		}
+		prof.CompFloorUSD = n
 	} else if prof.CompFloorUSD == 0 {
 		prof.CompFloorUSD = defaultCompFloor
 	}

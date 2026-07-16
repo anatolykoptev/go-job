@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strconv"
+
+	"github.com/anatolykoptev/go-kit/env"
 )
 
 // DefaultThresholdBytes is the size beyond which a payload is spilled to store.
@@ -31,13 +31,9 @@ type Storer interface {
 }
 
 // thresholdBytes reads GO_JOB_OVERSIZE_THRESHOLD_BYTES env, falls back to default.
+// Panics if the env var is set to an invalid integer (PF-8 fix).
 func thresholdBytes() int {
-	if v := os.Getenv("GO_JOB_OVERSIZE_THRESHOLD_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return DefaultThresholdBytes
+	return env.MustInt("GO_JOB_OVERSIZE_THRESHOLD_BYTES", DefaultThresholdBytes)
 }
 
 // knownListKeys are map keys whose values, if slices, yield item count.

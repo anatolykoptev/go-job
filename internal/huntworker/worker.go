@@ -29,7 +29,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -112,7 +111,7 @@ func NewWorker(store *hunt.Store) *Worker {
 	queries := parseQueries(env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries))
 	w := &Worker{
 		store:        store,
-		interval:     env.Duration("HUNT_INGEST_INTERVAL", 6*time.Hour),
+		interval:     env.MustDuration("HUNT_INGEST_INTERVAL", 6*time.Hour),
 		queries:      queries,
 		notifyMetric: engine.IncrHuntNotify,
 		// scoringProfile is loaded lazily on first Run (requires DB + context).
@@ -130,7 +129,7 @@ func NewWorker(store *hunt.Store) *Worker {
 	// issuing more failing calls. ErrOpen surfaces as an LLM error in
 	// scoreJobIfCreated → llm_error fail-open path (degraded but not dead).
 	// Disabled when HUNT_SCORE_BREAKER_ENABLED=false (LLM calls go direct).
-	if env.Bool("HUNT_SCORE_BREAKER_ENABLED", true) {
+	if env.MustBool("HUNT_SCORE_BREAKER_ENABLED", true) {
 		w.llmBreaker = newLLMBreaker()
 		w.scorerDeps.LLM = func(ctx context.Context, prompt string) (string, error) {
 			return breaker.Execute(w.llmBreaker, func() (string, error) {
@@ -174,15 +173,12 @@ func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
 // Read PER CALL (not snapshotted at NewWorker) BY DESIGN: Phase 7 flips the gate
 // by raising this env var, and reading it each cycle lets the change take effect
 // without a redeploy (per the migration plan's "no deploy if read each cycle").
-// A non-numeric or negative value clamps to 0 (gate open) — a malformed knob must
-// never silently start dropping jobs.
+// A non-numeric value panics at startup (PF-8 fix: fail-fast on config errors
+// instead of silent default fallback). A negative value clamps to 0 (gate open)
+// — a malformed knob must never silently start dropping jobs.
 func huntNotifyMinFit() int {
-	v := strings.TrimSpace(os.Getenv("HUNT_NOTIFY_MIN_FIT"))
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
+	n := env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)
+	if n < 0 {
 		return 0
 	}
 	return n
@@ -460,7 +456,7 @@ func scoreJobWithLimit(
 // It is extracted as a separate function for unit testability (injected store + deps).
 // No-op for any outcome other than OutcomeCreated — returns zero ScoreResult.
 //
-// Write failures from SetJobScore are retried up to 3 times with exponential
+// Write failures from SetJobScore are retried up to 5 times with exponential
 // backoff (go-kit/retry.Do). Transient DB errors (connection blips, timeouts)
 // are retried; permanent errors (ErrNotFound — job deleted between UpsertJob
 // and SetJobScore) are not retried. After all retries are exhausted, the
@@ -489,7 +485,7 @@ func scoreJobIfCreated(
 	}
 
 	_, err := retry.Do(ctx, retry.Options{
-		MaxAttempts:  3,
+		MaxAttempts:  5,
 		InitialDelay: 500 * time.Millisecond,
 		MaxDelay:     5 * time.Second,
 		Jitter:       true,
@@ -568,8 +564,8 @@ func runUnscoredSweep(
 	deps score.ScorerDeps,
 	llmCallsThisCycle *int,
 ) {
-	rescoreAll := env.Bool("HUNT_SCORE_RESCORE_ALL", false)
-	sweepLimit := env.Int("HUNT_SCORE_SWEEP_LIMIT", 50)
+	rescoreAll := env.MustBool("HUNT_SCORE_RESCORE_ALL", false)
+	sweepLimit := env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50)
 
 	// MEDIUM-1 budget cap: only fetch as many jobs as there is remaining LLM
 	// budget. Jobs that would exceed the ceiling could end up with

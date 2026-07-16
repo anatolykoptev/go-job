@@ -102,3 +102,21 @@ func TestSlugCache_MaxSize_LRU_EmitsLRUReason(t *testing.T) {
 	assert.Greater(t, after[lruKey]-before[lruKey], int64(0), "LRU eviction must emit reason=lru")
 	assert.Equal(t, after[ttlKey]-before[ttlKey], int64(0), "LRU eviction must NOT emit reason=ttl")
 }
+
+// TestSlugCache_MalformedEnvPanics verifies that invalid SLUG_CACHE_MAX_SIZE
+// panics at startup (PF-8 fix: fail-fast on config errors).
+func TestSlugCache_MalformedEnvPanics(t *testing.T) {
+	t.Setenv("SLUG_CACHE_MAX_SIZE", "abc")
+	assert.Panics(t, func() {
+		NewSlugCache("")
+	})
+}
+
+// TestSlugCache_MalformedTTLPanics verifies that invalid SLUG_CACHE_TTL
+// panics at startup (PF-8 fix).
+func TestSlugCache_MalformedTTLPanics(t *testing.T) {
+	t.Setenv("SLUG_CACHE_TTL", "not-a-duration")
+	assert.Panics(t, func() {
+		NewSlugCache("")
+	})
+}

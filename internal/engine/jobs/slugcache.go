@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
 	gokitcache "github.com/anatolykoptev/go-kit/cache"
+	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
@@ -37,54 +36,96 @@ type slugEntry struct {
 
 // inProcessSlugCache is the default SlugCache backed by a sync.Mutex-protected map.
 // Optional Redis L2 (via go-kit/cache) survives restarts.
+//
+// L2 warmup uses double-checked locking via per-platform sync.Once to avoid
+// holding the mutex during the Redis round-trip (PF-7 fix). The once map
+// itself is guarded by mu — only the check+create of the Once is under the
+// lock, not the Redis call.
 type inProcessSlugCache struct {
-	mu      sync.Mutex
-	entries map[string][]slugEntry
-	ttl     time.Duration
-	maxSize int
-	l2      *gokitcache.RedisL2
+	mu       sync.Mutex
+	entries  map[string][]slugEntry
+	warmOnce map[string]*sync.Once
+	ttl      time.Duration
+	maxSize  int
+	l2       *gokitcache.RedisL2
 }
 
 // NewSlugCache creates a slug cache. redisURL may be empty (in-process only then).
+// Panics if SLUG_CACHE_TTL or SLUG_CACHE_MAX_SIZE is set to an invalid value
+// (PF-8 fix: fail-fast on config errors instead of silent default fallback).
 func NewSlugCache(redisURL string) *inProcessSlugCache {
-	ttl := defaultSlugCacheTTL
-	if v := os.Getenv("SLUG_CACHE_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			ttl = d
-		}
-	}
-	maxSize := defaultSlugCacheMaxSize
-	if v := os.Getenv("SLUG_CACHE_MAX_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxSize = n
-		}
-	}
+	ttl := env.MustDuration("SLUG_CACHE_TTL", defaultSlugCacheTTL)
+	maxSize := env.MustInt("SLUG_CACHE_MAX_SIZE", defaultSlugCacheMaxSize)
 	var l2 *gokitcache.RedisL2
 	if redisURL != "" {
 		l2 = gokitcache.NewRedisL2(redisURL, 0, "gj:sc:")
 	}
 	return &inProcessSlugCache{
-		entries: make(map[string][]slugEntry),
-		ttl:     ttl,
-		maxSize: maxSize,
-		l2:      l2,
+		entries:  make(map[string][]slugEntry),
+		warmOnce: make(map[string]*sync.Once),
+		ttl:      ttl,
+		maxSize:  maxSize,
+		l2:       l2,
 	}
 }
 
-// Get returns non-expired slugs for platform. Warms from Redis L2 on first miss.
+// Get returns non-expired slugs for platform. Warms from Redis L2 on first miss
+// using double-checked locking (PF-7 fix): the mutex is only held briefly to
+// get-or-create the per-platform sync.Once, then released during the Redis
+// round-trip, then re-acquired to populate the entries map.
 func (c *inProcessSlugCache) Get(platform string) []string {
+	// Fast path: entries already populated (no L2 warmup needed).
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if _, ok := c.entries[platform]; ok {
+		result := c.filterUnexpired(platform)
+		c.mu.Unlock()
+		return result
+	}
+	c.mu.Unlock()
 
-	if _, ok := c.entries[platform]; !ok && c.l2 != nil {
-		if data, err := c.l2.Get(context.Background(), platform); err == nil {
-			var entries []slugEntry
-			if json.Unmarshal(data, &entries) == nil {
-				c.entries[platform] = entries
-			}
-		}
+	// Slow path: first miss for this platform — warm from L2.
+	if c.l2 != nil {
+		c.warmFromL2(platform)
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.filterUnexpired(platform)
+}
+
+// warmFromL2 fetches slugs from Redis and populates entries. Uses
+// double-checked locking via sync.Once so concurrent Get calls for the same
+// platform don't all hit Redis, and the mutex is NOT held during the round-trip.
+func (c *inProcessSlugCache) warmFromL2(platform string) {
+	c.mu.Lock()
+	once, ok := c.warmOnce[platform]
+	if !ok {
+		once = &sync.Once{}
+		c.warmOnce[platform] = once
+	}
+	c.mu.Unlock()
+
+	once.Do(func() {
+		data, err := c.l2.Get(context.Background(), platform)
+		if err != nil {
+			return
+		}
+		var entries []slugEntry
+		if json.Unmarshal(data, &entries) != nil {
+			return
+		}
+		c.mu.Lock()
+		// Double-check: another Merge may have populated entries while we
+		// were fetching from Redis. Only write if still absent.
+		if _, ok := c.entries[platform]; !ok {
+			c.entries[platform] = entries
+		}
+		c.mu.Unlock()
+	})
+}
+
+// filterUnexpired returns non-expired slugs for platform. Caller MUST hold c.mu.
+func (c *inProcessSlugCache) filterUnexpired(platform string) []string {
 	now := time.Now()
 	var result []string
 	for _, e := range c.entries[platform] {
