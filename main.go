@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anatolykoptev/go-kit/env"
 	kitembed "github.com/anatolykoptev/go-kit/embed"
+	"github.com/anatolykoptev/go-kit/env"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
 	linkedin "github.com/anatolykoptev/go-linkedin"
@@ -28,13 +28,13 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
-	"github.com/anatolykoptev/go_job/internal/pdfrender"
 	"github.com/anatolykoptev/go_job/internal/hunt/discovery"
 	"github.com/anatolykoptev/go_job/internal/hunt/enrich"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/huntworker"
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
+	"github.com/anatolykoptev/go_job/internal/pdfrender"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -45,6 +45,13 @@ var (
 )
 
 func main() {
+	// PF-6: install a redacting slog handler before any logging so the Telegram
+	// bot token is never written to logs. When TELEGRAM_BOT_TOKEN is unset,
+	// redaction is a no-op and the default handler is kept as-is.
+	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
+		slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(slog.Default().Handler(), token)))
+	}
+
 	huntNotifier := initEngine()
 
 	slog.Info("starting go_job",
