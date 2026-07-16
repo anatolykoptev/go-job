@@ -544,14 +544,14 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 // fetchGreenhouseJobs fetches all jobs for a given company slug.
 //
 //nolint:dupl // structurally similar to fetchAshbyJobs/fetchLeverPostings — different types, URLs, body limits
-func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, error) {
+func fetchGreenhouseJobs(ctx context.Context, slug string) (jobs []greenhouseJob, err error) {
 	if !greenhouseBreaker.Allow() {
 		return nil, fmt.Errorf("greenhouse breaker open: %w", breaker.ErrOpen)
 	}
+	defer func() { greenhouseBreaker.Record(err == nil) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
-		greenhouseBreaker.Record(false)
 		return nil, err
 	}
 	defer release()
@@ -560,7 +560,6 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		greenhouseBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -570,28 +569,24 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
-		greenhouseBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		greenhouseBreaker.Record(true) // 404 = valid response, not a failure
 		if sc := GetSlugCache(); sc != nil {
 			sc.Evict(engine.DiscoveryPlatformGreenhouse, slug, "board_404")
 		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		greenhouseBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "status")
 		return nil, fmt.Errorf("greenhouse API status %d for %s", resp.StatusCode, slug)
 	}
 
 	var gr greenhouseResponse
 	if err := atsBoardDecode(resp.Body, &gr); err != nil {
-		greenhouseBreaker.Record(false)
 		if isBodyTruncated(err) {
 			engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "truncated")
 			return nil, fmt.Errorf("greenhouse %s: %w", slug, ErrBodyTruncated)
@@ -599,7 +594,6 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) ([]greenhouseJob, err
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformGreenhouse, "parse")
 		return nil, fmt.Errorf("greenhouse parse: %w", err)
 	}
-	greenhouseBreaker.Record(true)
 	return gr.Jobs, nil
 }
 
@@ -744,14 +738,14 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 }
 
 // fetchLeverPostings fetches all job postings for a given company slug.
-func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error) {
+func fetchLeverPostings(ctx context.Context, slug string) (postings []leverPosting, err error) {
 	if !leverBreaker.Allow() {
 		return nil, fmt.Errorf("lever breaker open: %w", breaker.ErrOpen)
 	}
+	defer func() { leverBreaker.Record(err == nil) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
-		leverBreaker.Record(false)
 		return nil, err
 	}
 	defer release()
@@ -760,7 +754,6 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		leverBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -770,28 +763,23 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
-		leverBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		leverBreaker.Record(true) // 404 = valid response, not a failure
 		if sc := GetSlugCache(); sc != nil {
 			sc.Evict(engine.DiscoveryPlatformLever, slug, "board_404")
 		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		leverBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "status")
 		return nil, fmt.Errorf("lever API status %d for %s", resp.StatusCode, slug)
 	}
 
-	var postings []leverPosting
 	if err := atsBoardDecode(resp.Body, &postings); err != nil {
-		leverBreaker.Record(false)
 		if isBodyTruncated(err) {
 			engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "truncated")
 			return nil, fmt.Errorf("lever %s: %w", slug, ErrBodyTruncated)
@@ -799,7 +787,6 @@ func fetchLeverPostings(ctx context.Context, slug string) ([]leverPosting, error
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformLever, "parse")
 		return nil, fmt.Errorf("lever parse: %w", err)
 	}
-	leverBreaker.Record(true)
 	return postings, nil
 }
 
@@ -937,14 +924,14 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 // fetchAshbyJobs fetches all jobs for a given company slug.
 //
 //nolint:dupl // structurally similar to fetchGreenhouseJobs — different types, API URL pattern, and body limit (5MB vs 2MB)
-func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
+func fetchAshbyJobs(ctx context.Context, slug string) (jobs []ashbyJob, err error) {
 	if !ashbyBreaker.Allow() {
 		return nil, fmt.Errorf("ashby breaker open: %w", breaker.ErrOpen)
 	}
+	defer func() { ashbyBreaker.Record(err == nil) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
-		ashbyBreaker.Record(false)
 		return nil, err
 	}
 	defer release()
@@ -953,7 +940,6 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		ashbyBreaker.Record(false)
 		return nil, err
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
@@ -963,21 +949,18 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // ATS API URL from argument, intentional outbound request
 	})
 	if err != nil {
-		ashbyBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "transport")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		ashbyBreaker.Record(true) // 404 = valid response, not a failure
 		if sc := GetSlugCache(); sc != nil {
 			sc.Evict(engine.DiscoveryPlatformAshby, slug, "board_404")
 		}
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		ashbyBreaker.Record(false)
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "status")
 		return nil, fmt.Errorf("ashby API status %d for %s", resp.StatusCode, slug)
 	}
@@ -985,7 +968,6 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 	// Stream-decode: no full-body ReadAll; DoS ceiling via atsBoardMaxBytes LimitReader.
 	var ar ashbyResponse
 	if err := atsBoardDecode(resp.Body, &ar); err != nil {
-		ashbyBreaker.Record(false)
 		if isBodyTruncated(err) {
 			engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "truncated")
 			return nil, fmt.Errorf("ashby %s: %w", slug, ErrBodyTruncated)
@@ -993,7 +975,6 @@ func fetchAshbyJobs(ctx context.Context, slug string) ([]ashbyJob, error) {
 		engine.IncrATSFetchErrors(engine.DiscoveryPlatformAshby, "parse")
 		return nil, fmt.Errorf("ashby parse: %w", err)
 	}
-	ashbyBreaker.Record(true)
 	return ar.Jobs, nil
 }
 
