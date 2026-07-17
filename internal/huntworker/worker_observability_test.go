@@ -221,7 +221,7 @@ func Test_Sweep_ScoresUnscoredOpen(t *testing.T) {
 		},
 	}
 
-	llmCallsThisCycle := 0
+	var llmCallsThisCycle atomic.Int64
 	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
 
 	assert.Equal(t, int64(1), store.setCount.Load(),
@@ -274,7 +274,8 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 
 	// Budget already at max (0 allows 0 calls).
 	maxBudget := score.MaxLLMPerCycle() // = 0 from env
-	llmCallsThisCycle := maxBudget      // budget exhausted
+	var llmCallsThisCycle atomic.Int64
+	llmCallsThisCycle.Store(int64(maxBudget)) // budget exhausted
 	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
 
 	assert.Equal(t, int64(0), llmCalls.Load(),
@@ -313,7 +314,8 @@ func Test_Sweep_SkipsQueryWhenBudgetZero(t *testing.T) {
 
 	// Budget fully consumed by ingest path.
 	maxLLM := score.MaxLLMPerCycle() // 3 from env
-	llmCallsThisCycle := maxLLM      // already at ceiling
+	var llmCallsThisCycle atomic.Int64
+	llmCallsThisCycle.Store(int64(maxLLM)) // already at ceiling
 	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
 
 	assert.Equal(t, int64(0), store.setCount.Load(),
@@ -354,11 +356,11 @@ func Test_BudgetCountsAttempts(t *testing.T) {
 		},
 	}
 
-	llmCallsThisCycle := 0
+	var llmCallsThisCycle atomic.Int64
 	sr := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, store, &llmCallsThisCycle)
 
 	// LLM was attempted (parse_fail) — budget must be consumed.
-	assert.Equal(t, 1, llmCallsThisCycle,
+	assert.Equal(t, int64(1), llmCallsThisCycle.Load(),
 		"parse_fail result (LLM was invoked) must increment llmCallsThisCycle; "+
 			"RED-on-revert: revert increment to LLMCalled")
 	// parse_fail → FitBandUnscored; LLMResult=="parse_fail"; LLMCalled==false.

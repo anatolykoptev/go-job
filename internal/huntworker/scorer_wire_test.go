@@ -159,7 +159,7 @@ func TestMaxLLMPerCycle_CircuitBreaker(t *testing.T) {
 		},
 	}
 
-	cycleCounter := 0
+	var cycleCounter atomic.Int64
 	for i := 0; i < 5; i++ {
 		job := hunt.Job{
 			ID:          int64(100 + i),
@@ -215,7 +215,7 @@ func TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget(t *testing.T) 
 		LLM:     fitDeps.LLM,
 	}
 
-	cycleCounter := 0
+	var cycleCounter atomic.Int64
 
 	// 3 stale jobs — must NOT consume any LLM budget.
 	for i := 0; i < 3; i++ {
@@ -243,6 +243,6 @@ func TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget(t *testing.T) 
 	assert.Equal(t, int64(2), llmCalls.Load(),
 		"stale jobs must not consume LLM budget; expected exactly 2 LLM calls (the fit jobs)")
 	// cycleCounter must reflect only real LLM calls: 2.
-	assert.Equal(t, 2, cycleCounter,
+	assert.Equal(t, int64(2), cycleCounter.Load(),
 		"llmCallsThisCycle must count only actual LLM calls, not stale-shortcircuited ones")
 }
