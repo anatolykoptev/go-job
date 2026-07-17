@@ -319,6 +319,9 @@ const (
 	MetricDBPoolConns      = "db_pool_connections_total"
 	MetricDBPoolIdle       = "db_pool_idle_connections"
 	MetricDBPoolAcquireSec = "db_pool_acquire_wait_seconds"
+
+	// BH-12: slug cache L2 active gauge — 1=Redis connected, 0=degraded.
+	MetricSlugCacheL2Active = "slug_cache_l2_active"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -503,6 +506,8 @@ func FormatMetrics() string {
 	keys = append(keys, MetricATSBreakerOpen)
 	// BH-3 / OBS-5: DB pool stats gauges pre-touched at 0.
 	keys = append(keys, MetricDBPoolConns, MetricDBPoolIdle, MetricDBPoolAcquireSec)
+	// BH-12: slug cache L2 active gauge pre-touched at 0.
+	keys = append(keys, MetricSlugCacheL2Active)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -1104,4 +1109,17 @@ type PoolStatSnapshot struct {
 	IdleConns       int32
 	AcquireCount    int64
 	AcquireDuration float64 // seconds
+}
+
+// SetSlugCacheL2Active sets gojob_slug_cache_l2_active to 1 (Redis connected)
+// or 0 (degraded/in-process only). BH-12: makes Redis unavailability visible.
+func SetSlugCacheL2Active(active bool) {
+	if reg == nil {
+		return
+	}
+	var v float64
+	if active {
+		v = 1
+	}
+	reg.Gauge(MetricSlugCacheL2Active).Set(v)
 }

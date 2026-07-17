@@ -69,8 +69,27 @@ func NewSlugCache(redisURL string) *inProcessSlugCache {
 	ttl := env.MustDuration("SLUG_CACHE_TTL", defaultSlugCacheTTL)
 	maxSize := env.MustInt("SLUG_CACHE_MAX_SIZE", defaultSlugCacheMaxSize)
 	var l2 *gokitcache.RedisL2
+	l2Active := false
 	if redisURL != "" {
 		l2 = gokitcache.NewRedisL2(redisURL, 0, "gj:sc:")
+		// BH-12: validate Redis connectivity at init. If the probe Get fails,
+		// log a warning and set the L2 active gauge to 0 so the degradation is
+		// visible in Prometheus instead of silently falling back to L1 only.
+		// RedisL2 has no Ping method; a Get on a non-existent key returns
+		// nil/error — a connection error is distinguishable from a cache miss.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, probeErr := l2.Get(probeCtx, "__probe__")
+		probeCancel()
+		if probeErr != nil {
+			slog.Warn("slug cache: Redis L2 unreachable — degrading to in-process only",
+				slog.String("redis_url", redisURL),
+				slog.Any("error", probeErr))
+			l2Active = false
+		} else {
+			l2Active = true
+			slog.Info("slug cache: Redis L2 connected")
+		}
+		engine.SetSlugCacheL2Active(l2Active)
 	}
 	c := &inProcessSlugCache{
 		entries:  make(map[string][]slugEntry),
