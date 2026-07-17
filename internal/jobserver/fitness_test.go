@@ -311,6 +311,11 @@ func TestFF3_PerSourceDeadlineBound(t *testing.T) {
 // Revert-red: removing context.WithTimeout(ctx, perSourceTimeout) from runSource
 // causes this test to timeout waiting 2s — the slow source is NOT cancelled by
 // the parent (10s deadline >> test window), only the per-source cap would cancel it.
+//
+// BH-16: This test mutates the package-level perSourceTimeout var. It does NOT
+// call t.Parallel() — the save/restore pattern is safe only when tests run
+// sequentially within the package (the Go default). Do NOT add t.Parallel()
+// here without first converting perSourceTimeout to atomic.Value.
 func TestFF3b_PerSourceTimeout_IndependentFromParent(t *testing.T) {
 	prevTimeout := perSourceTimeout
 	perSourceTimeout = 50 * time.Millisecond
