@@ -150,6 +150,11 @@ func Init(c Config) {
 	// Fit-score histogram (P6): range 0–100 in 20-point steps.
 	// Answers "what is my fit distribution?" so the operator can tune HUNT_NOTIFY_MIN_FIT.
 	reg.RegisterHistogram(MetricHuntFitScore, kitmetrics.WithBuckets(HuntFitScoreBuckets))
+	// OBS-6: LLM request latency histogram — makes LLM slowness visible
+	// before it hits timeout. Buckets: 0.1s–60s.
+	reg.RegisterHistogram(MetricLLMRequestDuration, kitmetrics.WithBuckets(LLMRequestDurationBuckets))
+	// OBS-6: admin UI request latency histogram.
+	reg.RegisterHistogram(MetricAdminRequestDuration, kitmetrics.WithBuckets(AdminRequestDurationBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}

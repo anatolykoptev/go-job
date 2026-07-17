@@ -12,8 +12,11 @@ import (
 const defaultCharsPerToken = 3.5
 
 // CallLLM sends a prompt using the configured temperature and max_tokens.
+// OBS-6: records call duration in the llm_request_duration_seconds histogram.
 func CallLLM(ctx context.Context, prompt string) (string, error) {
 	reg.Incr(MetricLLMCalls)
+	timer := reg.StartTimer(MetricLLMRequestDuration)
+	defer timer.Stop()
 	raw, err := llmInst.Complete(ctx, prompt)
 	if err != nil {
 		reg.Incr(MetricLLMErrors)

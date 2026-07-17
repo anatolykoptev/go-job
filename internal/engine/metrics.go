@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
 	"time"
@@ -18,6 +19,19 @@ const (
 	MetricSearchRequests        = "search_requests_total"
 	MetricLLMCalls              = "llm_calls_total"
 	MetricLLMErrors             = "llm_errors_total"
+	// OBS-6: LLM request latency histogram — makes LLM slowness visible
+	// before it hits timeout. Buckets: 0.1s–60s (registered in Init).
+	MetricLLMRequestDuration    = "llm_request_duration_seconds"
+	// OBS-6: oversize purge outcome counters — make table growth visible.
+	MetricOversizePurgeDeleted  = "oversize_purge_deleted_total"
+	MetricOversizePurgeErrors   = "oversize_purge_errors_total"
+	// OBS-6: enrichment semaphore skipped counter — makes "semaphore full"
+	// events visible so operators can tune enrichMaxConcurrent.
+	MetricEnrichSemSkipped      = "enrich_semaphore_skipped_total"
+	// OBS-6: admin UI HTTP metrics — request rate, error rate, latency.
+	MetricAdminRequests         = "admin_requests_total"
+	MetricAdminErrors           = "admin_errors_total"
+	MetricAdminRequestDuration  = "admin_request_duration_seconds"
 	MetricFetchRequests         = "fetch_requests_total"
 	MetricFetchErrors           = "fetch_errors_total"
 	MetricFreelancerAPIRequests = "freelancer_api_requests_total"
@@ -345,6 +359,15 @@ var HuntCycleDurationBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 600}
 // Registered via reg.RegisterHistogram in engine.Init() before first Observe.
 var HuntFitScoreBuckets = []float64{0, 20, 40, 60, 80, 100}
 
+// LLMRequestDurationBuckets cover the latency range of LLM calls:
+// fast (0.1s) through slow (60s). OBS-6: makes LLM slowness visible
+// before it hits timeout.
+var LLMRequestDurationBuckets = []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60}
+
+// AdminRequestDurationBuckets cover admin UI response latency.
+// OBS-6: range 1ms–10s — admin pages are fast DB queries or htmx partials.
+var AdminRequestDurationBuckets = []float64{0.001, 0.01, 0.05, 0.1, 0.5, 1, 5, 10}
+
 // GetMetrics returns a snapshot of all metrics including cache stats.
 // Returns an empty map if the registry has not been initialised (e.g. in
 // package-external unit tests that do not call engine.Init).
@@ -503,6 +526,12 @@ func FormatMetrics() string {
 	keys = append(keys, MetricDBPoolConns, MetricDBPoolIdle, MetricDBPoolAcquireSec)
 	// BH-12: slug cache L2 active gauge pre-touched at 0.
 	keys = append(keys, MetricSlugCacheL2Active)
+	// OBS-6: oversize purge counters pre-touched at 0.
+	keys = append(keys, MetricOversizePurgeDeleted, MetricOversizePurgeErrors)
+	// OBS-6: enrichment semaphore skipped counter pre-touched at 0.
+	keys = append(keys, MetricEnrichSemSkipped)
+	// OBS-6: admin UI HTTP counters pre-touched at 0.
+	keys = append(keys, MetricAdminRequests, MetricAdminErrors)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -1068,6 +1097,40 @@ func IncrSlugCacheL2WriteError() {
 // breaker is open and blocks the call.
 func IncrATSBreakerOpen() {
 	reg.Incr(MetricATSBreakerOpen)
+}
+
+// OBS-6: oversize purge outcome incrementors.
+func IncrOversizePurgeDeleted(n int64) { reg.Add(MetricOversizePurgeDeleted, n) }
+func IncrOversizePurgeErrors()         { reg.Incr(MetricOversizePurgeErrors) }
+
+// OBS-6: enrichment semaphore skipped — bumped when enrichSem is full.
+func IncrEnrichSemSkipped() { reg.Incr(MetricEnrichSemSkipped) }
+
+// AdminMetricsMiddleware wraps an http.Handler with request count, error count,
+// and latency histogram. OBS-6: makes admin UI traffic and error rate visible.
+// Status code is captured via a responseWriter wrapper.
+func AdminMetricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reg.Incr(MetricAdminRequests)
+		timer := reg.StartTimer(MetricAdminRequestDuration)
+		defer timer.Stop()
+		rw := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rw, r)
+		if rw.status >= 500 {
+			reg.Incr(MetricAdminErrors)
+		}
+	})
+}
+
+// statusWriter wraps http.ResponseWriter to capture the status code.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // StartDBPoolCollector launches a background goroutine that updates DB pool

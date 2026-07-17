@@ -26,6 +26,19 @@ var schemaFS embed.FS
 // ErrNotFound is returned by Get when no row matches.
 var ErrNotFound = errors.New("oversize: entry not found")
 
+// OBS-6: purge metric hooks — set by engine.Init via SetPurgeMetricHooks.
+// Avoids import cycle (engine imports oversize via oversize_singleton).
+var (
+	onPurgeDeleted func(int64)
+	onPurgeError   func()
+)
+
+// SetPurgeMetricHooks wires the purge metric callbacks. Called from engine.Init.
+func SetPurgeMetricHooks(deletedFn func(int64), errorFn func()) {
+	onPurgeDeleted = deletedFn
+	onPurgeError = errorFn
+}
+
 // Entry is a stored oversize response.
 type Entry struct {
 	ID        int64           `json:"id"`
@@ -224,9 +237,16 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE oversize_responses SET deleted_at = NOW() WHERE created_at < $1 AND deleted_at IS NULL`, before)
 	if err != nil {
+		if onPurgeError != nil {
+			onPurgeError()
+		}
 		return 0, fmt.Errorf("oversize: purge: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	n := tag.RowsAffected()
+	if onPurgeDeleted != nil {
+		onPurgeDeleted(n)
+	}
+	return n, nil
 }
 
 // HardPurge permanently deletes rows soft-deleted more than 24h ago.
@@ -236,6 +256,9 @@ func (s *Store) HardPurge(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
 		`DELETE FROM oversize_responses WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '24 hours'`)
 	if err != nil {
+		if onPurgeError != nil {
+			onPurgeError()
+		}
 		return 0, fmt.Errorf("oversize: hard purge: %w", err)
 	}
 	return tag.RowsAffected(), nil
