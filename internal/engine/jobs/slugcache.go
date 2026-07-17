@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sort"
 	"sync"
@@ -72,15 +73,14 @@ func NewSlugCache(redisURL string) *inProcessSlugCache {
 	l2Active := false
 	if redisURL != "" {
 		l2 = gokitcache.NewRedisL2(redisURL, 0, "gj:sc:")
-		// BH-12: validate Redis connectivity at init. If the probe Get fails,
-		// log a warning and set the L2 active gauge to 0 so the degradation is
-		// visible in Prometheus instead of silently falling back to L1 only.
-		// RedisL2 has no Ping method; a Get on a non-existent key returns
-		// nil/error — a connection error is distinguishable from a cache miss.
+		// BH-12: validate Redis connectivity at init. A probe Get on a
+		// non-existent key returns ErrCacheMiss — that means Redis IS
+		// reachable (the round-trip succeeded). Only a non-ErrCacheMiss
+		// error means Redis is down. Set the L2 active gauge accordingly.
 		probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, probeErr := l2.Get(probeCtx, "__probe__")
 		probeCancel()
-		if probeErr != nil {
+		if probeErr != nil && !errors.Is(probeErr, gokitcache.ErrCacheMiss) {
 			slog.Warn("slug cache: Redis L2 unreachable — degrading to in-process only",
 				slog.String("redis_url", redisURL),
 				slog.Any("error", probeErr))

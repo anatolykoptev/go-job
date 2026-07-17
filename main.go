@@ -362,6 +362,12 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 
 	engine.Init(c)
 
+	// OBS-6: wire the enrichment-skip metric hook so hunt package can bump
+	// the gojob_enrich_semaphore_skipped_total counter without importing engine.
+	hunt.SetEnrichSkipHook(engine.IncrEnrichSemSkipped)
+	// OBS-6: wire the oversize purge metric hooks (avoids import cycle).
+	oversize.SetPurgeMetricHooks(engine.IncrOversizePurgeDeleted, engine.IncrOversizePurgeErrors)
+
 	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
 	var huntNotifier hunt.Notifier
 
@@ -559,7 +565,7 @@ func startAdminServer(ctx context.Context, store *hunt.Store, authority *applica
 	// the published port (Docker forwards to the container eth0, not loopback).
 	addr := ":" + env.Str("ADMIN_PORT", "8896")
 	mux := http.NewServeMux()
-	mux.Handle("/admin/", handler)
+	mux.Handle("/admin/", engine.AdminMetricsMiddleware(handler))
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
