@@ -58,9 +58,9 @@ const (
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
-	scoreFilterRecency  = "recency"
-	scoreFilterJaccard  = "jaccard"
-	scoreFilterQuality  = "quality"
+	scoreFilterRecency = "recency"
+	scoreFilterJaccard = "jaccard"
+	scoreFilterQuality = "quality"
 
 	// Fit-scoring LLM result labels (hunt_score_llm_total{result}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
