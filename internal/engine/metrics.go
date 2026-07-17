@@ -58,9 +58,9 @@ const (
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
-	scoreFilterRecency  = "recency"
-	scoreFilterJaccard  = "jaccard"
-	scoreFilterQuality  = "quality"
+	scoreFilterRecency = "recency"
+	scoreFilterJaccard = "jaccard"
+	scoreFilterQuality = "quality"
 
 	// Fit-scoring LLM result labels (hunt_score_llm_total{result}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
@@ -314,6 +314,11 @@ const (
 	// source is permanently blocked.
 	// Alert: increase(gojob_ats_breaker_open_total[1h]) > 10 → ATS API down.
 	MetricATSBreakerOpen = "ats_breaker_open_total"
+
+	// BH-3 / OBS-5: DB pool stats gauges — make pool saturation detectable.
+	MetricDBPoolConns      = "db_pool_connections_total"
+	MetricDBPoolIdle       = "db_pool_idle_connections"
+	MetricDBPoolAcquireSec = "db_pool_acquire_wait_seconds"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -496,6 +501,8 @@ func FormatMetrics() string {
 	keys = append(keys, MetricSlugCacheL2WriteErrors)
 	// #180: ATS breaker open counter pre-touched at 0.
 	keys = append(keys, MetricATSBreakerOpen)
+	// BH-3 / OBS-5: DB pool stats gauges pre-touched at 0.
+	keys = append(keys, MetricDBPoolConns, MetricDBPoolIdle, MetricDBPoolAcquireSec)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -1062,4 +1069,39 @@ func IncrSlugCacheL2WriteError() {
 // breaker is open and blocks the call.
 func IncrATSBreakerOpen() {
 	reg.Incr(MetricATSBreakerOpen)
+}
+
+// StartDBPoolCollector launches a background goroutine that updates DB pool
+// stats gauges every 15s from pgxpool.Stat(). BH-3 / OBS-5: makes pool
+// saturation and acquire wait time detectable before cascading timeouts.
+// No-op if the metrics registry is not initialised.
+func StartDBPoolCollector(ctx context.Context, poolStat func() PoolStatSnapshot) {
+	if reg == nil || poolStat == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s := poolStat()
+				reg.Gauge(MetricDBPoolConns).Set(float64(s.TotalConns))
+				reg.Gauge(MetricDBPoolIdle).Set(float64(s.IdleConns))
+				if s.AcquireCount > 0 {
+					reg.Gauge(MetricDBPoolAcquireSec).Set(s.AcquireDuration / float64(s.AcquireCount))
+				}
+			}
+		}
+	}()
+}
+
+// PoolStatSnapshot is a snapshot of pgxpool.Stat() values for the collector.
+type PoolStatSnapshot struct {
+	TotalConns      int32
+	IdleConns       int32
+	AcquireCount    int64
+	AcquireDuration float64 // seconds
 }
