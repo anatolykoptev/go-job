@@ -57,14 +57,14 @@ func main() {
 		slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(nil, token)))
 	}
 
-	huntNotifier := initEngine()
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	huntNotifier := initEngine(sigCtx)
 
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
 	)
-
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	// Start periodic Telegram bot token health check (noop when notifier is nil
 	// or not a *notify.ProductNotifier). Validates the token every hour via GetMe
@@ -256,7 +256,7 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 // the hunt.Notifier that was wired to the hunt store (nil if bot init failed or
 // the store was not configured). The caller (main) passes this to StartWorker so
 // the ingest worker can fire Telegram notifications on OutcomeCreated.
-func initEngine() hunt.Notifier {
+func initEngine(sigCtx context.Context) hunt.Notifier {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
@@ -378,6 +378,18 @@ func initEngine() hunt.Notifier {
 		} else {
 			jobs.SetResumeDB(rdb)
 			slog.Info("resume DB initialized")
+
+			// BH-3 / OBS-5: DB pool stats collector — exposes TotalConns,
+			// IdleConns, and avg acquire wait time as Prometheus gauges.
+			engine.StartDBPoolCollector(sigCtx, func() engine.PoolStatSnapshot {
+				st := rdb.Pool().Stat()
+				return engine.PoolStatSnapshot{
+					TotalConns:      st.TotalConns(),
+					IdleConns:       st.IdleConns(),
+					AcquireCount:    st.AcquireCount(),
+					AcquireDuration: st.AcquireDuration().Seconds(),
+				}
+			})
 
 			// Wire oversize store on the same pool (fails-soft: optional spill feature).
 			osStore := oversize.NewStore(rdb.Pool())

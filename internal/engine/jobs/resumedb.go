@@ -51,10 +51,11 @@ func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	// #172 fix: DB pool size is env-overridable. Default 10 was too small
-	// under concurrent load (17 parallel connectors + ATS ingest + admin UI).
+	// #172 fix: DB pool size is env-overridable. Default 25 (raised from 10
+	// in BH-3) — 10 was too small under concurrent load (17 parallel connectors
+	// + ATS ingest + admin UI + MCP tools all share one pool).
 	// DATABASE_MAX_CONNS lets ops tune without a rebuild.
-	maxConns := env.MustInt("DATABASE_MAX_CONNS", 10)
+	maxConns := env.MustInt("DATABASE_MAX_CONNS", 25)
 	if maxConns < 1 {
 		maxConns = 1
 	}
