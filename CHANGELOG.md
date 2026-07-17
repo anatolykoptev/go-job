@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.10.2](https://github.com/anatolykoptev/go-job/compare/v1.10.1...v1.10.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **pf-9-14:** LLM proxy key validation, LinkedIn stale-age + atomic swap, bounded L2 pool, HTTP conn pooling, fit-gate range clamp ([#239](https://github.com/anatolykoptev/go-job/issues/239)) ([b2b061a](https://github.com/anatolykoptev/go-job/commit/b2b061a5fd02351b129679017caa0509f94eb3c6))
+
 ## [1.10.1](https://github.com/anatolykoptev/go-job/compare/v1.10.0...v1.10.1) (2026-07-16)
 
 
