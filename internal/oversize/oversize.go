@@ -107,12 +107,14 @@ func (s *Store) Save(ctx context.Context, e Entry) (int64, error) {
 	return id, nil
 }
 
-// Get returns entry by id; ErrNotFound if missing.
+// Get returns entry by id; ErrNotFound if missing or soft-deleted.
+// BH-9: filters deleted_at IS NULL so purged entries are invisible to
+// concurrent reads even before the hard purge removes the row.
 func (s *Store) Get(ctx context.Context, id int64) (*Entry, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
 		FROM oversize_responses
-		WHERE id = $1`, id)
+		WHERE id = $1 AND deleted_at IS NULL`, id)
 
 	var e Entry
 	var sample []byte
@@ -162,27 +164,28 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Entry, error) {
 		rows, err = s.pool.Query(ctx, `
 			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
 			FROM oversize_responses
-			WHERE tool_name = $1 AND created_at > $2
+			WHERE tool_name = $1 AND created_at > $2 AND deleted_at IS NULL
 			ORDER BY created_at DESC
 			LIMIT $3`, f.ToolName, f.Since, limit)
 	case hasTool:
 		rows, err = s.pool.Query(ctx, `
 			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
 			FROM oversize_responses
-			WHERE tool_name = $1
+			WHERE tool_name = $1 AND deleted_at IS NULL
 			ORDER BY created_at DESC
 			LIMIT $2`, f.ToolName, limit)
 	case hasSince:
 		rows, err = s.pool.Query(ctx, `
 			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
 			FROM oversize_responses
-			WHERE created_at > $1
+			WHERE created_at > $1 AND deleted_at IS NULL
 			ORDER BY created_at DESC
 			LIMIT $2`, f.Since, limit)
 	default:
 		rows, err = s.pool.Query(ctx, `
 			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
 			FROM oversize_responses
+			WHERE deleted_at IS NULL
 			ORDER BY created_at DESC
 			LIMIT $1`, limit)
 	}
@@ -213,12 +216,27 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Entry, error) {
 	return result, nil
 }
 
-// Purge deletes entries older than `before`. Returns rows deleted.
+// Purge soft-deletes entries older than `before` by setting deleted_at=NOW().
+// BH-9: soft delete prevents races with concurrent Get/List reads — a
+// hard DELETE can execute before or during a read, causing ErrNotFound.
+// HardPurge removes rows with deleted_at older than 24h.
 func (s *Store) Purge(ctx context.Context, before time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM oversize_responses WHERE created_at < $1`, before)
+		`UPDATE oversize_responses SET deleted_at = NOW() WHERE created_at < $1 AND deleted_at IS NULL`, before)
 	if err != nil {
 		return 0, fmt.Errorf("oversize: purge: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// HardPurge permanently deletes rows soft-deleted more than 24h ago.
+// BH-9: second-stage hard purge that removes rows after the soft-delete
+// grace period, keeping the table bounded without racing with active reads.
+func (s *Store) HardPurge(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM oversize_responses WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '24 hours'`)
+	if err != nil {
+		return 0, fmt.Errorf("oversize: hard purge: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
@@ -247,9 +265,15 @@ func (s *Store) StartAutoPurge(ctx context.Context) {
 					slog.Warn("oversize: auto-purge failed", slog.Any("error", err))
 					continue
 				}
-				if deleted > 0 {
+				// BH-9: hard purge rows soft-deleted >24h ago.
+				hardDeleted, err := s.HardPurge(ctx)
+				if err != nil {
+					slog.Warn("oversize: hard purge failed", slog.Any("error", err))
+				}
+				if deleted > 0 || hardDeleted > 0 {
 					slog.Info("oversize: auto-purge complete",
-						slog.Int64("deleted", deleted),
+						slog.Int64("soft_deleted", deleted),
+						slog.Int64("hard_deleted", hardDeleted),
 						slog.Duration("retention", retention))
 				}
 			}
