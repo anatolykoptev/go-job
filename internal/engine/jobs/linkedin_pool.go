@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	linkedin "github.com/anatolykoptev/go-linkedin"
@@ -13,19 +14,32 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-const linkedinClientTTL = 10 * time.Minute
+const (
+	linkedinClientTTL    = 10 * time.Minute
+	linkedinMaxStaleAge  = 30 * time.Minute // PF-10: refuse stale client beyond this age
+)
 
 var errLinkedInNotConfigured = errors.New("linkedin not configured")
+var errLinkedInStaleExpired = errors.New("linkedin: stale client exceeded max age, refresh failed")
 
 // linkedinPool manages a lazy-initialized LinkedIn client with auto-refresh.
 // On first call or after TTL expiry, acquires fresh credentials from go-social.
+//
+// PF-10 fix: stale client fallback has a max age (linkedinMaxStaleAge). If the
+// cached client is older than max-stale-age and refresh fails, return an error
+// instead of a potentially expired credential.
+//
+// PF-12 fix: client swap uses atomic.Pointer so concurrent get() callers never
+// see a partially-written pointer. The mutex is only used to serialize refresh
+// attempts (single-flight), not to protect the client field.
 var linkedinPool = &liPool{}
 
 type liPool struct {
-	mu        sync.Mutex
-	client    *linkedin.Client
+	mu        sync.Mutex // serializes refresh attempts (single-flight)
+	client    atomic.Pointer[linkedin.Client]
 	accountID string
 	expiresAt time.Time
+	refreshedAt time.Time // when the client was last successfully refreshed
 }
 
 // getLinkedInClient returns a cached LinkedIn client, refreshing from go-social if expired.
@@ -48,23 +62,42 @@ func (p *liPool) get(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.client != nil && time.Now().Before(p.expiresAt) {
-		return p.client, nil
+	// Fast path: client is fresh.
+	if ptr := p.client.Load(); ptr != nil && time.Now().Before(p.expiresAt) {
+		return ptr, nil
 	}
 
+	// Slow path: needs refresh.
 	client, accountID, err := acquireLinkedIn(ctx, sc)
 	if err != nil {
-		// If we have a stale client, return it rather than failing.
-		if p.client != nil {
-			slog.Warn("linkedin refresh failed, using stale client", slog.Any("error", err))
-			return p.client, nil
+		// PF-10 fix: stale client fallback with max age check.
+		// If we have a stale client and it's not too old, return it.
+		if ptr := p.client.Load(); ptr != nil {
+			staleAge := time.Since(p.refreshedAt)
+			if staleAge < linkedinMaxStaleAge {
+				slog.Warn("linkedin refresh failed, using stale client",
+					slog.Any("error", err),
+					slog.Duration("stale_age", staleAge),
+					slog.Duration("max_stale_age", linkedinMaxStaleAge),
+				)
+				return ptr, nil
+			}
+			slog.Error("linkedin refresh failed and stale client exceeded max age",
+				slog.Any("error", err),
+				slog.Duration("stale_age", staleAge),
+				slog.Duration("max_stale_age", linkedinMaxStaleAge),
+			)
+			return nil, errLinkedInStaleExpired
 		}
 		return nil, err
 	}
 
-	p.client = client
+	// PF-12 fix: atomic store — concurrent readers never see a partial write
+	// even if they bypass the mutex via a future fast path.
+	p.client.Store(client)
 	p.accountID = accountID
 	p.expiresAt = time.Now().Add(linkedinClientTTL)
+	p.refreshedAt = time.Now()
 	slog.Info("linkedin client refreshed from go-social")
 	return client, nil
 }
