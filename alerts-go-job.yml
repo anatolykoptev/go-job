@@ -1,0 +1,306 @@
+# Prometheus alert rules for go-job — covers all 9 enforce:true failure classes
+# from the bug-hunt-council audit.
+#
+# Deployed to ~/deploy/server-config/config/prometheus/alerts-go-job.yml.
+# Alertmanager routes to dozor (Telegram) based on `receiver: dozor` label.
+groups:
+  - name: go-job-sources
+    interval: 5m
+    rules:
+      # P3 observability (ADR-J3 outcome vocab). The per-source outcome counter
+      # distinguishes WHY a source is empty: parse_fail (schema drift), no_key
+      # (missing API key config), timeout (slow fan-out), error (generic), empty
+      # (genuine 0 results), ok (real jobs). These alerts surface the BROKEN
+      # classes so a regression flips a metric instead of going silent the way
+      # the 2026-06 discovery collapse did (read logs by hand).
+
+      # parse_fail = a connector's parser rejected the upstream response —
+      # almost always upstream schema drift (e.g. habr changed employment field
+      # struct→string). Sustained parse_fail means the source is dead until the
+      # parser is made tolerant.
+      - alert: GojobSourceParseFail
+        expr: increase(gojob_platform_results_total{outcome="parse_fail"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: silent_downgrade
+        annotations:
+          summary: "go-job: source {{ $labels.platform }} parse_fail (upstream schema drift)"
+          description: |
+            Connector {{ $labels.platform }} returned parse_fail — its parser
+            could not decode the upstream response, typically because the source
+            site changed its JSON/HTML schema. The source yields ZERO jobs until
+            the parser is fixed (tolerant decode).
+
+            Triage:
+              docker logs go-job --since 1h | grep -E "{{ $labels.platform }}.*(parse|unmarshal)"
+            Fix class: tolerant decode + ErrParse wrap (see P4 source-fix arc).
+
+      # no_key = source needs an API key that is not configured. Clean skip, not
+      # a crash — but the source is permanently dark until the key is wired.
+      - alert: GojobSourceNoKey
+        expr: increase(gojob_platform_results_total{outcome="no_key"}[6h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: config_drift
+        annotations:
+          summary: "go-job: source {{ $labels.platform }} skipped — no API key configured"
+          description: |
+            Connector {{ $labels.platform }} requires an API key that is unset in
+            the go-job container env. The source is skipped cleanly (no_key) and
+            contributes zero jobs.
+
+            Fix: wire the key into compose/apps.yml go-job environment, redeploy.
+
+      # Delegation health: when ATS discovery falls back to the local single-source
+      # SearchDirect path, go-search (the multi-source delegation backend on the
+      # pillow mesh) is unreachable or empty. go-job is then back on the degraded
+      # DDG-only floor — the exact pre-fix failure mode. Sustained fallback = the
+      # delegation pipeline is down.
+      - alert: GojobDelegationFallback
+        expr: increase(gojob_hunt_discovery_source_total{source="local-fallback"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: dependency_block
+        annotations:
+          summary: "go-job: ATS discovery on LOCAL FALLBACK — go-search delegation unreachable"
+          description: |
+            ATS board-URL discovery fell back to the local SearchDirect path,
+            meaning the go-search delegation backend was unreachable or returned
+            empty. go-job is on the degraded single-source floor —
+            greenhouse/lever/ashby discovery is crippled until go-search recovers.
+
+            Triage:
+              curl -s --max-time 6 http://go-search:8890/health
+              docker logs go-job --since 1h | grep -E "GO_SEARCH_URL|discovery.*fallback"
+
+  # ESC-2 failure-class alerts: scoring pipeline health gauges added to make
+  # silent scoring degradation and unscored-job freeze visible before the
+  # hunt_jobs table goes stale. These gauges are set by the hunt worker's
+  # end-of-cycle unscored sweep and the scoring degradation flag.
+
+  - name: go-job-failure-classes
+    interval: 5m
+    rules:
+      # freeze_stall = the oldest unscored open job has been waiting > 2h.
+      # This means the scoring pipeline is stuck — either the LLM is down, the
+      # circuit breaker is permanently tripping, or the sweep is not running.
+      # Jobs accumulate unscored, notifications degrade to unscored cards, and
+      # hunt_list fit filtering stops working.
+      - alert: GojobHuntScoringFreezeStall
+        expr: gojob_hunt_unscored_jobs_max_age_seconds > 7200
+        for: 5m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: freeze_stall
+        annotations:
+          summary: "go-job: unscored jobs oldest age > 2h — scoring pipeline stalled"
+          description: |
+            The oldest unscored open job has been waiting for more than 2 hours
+            (gojob_hunt_unscored_jobs_max_age_seconds > 7200). The scoring
+            pipeline is stuck: either the LLM backend is down, the per-cycle
+            circuit breaker is permanently tripping (budget too low), or the
+            unscored sweep is not running. Jobs accumulate unscored, fit-score
+            notifications degrade, and hunt_list fit filtering stops working.
+
+            Triage:
+              docker logs go-job --since 2h | grep -E "breaker|sweep|llm_error|parse_fail"
+              Check LLM_API_BASE health and HUNT_SCORE_MAX_LLM_PER_CYCLE budget.
+
+      # silent_downgrade = the scoring degradation flag has been set for 10m.
+      # This means the circuit breaker is open OR the fail-open path was taken
+      # (llm_error / parse_fail in scoreJobIfCreated). Jobs are being ingested
+      # but landing as unscored — the fit-score pipeline is running in degraded
+      # mode, producing unscored cards and bypassing the fit gate.
+      - alert: GojobHuntScoringDegraded
+        expr: gojob_hunt_scoring_degraded == 1
+        for: 10m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: silent_downgrade
+        annotations:
+          summary: "go-job: scoring degraded — circuit breaker open or fail-open path active"
+          description: |
+            The hunt scoring pipeline is in degraded mode
+            (gojob_hunt_scoring_degraded == 1 for 10m). Either the per-cycle
+            LLM circuit breaker is open (budget exhausted) or the fail-open path
+            was taken (llm_error or parse_fail in scoreJobIfCreated). Jobs are
+            ingested but land as unscored — fit-score notifications degrade to
+            unscored cards and the fit gate is bypassed.
+
+            Triage:
+              docker logs go-job --since 30m | grep -E "breaker|llm_error|parse_fail|degraded"
+              Check LLM_API_BASE health and HUNT_SCORE_MAX_LLM_PER_CYCLE budget.
+
+      # wiring_dark = score persist failures after all retries exhausted.
+      # SetJobScore failed 5 attempts — DB health issue. Jobs are ingested but
+      # scores are lost, degrading fit filtering and notifications.
+      - alert: GojobScorePersistFailures
+        expr: increase(gojob_hunt_score_persist_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: wiring_dark
+        annotations:
+          summary: "go-job: score persist failures — DB health issue"
+          description: |
+            SetJobScore failed after all retry attempts
+            (gojob_hunt_score_persist_failures_total increasing). Jobs are
+            ingested but their fit-scores are not persisted to the DB,
+            degrading fit filtering and notification quality.
+
+            Triage:
+              docker logs go-job --since 30m | grep -E "SetJobScore|persist.*fail"
+              Check postgres health: docker exec postgres pg_isready
+
+      # auth_expiry = Telegram bot token invalid or unreachable.
+      # The notify health gauge drops to 0 when the bot token is revoked
+      # or the Telegram API is unreachable. Notifications are silently dropped.
+      - alert: GojobNotifyHealthDown
+        expr: gojob_hunt_notify_health == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: auth_expiry
+        annotations:
+          summary: "go-job: Telegram notify health down — bot token invalid or unreachable"
+          description: |
+            The Telegram bot health check has been failing for 5m
+            (gojob_hunt_notify_health == 0). The bot token may be revoked,
+            the Telegram API may be unreachable, or the bot container is down.
+            New job notifications are silently dropped.
+
+            Triage:
+              docker logs go-job --since 30m | grep -E "telegram|notify.*health"
+              Check TELEGRAM_BOT_TOKEN validity.
+
+      # epoch_apply_gap = circuit breaker trips per cycle. The LLM budget is
+      # exhausted before all jobs are scored. Sustained trips mean the budget
+      # is too low for the current job volume.
+      - alert: GojobScoreBreakerTrips
+        expr: increase(gojob_hunt_score_breaker_trips_total[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: epoch_apply_gap
+        annotations:
+          summary: "go-job: LLM circuit breaker tripping frequently — budget too low"
+          description: |
+            The LLM scoring circuit breaker tripped more than 3 times in the
+            last hour (gojob_hunt_score_breaker_trips_total). The per-cycle LLM
+            budget (HUNT_SCORE_MAX_LLM_PER_CYCLE) is too low for the current
+            job volume, leaving jobs unscored at the end of each cycle.
+
+            Triage:
+              docker logs go-job --since 1h | grep -E "breaker|budget"
+              Increase HUNT_SCORE_MAX_LLM_PER_CYCLE if LLM backend is healthy.
+
+      # resource_exhaustion = goroutine leak detection (OBS-1).
+      # A sustained growth rate > 10 goroutines per 5m indicates a leak.
+      # Known leak vectors: ATS fan-out, slug cache L2 writes, enrichment.
+      - alert: GojobGoroutineLeak
+        expr: rate(gojob_runtime_goroutines[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: resource_exhaustion
+        annotations:
+          summary: "go-job: goroutine count growing rapidly — possible leak"
+          description: |
+            The goroutine count is growing at more than 10 per 5m sustained
+            for 5m (rate(gojob_runtime_goroutines[5m]) > 10). This indicates a
+            goroutine leak — known vectors: ATS fan-out, slug cache L2 writes,
+            detached enrichment, person research.
+
+            Triage:
+              curl -s http://localhost:9891/metrics | grep gojob_runtime_goroutines
+              docker logs go-job --since 30m | grep -E "goroutine|leak"
+
+      # resource_exhaustion = goroutine count critically high (OBS-1).
+      # 10000 goroutines is a critical threshold — OOM risk.
+      - alert: GojobGoroutineCountHigh
+        expr: gojob_runtime_goroutines > 10000
+        for: 5m
+        labels:
+          severity: critical
+          service: go-job
+          receiver: dozor
+          failure_class: resource_exhaustion
+        annotations:
+          summary: "go-job: goroutine count > 10000 — OOM risk"
+          description: |
+            The goroutine count has exceeded 10000 for 5m
+            (gojob_runtime_goroutines > 10000). This is a critical resource
+            exhaustion risk — the process may OOM. Restart go-job immediately
+            and investigate the leak source.
+
+            Triage:
+              Restart: docker compose restart go-job
+              Profile: kill -USR1 <pid> (if pprof enabled)
+
+      # resource_exhaustion = slug cache L2 write failures (OBS-3).
+      # Redis is down or unreachable — L2 cache writes are failing.
+      # The cache operates in-memory-only; restart will lose evictions.
+      - alert: GojobSlugCacheL2WriteErrors
+        expr: increase(gojob_slug_cache_l2_write_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: resource_exhaustion
+        annotations:
+          summary: "go-job: slug cache L2 write failures — Redis down or unreachable"
+          description: |
+            Slug cache L2 writes (Redis SET) are failing
+            (gojob_slug_cache_l2_write_errors_total increasing). Redis may be
+            down or unreachable. The cache operates in-memory-only until Redis
+            recovers — a restart will lose evicted slugs (404 slugs may be
+            re-introduced).
+
+            Triage:
+              docker exec redis redis-cli ping
+              docker logs go-job --since 30m | grep -E "slugcache.*L2"
+
+      # loopback_misroute = notifier disabled in opportunity ingest (OBS-2).
+      # The notifier is nil (bot init failed or token missing), so bounty/
+      # security/freelance notifications are silently dropped.
+      - alert: GojobNotifierDisabled
+        expr: increase(gojob_hunt_notify_total{outcome="notifier_disabled"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: loopback_misroute
+        annotations:
+          summary: "go-job: notifier disabled — notifications silently dropped"
+          description: |
+            The notifier is nil (bot init failed or TELEGRAM_BOT_TOKEN /
+            HUNT_NOTIFY_CHAT_ID not configured). Bounty, security, and
+            freelance notifications are being silently dropped
+            (gojob_hunt_notify_total{outcome="notifier_disabled"} increasing).
+
+            Triage:
+              docker logs go-job --since 30m | grep -E "notifier|telegram.*init"
+              Check TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID in container env.
