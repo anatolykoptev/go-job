@@ -79,7 +79,14 @@ func notifyBackfillThreshold() int {
 // Returns (notified, suppressed) counts as the single source of truth for the
 // caller's log line; avoids re-deriving the policy a second time in PersistBounties.
 func applyBountyNotifyPolicy(notifier hunt.Notifier, created []hunt.Bounty) (notified, suppressed int) {
-	if notifier == nil || len(created) == 0 {
+	if notifier == nil {
+		if len(created) > 0 {
+			// OBS-2 fix: emit metric so notification suppression is visible.
+			engine.IncrHuntNotify("notifier_disabled")
+		}
+		return 0, 0
+	}
+	if len(created) == 0 {
 		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
@@ -106,7 +113,14 @@ func applyBountyNotifyPolicy(notifier hunt.Notifier, created []hunt.Bounty) (not
 // applySecurityNotifyPolicy implements the shared notify policy for security programs.
 // Returns (notified, suppressed) counts.
 func applySecurityNotifyPolicy(notifier hunt.Notifier, created []hunt.Security) (notified, suppressed int) {
-	if notifier == nil || len(created) == 0 {
+	if notifier == nil {
+		if len(created) > 0 {
+			// OBS-2 fix: emit metric so notification suppression is visible.
+			engine.IncrHuntNotify("notifier_disabled")
+		}
+		return 0, 0
+	}
+	if len(created) == 0 {
 		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
@@ -137,7 +151,14 @@ func applySecurityNotifyPolicy(notifier hunt.Notifier, created []hunt.Security) 
 // applyFreelanceNotifyPolicy implements the shared notify policy for freelance projects.
 // Returns (notified, suppressed) counts.
 func applyFreelanceNotifyPolicy(notifier hunt.Notifier, created []hunt.Freelance) (notified, suppressed int) {
-	if notifier == nil || len(created) == 0 {
+	if notifier == nil {
+		if len(created) > 0 {
+			// OBS-2 fix: emit metric so notification suppression is visible.
+			engine.IncrHuntNotify("notifier_disabled")
+		}
+		return 0, 0
+	}
+	if len(created) == 0 {
 		return 0, 0
 	}
 	threshold := notifyBackfillThreshold()
