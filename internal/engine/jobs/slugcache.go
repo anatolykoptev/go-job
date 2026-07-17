@@ -41,6 +41,10 @@ type slugEntry struct {
 // holding the mutex during the Redis round-trip (PF-7 fix). The once map
 // itself is guarded by mu — only the check+create of the Once is under the
 // lock, not the Redis call.
+//
+// L2 writes go through a bounded worker pool (PF-11 fix) instead of
+// fire-and-forget goroutines, preventing goroutine pile-up when Redis is
+// slow or down during high slug churn.
 type inProcessSlugCache struct {
 	mu       sync.Mutex
 	entries  map[string][]slugEntry
@@ -48,6 +52,14 @@ type inProcessSlugCache struct {
 	ttl      time.Duration
 	maxSize  int
 	l2       *gokitcache.RedisL2
+	l2Pool   chan l2WriteJob // bounded pool for L2 writes
+}
+
+// l2WriteJob is a unit of work for the L2 writer pool.
+type l2WriteJob struct {
+	platform string
+	data     []byte
+	ttl      time.Duration
 }
 
 // NewSlugCache creates a slug cache. redisURL may be empty (in-process only then).
@@ -60,13 +72,23 @@ func NewSlugCache(redisURL string) *inProcessSlugCache {
 	if redisURL != "" {
 		l2 = gokitcache.NewRedisL2(redisURL, 0, "gj:sc:")
 	}
-	return &inProcessSlugCache{
+	c := &inProcessSlugCache{
 		entries:  make(map[string][]slugEntry),
 		warmOnce: make(map[string]*sync.Once),
 		ttl:      ttl,
 		maxSize:  maxSize,
 		l2:       l2,
 	}
+	if l2 != nil {
+		// PF-11 fix: bounded worker pool for L2 writes (10 workers).
+		// Prevents goroutine pile-up when Redis is slow/down.
+		const l2PoolSize = 10
+		c.l2Pool = make(chan l2WriteJob, l2PoolSize)
+		for range l2PoolSize {
+			go c.l2Writer()
+		}
+	}
+	return c
 }
 
 // Get returns non-expired slugs for platform. Warms from Redis L2 on first miss
@@ -136,6 +158,36 @@ func (c *inProcessSlugCache) filterUnexpired(platform string) []string {
 	return result
 }
 
+// l2Writer is a bounded worker that processes L2 write jobs from the pool channel.
+// PF-11 fix: replaces fire-and-forget goroutines that could pile up under Redis slowness.
+func (c *inProcessSlugCache) l2Writer() {
+	for job := range c.l2Pool {
+		if err := c.l2.Set(context.Background(), job.platform, job.data, job.ttl); err != nil {
+			slog.Debug("slugcache: L2 persist failed",
+				slog.String("platform", job.platform),
+				slog.Any("error", err))
+		}
+	}
+}
+
+// submitL2Write enqueues an L2 write job to the bounded pool.
+// Non-blocking: if the pool is full, the write is dropped (cache is best-effort).
+func (c *inProcessSlugCache) submitL2Write(platform string, snapshot []slugEntry) {
+	if c.l2Pool == nil {
+		return
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return
+	}
+	select {
+	case c.l2Pool <- l2WriteJob{platform: platform, data: data, ttl: c.ttl}:
+	default:
+		slog.Debug("slugcache: L2 write pool full, dropping write",
+			slog.String("platform", platform))
+	}
+}
+
 // Merge adds slugs to the platform set, refreshing lastSeen. Trims to maxSize LRU.
 // ctx is accepted for interface compatibility; L2 writes use context.Background()
 // so cache persistence survives request cancellation.
@@ -183,18 +235,8 @@ func (c *inProcessSlugCache) Merge(_ context.Context, platform string, slugs []s
 	slog.Debug("slugcache: merged", slog.String("platform", platform), slog.Int("size", size))
 
 	if c.l2 != nil {
-		// Use context.Background() — cache persistence must survive request cancellation
-		// (consistent with Evict which also uses Background). Discovery ctx has a 20s
-		// budget; a cancelled ctx would silently drop the L2 write.
-		go func() { //nolint:gosec // G118: intentional — L2 cache write must outlive request ctx
-			data, err := json.Marshal(snapshot)
-			if err != nil {
-				return
-			}
-			if err := c.l2.Set(context.Background(), platform, data, c.ttl); err != nil {
-				slog.Debug("slugcache: L2 persist failed", slog.String("platform", platform), slog.Any("error", err))
-			}
-		}()
+		// PF-11 fix: submit to bounded worker pool instead of fire-and-forget goroutine.
+		c.submitL2Write(platform, snapshot)
 	}
 }
 
@@ -216,15 +258,8 @@ func (c *inProcessSlugCache) Evict(platform, slug, reason string) {
 	c.mu.Unlock()
 
 	if c.l2 != nil {
-		go func() {
-			data, err := json.Marshal(snapshot)
-			if err != nil {
-				return
-			}
-			if err := c.l2.Set(context.Background(), platform, data, c.ttl); err != nil {
-				slog.Debug("slugcache: L2 update after evict failed", slog.Any("error", err))
-			}
-		}()
+		// PF-11 fix: submit to bounded worker pool instead of fire-and-forget goroutine.
+		c.submitL2Write(platform, snapshot)
 	}
 }
 

@@ -173,13 +173,18 @@ func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
 // Read PER CALL (not snapshotted at NewWorker) BY DESIGN: Phase 7 flips the gate
 // by raising this env var, and reading it each cycle lets the change take effect
 // without a redeploy (per the migration plan's "no deploy if read each cycle").
-// A non-numeric value panics at startup (PF-8 fix: fail-fast on config errors
-// instead of silent default fallback). A negative value clamps to 0 (gate open)
-// — a malformed knob must never silently start dropping jobs.
+// A non-numeric value panics (PF-8 fix: fail-fast on config errors).
+// Out-of-range values clamp to [0,100] with a warning (PF-14 fix: a malformed
+// knob must never silently open the gate or block all notifications).
 func huntNotifyMinFit() int {
 	n := env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)
 	if n < 0 {
+		slog.Warn("hunt: HUNT_NOTIFY_MIN_FIT negative, clamping to 0 (gate open)", slog.Int("value", n))
 		return 0
+	}
+	if n > 100 {
+		slog.Warn("hunt: HUNT_NOTIFY_MIN_FIT >100, clamping to 100 (gate fully closed)", slog.Int("value", n))
+		return 100
 	}
 	return n
 }
