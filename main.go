@@ -57,14 +57,14 @@ func main() {
 		slog.SetDefault(slog.New(notify.NewRedactingSlogHandler(nil, token)))
 	}
 
-	huntNotifier := initEngine()
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	huntNotifier := initEngine(sigCtx)
 
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
 	)
-
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	// Start periodic Telegram bot token health check (noop when notifier is nil
 	// or not a *notify.ProductNotifier). Validates the token every hour via GetMe
@@ -239,7 +239,7 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 // the hunt.Notifier that was wired to the hunt store (nil if bot init failed or
 // the store was not configured). The caller (main) passes this to StartWorker so
 // the ingest worker can fire Telegram notifications on OutcomeCreated.
-func initEngine() hunt.Notifier {
+func initEngine(sigCtx context.Context) hunt.Notifier {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
@@ -371,7 +371,7 @@ func initEngine() hunt.Notifier {
 				engine.SetOversizeStore(osStore)
 				slog.Info("oversize store ready")
 				// #185: auto-purge old oversize responses to prevent unbounded table growth.
-				osStore.StartAutoPurge(context.Background())
+				osStore.StartAutoPurge(sigCtx)
 			}
 
 			// Wire hunt store on the same pool.
