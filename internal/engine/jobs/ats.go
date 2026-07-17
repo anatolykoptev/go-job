@@ -496,7 +496,11 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 	ch := make(chan fetchResult, len(slugs))
 	for _, slug := range slugs {
 		go func(s string) {
-			jobs, err := fetchGreenhouseJobs(ctx, s)
+			// BH-13: per-fetch timeout so one slow slug doesn't block the
+			// entire platform's result collection until perPlatformTimeout.
+			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			jobs, err := fetchGreenhouseJobs(fetchCtx, s)
 			ch <- fetchResult{s, jobs, err}
 		}(slug)
 	}
@@ -678,7 +682,11 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	ch := make(chan fetchResult, len(slugs))
 	for _, slug := range slugs {
 		go func(s string) {
-			postings, err := fetchLeverPostings(ctx, s)
+			// BH-13: per-fetch timeout so one slow slug doesn't block the
+			// entire platform's result collection until perPlatformTimeout.
+			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			postings, err := fetchLeverPostings(fetchCtx, s)
 			ch <- fetchResult{s, postings, err}
 		}(slug)
 	}
@@ -871,7 +879,11 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	ch := make(chan fetchResult, len(slugs))
 	for _, slug := range slugs {
 		go func(s string) {
-			fetched, ferr := fetchAshbyJobs(ctx, s)
+			// BH-13: per-fetch timeout so one slow slug doesn't block the
+			// entire platform's result collection until perPlatformTimeout.
+			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			fetched, ferr := fetchAshbyJobs(fetchCtx, s)
 			ch <- fetchResult{s, fetched, ferr}
 		}(slug)
 	}
