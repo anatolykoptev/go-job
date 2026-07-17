@@ -299,16 +299,25 @@ func unionDiscoverSlugs(
 	freshSeen := make(map[string]bool)
 	var fresh []string
 	for range variants {
-		r := <-ch
-		result := "miss"
-		if r.hit {
-			result = "hit"
-		}
-		engine.IncrHuntDiscoveryVariant(platform, result)
-		for _, s := range r.slugs {
-			if !freshSeen[s] {
-				freshSeen[s] = true
-				fresh = append(fresh, s)
+		// BH-6: check ctx.Done() so the receive loop exits early on
+		// cancellation — goroutines sending to ch will block on the buffered
+		// channel but the caller no longer waits for all of them.
+		select {
+		case <-ctx.Done():
+			// Context cancelled: return just the cached slugs (no fresh
+			// results from the cancelled discovery goroutines).
+			return cached
+		case r := <-ch:
+			result := "miss"
+			if r.hit {
+				result = "hit"
+			}
+			engine.IncrHuntDiscoveryVariant(platform, result)
+			for _, s := range r.slugs {
+				if !freshSeen[s] {
+					freshSeen[s] = true
+					fresh = append(fresh, s)
+				}
 			}
 		}
 	}

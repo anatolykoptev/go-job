@@ -400,7 +400,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 				engine.SetOversizeStore(osStore)
 				slog.Info("oversize store ready")
 				// #185: auto-purge old oversize responses to prevent unbounded table growth.
-				osStore.StartAutoPurge(context.Background())
+				osStore.StartAutoPurge(sigCtx)
 			}
 
 			// Wire hunt store on the same pool.
