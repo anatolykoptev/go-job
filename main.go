@@ -83,6 +83,9 @@ func main() {
 
 	startPrometheusScrape(sigCtx, slog.Default())
 
+	// OBS-1: goroutine count gauge — updates every 15s for leak detection.
+	engine.StartGoroutineCollector(sigCtx)
+
 	// Compose the application PDF authority.
 	// TypstAdapter wraps pandoc+typst; gracefully degrades when binaries absent.
 	adapter := pdfrender.New()

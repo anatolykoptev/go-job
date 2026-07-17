@@ -160,12 +160,14 @@ func (c *inProcessSlugCache) filterUnexpired(platform string) []string {
 
 // l2Writer is a bounded worker that processes L2 write jobs from the pool channel.
 // PF-11 fix: replaces fire-and-forget goroutines that could pile up under Redis slowness.
+// OBS-3 fix: L2 write failures promoted from Debug to Warn + metric increment.
 func (c *inProcessSlugCache) l2Writer() {
 	for job := range c.l2Pool {
 		if err := c.l2.Set(context.Background(), job.platform, job.data, job.ttl); err != nil {
-			slog.Debug("slugcache: L2 persist failed",
+			slog.Warn("slugcache: L2 persist failed",
 				slog.String("platform", job.platform),
 				slog.Any("error", err))
+			engine.IncrSlugCacheL2WriteError()
 		}
 	}
 }

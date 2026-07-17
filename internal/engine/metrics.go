@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
+	"time"
 )
 
 // Metric name constants.
@@ -288,6 +290,22 @@ const (
 	// Pre-touched at 0 in FormatMetrics.
 	// Alert: == 1 for 10m → GojobHuntScoringDegraded (silent_downgrade).
 	MetricHuntScoringDegraded = "hunt_scoring_degraded"
+
+	// MetricRuntimeGoroutines is the gauge gojob_runtime_goroutines.
+	// Updated every 15s with runtime.NumGoroutine(). No labels.
+	// OBS-1 fix: goroutine leak monitoring — the codebase has 53+ `go func()`
+	// spawns with no visibility into goroutine count. This gauge makes leaks
+	// detectable before OOM.
+	// Alert: rate(gojob_runtime_goroutines[5m]) > 10 for 5m → leak (warning).
+	// Alert: gojob_runtime_goroutines > 10000 for 5m → critical.
+	MetricRuntimeGoroutines = "runtime_goroutines"
+
+	// MetricSlugCacheL2WriteErrors is the counter
+	// gojob_slug_cache_l2_write_errors_total. Incremented when an L2 write
+	// (Redis SET) fails. No labels — cardinality guard.
+	// OBS-3 fix: L2 write failures were Debug-only logs, invisible in prod.
+	// Alert: rate(gojob_slug_cache_l2_write_errors_total[5m]) > 0 → Redis down.
+	MetricSlugCacheL2WriteErrors = "slug_cache_l2_write_errors_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -464,6 +482,10 @@ func FormatMetrics() string {
 	keys = append(keys, MetricHuntUnscoredJobsCount)
 	keys = append(keys, MetricHuntUnscoredJobsMaxAge)
 	keys = append(keys, MetricHuntScoringDegraded)
+	// OBS-1: goroutine count gauge pre-touched at 0.
+	keys = append(keys, MetricRuntimeGoroutines)
+	// OBS-3: L2 write error counter pre-touched at 0.
+	keys = append(keys, MetricSlugCacheL2WriteErrors)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -991,4 +1013,35 @@ func IncrVacancyIngest(result string) {
 		return
 	}
 	reg.Incr(MetricVacancyIngest + "{result=" + result + "}")
+}
+
+// StartGoroutineCollector launches a background goroutine that updates
+// gojob_runtime_goroutines every 15s with runtime.NumGoroutine().
+// OBS-1 fix: makes goroutine leaks detectable before OOM.
+// No-op if the metrics registry is not initialised.
+func StartGoroutineCollector(ctx context.Context) {
+	if reg == nil {
+		return
+	}
+	// Set initial value immediately.
+	reg.Gauge(MetricRuntimeGoroutines).Set(float64(runtime.NumGoroutine()))
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				reg.Gauge(MetricRuntimeGoroutines).Set(float64(runtime.NumGoroutine()))
+			}
+		}
+	}()
+}
+
+// IncrSlugCacheL2WriteError bumps gojob_slug_cache_l2_write_errors_total.
+// OBS-3 fix: L2 write failures were Debug-only logs, invisible in production.
+// Called by the slug cache L2 writer when Redis SET fails.
+func IncrSlugCacheL2WriteError() {
+	reg.Incr(MetricSlugCacheL2WriteErrors)
 }
