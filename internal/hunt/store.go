@@ -138,6 +138,8 @@ func (s *Store) NotifyJobIfOpen(j Job) {
 }
 
 // Migrate runs schema migrations in lexical order. Idempotent (all DDL uses IF NOT EXISTS).
+// BH-8: tracks applied migrations in schema_versions table so code/schema
+// drift is detectable at startup.
 func (s *Store) Migrate(ctx context.Context) error {
 	entries, err := schemaFS.ReadDir("schema")
 	if err != nil {
@@ -162,6 +164,17 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
+		// BH-8: skip migrations already recorded in schema_versions.
+		var exists bool
+		if err := conn.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = $1)`,
+			entry.Name()).Scan(&exists); err != nil {
+			return fmt.Errorf("hunt: check schema_versions for %s: %w", entry.Name(), err)
+		}
+		if exists {
+			continue
+		}
+
 		data, err := schemaFS.ReadFile("schema/" + entry.Name())
 		if err != nil {
 			return fmt.Errorf("hunt: read %s: %w", entry.Name(), err)
@@ -169,6 +182,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if _, err := conn.Exec(ctx, string(data)); err != nil {
 			return fmt.Errorf("hunt: execute %s: %w", entry.Name(), err)
 		}
+		// BH-8: record the applied migration.
+		if _, err := conn.Exec(ctx,
+			`INSERT INTO schema_versions (version) VALUES ($1) ON CONFLICT DO NOTHING`,
+			entry.Name()); err != nil {
+			return fmt.Errorf("hunt: record schema_versions %s: %w", entry.Name(), err)
+		}
+		slog.Info("hunt: migration applied", slog.String("version", entry.Name()))
 	}
 	return nil
 }
