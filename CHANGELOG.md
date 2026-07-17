@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.10.4](https://github.com/anatolykoptev/go-job/compare/v1.10.3...v1.10.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* **batch3:** 9 bug-hunt fixes — dead code, goroutine leak, oversize purge, breaker backoff, DB pool, fail-open default, LLM validation, ATS metric, security docs ([#243](https://github.com/anatolykoptev/go-job/issues/243)) ([e05bca8](https://github.com/anatolykoptev/go-job/commit/e05bca8d7cd9e94fcc92e6cf143db4a38f66f8f8))
+
 ## [1.10.3](https://github.com/anatolykoptev/go-job/compare/v1.10.2...v1.10.3) (2026-07-17)
 
 
