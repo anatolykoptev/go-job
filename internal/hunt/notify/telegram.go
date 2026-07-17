@@ -58,6 +58,19 @@ const defaultMaxAge = 48 * time.Hour
 // with a RedactingTransport-wrapped client and then hand the bot to
 // kitnotify.NewProductSink.
 //
+// SECURITY NOTE (#182): The Telegram Bot API embeds the token in the URL path
+// (https://api.telegram.org/bot<token>/...). The RedactingTransport scrubs the
+// token from *url.Error and slog output, but the token IS still visible in:
+//   - outbound proxy access logs (if a proxy intercepts HTTPS)
+//   - network monitoring/PCAP (if TLS is terminated by a middlebox)
+//
+// This is an upstream limitation of the OvyFlash/telegram-bot-api library which
+// uses URL-path auth, not a Bearer header. Migrating to a header-based client
+// would require forking the vendor library. The risk is accepted because:
+//   1. go-job connects directly to api.telegram.org (no proxy in the path)
+//   2. The redacting transport covers the go-job-side leak vectors (logs/errors)
+//   3. The token has limited scope (send messages to specific chat IDs only)
+//
 // Required env:
 //   - TELEGRAM_BOT_TOKEN    — bot token (env.Required; fatal if missing)
 //   - HUNT_NOTIFY_CHAT_ID   — default recipient chat ID (parsed via

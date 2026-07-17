@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/anatolykoptev/go-engine/extract"
 	"github.com/anatolykoptev/go-engine/fetch"
 	engllm "github.com/anatolykoptev/go-engine/llm"
+	"github.com/anatolykoptev/go-kit/env"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
@@ -254,6 +256,24 @@ func Init(c Config) {
 	}
 	llmInst = engllm.New(llmOpts...)
 
+	// #181: Validate LLM API key at startup with a minimal ping. Non-fatal —
+	// if the key is invalid/expired, log an ERROR but continue (fail-open path
+	// will produce unscored results, which is better than refusing to start).
+	// The metric hunt_score_llm_total{llm_result="llm_error"} will also fire
+	// on every scoring attempt, and the GojobHuntScoringDegraded alert covers
+	// sustained degradation.
+	go func() {
+		validateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := llmInst.Complete(validateCtx, "ping"); err != nil {
+			slog.Error("engine: LLM API key validation failed — scoring will degrade to unscored",
+				slog.Any("error", err),
+				slog.String("hint", "check LLM_API_KEY / LLM_API_BASE — key may be expired or revoked"))
+		} else {
+			slog.Info("engine: LLM API key validation OK")
+		}
+	}()
+
 	// Plain HTTP client for GitHub API and similar direct calls.
 	// Configured with connection pooling to prevent FD exhaustion under
 	// high parallel load (PF-13 fix: MaxIdleConns/MaxConnsPerHost/IdleConnTimeout).
@@ -290,6 +310,12 @@ func Init(c Config) {
 	if c.DirectDDG && c.OxBrowserURL == "" {
 		slog.Error("engine: DDG discovery enabled WITHOUT an ox-browser anti-bot tier — " +
 			"a datacenter-IP 202 wall will silently zero discovery; set OX_BROWSER_URL")
+	}
+
+	// #167: Surface the fail-open setting at startup so operators know whether
+	// LLM failures will silently degrade to unscored (true) or produce errors (false).
+	if env.MustBool("HUNT_SCORE_FAIL_OPEN", false) {
+		slog.Warn("engine: HUNT_SCORE_FAIL_OPEN=true — LLM failures will silently degrade to unscored")
 	}
 }
 

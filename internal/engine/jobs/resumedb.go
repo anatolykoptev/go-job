@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,7 +51,14 @@ func ConnectResumeDB(ctx context.Context, databaseURL string) (*ResumeDB, error)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	config.MaxConns = 10
+	// #172 fix: DB pool size is env-overridable. Default 10 was too small
+	// under concurrent load (17 parallel connectors + ATS ingest + admin UI).
+	// DATABASE_MAX_CONNS lets ops tune without a rebuild.
+	maxConns := env.MustInt("DATABASE_MAX_CONNS", 10)
+	if maxConns < 1 {
+		maxConns = 1
+	}
+	config.MaxConns = int32(maxConns) //nolint:gosec // G115: bounded to [1, MaxInt32] by env.MustInt + guard above
 	config.MinConns = 1
 
 	// Force search_path to public for all pool connections.

@@ -224,9 +224,18 @@ func failOpen(ctx context.Context, jaccardScore int, llmResult string) hunt.Scor
 	return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now(), LLMResult: llmResult}
 }
 
-// scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default true).
+// scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default false).
+//
+// #167 fix: The default was true, which meant LLM failures silently downgraded
+// jobs to unscored without any error — the scoring pipeline appeared healthy
+// while producing no fit scores. Defaulting to false makes LLM failures
+// explicit: the caller gets an error and the job remains unscored, which is
+// the correct behavior for a scoring pipeline that depends on LLM output.
+//
+// Operators who want the old behavior (degrade silently to unscored on LLM
+// failure) can set HUNT_SCORE_FAIL_OPEN=true explicitly.
 func scoringFailOpen() bool {
-	return env.MustBool("HUNT_SCORE_FAIL_OPEN", true)
+	return env.MustBool("HUNT_SCORE_FAIL_OPEN", false)
 }
 
 // buildProfileKeywords concatenates CoreSkills + AdjacentSkills + TargetDomains
