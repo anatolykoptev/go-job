@@ -102,6 +102,15 @@ type Store struct {
 // faster than they complete (#184).
 const enrichMaxConcurrent = 5
 
+// onEnrichSkipped is called when the enrichment semaphore is full and
+// enrichment is skipped. Set by engine.Init via SetEnrichSkipHook so the
+// hunt package doesn't need to import engine (avoids circular dependency).
+// OBS-6: makes "semaphore full" events visible in Prometheus.
+var onEnrichSkipped func()
+
+// SetEnrichSkipHook wires the enrichment-skip callback. Called from engine.Init.
+func SetEnrichSkipHook(fn func()) { onEnrichSkipped = fn }
+
 // NewStore returns a Store using the given pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{
@@ -160,8 +169,29 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("hunt: set search_path: %w", err)
 	}
 
+	// BH-8: create schema_versions table before the check loop — the table
+	// itself can't be created by a migration file because the check loop
+	// depends on it existing. Create it inline, then record it as applied.
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_versions (
+			version     TEXT PRIMARY KEY,
+			applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		return fmt.Errorf("hunt: create schema_versions: %w", err)
+	}
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		// BH-8: skip 000_schema_versions.sql — the table is already created
+		// above. Record it as applied if not already.
+		if entry.Name() == "000_schema_versions.sql" {
+			if _, err := conn.Exec(ctx,
+				`INSERT INTO schema_versions (version) VALUES ($1) ON CONFLICT DO NOTHING`,
+				entry.Name()); err != nil {
+				return fmt.Errorf("hunt: record schema_versions %s: %w", entry.Name(), err)
+			}
 			continue
 		}
 		// BH-8: skip migrations already recorded in schema_versions.
@@ -340,6 +370,10 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 			}()
 		default:
 			// Semaphore full — skip enrichment this cycle. Non-fatal: next call retries.
+			// OBS-6: bump the skip counter so operators can tune enrichMaxConcurrent.
+			if onEnrichSkipped != nil {
+				onEnrichSkipped()
+			}
 		}
 	}
 
