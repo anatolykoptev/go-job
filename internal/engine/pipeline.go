@@ -57,7 +57,7 @@ func runSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (Sm
 		maxFetchURLs = maxFetchURLs * 3 / 2 // ×1.5
 	}
 
-	// --- Parallel search (SearchDirect, one goroutine per query) ---
+	// --- Parallel search (SearchWeb: go-search primary, SearchDirect fallback) ---
 	type searchResult struct {
 		results []SearxngResult
 		err     error
@@ -67,7 +67,7 @@ func runSearchPipeline(ctx context.Context, query string, opts PipelineOpts) (Sm
 		ch := make(chan searchResult, 1)
 		channels[i] = ch
 		go func(sq SearchQuery, ch chan searchResult) {
-			r := SearchDirect(ctx, sq.Query, lang)
+			r := SearchWeb(ctx, sq.Query, lang)
 			ch <- searchResult{r, nil}
 		}(sq, ch)
 	}
@@ -93,15 +93,6 @@ collectLoop:
 	}
 	// --- Merge extra results (direct API calls) ---
 	merged = append(merged, opts.ExtraResults...)
-
-	// --- Merge direct scraper results (DDG, Startpage, Brave, Reddit) ---
-	directQuery := query
-	if len(opts.Queries) > 0 {
-		directQuery = opts.Queries[0].Query
-	}
-	if directResults := SearchDirect(ctx, directQuery, lang); len(directResults) > 0 {
-		merged = append(merged, directResults...)
-	}
 
 	if len(merged) == 0 {
 		if lastErr != nil {

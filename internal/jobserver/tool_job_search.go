@@ -183,9 +183,9 @@ func registerJobSearch(server *mcp.Server) {
 				} else {
 					searxQuery = input.Query + " jobs"
 				}
-				// go-engine DIRECT (primary, always-on via DIRECT_* env).
-				results := engine.SearchDirect(ctx, searxQuery, lang)
-				// DIRECT is authoritative.
+				// SearchWeb: go-search primary (Brave API + ox-browser + DDG via
+				// proxy), SearchDirect fallback (local direct scrapers).
+				results := engine.SearchWeb(ctx, searxQuery, lang)
 				ch <- sourceResult{name: "searxng", results: results, err: nil}
 			}()
 		}

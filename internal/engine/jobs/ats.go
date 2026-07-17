@@ -48,40 +48,10 @@ type discoverer interface {
 // Idempotent; calling with nil reverts to local-only mode.
 func SetATSDiscoverer(d discoverer) { ATSDiscoverer = d }
 
-// rawSearcher is the local interface for general-purpose web search via
-// go-search. Mirrors discovery.RawSearcher — defined here to avoid a
-// package-level import cycle (same pattern as discoverer above).
-type rawSearcher interface {
-	RawSearch(ctx context.Context, query string) ([]engine.SearxngResult, error)
-}
-
-// RawSearcherInstance is the optional go-search-backed general web search
-// backend. When non-nil, searchWeb (used by person/salary research) tries it
-// first; on error or nil, falls back to engine.SearchDirect.
-// When nil, engine.SearchDirect is the only path (preserves current behaviour
-// when GO_SEARCH_URL is unset).
-//
-//nolint:gochecknoglobals // package-level singleton, set once at startup, read-only after
-var RawSearcherInstance rawSearcher
-
-// SetRawSearcher wires the go-search raw search client at startup.
-// Idempotent; calling with nil reverts to DIRECT-only mode.
-func SetRawSearcher(r rawSearcher) { RawSearcherInstance = r }
-
 // searchWeb is the unified web-search helper for person/salary/company research.
-// go-search primary + engine.SearchDirect fallback, mirroring the discoverJobURLs
-// pattern. When RawSearcherInstance is nil (GO_SEARCH_URL unset), uses SearchDirect
-// only.
+// Delegates to engine.SearchWeb (go-search primary, SearchDirect fallback).
 func searchWeb(ctx context.Context, query string) []engine.SearxngResult {
-	if RawSearcherInstance != nil {
-		results, err := RawSearcherInstance.RawSearch(ctx, query)
-		if err == nil {
-			return results
-		}
-		slog.Debug("searchWeb: go-search error, falling back to DIRECT",
-			slog.Any("error", err))
-	}
-	return engine.SearchDirect(ctx, query, "all")
+	return engine.SearchWeb(ctx, query, "all")
 }
 
 func getATSMaxConcurrent() int {
