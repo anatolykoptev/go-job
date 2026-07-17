@@ -99,6 +99,11 @@ func getDiscoveryQueryVariants() int {
 // breaker opens for OpenDuration, blocking further attempts. After cooldown it
 // half-opens for one probe; if that succeeds the breaker resets to closed.
 //
+// #180 fix: All three breakers now have BackoffMultiplier + MaxOpenDuration
+// so a permanently-down ATS API doesn't disable discovery indefinitely —
+// the breaker backs off exponentially up to MaxOpenDuration (5m), then
+// half-opens for a probe on every cycle, so recovery is automatic.
+//
 //nolint:gochecknoglobals // package-level breakers, init-once, never mutated
 var (
 	ashbyBreaker = breaker.New(breaker.Options{
@@ -109,14 +114,18 @@ var (
 		MaxOpenDuration:   5 * time.Minute,
 	})
 	greenhouseBreaker = breaker.New(breaker.Options{
-		Name:          "greenhouse",
-		FailThreshold: 3,
-		OpenDuration:  30 * time.Second,
+		Name:              "greenhouse",
+		FailThreshold:     3,
+		OpenDuration:      30 * time.Second,
+		BackoffMultiplier: 2.0,
+		MaxOpenDuration:   5 * time.Minute,
 	})
 	leverBreaker = breaker.New(breaker.Options{
-		Name:          "lever",
-		FailThreshold: 3,
-		OpenDuration:  30 * time.Second,
+		Name:              "lever",
+		FailThreshold:     3,
+		OpenDuration:      30 * time.Second,
+		BackoffMultiplier: 2.0,
+		MaxOpenDuration:   5 * time.Minute,
 	})
 )
 
@@ -536,6 +545,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 //nolint:dupl // structurally similar to fetchAshbyJobs/fetchLeverPostings — different types, URLs, body limits
 func fetchGreenhouseJobs(ctx context.Context, slug string) (jobs []greenhouseJob, err error) {
 	if !greenhouseBreaker.Allow() {
+		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("greenhouse breaker open: %w", breaker.ErrOpen)
 	}
 	defer func() { greenhouseBreaker.Record(err == nil) }()
@@ -730,6 +740,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 // fetchLeverPostings fetches all job postings for a given company slug.
 func fetchLeverPostings(ctx context.Context, slug string) (postings []leverPosting, err error) {
 	if !leverBreaker.Allow() {
+		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("lever breaker open: %w", breaker.ErrOpen)
 	}
 	defer func() { leverBreaker.Record(err == nil) }()
@@ -916,6 +927,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 //nolint:dupl // structurally similar to fetchGreenhouseJobs — different types, API URL pattern, and body limit (5MB vs 2MB)
 func fetchAshbyJobs(ctx context.Context, slug string) (jobs []ashbyJob, err error) {
 	if !ashbyBreaker.Allow() {
+		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("ashby breaker open: %w", breaker.ErrOpen)
 	}
 	defer func() { ashbyBreaker.Record(err == nil) }()
