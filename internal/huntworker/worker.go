@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/breaker"
@@ -99,6 +100,12 @@ type Worker struct {
 	// Held as a field so the breaker wrapper can route to it; tests override it
 	// with a fake to exercise the real breaker wrapping path without a live LLM.
 	llmFn func(ctx context.Context, prompt string) (string, error)
+	// cycleRunning (BH-7) prevents overlapping ticks when a cycle takes
+	// longer than HUNT_INGEST_INTERVAL. Without this guard, a slow cycle
+	// (e.g., 75 min with 1h interval) causes the next tick to fire while
+	// runCycle is still executing → concurrent DB upserts, 2x ATS API calls,
+	// LLM budget confusion. CAS(false→true) on tick; store(false) on exit.
+	cycleRunning atomic.Bool
 }
 
 // NewWorker builds a Worker from env vars.  Returns nil if the store is nil
@@ -297,7 +304,18 @@ func (w *Worker) Run(ctx context.Context) {
 			slog.Info("hunt worker: stopping")
 			return
 		case <-ticker.C:
-			w.runCycle(ctx)
+			// BH-7: Skip tick if previous cycle is still running. A slow cycle
+			// (e.g., ATS APIs hanging) can exceed HUNT_INGEST_INTERVAL; without
+			// this guard, the next tick spawns a concurrent cycle → duplicate
+			// upserts, 2x resource consumption, LLM budget confusion.
+			if !w.cycleRunning.CompareAndSwap(false, true) {
+				slog.Warn("hunt worker: previous cycle still running, skipping tick")
+				continue
+			}
+			go func() {
+				defer w.cycleRunning.Store(false)
+				w.runCycle(ctx)
+			}()
 		}
 	}
 }
@@ -322,7 +340,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 	}
 
 	var totalCreated, totalMerged, totalError int
-	llmCallsThisCycle := 0 // circuit-breaker counter, reset per cycle
+	var llmCallsThisCycle atomic.Int64 // circuit-breaker counter, reset per cycle (BH-4)
 
 	for _, q := range w.queries {
 		for _, p := range platforms {
@@ -402,7 +420,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 		slog.Int("created", totalCreated),
 		slog.Int("merged", totalMerged),
 		slog.Int("errors", totalError),
-		slog.Int("llm_scored", llmCallsThisCycle),
+		slog.Int("llm_scored", int(llmCallsThisCycle.Load())),
 	)
 }
 
@@ -426,14 +444,14 @@ func scoreJobWithLimit(
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
 	store jobScoreSetter,
-	llmCallsThisCycle *int,
+	llmCallsThisCycle *atomic.Int64,
 ) *hunt.ScoreResult {
 	if outcome != hunt.OutcomeCreated {
 		return nil
 	}
 
 	maxLLM := score.MaxLLMPerCycle()
-	if *llmCallsThisCycle >= maxLLM {
+	if llmCallsThisCycle.Load() >= int64(maxLLM) {
 		// Circuit breaker tripped: return unscored result in-memory only.
 		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
 		// the job from the `scored_at IS NULL` unscored pool, permanently
@@ -452,7 +470,7 @@ func scoreJobWithLimit(
 	// Stale/reject/nil-profile short-circuits have LLMResult=="" and spend zero budget.
 	result := scoreJobIfCreated(ctx, outcome, job, profile, deps, store)
 	if result.LLMResult != "" {
-		*llmCallsThisCycle++
+		llmCallsThisCycle.Add(1)
 	}
 	return &result
 }
@@ -567,7 +585,7 @@ func runUnscoredSweep(
 	store unscoredJobStore,
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
-	llmCallsThisCycle *int,
+	llmCallsThisCycle *atomic.Int64,
 ) {
 	rescoreAll := env.MustBool("HUNT_SCORE_RESCORE_ALL", false)
 	sweepLimit := env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50)
@@ -584,7 +602,7 @@ func runUnscoredSweep(
 	// the LLM call count. A larger sweep limit just under-utilizes, never
 	// permanently strands jobs.
 	maxLLM := score.MaxLLMPerCycle()
-	remaining := maxLLM - *llmCallsThisCycle
+	remaining := maxLLM - int(llmCallsThisCycle.Load())
 	if remaining <= 0 {
 		return
 	}
