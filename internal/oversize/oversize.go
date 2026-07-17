@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/env"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -219,6 +221,40 @@ func (s *Store) Purge(ctx context.Context, before time.Time) (int64, error) {
 		return 0, fmt.Errorf("oversize: purge: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// StartAutoPurge runs a background goroutine that purges entries older than
+// the retention period every purgeInterval. #185 fix: prevents unbounded
+// table growth. Default retention = 7 days, purge interval = 1h.
+// Both are env-overridable via OVERSIZE_RETENTION and OVERSIZE_PURGE_INTERVAL.
+func (s *Store) StartAutoPurge(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	retention := env.MustDuration("OVERSIZE_RETENTION", 7*24*time.Hour)
+	interval := env.MustDuration("OVERSIZE_PURGE_INTERVAL", time.Hour)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				before := time.Now().Add(-retention)
+				deleted, err := s.Purge(ctx, before)
+				if err != nil {
+					slog.Warn("oversize: auto-purge failed", slog.Any("error", err))
+					continue
+				}
+				if deleted > 0 {
+					slog.Info("oversize: auto-purge complete",
+						slog.Int64("deleted", deleted),
+						slog.Duration("retention", retention))
+				}
+			}
+		}
+	}()
 }
 
 // nullableJSON returns nil when the raw message is empty, otherwise returns

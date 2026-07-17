@@ -306,6 +306,14 @@ const (
 	// OBS-3 fix: L2 write failures were Debug-only logs, invisible in prod.
 	// Alert: rate(gojob_slug_cache_l2_write_errors_total[5m]) > 0 → Redis down.
 	MetricSlugCacheL2WriteErrors = "slug_cache_l2_write_errors_total"
+
+	// MetricATSBreakerOpen is the counter gojob_ats_breaker_open_total.
+	// Incremented when an ATS circuit breaker (ashby/greenhouse/lever) blocks
+	// a fetch call. No labels — cardinality guard.
+	// #180 fix: makes ATS breaker trips visible so operators can see when a
+	// source is permanently blocked.
+	// Alert: increase(gojob_ats_breaker_open_total[1h]) > 10 → ATS API down.
+	MetricATSBreakerOpen = "ats_breaker_open_total"
 )
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
@@ -486,6 +494,8 @@ func FormatMetrics() string {
 	keys = append(keys, MetricRuntimeGoroutines)
 	// OBS-3: L2 write error counter pre-touched at 0.
 	keys = append(keys, MetricSlugCacheL2WriteErrors)
+	// #180: ATS breaker open counter pre-touched at 0.
+	keys = append(keys, MetricATSBreakerOpen)
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -1044,4 +1054,12 @@ func StartGoroutineCollector(ctx context.Context) {
 // Called by the slug cache L2 writer when Redis SET fails.
 func IncrSlugCacheL2WriteError() {
 	reg.Incr(MetricSlugCacheL2WriteErrors)
+}
+
+// IncrATSBreakerOpen bumps gojob_ats_breaker_open_total.
+// #180 fix: makes ATS circuit breaker trips visible in Prometheus.
+// Called by fetchGreenhouseJobs/fetchLeverPostings/fetchAshbyJobs when the
+// breaker is open and blocks the call.
+func IncrATSBreakerOpen() {
+	reg.Incr(MetricATSBreakerOpen)
 }

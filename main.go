@@ -370,6 +370,8 @@ func initEngine() hunt.Notifier {
 			} else {
 				engine.SetOversizeStore(osStore)
 				slog.Info("oversize store ready")
+				// #185: auto-purge old oversize responses to prevent unbounded table growth.
+				osStore.StartAutoPurge(context.Background())
 			}
 
 			// Wire hunt store on the same pool.

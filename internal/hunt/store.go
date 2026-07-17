@@ -86,11 +86,27 @@ type Store struct {
 	pool     *pgxpool.Pool
 	enricher BountyEnricher
 	notifier Notifier
+
+	// enrichSem bounds concurrent detached enrichment goroutines (#184 fix).
+	// Without this, rapid ListBounties calls spawn unbounded goroutines that
+	// each hold a 30s detached context — under heavy admin UI / MCP usage they
+	// accumulate faster than they complete. The semaphore caps concurrency to
+	// enrichMaxConcurrent; excess calls skip enrichment (best-effort, non-blocking).
+	enrichSem chan struct{}
 }
+
+// enrichMaxConcurrent caps the number of detached enrichment goroutines that
+// ListBounties may spawn. Each holds a 30s detached context; without a cap,
+// rapid calls (admin UI refresh, MCP tool fan-out) can pile up goroutines
+// faster than they complete (#184).
+const enrichMaxConcurrent = 5
 
 // NewStore returns a Store using the given pool.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{
+		pool:      pool,
+		enrichSem: make(chan struct{}, enrichMaxConcurrent),
+	}
 }
 
 // Pool returns the underlying pgxpool.Pool used by this Store.
@@ -286,14 +302,24 @@ func (s *Store) ListBounties(ctx context.Context, f BountyFilter) ([]Bounty, err
 	// Uses a detached context (not coupled to the request) with a 30s hard deadline
 	// to ensure graceful shutdown even if the caller's ctx is cancelled.
 	// G118: context.Background() is intentional — enrich must outlive the request context.
+	//
+	// #184 fix: bounded by enrichSem (cap=5) to prevent goroutine pile-up under
+	// rapid ListBounties calls. Non-blocking acquire — if the semaphore is full,
+	// enrichment is skipped (best-effort: the next ListBounties call will retry).
 	if s.enricher != nil && len(result) > 0 {
-		snap := make([]Bounty, len(result))
-		copy(snap, result)
-		go func() { //nolint:gosec // G118: intentional detached context with explicit 30s deadline
-			enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			s.enricher.EnrichBountyStatus(enrichCtx, s, snap, defaultEnrichTTL)
-		}()
+		select {
+		case s.enrichSem <- struct{}{}:
+			snap := make([]Bounty, len(result))
+			copy(snap, result)
+			go func() { //nolint:gosec // G118: intentional detached context with explicit 30s deadline
+				defer func() { <-s.enrichSem }()
+				enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				s.enricher.EnrichBountyStatus(enrichCtx, s, snap, defaultEnrichTTL)
+			}()
+		default:
+			// Semaphore full — skip enrichment this cycle. Non-fatal: next call retries.
+		}
 	}
 
 	return result, nil
