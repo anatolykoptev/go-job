@@ -460,7 +460,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	if goSearchURL := env.Str("GO_SEARCH_URL", ""); goSearchURL != "" {
 		searchClient := discovery.NewClient(goSearchURL)
 		jobs.SetATSDiscoverer(searchClient)
-		jobs.SetRawSearcher(searchClient)
+		engine.SetRawSearcher(searchClient)
 		slog.Info("go-search client wired (ATS discovery + raw web search)",
 			slog.String("go_search_url", goSearchURL),
 		)
