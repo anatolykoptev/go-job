@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -219,7 +220,8 @@ func (f *fakeScoreSetter) callCount() int {
 // makes this test fail (callCount > 0).
 func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testing.T) {
 	store := &fakeScoreSetter{}
-	llmCalls := score.MaxLLMPerCycle() // breaker tripped: at capacity
+	var llmCalls atomic.Int64
+	llmCalls.Store(int64(score.MaxLLMPerCycle())) // breaker tripped: at capacity
 
 	job := hunt.Job{ID: 42}
 	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
@@ -269,7 +271,7 @@ func TestRunUnscoredSweep_SetsGauges(t *testing.T) {
 	store := &fakeUnscoredJobStore{
 		jobs: jobs,
 	}
-	llmCalls := 0
+	var llmCalls atomic.Int64
 
 	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
 
@@ -419,7 +421,7 @@ func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
 	store := &fakeUnscoredJobStore{
 		jobs: nil,
 	}
-	llmCalls := 0
+	var llmCalls atomic.Int64
 
 	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
 
