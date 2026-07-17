@@ -119,10 +119,27 @@ func main() {
 		},
 	}
 
+	// BH-2: Wire BearerAuth when MCP_BEARER_TOKEN is set. Without this, any
+	// client that can reach :8891/mcp has unauthenticated access to all 44
+	// tools (job search, resume analysis, LLM scoring, DB writes). When the
+	// token is unset, log a warning — acceptable for localhost-only deployments
+	// but must not be exposed to untrusted networks without auth.
+	var bearerAuth *mcpserver.BearerAuth
+	if token := env.Str("MCP_BEARER_TOKEN", ""); token != "" {
+		bearerAuth = &mcpserver.BearerAuth{
+			Verifier:       mcpserver.StaticTokenVerifier(token),
+			LoopbackBypass: true, // allow self-connect from same host
+		}
+		slog.Info("MCP BearerAuth enabled (loopback bypass on)")
+	} else {
+		slog.Warn("MCP_BEARER_TOKEN not set — MCP server running without authentication (acceptable for localhost-only)")
+	}
+
 	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:    "go_job",
-		Version: version,
-		Port:    mcpPort,
+		Name:       "go_job",
+		Version:    version,
+		Port:       mcpPort,
+		BearerAuth: bearerAuth,
 		// Return tool results as a single application/json body instead of the
 		// go-sdk default text/event-stream framing. The SSE path puts the entire
 		// JSON result on ONE `data:` line; large results (e.g. resume_profile's
