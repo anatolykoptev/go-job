@@ -128,7 +128,11 @@ func (c *inProcessSlugCache) warmFromL2(platform string) {
 	c.mu.Unlock()
 
 	once.Do(func() {
-		data, err := c.l2.Get(context.Background(), platform)
+		// BH-6: use a timeout context instead of context.Background() so a
+		// hanging Redis doesn't leak the goroutine indefinitely during shutdown.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		data, err := c.l2.Get(ctx, platform)
 		if err != nil {
 			return
 		}
