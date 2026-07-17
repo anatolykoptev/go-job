@@ -22,21 +22,6 @@ func CallLLM(ctx context.Context, prompt string) (string, error) {
 	return raw, nil
 }
 
-// RewriteQuery uses the LLM to convert a conversational query into search form.
-func RewriteQuery(ctx context.Context, query string) string {
-	return llmInst.RewriteQuery(ctx, query)
-}
-
-// ExpandSearchQueries generates semantically diverse query variants.
-func ExpandSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
-	return llmInst.ExpandSearchQueries(ctx, query, n)
-}
-
-// ExpandWebSearchQueries generates diverse web search query variants.
-func ExpandWebSearchQueries(ctx context.Context, query string, n int) ([]string, error) {
-	return llmInst.ExpandWebSearchQueries(ctx, query, n)
-}
-
 // BuildSourcesText formats search results and fetched content for LLM context.
 func BuildSourcesText(results []SearxngResult, contents map[string]string, contentLimit int) string {
 	return llm.BuildSourcesText(results, contents, contentLimit, defaultCharsPerToken)

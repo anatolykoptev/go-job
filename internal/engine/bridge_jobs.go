@@ -16,12 +16,6 @@ type llmJobOutput struct {
 	Summary string       `json:"summary"`
 }
 
-// llmFreelanceOutput is the JSON structure expected from the LLM for freelance search.
-type llmFreelanceOutput struct {
-	Projects []FreelanceProject `json:"projects"`
-	Summary  string             `json:"summary"`
-}
-
 // SummarizeJobResults calls the LLM with job-specific prompt and parses structured job listings.
 func SummarizeJobResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*JobSearchOutput, error) {
 	parsed, raw, err := SummarizeToJSON[llmJobOutput](ctx, query, instruction, contentLimit, results, contents)
@@ -38,24 +32,6 @@ func SummarizeJobResults(ctx context.Context, query, instruction string, content
 		}
 	}
 	return &JobSearchOutput{Query: query, Jobs: parsed.Jobs, Summary: parsed.Summary}, nil
-}
-
-// SummarizeFreelanceResults calls the LLM with freelance-specific prompt and parses structured projects.
-func SummarizeFreelanceResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*FreelanceSearchOutput, error) {
-	parsed, raw, err := SummarizeToJSON[llmFreelanceOutput](ctx, query, instruction, contentLimit, results, contents)
-	if err != nil {
-		return nil, err
-	}
-	if parsed == nil {
-		return &FreelanceSearchOutput{Query: query, Summary: raw}, nil
-	}
-
-	for i := range parsed.Projects {
-		if parsed.Projects[i].URL == "" && i < len(results) {
-			parsed.Projects[i].URL = results[i].URL
-		}
-	}
-	return &FreelanceSearchOutput{Query: query, Projects: parsed.Projects, Summary: parsed.Summary}, nil
 }
 
 // FetchContentsParallel fetches text content from URLs in parallel.
