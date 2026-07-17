@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -870,7 +871,7 @@ func (s *Store) RateExact(ctx context.Context, kind string, entryID int64, user,
 // existing pipeline stage and note. Mirrors SetStage's note-preserve discipline but
 // for the triage axis (migration 012).
 //
-// If no row exists, a new one is inserted with stage='' and note=NULL.
+// If no row exists, a new one is inserted with stage=” and note=NULL.
 func (s *Store) SetTriage(ctx context.Context, kind string, entryID int64, user, triage string) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, user_name, triage, rated_at, updated_at)
@@ -965,6 +966,40 @@ const shortlistJoin = `FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'j
 // shortlistDefaultOrder is the fallback ORDER BY when ShortlistQuery.OrderBy is empty.
 const shortlistDefaultOrder = "j.fit_score DESC NULLS LAST, j.company"
 
+// safeOrderByPatterns is the allowlist of column expressions that may appear
+// in an ORDER BY clause. BH-5: defense-in-depth against SQL injection — even
+// though admintable.Spec.OrderBy is author-declared, ListShortlist is a public
+// API. Each entry is a full "column [ASC|DESC] [NULLS LAST]" expression.
+var safeOrderByPatterns = map[string]bool{
+	"j.fit_score DESC NULLS LAST": true,
+	"j.fit_score ASC":             true,
+	"j.company ASC":               true,
+	"j.company DESC":              true,
+	"j.title ASC":                 true,
+	"j.title DESC":                true,
+	"j.posted_at DESC":            true,
+	"j.posted_at ASC":             true,
+	"j.scored_at DESC":            true,
+	"j.scored_at ASC":             true,
+	"j.location ASC":              true,
+	"j.location DESC":             true,
+	"j.salary_max DESC":           true,
+	"j.salary_max ASC":            true,
+	"r.updated_at DESC":           true,
+	"r.updated_at ASC":            true,
+	"r.triage ASC":                true,
+	"r.triage DESC":               true,
+	"r.stage ASC":                 true,
+	"r.stage DESC":                true,
+	shortlistDefaultOrder:         true,
+}
+
+// isSafeOrderBy reports whether orderBy is in the allowlist of safe ORDER BY
+// expressions. BH-5: prevents SQL injection via raw OrderBy interpolation.
+func isSafeOrderBy(orderBy string) bool {
+	return safeOrderByPatterns[strings.TrimSpace(orderBy)]
+}
+
 // ListShortlist returns hunt_jobs rows that have a hunt_ratings row for the given
 // user (q.User) whose triage is in q.TriageValues OR stage is in q.StageValues,
 // applying optional FilterSpec conditions and pagination. Returns the matching rows
@@ -998,7 +1033,16 @@ func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]Shortlis
 
 	orderBy := shortlistDefaultOrder
 	if q.OrderBy != "" {
-		orderBy = q.OrderBy
+		// BH-5: validate OrderBy against an allowlist of safe column expressions.
+		// admintable.Spec.OrderBy is author-declared, but ListShortlist is a public
+		// API callable from non-admin paths (MCP tools). Defense-in-depth: reject
+		// anything not in the allowlist rather than interpolating raw input.
+		if !isSafeOrderBy(q.OrderBy) {
+			slog.Warn("hunt: rejecting unsafe OrderBy, using default", slog.String("orderby", q.OrderBy))
+			orderBy = shortlistDefaultOrder
+		} else {
+			orderBy = q.OrderBy
+		}
 	}
 
 	const selectCols = `SELECT j.id,
@@ -1441,8 +1485,8 @@ func (s *Store) ListRatings(ctx context.Context, f RatingFilter) ([]Rating, erro
 // TrackedJobRow is the postgres projection for the job_tracker MCP tool.
 // Joins hunt_jobs with hunt_ratings for a given user.
 // After migration 012 it carries BOTH axes:
-//   - Triage: operator interest signal ('' = untriaged)
-//   - Stage:  pipeline position    ('' = not in pipeline)
+//   - Triage: operator interest signal (” = untriaged)
+//   - Stage:  pipeline position    (” = not in pipeline)
 //
 // The caller synthesizes a display status as: if Triage != "" → Triage, else Stage.
 type TrackedJobRow struct {
@@ -1832,7 +1876,7 @@ func stageIn(stage string, stages []string) bool {
 //
 // Toggle semantics:
 //   - No row, or triage ∉ activeTriage                        → upsert triage=StageSaved → starred=true  (star on)
-//   - triage ∈ softDemotable (interesting, saved)             → update  triage=''         → starred=false (star off)
+//   - triage ∈ softDemotable (interesting, saved)             → update  triage=”         → starred=false (star off)
 //   - triage ∉ softDemotable but ∈ activeTriage (discarded)  → NO-OP                    → starred=false (deliberate negative decision)
 //   - stage  ∈ advanced pipeline (applied/interview/offer)    → NO-OP                    → starred=true  (pipeline protection)
 //
