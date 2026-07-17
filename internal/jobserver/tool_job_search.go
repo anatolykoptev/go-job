@@ -52,6 +52,18 @@ type sourceResult struct {
 	err     error
 }
 
+// jobSearchSem bounds the number of connector goroutines that may run
+// concurrently across ALL in-flight job_search requests (BH-1, #245).
+// runSource() spawned 1 goroutine per connector (17-18 sources) per request
+// with no cap; 10 concurrent job_search(all) calls = 180 goroutines → FD
+// exhaustion and OOM. This package-level semaphore caps the fan-out at 8
+// concurrent connector goroutines. Acquire is BLOCKING so every selected
+// source still runs (the "all sources run" contract is preserved); only the
+// concurrency is bounded, not the set of sources.
+//
+//nolint:gochecknoglobals // package-level concurrency cap, fixed at 8
+var jobSearchSem = make(chan struct{}, 8)
+
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
@@ -143,8 +155,16 @@ func registerJobSearch(server *mcp.Server) {
 
 		ch := make(chan sourceResult, len(srcs)+1)
 
+		// BH-1: Bound connector goroutine fan-out. Without a cap, 10 concurrent
+		// job_search(platform=all) calls spawn 180 goroutines (18 sources × 10
+		// requests), each holding a 90s timeout → FD exhaustion, OOM. Blocking
+		// acquire preserves the "all sources run" contract, just bounds concurrency.
 		for _, src := range srcs {
-			go runSource(ctx, src, q, ch)
+			jobSearchSem <- struct{}{}
+			go func(s connectors.Source) {
+				defer func() { <-jobSearchSem }()
+				runSource(ctx, s, q, ch)
+			}(src)
 		}
 
 		// Generic web-search discovery (go-engine DIRECT + SearXNG) is broad and
