@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.10.3](https://github.com/anatolykoptev/go-job/compare/v1.10.2...v1.10.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **obs-1-4:** goroutine gauge, notifier-disabled metric, L2 write error metric, alert rules for 9 failure classes ([#241](https://github.com/anatolykoptev/go-job/issues/241)) ([60e07d9](https://github.com/anatolykoptev/go-job/commit/60e07d9317ce7bf704f1a971fac55a9fb4579945))
+
 ## [1.10.2](https://github.com/anatolykoptev/go-job/compare/v1.10.1...v1.10.2) (2026-07-17)
 
 
