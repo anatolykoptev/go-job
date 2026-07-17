@@ -207,6 +207,20 @@ func Init(c Config) {
 	// fallback. When <=1 proxy URL, behavior is identical to single-proxy
 	// mode (WithAPIBase + WithAPIKey).
 	if len(c.LLMProxyURLs) > 1 {
+		// PF-9 fix: validate proxy URL/key length mismatch before wiring.
+		// If LLMProxyKeys is shorter than LLMProxyURLs, missing keys default
+		// to LLMAPIKey — but if LLMAPIKey is also empty, all remote proxy
+		// attempts will fail with auth errors. Surface this at startup.
+		if len(c.LLMProxyKeys) > 0 && len(c.LLMProxyKeys) < len(c.LLMProxyURLs) {
+			slog.Error("llm: LLM_PROXY_KEYS shorter than LLM_PROXY_URLS — missing keys default to LLM_API_KEY",
+				slog.Int("proxy_urls", len(c.LLMProxyURLs)),
+				slog.Int("proxy_keys", len(c.LLMProxyKeys)),
+				slog.Bool("llm_api_key_empty", c.LLMAPIKey == ""),
+			)
+			if c.LLMAPIKey == "" {
+				slog.Error("llm: LLM_API_KEY is empty AND proxy keys are missing — all remote proxy auth will fail")
+			}
+		}
 		llmOpts = append(llmOpts, engllm.WithProxyURLs(c.LLMProxyURLs))
 		llmOpts = append(llmOpts, engllm.WithProxyKeys(c.LLMProxyKeys))
 		slog.Info("llm: multi-proxy rotation enabled",
@@ -241,7 +255,18 @@ func Init(c Config) {
 	llmInst = engllm.New(llmOpts...)
 
 	// Plain HTTP client for GitHub API and similar direct calls.
-	httpClient = &http.Client{Timeout: 15 * time.Second}
+	// Configured with connection pooling to prevent FD exhaustion under
+	// high parallel load (PF-13 fix: MaxIdleConns/MaxConnsPerHost/IdleConnTimeout).
+	httpClient = &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxConnsPerHost:     10,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+	}
 
 	// Populate computed Config fields for sub-packages (jobs, sources).
 	cfg.HTTPClient = httpClient
