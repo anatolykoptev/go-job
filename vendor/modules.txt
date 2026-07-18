@@ -60,10 +60,10 @@ github.com/anatolykoptev/go-kit/telegram/miniapp
 github.com/anatolykoptev/go-kit/telegram/notify
 github.com/anatolykoptev/go-kit/telegram/tgapi5
 github.com/anatolykoptev/go-kit/uploads
-# github.com/anatolykoptev/go-linkedin v0.4.2 => /home/user/src/go-linkedin
+# github.com/anatolykoptev/go-linkedin v0.4.2 => /home/krolik/src/go-linkedin
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
-# github.com/anatolykoptev/go-mcpserver v0.15.0
+# github.com/anatolykoptev/go-mcpserver v0.16.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 github.com/anatolykoptev/go-mcpserver/mcpclient
@@ -190,7 +190,7 @@ github.com/go-shiori/go-readability/internal/re2go
 # github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f
 ## explicit
 github.com/gogs/chardet
-# github.com/google/jsonschema-go v0.4.2
+# github.com/google/jsonschema-go v0.4.3
 ## explicit; go 1.23.0
 github.com/google/jsonschema-go/jsonschema
 # github.com/google/uuid v1.6.0
@@ -304,7 +304,7 @@ github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.20
 ## explicit; go 1.15
 github.com/mattn/go-isatty
-# github.com/modelcontextprotocol/go-sdk v1.5.0
+# github.com/modelcontextprotocol/go-sdk v1.6.1
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
 github.com/modelcontextprotocol/go-sdk/internal/json
@@ -626,4 +626,4 @@ modernc.org/memory
 modernc.org/sqlite
 modernc.org/sqlite/lib
 modernc.org/sqlite/vtab
-# github.com/anatolykoptev/go-linkedin => /home/user/src/go-linkedin
+# github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin

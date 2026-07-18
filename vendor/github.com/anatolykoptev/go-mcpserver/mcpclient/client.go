@@ -24,7 +24,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const defaultTimeout = 15 * time.Second
+const (
+	defaultTimeout           = 15 * time.Second
+	defaultMaxFireConcurrent = 50
+)
 
 // clientImpl is the MCP implementation descriptor sent during Connect.
 // Allocated once at package init rather than on every connect call.
@@ -51,6 +54,9 @@ type Client struct {
 	timeout    time.Duration
 	tolerant   bool // WithUnreachableTolerant
 	reuse      bool // WithSessionReuse
+
+	maxFireConcurrent int
+	fireSem           chan struct{}
 
 	mu      sync.Mutex
 	session *mcp.ClientSession // nil = not connected or dropped
@@ -89,16 +95,28 @@ func WithSessionReuse(v bool) Option {
 	return func(c *Client) { c.reuse = v }
 }
 
+// WithMaxFireConcurrency sets the maximum number of concurrent Fire()
+// goroutines. When the limit is reached, additional Fire() calls are
+// dropped with a slog.Warn. Defaults to 50.
+func WithMaxFireConcurrency(n int) Option {
+	return func(c *Client) { c.maxFireConcurrent = n }
+}
+
 // New creates a Client pointing at baseURL.
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
-		baseURL: baseURL,
-		timeout: defaultTimeout,
-		reuse:   true,
+		baseURL:           baseURL,
+		timeout:           defaultTimeout,
+		reuse:             true,
+		maxFireConcurrent: defaultMaxFireConcurrent,
 	}
 	for _, o := range opts {
 		o(c)
 	}
+	if c.maxFireConcurrent <= 0 {
+		c.maxFireConcurrent = defaultMaxFireConcurrent
+	}
+	c.fireSem = make(chan struct{}, c.maxFireConcurrent)
 	return c
 }
 
@@ -146,12 +164,26 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (*m
 
 // Fire calls the named tool in a background goroutine detached from ctx so
 // the push survives the caller's handler return. Errors are logged at Warn
-// level. The call is still bounded by WithTimeout.
+// level. The call is still bounded by WithTimeout. Concurrent Fire() calls
+// are bounded by WithMaxFireConcurrency (default 50); when at capacity, the
+// call is dropped with a slog.Warn instead of spawning an unbounded goroutine.
 func (c *Client) Fire(ctx context.Context, tool string, args map[string]any) {
+	// Non-blocking semaphore acquire — drop if at capacity.
+	select {
+	case c.fireSem <- struct{}{}:
+	default:
+		slog.Warn("mcpclient: fire dropped — max concurrent fire reached",
+			slog.String("tool", tool),
+			slog.String("url", c.baseURL),
+			slog.Int("max", c.maxFireConcurrent))
+		return
+	}
+
 	// Detach from the parent context so the goroutine isn't cancelled when the
 	// caller's handler returns. Each call still has its own WithTimeout.
 	detached := context.WithoutCancel(ctx)
 	go func() {
+		defer func() { <-c.fireSem }()
 		_, err := c.Call(detached, tool, args)
 		if err != nil && (!c.tolerant || !errors.Is(err, ErrUnreachable)) {
 			slog.Warn("mcpclient: fire failed",
