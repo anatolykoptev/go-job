@@ -23,6 +23,11 @@ type BackendConfig struct {
 	FollowRedirects bool
 	HTTP3           bool
 
+	// InsecureSkipVerify, when true, disables TLS certificate verification.
+	// Honored by the tls-client backend; the std backend verifies by default
+	// (net/http) and will honor this field when wired.
+	InsecureSkipVerify bool
+
 	// DialControl, when non-nil, is installed as the connect-time SSRF guard
 	// on the backend's dialer (net.Dialer.Control on the std backend;
 	// tls-client WithDialer on the tls backend). It fires on the

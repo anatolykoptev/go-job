@@ -1,6 +1,7 @@
 package stealth
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +24,9 @@ func newStdBackend(cfg BackendConfig) (HTTPDoer, error) {
 	jar, _ := cookiejar.New(nil)
 
 	transport := &http.Transport{}
+	if cfg.InsecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 	if cfg.DialControl != nil {
 		// Connect-time SSRF guard on the resolved address (rebind-proof).
 		transport.DialContext = (&net.Dialer{
@@ -84,7 +88,7 @@ func (s *stdDoer) Do(req *Request) (*Response, error) {
 	for k, v := range resp.Header {
 		lk := strings.ToLower(k)
 		if lk == "set-cookie" {
-			respHeaders["set-cookie"] = strings.Join(v, "; ")
+			respHeaders["set-cookie"] = strings.Join(v, "\n")
 		} else if len(v) > 0 {
 			respHeaders[lk] = v[0]
 		}

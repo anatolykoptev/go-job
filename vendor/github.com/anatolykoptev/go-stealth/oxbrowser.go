@@ -73,7 +73,10 @@ type AnalyzeResponse struct {
 
 // Solve calls ox-browser /solve to get CF clearance cookies.
 func (c *OxBrowserClient) Solve(ctx context.Context, url, challengeType string) (map[string]string, error) {
-	body, _ := json.Marshal(map[string]string{"url": url, "challenge_type": challengeType})
+	body, err := json.Marshal(map[string]string{"url": url, "challenge_type": challengeType})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	var result SolveResponse
 	if err := c.post(ctx, "/solve", body, &result); err != nil {
 		return nil, err
@@ -86,7 +89,10 @@ func (c *OxBrowserClient) Solve(ctx context.Context, url, challengeType string) 
 
 // FetchSmart calls ox-browser /fetch-smart (auto CF bypass).
 func (c *OxBrowserClient) FetchSmart(ctx context.Context, url string) (*FetchSmartResponse, error) {
-	body, _ := json.Marshal(map[string]string{"url": url})
+	body, err := json.Marshal(map[string]string{"url": url})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	var result FetchSmartResponse
 	if err := c.post(ctx, "/fetch-smart", body, &result); err != nil {
 		return nil, err
@@ -96,7 +102,10 @@ func (c *OxBrowserClient) FetchSmart(ctx context.Context, url string) (*FetchSma
 
 // Analyze calls ox-browser /analyze for tech detection.
 func (c *OxBrowserClient) Analyze(ctx context.Context, url string) (*AnalyzeResponse, error) {
-	body, _ := json.Marshal(map[string]string{"url": url})
+	body, err := json.Marshal(map[string]string{"url": url})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	var result AnalyzeResponse
 	if err := c.post(ctx, "/analyze", body, &result); err != nil {
 		return nil, err

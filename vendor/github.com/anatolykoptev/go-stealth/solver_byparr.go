@@ -100,15 +100,15 @@ type solverRequest struct {
 }
 
 type solverResponse struct {
-	Status   string         `json:"status"`
-	Message  string         `json:"message"`
+	Status   string          `json:"status"`
+	Message  string          `json:"message"`
 	Solution *solverSolution `json:"solution"`
 }
 
 type solverSolution struct {
-	URL       string          `json:"url"`
-	Cookies   []solverCookie  `json:"cookies"`
-	UserAgent string          `json:"userAgent"`
+	URL       string         `json:"url"`
+	Cookies   []solverCookie `json:"cookies"`
+	UserAgent string         `json:"userAgent"`
 }
 
 type solverCookie struct {

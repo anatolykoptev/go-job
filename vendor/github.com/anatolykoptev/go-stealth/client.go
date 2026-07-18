@@ -56,13 +56,14 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	}
 
 	backendCfg := BackendConfig{
-		Profile:         cfg.profile,
-		ProxyURL:        cfg.proxyURL,
-		TimeoutSeconds:  cfg.timeout,
-		FollowRedirects: cfg.followRedirs,
-		HTTP3:           cfg.http3,
-		DialControl:     cfg.dialControl,
-		RedirectGuard:   cfg.redirectGuard,
+		Profile:            cfg.profile,
+		ProxyURL:           cfg.proxyURL,
+		TimeoutSeconds:     cfg.timeout,
+		FollowRedirects:    cfg.followRedirs,
+		HTTP3:              cfg.http3,
+		InsecureSkipVerify: cfg.insecureSkipVerify,
+		DialControl:        cfg.dialControl,
+		RedirectGuard:      cfg.redirectGuard,
 	}
 
 	factory := cfg.backend

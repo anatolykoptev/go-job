@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anatolykoptev/go-stealth/internal/uri"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -55,7 +56,7 @@ func NewSiteIntel(client *OxBrowserClient) *SiteIntel {
 // Get returns cached SiteInfo for the domain, fetching via /analyze if needed.
 // Concurrent calls for the same domain are deduplicated via singleflight.
 func (si *SiteIntel) Get(rawURL string) (*SiteInfo, error) {
-	domain := extractDomain(rawURL)
+	domain := uri.ExtractHost(rawURL)
 
 	si.mu.RLock()
 	if info, ok := si.cache[domain]; ok && time.Since(info.FetchedAt) < si.ttl {
