@@ -23,10 +23,15 @@ import (
 var version = "dev"
 
 func main() {
-	server := mcp.NewServer(&mcp.Implementation{
+	// Use mcpserver.NewServer to get KeepAlive + SchemaCache support.
+	// If you don't need those, mcp.NewServer(impl, nil) + mcpserver.Run also works.
+	server := mcpserver.NewServer(&mcp.Implementation{
 		Name:    "my-service",
 		Version: version,
-	}, nil)
+	}, mcpserver.Config{
+		Name:    "my-service",
+		Version: version,
+	})
 
 	// register tools...
 
@@ -58,7 +63,7 @@ type Config struct {
 	Version string // version string (required)
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
-	WriteTimeout    time.Duration // default 120s
+	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
 	ReadTimeout     time.Duration // default 30s
 	ShutdownTimeout time.Duration // default 10s
 
@@ -75,10 +80,69 @@ type Config struct {
 	DisableHealth     bool            // set true to register custom /health in Routes
 	DisableRequestLog bool            // default false (request logging ON)
 
+	// MCP session options
+	KeepAlive                time.Duration     // ping interval; 0 = disabled; use NewServer to apply
+	SchemaCache              *mcp.SchemaCache  // JSON schema cache for stateless mode; use NewServer to apply
+	DisableLocalhostProtection bool            // DNS rebinding protection; set true ONLY behind trusted reverse proxy
+
 	Context    context.Context // nil → internal signal.NotifyContext(SIGINT, SIGTERM)
 	Logger     *slog.Logger    // nil → auto
 	OnShutdown func()          // called before HTTP shutdown
 }
+```
+
+## NewServer vs mcp.NewServer
+
+`mcpserver.NewServer(impl, cfg)` creates an `*mcp.Server` with `ServerOptions`
+derived from `Config`:
+
+| Config field | ServerOptions field | Purpose |
+|---|---|---|
+| `KeepAlive` | `KeepAlive` | Periodic ping; auto-closes session if peer doesn't respond |
+| `SchemaCache` | `SchemaCache` | Caches JSON schemas; avoids repeated reflection in stateless mode |
+
+If you use `mcp.NewServer(impl, nil)` directly, these fields are ignored — `Run`/`Build`
+apply middleware (ToolTimeout, ToolFilter, custom) regardless, but `KeepAlive` and
+`SchemaCache` can only be set at server creation time.
+
+**Stateless mode + SchemaCache:**
+
+```go
+cache := mcp.NewSchemaCache() // create once, share across requests
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    server := mcpserver.NewServer(impl, mcpserver.Config{
+        SchemaCache: cache,
+        Stateless:   &[]bool{true}[0],
+    })
+    // ... register tools, handle request ...
+}
+```
+
+**Stateful mode + KeepAlive:**
+
+```go
+server := mcpserver.NewServer(impl, mcpserver.Config{
+    KeepAlive: 30 * time.Second,
+})
+mcpserver.Run(server, mcpserver.Config{
+    Name:    "my-service",
+    Version: "1.0.0",
+})
+```
+
+## Reverse proxy on localhost
+
+By default, the SDK rejects requests from `127.0.0.1`/`[::1]` with a non-localhost
+`Host` header (DNS rebinding protection). If you run behind a trusted reverse proxy
+on the same host, set `DisableLocalhostProtection: true`:
+
+```go
+mcpserver.Run(server, mcpserver.Config{
+    Name:                     "my-service",
+    Version:                  "1.0.0",
+    DisableLocalhostProtection: true, // behind trusted nginx/Caddy on localhost
+})
 ```
 
 ## Health Endpoints
