@@ -98,4 +98,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/anatolykoptev/go-linkedin => /home/user/src/go-linkedin
+replace github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin
