@@ -3,6 +3,8 @@ package stealth
 import (
 	"fmt"
 	"strings"
+
+	"github.com/anatolykoptev/go-stealth/internal/uri"
 )
 
 // ChallengeType identifies the kind of Cloudflare challenge.
@@ -102,7 +104,7 @@ type CookieProvider interface {
 func CloudflareCookieMiddleware(provider CookieProvider) Middleware {
 	return func(next Handler) Handler {
 		return func(req *Request) (*Response, error) {
-			domain := extractDomain(req.URL)
+			domain := uri.ExtractHost(req.URL)
 
 			if cookie := provider.GetCookie(domain); cookie != "" {
 				if req.Headers == nil {
@@ -136,19 +138,6 @@ func CloudflareCookieMiddleware(provider CookieProvider) Middleware {
 			return next(req)
 		}
 	}
-}
-
-// extractDomain extracts the hostname from a URL string.
-func extractDomain(rawURL string) string {
-	idx := strings.Index(rawURL, "://")
-	if idx < 0 {
-		return rawURL
-	}
-	host := rawURL[idx+3:]
-	if i := strings.IndexAny(host, ":/"); i >= 0 {
-		host = host[:i]
-	}
-	return host
 }
 
 // appendCookie appends a cookie to an existing cookie header value.
