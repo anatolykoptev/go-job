@@ -2,7 +2,7 @@ name: preflight
 
 # Pre-merge build/test gate. Runs on GitHub-hosted `ubuntu-24.04-arm` — free
 # unlimited minutes for public repos, and arm64 matches the ARM prod box this
-# service runs on. Moved off the krolik self-hosted runner 2026-07-14: this
+# service runs on. Moved off the host-a self-hosted runner 2026-07-14: this
 # public repo's old workflow had NO fork-PR guard, so any external PR could
 # execute code on the prod box; GitHub-hosted runners sandbox every job in a
 # throwaway VM, closing that surface outright.

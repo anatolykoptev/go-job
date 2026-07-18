@@ -63,7 +63,7 @@ type Config struct {
 	// (notably DDG's 202 anti-bot wall from a datacenter IP), the fetch
 	// escalates to a real headless browser. Empty = disabled (graceful).
 	// Authoritative source is OX_BROWSER_URL env — do NOT hard-code the
-	// location, so a future move to the pillow mesh is a one-line env change.
+	// location, so a future move to the host-d mesh is a one-line env change.
 	OxBrowserURL string // OX_BROWSER_URL
 
 	// Bounty notify: env vars are read directly by go-kit's NewProductSinkFromEnv.
