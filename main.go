@@ -292,19 +292,9 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 		FetchDirectFirst:       directFirst,
 	}
 
-	// Initialize proxy pool from Webshare API (optional).
+	// Initialize proxy pool: Webshare primary, Tor fallback (see initProxyPool).
 	// Skipped when FETCH_DIRECT_FIRST=direct (direct-only) or FETCH_DIRECT_FIRST=off.
-	if initPool {
-		if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
-			pool, err := proxypool.NewWebshare(apiKey)
-			if err != nil {
-				slog.Warn("proxy pool init failed, running without proxy", slog.Any("error", err))
-			} else {
-				c.ProxyPool = pool
-				slog.Info("proxy pool initialized", slog.Int("proxies", pool.Len()))
-			}
-		}
-	}
+	c.ProxyPool = initProxyPool(initPool)
 
 	// go-social client (optional — centralized account pool)
 	if socialURL := env.Str("GO_SOCIAL_URL", ""); socialURL != "" {
@@ -499,6 +489,30 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
 	return huntNotifier
+}
+
+// initProxyPool builds the fetch proxy pool: Webshare primary, Tor fallback.
+// Returns nil when the pool is disabled (initPool=false, i.e.
+// FETCH_DIRECT_FIRST=direct/off) so fetches go direct. When enabled but
+// Webshare is absent or fails to init, it falls back to the shared Tor SOCKS
+// proxy (TOR_PROXY, default socks5://tor:9050) instead of silently dropping to
+// unproxied direct fetches — mirrors go-wp's initProxyPool.
+func initProxyPool(initPool bool) proxypool.ProxyPool {
+	if !initPool {
+		return nil
+	}
+	if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
+		pool, err := proxypool.NewWebshare(apiKey)
+		if err != nil {
+			slog.Warn("proxy pool: webshare failed, trying Tor fallback", slog.Any("error", err))
+		} else {
+			slog.Info("proxy pool: using Webshare", slog.Int("proxies", pool.Len()))
+			return pool
+		}
+	}
+	torProxy := env.Str("TOR_PROXY", "socks5://tor:9050")
+	slog.Info("proxy pool: using Tor fallback", slog.String("proxy", torProxy))
+	return proxypool.NewStatic(torProxy)
 }
 
 // resolveFetchMode maps FETCH_DIRECT_FIRST env value to (directFirst, initPool) flags.
