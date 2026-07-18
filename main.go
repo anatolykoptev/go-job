@@ -20,6 +20,7 @@ import (
 	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-mcpserver"
+	panelmcp "github.com/anatolykoptev/go-panel/mcp"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
@@ -102,10 +103,13 @@ func main() {
 		startAdminServer(sigCtx, hs, authority, slog.Default())
 	}
 
-	server := mcp.NewServer(&mcp.Implementation{
+	server := mcpserver.NewServer(&mcp.Implementation{
 		Name:    "go_job",
 		Version: version,
-	}, nil)
+	}, mcpserver.Config{
+		KeepAlive:   30 * time.Second,
+		SchemaCache: mcp.NewSchemaCache(),
+	})
 
 	jobserver.RegisterTools(server, authority)
 	slog.Info("tools registered", slog.Int("count", 44))
@@ -136,10 +140,13 @@ func main() {
 	}
 
 	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:       "go_job",
-		Version:    version,
-		Port:       mcpPort,
-		BearerAuth: bearerAuth,
+		Name:                       "go_job",
+		Version:                    version,
+		Port:                       mcpPort,
+		KeepAlive:                  30 * time.Second,
+		SchemaCache:                mcp.NewSchemaCache(),
+		DisableLocalhostProtection: true,
+		BearerAuth:                 bearerAuth,
 		// Return tool results as a single application/json body instead of the
 		// go-sdk default text/event-stream framing. The SSE path puts the entire
 		// JSON result on ONE `data:` line; large results (e.g. resume_profile's
@@ -573,11 +580,13 @@ func startNotifyHealthCheck(ctx context.Context, n *notify.ProductNotifier) {
 }
 
 // startAdminServer starts the operator admin UI (go-panel) on ADMIN_PORT
-// (default 8896, host-restricted to 127.0.0.1 by compose), mounted at /admin. Fail-soft: when admin
-// credentials are unset (adminui.New returns ok=false) the listener is skipped,
+// (default 8896, host-restricted to 127.0.0.1 by compose), mounted at /admin,
+// and optionally the admin MCP server on ADMIN_MCP_PORT (default 8897) which
+// auto-exposes all registered Resources as MCP list/get tools. Fail-soft: when
+// admin credentials are unset (adminui.New returns ok=false) both are skipped,
 // so deploying before the env is wired changes nothing.
 func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, logger *slog.Logger) {
-	handler, ok := adminui.New(store, authority)
+	handler, panel, ok := adminui.New(store, authority)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
 		return
@@ -605,5 +614,20 @@ func startAdminServer(ctx context.Context, store *hunt.Store, authority *applica
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
+	}()
+
+	// Admin MCP server: auto-exposes registered Resources as MCP tools.
+	// Runs on a separate port so it can be independently gated/authed.
+	mcpPort := env.Str("ADMIN_MCP_PORT", "8897")
+	go func() {
+		logger.Info("admin MCP endpoint", slog.String("addr", mcpPort))
+		if err := panelmcp.Run(panelmcp.Config{
+			Panel:   panel,
+			Port:    mcpPort,
+			Context: ctx,
+			Logger:  logger,
+		}); err != nil {
+			logger.Error("admin MCP server", slog.Any("error", err))
+		}
 	}()
 }
