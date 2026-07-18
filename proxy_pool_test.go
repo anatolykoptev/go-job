@@ -10,23 +10,47 @@ func TestInitProxyPool_Disabled_ReturnsNil(t *testing.T) {
 	}
 }
 
-// Enabled + no Webshare key => Tor static pool (the new fallback: previously this
-// path left ProxyPool nil and dropped to unproxied direct fetches).
-func TestInitProxyPool_EnabledNoWebshare_TorFallback(t *testing.T) {
+// Enabled + no Webshare + Tor fallback NOT enabled (default) => nil (direct).
+// This is the pre-change behaviour: a Webshare outage must not silently route
+// through Tor unless the operator opts in.
+func TestInitProxyPool_NoWebshare_TorGateOff_ReturnsNil(t *testing.T) {
 	t.Setenv("WEBSHARE_API_KEY", "")
-	t.Setenv("TOR_PROXY", "socks5://127.0.0.1:9150")
+	t.Setenv("TOR_FALLBACK_ENABLED", "")
 
-	if pool := initProxyPool(true); pool == nil {
-		t.Fatal("initProxyPool(true) = nil, want static Tor pool when no Webshare key")
+	if pool := initProxyPool(true); pool != nil {
+		t.Fatalf("initProxyPool(true) = non-nil, want nil (direct) when TOR_FALLBACK_ENABLED unset")
 	}
 }
 
-// Enabled + no Webshare key + empty TOR_PROXY => still a Tor pool (default addr).
-func TestInitProxyPool_EnabledDefaultTor(t *testing.T) {
+// Enabled + no Webshare + Tor fallback ON => static Tor pool at the configured addr.
+func TestInitProxyPool_NoWebshare_TorGateOn_TorPool(t *testing.T) {
 	t.Setenv("WEBSHARE_API_KEY", "")
+	t.Setenv("TOR_FALLBACK_ENABLED", "true")
+	t.Setenv("TOR_PROXY", "socks5://127.0.0.1:9150")
+
+	pool := initProxyPool(true)
+	if pool == nil {
+		t.Fatal("initProxyPool(true) = nil, want static Tor pool when TOR_FALLBACK_ENABLED=true")
+	}
+	if got, want := pool.Len(), 1; got != want {
+		t.Fatalf("pool.Len() = %d, want %d (single static Tor entry, not a Webshare pool)", got, want)
+	}
+	if got, want := pool.Next(), "socks5://127.0.0.1:9150"; got != want {
+		t.Fatalf("pool.Next() = %q, want %q", got, want)
+	}
+}
+
+// Tor fallback ON + empty TOR_PROXY => static pool at the default docker addr.
+func TestInitProxyPool_TorGateOn_DefaultTor(t *testing.T) {
+	t.Setenv("WEBSHARE_API_KEY", "")
+	t.Setenv("TOR_FALLBACK_ENABLED", "true")
 	t.Setenv("TOR_PROXY", "")
 
-	if pool := initProxyPool(true); pool == nil {
+	pool := initProxyPool(true)
+	if pool == nil {
 		t.Fatal("initProxyPool(true) = nil, want static Tor pool with default TOR_PROXY")
+	}
+	if got, want := pool.Next(), "socks5://tor:9050"; got != want {
+		t.Fatalf("pool.Next() = %q, want %q (default TOR_PROXY)", got, want)
 	}
 }

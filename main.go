@@ -491,12 +491,17 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	return huntNotifier
 }
 
-// initProxyPool builds the fetch proxy pool: Webshare primary, Tor fallback.
-// Returns nil when the pool is disabled (initPool=false, i.e.
-// FETCH_DIRECT_FIRST=direct/off) so fetches go direct. When enabled but
-// Webshare is absent or fails to init, it falls back to the shared Tor SOCKS
-// proxy (TOR_PROXY, default socks5://tor:9050) instead of silently dropping to
-// unproxied direct fetches — mirrors go-wp's initProxyPool.
+// initProxyPool builds the fetch proxy pool: Webshare primary, optional Tor
+// fallback. Returns nil (fetch direct) when the pool is disabled
+// (initPool=false, i.e. FETCH_DIRECT_FIRST=direct/off) or when Webshare is
+// unavailable and the Tor fallback is not explicitly enabled.
+//
+// The Tor fallback is OPT-IN via TOR_FALLBACK_ENABLED (default false), unlike
+// go-wp where Tor is an unconditional fallback: go-job scrapes job boards
+// (LinkedIn/ATS) that commonly hard-block Tor exit IPs, so silently routing a
+// Webshare outage through Tor would turn into mass fetch failures. Operators
+// enable it only for deployments whose targets tolerate Tor. When disabled and
+// Webshare is unavailable, behaviour is unchanged from before: direct fetches.
 func initProxyPool(initPool bool) proxypool.ProxyPool {
 	if !initPool {
 		return nil
@@ -504,15 +509,19 @@ func initProxyPool(initPool bool) proxypool.ProxyPool {
 	if apiKey := env.Str("WEBSHARE_API_KEY", ""); apiKey != "" {
 		pool, err := proxypool.NewWebshare(apiKey)
 		if err != nil {
-			slog.Warn("proxy pool: webshare failed, trying Tor fallback", slog.Any("error", err))
+			slog.Warn("proxy pool: webshare init failed", slog.Any("error", err))
 		} else {
 			slog.Info("proxy pool: using Webshare", slog.Int("proxies", pool.Len()))
 			return pool
 		}
 	}
-	torProxy := env.Str("TOR_PROXY", "socks5://tor:9050")
-	slog.Info("proxy pool: using Tor fallback", slog.String("proxy", torProxy))
-	return proxypool.NewStatic(torProxy)
+	if env.Bool("TOR_FALLBACK_ENABLED", false) {
+		torProxy := env.Str("TOR_PROXY", "socks5://tor:9050")
+		slog.Info("proxy pool: using Tor fallback", slog.String("proxy", torProxy))
+		return proxypool.NewStatic(torProxy)
+	}
+	slog.Warn("proxy pool: webshare unavailable, fetching direct (set TOR_FALLBACK_ENABLED=true to route via Tor)")
+	return nil
 }
 
 // resolveFetchMode maps FETCH_DIRECT_FIRST env value to (directFirst, initPool) flags.
