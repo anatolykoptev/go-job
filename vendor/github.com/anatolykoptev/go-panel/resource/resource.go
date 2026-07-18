@@ -206,6 +206,7 @@ type Panel struct {
 	csrfKey     []byte
 	locales     locale.Set          // configured i18n locales; zero value = single-locale
 	profileCfg  shell.ProfileConfig // static defaults for the sidebar profile block
+	resources   []Resource           // registered Resources, in Register order
 
 	// indexOverride is set once via MountPage(PageSpec{Path: ""}) before the
 	// mux is finalized; it replaces the default handleIndex at GET {basePath}/{$}.
@@ -365,6 +366,15 @@ func (p *Panel) Handler() http.Handler {
 	return withTenantResolution(p.resolver, p.mux)
 }
 
+// Resources returns the registered Resources in registration order.
+// The returned slice is a copy; callers may freely iterate or mutate it
+// without affecting the Panel's internal state.
+func (p *Panel) Resources() []Resource {
+	out := make([]Resource, len(p.resources))
+	copy(out, p.resources)
+	return out
+}
+
 // withTenantResolution wraps next with the panel's single tenant-resolution
 // composition point: resolve a Tenant from the request via resolver, strip a
 // concrete tenant.PathResolver's /tenant/{slug} marker pair from the path so
@@ -501,6 +511,7 @@ func Register(p *Panel, r Resource) {
 		validateWriterConfig(p, r)
 	}
 	validateRoleConfig(p, r)
+	p.resources = append(p.resources, r)
 
 	// Add nav entry.
 	if r.Group != "" {

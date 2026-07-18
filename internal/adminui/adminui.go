@@ -23,18 +23,20 @@ const (
 	navIDLinkedin = "linkedin"
 )
 
-// New builds the admin handler mounted at /admin. Returns (nil,false) when
+// New builds the admin handler mounted at /admin. Returns (nil,nil,false) when
 // ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled.
+// The returned *resource.Panel can be used to expose Resources via MCP
+// (see go-panel/mcp); nil when admin is disabled.
 //
 // Routing: an outer http.ServeMux wraps p.Handler() as a /admin/ catch-all.
 // Bespoke 4-/5-segment routes (POST /rate, GET /download/{kind}) precede the
 // panel catch-all and do not shadow go-panel's 3-segment routes (/rows, /{id}).
 // GET /admin/jobs/{id} is served by go-panel via the Detailer (natural URL).
-func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bool) {
+func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *resource.Panel, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
 	if len(hmacKey) < 32 || password == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	csrfKey := os.Getenv("ADMIN_CSRF_KEY")
 	if len(csrfKey) < 32 {
@@ -141,7 +143,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, bo
 	// jobsLister closure can generate per-request CSRF tokens for the
 	// star-toggle inline forms without needing the *http.Request.
 	mux.Handle(adminBasePath+"/", withSessionCookieContext(a.SessionCookieName(), p.Handler()))
-	return mux, true
+	return mux, p, true
 }
 
 // checkAuthCapabilities panics at startup if a does not implement cookieNamer
