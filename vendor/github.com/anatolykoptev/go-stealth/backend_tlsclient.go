@@ -26,7 +26,9 @@ func newTLSClientBackend(cfg BackendConfig) (HTTPDoer, error) {
 		tls_client.WithTimeoutSeconds(cfg.TimeoutSeconds),
 		tls_client.WithClientProfile(profile),
 		tls_client.WithCookieJar(tls_client.NewCookieJar()),
-		tls_client.WithInsecureSkipVerify(),
+	}
+	if cfg.InsecureSkipVerify {
+		opts = append(opts, tls_client.WithInsecureSkipVerify())
 	}
 	if cfg.DialControl != nil {
 		// Connect-time SSRF guard on the resolved address. tls-client dials
@@ -122,7 +124,7 @@ func (t *tlsClientDoer) Do(req *Request) (*Response, error) {
 	respHeaders := make(map[string]string, len(resp.Header))
 	for k, v := range resp.Header {
 		if strings.ToLower(k) == "set-cookie" {
-			respHeaders["set-cookie"] = strings.Join(v, "; ")
+			respHeaders["set-cookie"] = strings.Join(v, "\n")
 		} else if len(v) > 0 {
 			respHeaders[strings.ToLower(k)] = v[0]
 		}

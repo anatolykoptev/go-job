@@ -26,7 +26,7 @@ type HealthTracker struct {
 	maxConsecFailures   int     // auto-disable after N consecutive failures
 	tripCount           int     // deactivation generations: bumped once per rising-edge trip
 	tripped             bool    // latched while in a trip; cleared by a success/reset so the
-	                            // next clean->trip transition counts as a new generation
+	// next clean->trip transition counts as a new generation
 }
 
 // NewHealthTracker creates a HealthTracker with the given thresholds.

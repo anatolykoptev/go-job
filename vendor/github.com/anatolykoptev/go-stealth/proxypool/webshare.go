@@ -172,6 +172,9 @@ func buildRotatingFromAPI(apiKey string, cfg WebshareConfig, logger *slog.Logger
 
 // Next returns the next proxy URL in round-robin order.
 func (w *Webshare) Next() string {
+	if len(w.proxies) == 0 {
+		return ""
+	}
 	idx := w.counter.Add(1) % uint64(len(w.proxies))
 	return w.proxies[idx]
 }

@@ -25,6 +25,13 @@ import (
 // (CGNAT, NAT64/6to4, alt-encoded-IP rejection) wires go-kit/httputil's
 // SSRFGuards()/CheckURL through WithDialControl / WithRedirectGuard /
 // WithRequestURLGuard, which OVERRIDE these defaults.
+//
+// A caller-supplied guard's error need NOT wrap this sentinel itself: the With*
+// setters tag it (see tagGuardErr2), so errors.Is(err, ErrSSRFBlocked) holds
+// for any configured guard's rejection, built-in or framework-wired. That is
+// what makes doWithRetry treat the rejection as non-retryable — a blocked
+// target is about the URL/address, not the proxy, so every retry re-blocks
+// identically.
 var ErrSSRFBlocked = errors.New("stealth: SSRF-blocked address")
 
 // maxSSRFRedirectHops caps how many redirect hops the default redirect guard
