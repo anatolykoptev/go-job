@@ -11,7 +11,7 @@
 #   - Alerts that fire on persistent config issues (no_key, notifier_disabled)
 #     use longer `for:` to fire once, not every 5m.
 #
-# Deployed to ~/deploy/krolik-server/config/prometheus/alerts-go-job.yml.
+# Deployed to ~/deploy/server-config/config/prometheus/alerts-go-job.yml.
 # Alertmanager routes to dozor (Telegram) based on `receiver: dozor` label.
 groups:
   - name: go-job-sources

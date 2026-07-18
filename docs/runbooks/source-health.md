@@ -65,7 +65,7 @@ A keyed source has no key configured. The source is cleanly skipped (not errorin
 
 1. Identify the platform: `grep 'no_key' <metrics output>`
 2. Check the relevant env key:
-   - **indeed**: `INDEED_API_KEY` in `~/deploy/krolik-server/.env`
+   - **indeed**: `INDEED_API_KEY` in `~/deploy/server-config/.env`
 3. Add the key and restart the container. Verify outcome flips to `ok`.
 4. If no key is available, the source will remain `no_key` — this is expected
    and the counter is informational. P4(c) adds `NeedsAPIKey` capability so the

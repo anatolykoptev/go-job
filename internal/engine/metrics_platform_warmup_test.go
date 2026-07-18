@@ -11,7 +11,7 @@ import (
 // collision) and asserts that warmAlertBoundedMetrics seeds every
 // platform×outcome key backing GojobSourceParseFail / GojobSourceNoKey, plus
 // every discovery-source key backing GojobDelegationFallback (see
-// ~/deploy/krolik-server/config/prometheus/alerts-go-job.yml).
+// ~/deploy/server-config/config/prometheus/alerts-go-job.yml).
 //
 // Presence, not just value, is what's asserted: a MISSING key is exactly the
 // bug this warm-up fixes (increase() cannot see a series' first real

@@ -5,7 +5,7 @@ name: release-please
 #
 # Binaries are NOT built here: GoReleaser cross-compile + docker builds are heavy
 # and would consume PAID GitHub Actions minutes (operator rule: never use paid
-# GHA). The release binaries are built + uploaded LOCALLY on the krolik box by
+# GHA). The release binaries are built + uploaded LOCALLY on the host-a box by
 # ~/bin/goreleaser-release-local.sh (a systemd timer that detects a new
 # release-please tag whose GitHub release has no binary assets and runs
 # `goreleaser release` on the box). Do NOT add a goreleaser job back here.
