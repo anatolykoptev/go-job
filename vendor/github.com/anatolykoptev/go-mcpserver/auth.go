@@ -73,7 +73,7 @@ var TokenInfoFromContext = auth.TokenInfoFromContext
 func StaticTokenVerifier(token string) auth.TokenVerifier {
 	expected := []byte(token)
 	return func(_ context.Context, t string, _ *http.Request) (*auth.TokenInfo, error) {
-		if subtle.ConstantTimeCompare([]byte(t), expected) != 1 {
+		if len(expected) == 0 || subtle.ConstantTimeCompare([]byte(t), expected) != 1 {
 			return nil, auth.ErrInvalidToken
 		}
 		return &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}, nil

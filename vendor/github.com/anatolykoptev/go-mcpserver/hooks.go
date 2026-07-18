@@ -76,11 +76,16 @@ const leakWarnFactor = 2
 // ToolTimeoutMiddleware returns MCP middleware that enforces tool execution timeouts.
 //
 // Timeout resolution order (first wins):
-//  1. "timeout_secs" in the tool call arguments (LLM per-request override)
+//  1. "timeout_secs" in the tool call arguments (LLM per-request override, capped at MaxToolTimeout)
 //  2. cfg.ToolTimeouts[toolName] (per-tool config)
 //  3. cfg.ToolTimeout (global default, 90s)
 //
 // On timeout the tool returns an error result instead of hanging.
+//
+// Concurrent tool execution is bounded by cfg.MaxConcurrentTools (default 100).
+// When the limit is reached, additional calls return an error result immediately
+// instead of spawning an unbounded goroutine. This prevents goroutine leaks from
+// tools that ignore ctx.Done().
 //
 // The worker goroutine is detached on timeout: if the underlying tool does
 // not honor ctx.Done(), it keeps running and may leak. To surface that, a
@@ -89,6 +94,12 @@ const leakWarnFactor = 2
 // kill the goroutine — Go has no way to do that — but makes the leak
 // visible in operator logs so the underlying tool can be fixed.
 func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
+	// MaxConcurrentTools <= 0 means unbounded (backward compat when
+	// withDefaults is not called, e.g. in direct unit tests).
+	var sem chan struct{}
+	if cfg.MaxConcurrentTools > 0 {
+		sem = make(chan struct{}, cfg.MaxConcurrentTools)
+	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			if method != methodToolsCall {
@@ -96,6 +107,23 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 			}
 			params := req.GetParams().(*mcp.CallToolParamsRaw)
 			timeout := resolveTimeout(params.Name, params.Arguments, cfg)
+
+			// Acquire semaphore (if configured) — non-blocking; if at
+			// capacity, reject immediately rather than spawning an
+			// unbounded goroutine.
+			if sem != nil {
+				select {
+				case sem <- struct{}{}:
+				default:
+					return &mcp.CallToolResult{
+						IsError: true,
+						Content: []mcp.Content{&mcp.TextContent{
+							Text: fmt.Sprintf("tool %q rejected: max concurrent tools (%d) reached", params.Name, cfg.MaxConcurrentTools),
+						}},
+					}, nil
+				}
+				defer func() { <-sem }()
+			}
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -141,8 +169,11 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 }
 
 func resolveTimeout(name string, args json.RawMessage, cfg Config) time.Duration {
-	// 1. Check request args for timeout_secs.
+	// 1. Check request args for timeout_secs (capped at MaxToolTimeout).
 	if t := parseArgTimeout(args); t > 0 {
+		if cfg.MaxToolTimeout > 0 && t > cfg.MaxToolTimeout {
+			return cfg.MaxToolTimeout
+		}
 		return t
 	}
 

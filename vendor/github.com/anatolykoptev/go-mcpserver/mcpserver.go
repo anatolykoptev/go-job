@@ -37,6 +37,7 @@ func isStdio() bool {
 // Run starts the MCP server and blocks until a signal is received.
 // In stdio mode (--stdio flag), it runs via stdin/stdout.
 // Otherwise, it starts an HTTP server with middleware, /mcp, /health, and optional /metrics.
+//
 //nolint:cyclop // server bootstrap fans out over transport modes (stdio/http/sse); complexity is inherent and stable
 func Run(server *mcp.Server, cfg Config) error {
 	if err := validate(cfg); err != nil {
@@ -47,6 +48,12 @@ func Run(server *mcp.Server, cfg Config) error {
 	}
 	cfg = withDefaults(cfg)
 	stdio := isStdio()
+
+	// Wire up REST bridge cleanup receiver — buildHandler will populate
+	// restBridgeCleanup if RESTBridge is enabled, and we call it AFTER
+	// srv.Shutdown() so in-flight requests drain first.
+	var restBridgeCleanup func()
+	cfg.onRESTBridgeCleanup = &restBridgeCleanup
 
 	logger := cfg.Logger
 	if logger == nil {
@@ -80,7 +87,17 @@ func Run(server *mcp.Server, cfg Config) error {
 	}
 	defer cancel()
 
-	h, err := buildHandler(sigCtx, server, cfg, logger)
+	// Pass a separate context to buildHandler — NOT sigCtx. The REST bridge
+	// safety-net goroutine listens on this ctx; if we passed sigCtx, the
+	// goroutine would close sessions immediately on signal, before
+	// srv.Shutdown() drains in-flight HTTP requests. Using a non-cancellable
+	// context ensures sessions stay open until the cleanup function is called
+	// after srv.Shutdown(). The defer cancel() below is a safety net for
+	// abnormal Run() exit (error paths).
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	defer bridgeCancel()
+
+	h, err := buildHandler(bridgeCtx, server, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("mcpserver: %w", err)
 	}
@@ -126,6 +143,13 @@ func Run(server *mcp.Server, cfg Config) error {
 		return err
 	}
 
+	// Close REST bridge sessions AFTER the HTTP server has drained
+	// in-flight requests — closing them earlier would cause mid-flight
+	// REST tool calls to lose their session.
+	if restBridgeCleanup != nil {
+		restBridgeCleanup()
+	}
+
 	logger.Info("stopped", slog.String("service", cfg.Name))
 	return nil
 }
@@ -156,11 +180,12 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 		var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 			return server
 		}, &mcp.StreamableHTTPOptions{
-			Stateless:      stateless,
-			SessionTimeout: cfg.SessionTimeout,
-			EventStore:     cfg.EventStore,
-			JSONResponse:   cfg.JSONResponse,
-			Logger:         cfg.MCPLogger,
+			Stateless:                  stateless,
+			SessionTimeout:             cfg.SessionTimeout,
+			EventStore:                 cfg.EventStore,
+			JSONResponse:               cfg.JSONResponse,
+			Logger:                     cfg.MCPLogger,
+			DisableLocalhostProtection: cfg.DisableLocalhostProtection,
 		})
 
 		if cfg.BearerAuth != nil {
@@ -193,8 +218,15 @@ func buildHandler(ctx context.Context, server *mcp.Server, cfg Config, logger *s
 	}
 
 	if cfg.RESTBridge && !cfg.DisableMCP {
-		if err := startRESTBridge(ctx, server, mux, cfg, logger); err != nil {
+		cleanup, err := startRESTBridge(ctx, server, mux, cfg, logger)
+		if err != nil {
 			return nil, fmt.Errorf("REST bridge init failed: %w", err)
+		}
+		// Store cleanup for Run() to call after srv.Shutdown().
+		// For Build() (testing), the ctx.Done() safety net in startRESTBridge
+		// handles cleanup when the test context is cancelled.
+		if cfg.onRESTBridgeCleanup != nil {
+			*cfg.onRESTBridgeCleanup = cleanup
 		}
 	}
 
@@ -209,15 +241,17 @@ var warnLoopbackBypassOnce sync.Once
 // applyBearerAuth wraps handler with bearer token verification.
 // When LoopbackBypass is set, requests from 127.0.0.1/::1 skip auth.
 //
-// Emits a one-shot slog.Warn on first call when LoopbackBypass=true and the
-// process looks containerised (KUBERNETES_SERVICE_HOST or /.dockerenv) — see
-// BearerAuth.LoopbackBypass for the rationale.
+// Emits a one-shot slog.Warn on first call when LoopbackBypass=true. The
+// warning always fires (not just in containers) because a reverse proxy on
+// bare metal has the same RemoteAddr=loopback effect.
 func applyBearerAuth(handler http.Handler, cfg *BearerAuth) http.Handler {
 	if cfg.LoopbackBypass {
 		warnLoopbackBypassOnce.Do(func() {
+			msg := "BearerAuth.LoopbackBypass=true — auth will be skipped for any request whose RemoteAddr is loopback. If a reverse proxy fronts this service, every external request looks like loopback and bearer auth is effectively DISABLED. Set LoopbackBypass=false unless you control the listener directly."
 			if looksContainerised() {
-				slog.Warn("BearerAuth.LoopbackBypass=true on a containerised host — auth will be skipped for any request whose RemoteAddr is loopback. If a reverse proxy fronts this service, every external request looks like loopback and bearer auth is effectively DISABLED. Set LoopbackBypass=false unless you control the listener directly.")
+				msg += " (containerised host detected — reverse proxy misconfiguration is the most common cause.)"
 			}
+			slog.Warn(msg)
 		})
 	}
 	metaPath := cfg.ResourceMetadataPath

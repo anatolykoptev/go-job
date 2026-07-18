@@ -8,12 +8,12 @@ require (
 	github.com/anatolykoptev/go-engine v1.51.5
 	github.com/anatolykoptev/go-kit v0.97.1
 	github.com/anatolykoptev/go-linkedin v0.4.2
-	github.com/anatolykoptev/go-mcpserver v0.15.0
+	github.com/anatolykoptev/go-mcpserver v0.16.0
 	github.com/anatolykoptev/go-panel v0.20.1
 	github.com/anatolykoptev/go-stealth v1.18.0
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/modelcontextprotocol/go-sdk v1.5.0
+	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/net v0.57.0
@@ -45,7 +45,7 @@ require (
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/go-shiori/go-readability v0.0.0-20241012063810-92284fa8a71f // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hablullah/go-hijri v1.0.2 // indirect
 	github.com/hablullah/go-juliandays v1.0.0 // indirect
