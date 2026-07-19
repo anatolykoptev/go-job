@@ -107,7 +107,6 @@ func main() {
 		Name:    "go_job",
 		Version: version,
 	}, mcpserver.Config{
-		KeepAlive:   30 * time.Second,
 		SchemaCache: mcp.NewSchemaCache(),
 	})
 
@@ -143,20 +142,20 @@ func main() {
 		Name:                       "go_job",
 		Version:                    version,
 		Port:                       mcpPort,
-		KeepAlive:                  30 * time.Second,
 		SchemaCache:                mcp.NewSchemaCache(),
 		DisableLocalhostProtection: true,
 		BearerAuth:                 bearerAuth,
-		// Return tool results as a single application/json body instead of the
-		// go-sdk default text/event-stream framing. The SSE path puts the entire
-		// JSON result on ONE `data:` line; large results (e.g. resume_profile's
-		// ~17KB) exceed the SSE single-line buffer limit on the WAN MCP client and
-		// the connection is severed after the 54-byte event prefix → "transport
-		// dropped; response lost". go-job's tools are all unary request/response
-		// (no mid-call progress notifications), so SSE buys nothing here. A plain
-		// JSON body has no per-line limit and is delivered intact. Clients send
-		// `Accept: application/json, text/event-stream`, so this is fully negotiated.
-		JSONResponse: true,
+		// SSE (text/event-stream) mode. Long tool calls (research, application_prep,
+		// job_search, etc.) emit no bytes until they finish; in stateless mode the
+		// server can't send ping requests, so a client/proxy idle-timeout would
+		// abandon the call while the server keeps working. Instead,
+		// ToolKeepaliveInterval emits a progress notification on the request
+		// stream every 10s to keep it warm. (The old KeepAlive:30s ping was
+		// inert in stateless mode — rejected, then closed the session at 30s and
+		// truncated the response; removed.) Caddy forces HTTP/1.1 to the
+		// upstream, fixing the h2 stream-reset that originally motivated JSON.
+		JSONResponse:          false,
+		ToolKeepaliveInterval: 10 * time.Second,
 		// go-mcpserver v0.15.0+ plumbs http.Server.IdleTimeout (default 5m), which
 		// keeps idle pooled connections alive across pauses between tool calls — so
 		// the first MCP call after an idle window no longer drops. No ReadTimeout
