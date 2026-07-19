@@ -103,16 +103,6 @@ func main() {
 		startAdminServer(sigCtx, hs, authority, slog.Default())
 	}
 
-	server := mcpserver.NewServer(&mcp.Implementation{
-		Name:    "go_job",
-		Version: version,
-	}, mcpserver.Config{
-		SchemaCache: mcp.NewSchemaCache(),
-	})
-
-	jobserver.RegisterTools(server, authority)
-	slog.Info("tools registered", slog.Int("count", 44))
-
 	hooks := mcpserver.MCPHooks{
 		OnToolCall: func(_ context.Context, _ string) {
 			engine.IncrToolCall()
@@ -138,7 +128,10 @@ func main() {
 		slog.Warn("MCP_BEARER_TOKEN not set — MCP server running without authentication (acceptable for localhost-only)")
 	}
 
-	if err := mcpserver.Run(server, mcpserver.Config{
+	if err := mcpserver.Serve(&mcp.Implementation{
+		Name:    "go_job",
+		Version: version,
+	}, mcpserver.Config{
 		Name:                       "go_job",
 		Version:                    version,
 		Port:                       mcpPort,
@@ -171,6 +164,9 @@ func main() {
 		MCPLogger:              slog.Default(),
 		Metrics:                engine.FormatMetrics,
 		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware(), mcpmw.Middleware(engine.Reg(), "tool")},
+	}, func(s *mcp.Server) {
+		jobserver.RegisterTools(s, authority)
+		slog.Info("tools registered", slog.Int("count", 44))
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
