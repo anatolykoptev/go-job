@@ -34,6 +34,19 @@ func isStdio() bool {
 	return false
 }
 
+// Serve creates a server from cfg (applying server-only options like KeepAlive
+// and SchemaCache), lets register add tools/handlers, then runs it. It is the
+// one-call alternative to the NewServer + Run pair: config lives in ONE place,
+// so there is no dead/duplicated server-option field. Blocks until the server
+// stops (same lifecycle as Run).
+func Serve(impl *mcp.Implementation, cfg Config, register func(*mcp.Server)) error {
+	server := NewServer(impl, cfg) // applies KeepAlive + SchemaCache at creation
+	if register != nil {
+		register(server)
+	}
+	return Run(server, cfg.withoutServerOpts())
+}
+
 // Run starts the MCP server and blocks until a signal is received.
 // In stdio mode (--stdio flag), it runs via stdin/stdout.
 // Otherwise, it starts an HTTP server with middleware, /mcp, /health, and optional /metrics.
@@ -64,6 +77,7 @@ func Run(server *mcp.Server, cfg Config) error {
 		logger = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 	slog.SetDefault(logger)
+	warnIgnoredServerOpts(cfg, logger)
 
 	applyMCPMiddleware(server, cfg)
 
@@ -164,11 +178,12 @@ func Build(server *mcp.Server, cfg Config) (http.Handler, error) {
 		return nil, errors.New("mcpserver: server must not be nil when DisableMCP is false")
 	}
 	cfg = withDefaults(cfg)
-	applyMCPMiddleware(server, cfg)
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
+	warnIgnoredServerOpts(cfg, logger)
+	applyMCPMiddleware(server, cfg)
 	return buildHandler(buildCtx(cfg), server, cfg, logger)
 }
 
