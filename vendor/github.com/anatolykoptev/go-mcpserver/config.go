@@ -11,13 +11,33 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// Tool-call timeout tiers. Assign a tier to Config.ToolTimeout or to entries in
+// Config.ToolTimeouts, or select the global default tier via Config.ToolTimeoutMode.
+const (
+	ToolTimeoutShort   = 60 * time.Second  // fast tools (single query / cache read)
+	ToolTimeoutDefault = 90 * time.Second  // default tier
+	ToolTimeoutLong    = 180 * time.Second // scrape + LLM-extraction tools
+)
+
+// ToolTimeoutMode selects a named default tool-call timeout tier. It is applied
+// only when Config.ToolTimeout is 0 (unset). An explicit Config.ToolTimeout, or
+// a per-tool Config.ToolTimeouts entry, always wins — that is the "custom" tier.
+type ToolTimeoutMode string
+
+const (
+	ToolTimeoutModeShort   ToolTimeoutMode = "short"   // ToolTimeoutShort (60s)
+	ToolTimeoutModeDefault ToolTimeoutMode = "default" // ToolTimeoutDefault (90s); also the zero-value behaviour
+	ToolTimeoutModeLong    ToolTimeoutMode = "long"    // ToolTimeoutLong (180s)
+	ToolTimeoutModeCustom  ToolTimeoutMode = "custom"  // use Config.ToolTimeout exactly as the app set it
+)
+
 const (
 	defaultPort               = "8080"
 	defaultReadTimeout        = 30 * time.Second
 	defaultWriteTimeout       = 0               // disabled for SSE — tools manage own timeout via context
 	defaultIdleTimeout        = 5 * time.Minute // generous for pauses between tool calls
 	defaultShutdownTimeout    = 10 * time.Second
-	defaultToolTimeout        = 90 * time.Second
+	defaultToolTimeout        = ToolTimeoutDefault
 	defaultMaxConcurrentTools = 100
 	portEnvVar                = "MCP_PORT"
 )
@@ -26,6 +46,7 @@ const (
 type Config struct {
 	Name    string // service name for /health + logs (required)
 	Version string // version for /health + logs (required)
+	Host    string // bind host; empty → "0.0.0.0" (all interfaces)
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
 	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
@@ -59,10 +80,26 @@ type Config struct {
 	MCPReceivingMiddleware []mcp.Middleware // applied to incoming JSON-RPC (client→server)
 	MCPSendingMiddleware   []mcp.Middleware // applied to outgoing JSON-RPC (server→client)
 
-	ToolTimeout        time.Duration            // default tool execution timeout; 0 = 90s; tools can override via ToolTimeouts
+	ToolTimeout        time.Duration            // default tool execution timeout; 0 = resolve from ToolTimeoutMode (default 90s); tools can override via ToolTimeouts
 	ToolTimeouts       map[string]time.Duration // per-tool timeout overrides; key = tool name
 	MaxToolTimeout     time.Duration            // upper bound for timeout_secs arg override; 0 = ToolTimeout * 2
 	MaxConcurrentTools int                      // max concurrent tool execution goroutines; 0 = 100
+
+	// ToolTimeoutMode selects the default tool-call timeout tier (short 60s /
+	// default 90s / long 180s / custom) used when ToolTimeout == 0. An explicit
+	// ToolTimeout or a per-tool ToolTimeouts entry always wins. Empty = default.
+	ToolTimeoutMode ToolTimeoutMode
+
+	// ToolKeepaliveInterval, when > 0, makes the server emit a periodic MCP
+	// progress notification while a tool call is running, so long tools keep the
+	// response stream warm and clients/proxies don't abandon a call still in
+	// progress. 0 = disabled (default).
+	//
+	// Requires SSE mode (JSONResponse == false): the notification routes to the
+	// tool call's event stream. In application/json mode there is no per-request
+	// stream and the heartbeat is a harmless no-op. Notifications are used (not
+	// server->client ping requests) because requests are rejected in stateless mode.
+	ToolKeepaliveInterval time.Duration
 
 	SessionTimeout    time.Duration  // idle session timeout; 0 = never (passed to StreamableHTTPOptions)
 	EventStore        mcp.EventStore // stream resumption; nil = MemoryEventStore (auto-enabled unless DisableEventStore)
@@ -154,13 +191,27 @@ func applyTimeoutDefaults(cfg *Config) {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
 	}
 	if cfg.ToolTimeout == 0 {
-		cfg.ToolTimeout = defaultToolTimeout
+		cfg.ToolTimeout = resolveToolTimeoutMode(cfg.ToolTimeoutMode)
 	}
 	if cfg.MaxToolTimeout == 0 {
 		cfg.MaxToolTimeout = cfg.ToolTimeout * 2
 	}
 	if cfg.MaxConcurrentTools == 0 {
 		cfg.MaxConcurrentTools = defaultMaxConcurrentTools
+	}
+}
+
+// resolveToolTimeoutMode maps a ToolTimeoutMode to its tier duration. It is
+// consulted only when Config.ToolTimeout is unset. An unknown or empty mode —
+// and "custom" without an explicit ToolTimeout — falls back to the default tier.
+func resolveToolTimeoutMode(mode ToolTimeoutMode) time.Duration {
+	switch mode {
+	case ToolTimeoutModeShort:
+		return ToolTimeoutShort
+	case ToolTimeoutModeLong:
+		return ToolTimeoutLong
+	default:
+		return ToolTimeoutDefault
 	}
 }
 

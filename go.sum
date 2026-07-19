@@ -18,12 +18,8 @@ github.com/anatolykoptev/go-engine v1.51.5 h1:eBAcqyc1LghtnfHaXiUhRpLZr/eJ3MLhha
 github.com/anatolykoptev/go-engine v1.51.5/go.mod h1:cJEdCaLVNRFW04gAeRZUtkIxGMVwdPPZ74T3evOXUrI=
 github.com/anatolykoptev/go-kit v0.97.1 h1:/e7qgw2k1zVORqh7jwIdGGelIbyqcTZP7Z+DLXuFOzM=
 github.com/anatolykoptev/go-kit v0.97.1/go.mod h1:jLGRJLqxCdEfrxH8xmYRPO+ax/ozXnyTcVQXzot5S9w=
-github.com/anatolykoptev/go-mcpserver v0.16.0 h1:REoP0fOD3wo+J3Zc4r0TSlxmuz/RPDX+F0qUcVOv7Fg=
-github.com/anatolykoptev/go-mcpserver v0.16.0/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
-github.com/anatolykoptev/go-panel v0.20.1 h1:a5QE7JoenMaGt+RcnkK6y0/c/opogc/IoguAd5vEChM=
-github.com/anatolykoptev/go-panel v0.20.1/go.mod h1:wsQHQqh30wDFNbaV/jFITvnYa1Wu3O+GZJGT0UbmMsQ=
-github.com/anatolykoptev/go-panel v0.21.0 h1:fhbl83xB8j1sHKWPVaR3SagJANizPE400UPqD/6t1YA=
-github.com/anatolykoptev/go-panel v0.21.0/go.mod h1:QRDfoKNLoTXTj8x7JvsnmU0I6jC+4kDSkYd4Nt/o/n8=
+github.com/anatolykoptev/go-mcpserver v0.17.0 h1:kzNyfu5cFb7QQ4NRtWzM9F9MQGs/iLz/Mr4DV89CBeE=
+github.com/anatolykoptev/go-mcpserver v0.17.0/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
 github.com/anatolykoptev/go-panel v0.21.1 h1:DbFmcIUfH6Hsm9bCwmAWGgiFs5MaLKXubPp6wmMK8gc=
 github.com/anatolykoptev/go-panel v0.21.1/go.mod h1:QRDfoKNLoTXTj8x7JvsnmU0I6jC+4kDSkYd4Nt/o/n8=
 github.com/anatolykoptev/go-stealth v1.19.1 h1:7w25zGDUMy0kz4cP2p/J9zjCgfUA6U1akBTDMh/M7G4=
