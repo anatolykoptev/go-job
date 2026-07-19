@@ -2,6 +2,34 @@
 
 All notable changes to go_job are documented here.
 
+## [1.11.0](https://github.com/anatolykoptev/go-job/compare/v1.10.4...v1.11.0) (2026-07-19)
+
+
+### Features
+
+* **mcp:** adopt NewServer + KeepAlive + SchemaCache + wire go-panel mcp ([#285](https://github.com/anatolykoptev/go-job/issues/285)) ([5b4225d](https://github.com/anatolykoptev/go-job/commit/5b4225d50ba323cfbacd91d0fe99e67a2ef8a328))
+* **proxy:** Tor fallback when Webshare absent/fails ([#280](https://github.com/anatolykoptev/go-job/issues/280)) ([5671941](https://github.com/anatolykoptev/go-job/commit/5671941a533762818d089c61bc62b02ff9be9e4e))
+
+
+### Bug Fixes
+
+* **ats:** per-fetch timeout context for greenhouse, lever, ashby (BH-13) ([#272](https://github.com/anatolykoptev/go-job/issues/272)) ([6fe2d58](https://github.com/anatolykoptev/go-job/commit/6fe2d5879c12912c8c6ac060e4211b74225c05e2))
+* bump go-panel v0.21.0 → v0.21.1 (jsonschema tag panic fix) ([#286](https://github.com/anatolykoptev/go-job/issues/286)) ([6e29b0d](https://github.com/anatolykoptev/go-job/commit/6e29b0ddaf499fbe95e5ca6852f6066c8a15d759))
+* cancelable contexts for slugcache warmup, oversize purge, ats discovery (BH-6) ([#267](https://github.com/anatolykoptev/go-job/issues/267)) ([db12b85](https://github.com/anatolykoptev/go-job/commit/db12b851c4a6e0fdcf4924f5f7b449e55c5efd8d))
+* **db:** increase default pool to 25 + add pool stats gauges (BH-3) ([#266](https://github.com/anatolykoptev/go-job/issues/266)) ([0e2eef5](https://github.com/anatolykoptev/go-job/commit/0e2eef59c0e2e6559954d3bb98c0bc6070a6e5c4))
+* **hunt:** schema version tracking for code/schema drift detection (BH-8) ([#273](https://github.com/anatolykoptev/go-job/issues/273)) ([7d3f5f5](https://github.com/anatolykoptev/go-job/commit/7d3f5f581c2288fb42fd8dc9c16943d3917a472d))
+* **hunt:** validate OrderBy against allowlist to prevent SQL injection (BH-5) ([#269](https://github.com/anatolykoptev/go-job/issues/269)) ([41a6b49](https://github.com/anatolykoptev/go-job/commit/41a6b496a6d55a940564a4b2d45ec7c09b3bf9a2))
+* **job_search:** bound connector goroutine fan-out with semaphore cap 8 (BH-1) ([#263](https://github.com/anatolykoptev/go-job/issues/263)) ([457270a](https://github.com/anatolykoptev/go-job/commit/457270af52baa863d2315a84e0a36da714834f8c))
+* **mcp:** wire BearerAuth when MCP_BEARER_TOKEN is set (BH-2) ([#264](https://github.com/anatolykoptev/go-job/issues/264)) ([981f6be](https://github.com/anatolykoptev/go-job/commit/981f6bea929a4de43a43d819f53b2c9928af8ec3))
+* **metrics:** remove dead metrics — gitingest, direct_ddg, direct_startpage (BH-14) ([#274](https://github.com/anatolykoptev/go-job/issues/274)) ([fe1ebd3](https://github.com/anatolykoptev/go-job/commit/fe1ebd3b985f606ad008cce29f65bb02338a63de))
+* **obs:** add LLM latency, purge, enrich skip, admin UI metrics (OBS-6) ([#276](https://github.com/anatolykoptev/go-job/issues/276)) ([2fc29fd](https://github.com/anatolykoptev/go-job/commit/2fc29fd1b375124c33d8cf641d487b04c242b791))
+* **obs:** add LLM latency, purge, enrich skip, admin UI metrics (OBS-6) ([#276](https://github.com/anatolykoptev/go-job/issues/276)) ([#277](https://github.com/anatolykoptev/go-job/issues/277)) ([d79cfaa](https://github.com/anatolykoptev/go-job/commit/d79cfaa3da5b977ffdec77092d26351809ccbff0))
+* **oversize:** soft delete to prevent purge racing with active reads (BH-9) ([#270](https://github.com/anatolykoptev/go-job/issues/270)) ([bec0aed](https://github.com/anatolykoptev/go-job/commit/bec0aed34db6409e45df18d88c4a54455005a657))
+* **search:** route web search through go-search instead of direct DDG ([#278](https://github.com/anatolykoptev/go-job/issues/278)) ([e7eaa6f](https://github.com/anatolykoptev/go-job/commit/e7eaa6f7eb41e450b1e2d73c4fff5609e15bd163))
+* **slugcache:** validate Redis connectivity at init + L2 active metric (BH-12) ([#271](https://github.com/anatolykoptev/go-job/issues/271)) ([27b845f](https://github.com/anatolykoptev/go-job/commit/27b845f8e3bf95c0fd0080a66deea3661390d4af))
+* **test:** document perSourceTimeout mutation is not parallel-safe (BH-16) ([#275](https://github.com/anatolykoptev/go-job/issues/275)) ([1d694be](https://github.com/anatolykoptev/go-job/commit/1d694bec085780c6a257547ff022d688966032b9))
+* **worker:** atomic llmCallsThisCycle + cycle guard (BH-4, BH-7) ([#265](https://github.com/anatolykoptev/go-job/issues/265)) ([3cea0c1](https://github.com/anatolykoptev/go-job/commit/3cea0c1bc0cddd4767fa0479ac9e3067ca22f8b9))
+
 ## [1.10.4](https://github.com/anatolykoptev/go-job/compare/v1.10.3...v1.10.4) (2026-07-17)
 
 
