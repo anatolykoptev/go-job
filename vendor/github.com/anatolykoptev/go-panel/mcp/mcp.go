@@ -49,6 +49,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	defaultListLimit = 50
+	maxListLimit     = 500
+)
+
 // Config configures the MCP server that exposes panel Resources as MCP tools.
 type Config struct {
 	// Panel is the admin panel whose Resources are exposed as MCP tools.
@@ -125,10 +130,10 @@ func registerResourceTools(server *mcp.Server, resources []resource.Resource, lo
 // --- list tool ---
 
 type listInput struct {
-	Limit   int    `json:"limit,omitempty" jsonschema:"default=50,minimum=1,maximum=500"`
-	Offset  int    `json:"offset,omitempty" jsonschema:"minimum=0"`
-	SortKey string `json:"sort_key,omitempty"`
-	SortDir string `json:"sort_dir,omitempty" jsonschema:"enum=asc,enum=desc"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"max 500 rows per page; default 50"`
+	Offset  int    `json:"offset,omitempty" jsonschema:"zero-based offset"`
+	SortKey string `json:"sort_key,omitempty" jsonschema:"field name to sort by"`
+	SortDir string `json:"sort_dir,omitempty" jsonschema:"asc or desc"`
 }
 
 type listOutput struct {
@@ -159,10 +164,10 @@ func registerListTool(server *mcp.Server, r resource.Resource, logger *slog.Logg
 	mcp.AddTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, listOutput, error) {
 		limit := in.Limit
 		if limit <= 0 {
-			limit = 50
+			limit = defaultListLimit
 		}
-		if limit > 500 {
-			limit = 500
+		if limit > maxListLimit {
+			limit = maxListLimit
 		}
 		offset := in.Offset
 		if offset < 0 {

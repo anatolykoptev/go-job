@@ -24,6 +24,8 @@ github.com/anatolykoptev/go-panel v0.20.1 h1:a5QE7JoenMaGt+RcnkK6y0/c/opogc/Iogu
 github.com/anatolykoptev/go-panel v0.20.1/go.mod h1:wsQHQqh30wDFNbaV/jFITvnYa1Wu3O+GZJGT0UbmMsQ=
 github.com/anatolykoptev/go-panel v0.21.0 h1:fhbl83xB8j1sHKWPVaR3SagJANizPE400UPqD/6t1YA=
 github.com/anatolykoptev/go-panel v0.21.0/go.mod h1:QRDfoKNLoTXTj8x7JvsnmU0I6jC+4kDSkYd4Nt/o/n8=
+github.com/anatolykoptev/go-panel v0.21.1 h1:DbFmcIUfH6Hsm9bCwmAWGgiFs5MaLKXubPp6wmMK8gc=
+github.com/anatolykoptev/go-panel v0.21.1/go.mod h1:QRDfoKNLoTXTj8x7JvsnmU0I6jC+4kDSkYd4Nt/o/n8=
 github.com/anatolykoptev/go-stealth v1.19.1 h1:7w25zGDUMy0kz4cP2p/J9zjCgfUA6U1akBTDMh/M7G4=
 github.com/anatolykoptev/go-stealth v1.19.1/go.mod h1:1Fevj8WfJDJ9h/t4Bl8MtHbuQ92ZPjIm8SR6/vnwJsQ=
 github.com/anatolykoptev/go-twitter v0.6.4 h1:nrpjsBvixCozqCCq5BRwY94QwAjhDc2HS/kqJqNOYcE=
