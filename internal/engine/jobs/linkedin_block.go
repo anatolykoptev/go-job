@@ -62,11 +62,11 @@ var linkedInBlockMarkers = []string{
 //   - status >= 300 (non-302 3xx redirect — LinkedIn redirects to authwall/checkpoint) → liChallenge.
 //   - otherwise (2xx like 204) → liOK.
 //
-// The default-by-range classification is critical: linkedInTier1Stealth returns
-// (status, body, nil) for ANY status, so a 503/500 error page MUST classify as
-// a hard block — otherwise the cascade short-circuits on the error page,
-// records a breaker success on a failure, and returns the error-page body to
-// MCP tools as a false success (issue #291).
+// The default-by-range classification is critical: the cascade tier funcs
+// return (status, body, nil) for ANY status, so a 503/500 error page MUST
+// classify as a hard block — otherwise the cascade short-circuits on the error
+// page, records a breaker success on a failure, and returns the error-page
+// body to MCP tools as a false success (issue #291).
 func classifyLinkedInResponse(status int, body []byte) linkedInBlockKind {
 	switch status {
 	case 200:
