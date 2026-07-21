@@ -145,6 +145,33 @@ type JobSearchParams struct {
 	Limit    int    `json:"limit,omitempty"`
 }
 
+// JobDetail is the full detail for a single LinkedIn job posting, fetched from
+// the Voyager jobPostings endpoint with the WebFullJobPosting decoration.
+//
+// VALIDATE-WITH-LIVE-li_at (go-job #293): endpoint + included-entity shape
+// grounded in mattmichaelree/LinkedIn-Job-Scraper (WebFullJobPosting-65
+// decoration, data_variables.csv field paths) + hubertusgbecker/mcp-linkedin-
+// server get_job_details return spec, NOT verified against a live Voyager
+// session — re-check field paths once an account is provisioned.
+type JobDetail struct {
+	JobID          string             `json:"job_id"`
+	Title          string             `json:"title"`
+	Company        string             `json:"company"`
+	ApplicantCount int                `json:"applicant_count"`
+	SeniorityLevel string             `json:"seniority_level,omitempty"`
+	JobFunction    string             `json:"job_function,omitempty"`
+	EmploymentType string             `json:"employment_type,omitempty"`
+	EasyApply      bool               `json:"easy_apply"`
+	HiringTeam     []HiringTeamMember `json:"hiring_team,omitempty"`
+}
+
+// HiringTeamMember is a single recruiter/hiring-contact listed on a job posting.
+type HiringTeamMember struct {
+	Name       string `json:"name"`
+	Title      string `json:"title,omitempty"`
+	ProfileURL string `json:"profile_url,omitempty"`
+}
+
 // SearchParams are filters for SearchPeople/SearchCompanies.
 type SearchParams struct {
 	Query string `json:"query"`
