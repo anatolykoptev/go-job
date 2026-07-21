@@ -90,16 +90,6 @@ func Run(cfg Config) error {
 		logger = slog.Default()
 	}
 
-	server := mcpserver.NewServer(&mcp.Implementation{
-		Name:    "go-panel",
-		Version: "0.1.0",
-	}, mcpserver.Config{
-		KeepAlive:   30 * time.Second,
-		SchemaCache: mcp.NewSchemaCache(),
-	})
-
-	registerResourceTools(server, cfg.Panel.Resources(), logger)
-
 	mcpCfg := mcpserver.Config{
 		Name:                       "go-panel",
 		Version:                    "0.1.0",
@@ -114,14 +104,23 @@ func Run(cfg Config) error {
 		JSONResponse:               true,
 		SessionTimeout:             10 * time.Minute,
 	}
-	return mcpserver.Run(server, mcpCfg)
+	return mcpserver.Serve(&mcp.Implementation{
+		Name:    "go-panel",
+		Version: "0.1.0",
+	}, mcpCfg, func(s *mcp.Server) {
+		registerResourceTools(s, cfg.Panel.Resources(), logger)
+	})
 }
 
 // registerResourceTools creates MCP list/get tools for each Resource.
 func registerResourceTools(server *mcp.Server, resources []resource.Resource, logger *slog.Logger) {
 	for _, r := range resources {
 		registerListTool(server, r, logger)
-		if r.Detailer != nil {
+		// EffectiveDetailer returns the hand-written Detailer OR a synthesized
+		// auto-Detailer built from Sort.Columns + FetchRow. This keeps MCP's
+		// {resource}_get tool in sync with the HTTP detail route (which is
+		// mounted whenever Detailer OR FetchRow is non-nil — see resource.Register).
+		if resource.EffectiveDetailer(r) != nil {
 			registerGetTool(server, r, logger)
 		}
 	}
@@ -137,17 +136,17 @@ type listInput struct {
 }
 
 type listOutput struct {
-	Resource string         `json:"resource"`
-	Rows     []rowJSON      `json:"rows"`
-	Total    int            `json:"total"`
-	Limit    int            `json:"limit"`
-	Offset   int            `json:"offset"`
+	Resource string    `json:"resource"`
+	Rows     []rowJSON `json:"rows"`
+	Total    int       `json:"total"`
+	Limit    int       `json:"limit"`
+	Offset   int       `json:"offset"`
 }
 
 type rowJSON struct {
-	ID    string      `json:"id"`
-	Cells []cellJSON  `json:"cells"`
-	Href  string      `json:"href,omitempty"`
+	ID    string     `json:"id"`
+	Cells []cellJSON `json:"cells"`
+	Href  string     `json:"href,omitempty"`
 }
 
 type cellJSON struct {
@@ -204,15 +203,15 @@ type getInput struct {
 }
 
 type getOutput struct {
-	Resource string           `json:"resource"`
-	ID       string           `json:"id"`
-	Sections []sectionJSON    `json:"sections"`
+	Resource string        `json:"resource"`
+	ID       string        `json:"id"`
+	Sections []sectionJSON `json:"sections"`
 }
 
 type sectionJSON struct {
-	Title   string      `json:"title,omitempty"`
-	Items   []itemJSON  `json:"items,omitempty"`
-	RawHTML string      `json:"raw_html,omitempty"`
+	Title   string     `json:"title,omitempty"`
+	Items   []itemJSON `json:"items,omitempty"`
+	RawHTML string     `json:"raw_html,omitempty"`
 }
 
 type itemJSON struct {
@@ -235,7 +234,10 @@ func registerGetTool(server *mcp.Server, r resource.Resource, logger *slog.Logge
 		if err != nil {
 			return nil, getOutput{}, fmt.Errorf("%s: internal request build failed: %w", toolName, err)
 		}
-		sections, err := r.Detailer(ctx, req, in.ID)
+		// EffectiveDetailer handles both hand-written Detailer and the
+		// FetchRow-backed auto-Detailer (see resource.EffectiveDetailer).
+		detailer := resource.EffectiveDetailer(r)
+		sections, err := detailer(ctx, req, in.ID)
 		if err != nil {
 			return nil, getOutput{}, fmt.Errorf("%s: detail failed: %w", toolName, err)
 		}
