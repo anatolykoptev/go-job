@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,12 +152,12 @@ func reportLinkedInAuthError(ctx context.Context) {
 	}
 }
 
+// isAuthError reports whether err indicates a LinkedIn auth/block signal that
+// should trigger client rotation. Uses classifyLinkedInError so the Voyager
+// path rotates on 999, 429, and 200-with-challenge-body — not just 302/401/403
+// (issue #290).
 func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "302") || strings.Contains(s, "403") || strings.Contains(s, "401")
+	return classifyLinkedInError(err) != liOK
 }
 
 func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, string, error) {
