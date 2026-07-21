@@ -14,18 +14,16 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-// withTiers swaps the three cascade tier functions and restores them on cleanup.
-func withTiers(t *testing.T, t1, t2, t3 linkedInTierFunc) {
+// withTiers swaps the two cascade tier functions and restores them on cleanup.
+func withTiers(t *testing.T, tA, tB linkedInTierFunc) {
 	t.Helper()
-	orig1, orig2, orig3 := linkedInTier1Fetch, linkedInTier2Fetch, linkedInTier3Fetch
+	origA, origB := linkedInTierAFetch, linkedInTierBFetch
 	t.Cleanup(func() {
-		linkedInTier1Fetch = orig1
-		linkedInTier2Fetch = orig2
-		linkedInTier3Fetch = orig3
+		linkedInTierAFetch = origA
+		linkedInTierBFetch = origB
 	})
-	linkedInTier1Fetch = t1
-	linkedInTier2Fetch = t2
-	linkedInTier3Fetch = t3
+	linkedInTierAFetch = tA
+	linkedInTierBFetch = tB
 }
 
 // withBreaker swaps the package linkedinBreaker with a fresh test breaker and
@@ -38,184 +36,149 @@ func withBreaker(t *testing.T, b *breaker.Breaker) {
 }
 
 func TestLinkedInCascadeEscalatesThroughTiers(t *testing.T) {
-	var calls1, calls2, calls3 atomic.Int32
+	var callsA, callsB atomic.Int32
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls1.Add(1)
-		return 200, []byte(`<html><body>checkpoint</body></html>`), nil // liChallenge
-	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls2.Add(1)
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsA.Add(1)
 		return 403, []byte(`forbidden`), nil // liHardBlock
 	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls3.Add(1)
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsB.Add(1)
 		return 200, []byte(`<html><body>clean job results page</body></html>`), nil // liOK
 	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	body, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err != nil {
 		t.Fatalf("linkedInRequest returned error: %v", err)
 	}
 	if string(body) != `<html><body>clean job results page</body></html>` {
-		t.Errorf("expected tier-3 body, got %q", string(body))
+		t.Errorf("expected tier-B body, got %q", string(body))
 	}
-	if got := calls1.Load(); got != 1 {
-		t.Errorf("tier1 call count = %d, want 1", got)
+	if got := callsA.Load(); got != 1 {
+		t.Errorf("tierA call count = %d, want 1", got)
 	}
-	if got := calls2.Load(); got != 1 {
-		t.Errorf("tier2 call count = %d, want 1", got)
-	}
-	if got := calls3.Load(); got != 1 {
-		t.Errorf("tier3 call count = %d, want 1", got)
+	if got := callsB.Load(); got != 1 {
+		t.Errorf("tierB call count = %d, want 1", got)
 	}
 }
 
-func TestLinkedInCascadeShortCircuitsOnTier1OK(t *testing.T) {
-	var calls1, calls2, calls3 atomic.Int32
+func TestLinkedInCascadeShortCircuitsOnTierAOK(t *testing.T) {
+	var callsA, callsB atomic.Int32
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls1.Add(1)
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsA.Add(1)
 		return 200, []byte(`<html><body>clean results</body></html>`), nil // liOK
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls2.Add(1)
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsB.Add(1)
 		return 200, []byte(`should not be called`), nil
 	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls3.Add(1)
-		return 200, []byte(`should not be called`), nil
-	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	body, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err != nil {
 		t.Fatalf("linkedInRequest returned error: %v", err)
 	}
 	if string(body) != `<html><body>clean results</body></html>` {
-		t.Errorf("expected tier-1 body, got %q", string(body))
+		t.Errorf("expected tier-A body, got %q", string(body))
 	}
-	if got := calls1.Load(); got != 1 {
-		t.Errorf("tier1 call count = %d, want 1", got)
+	if got := callsA.Load(); got != 1 {
+		t.Errorf("tierA call count = %d, want 1", got)
 	}
-	if got := calls2.Load(); got != 0 {
-		t.Errorf("tier2 call count = %d, want 0 (short-circuit)", got)
-	}
-	if got := calls3.Load(); got != 0 {
-		t.Errorf("tier3 call count = %d, want 0 (short-circuit)", got)
+	if got := callsB.Load(); got != 0 {
+		t.Errorf("tierB call count = %d, want 0 (short-circuit)", got)
 	}
 }
 
 func TestLinkedInCascadeAllTiersBlocked(t *testing.T) {
-	var calls1, calls2, calls3 atomic.Int32
+	var callsA, callsB atomic.Int32
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls1.Add(1)
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsA.Add(1)
 		return 999, []byte(`blocked`), nil // liHardBlock
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls2.Add(1)
-		return 429, []byte(`rate limited`), nil // liRateLimited
-	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls3.Add(1)
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsB.Add(1)
 		return 0, nil, errors.New("gowowa render: connection refused") // err
 	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	_, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err == nil {
 		t.Fatal("expected error when all tiers blocked, got nil")
 	}
-	if got := calls1.Load(); got != 1 {
-		t.Errorf("tier1 call count = %d, want 1", got)
+	if got := callsA.Load(); got != 1 {
+		t.Errorf("tierA call count = %d, want 1", got)
 	}
-	if got := calls2.Load(); got != 1 {
-		t.Errorf("tier2 call count = %d, want 1", got)
-	}
-	if got := calls3.Load(); got != 1 {
-		t.Errorf("tier3 call count = %d, want 1", got)
+	if got := callsB.Load(); got != 1 {
+		t.Errorf("tierB call count = %d, want 1", got)
 	}
 }
 
-func TestLinkedInCascadeTier1ErrorEscalates(t *testing.T) {
-	// Tier 1 returns a network error (not a block signal) — cascade should escalate.
-	var calls1, calls2, calls3 atomic.Int32
+func TestLinkedInCascadeTierAErrorEscalates(t *testing.T) {
+	// Tier A returns a network error (not a block signal) — cascade should escalate.
+	var callsA, callsB atomic.Int32
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls1.Add(1)
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsA.Add(1)
 		return 0, nil, errors.New("connection reset")
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls2.Add(1)
-		return 200, []byte(`<html><body>clean via proxy</body></html>`), nil // liOK
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsB.Add(1)
+		return 200, []byte(`<html><body>clean via render</body></html>`), nil // liOK
 	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls3.Add(1)
-		return 200, []byte(`should not be called`), nil
-	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	body, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err != nil {
 		t.Fatalf("linkedInRequest returned error: %v", err)
 	}
-	if string(body) != `<html><body>clean via proxy</body></html>` {
-		t.Errorf("expected tier-2 body, got %q", string(body))
+	if string(body) != `<html><body>clean via render</body></html>` {
+		t.Errorf("expected tier-B body, got %q", string(body))
 	}
-	if got := calls1.Load(); got != 1 {
-		t.Errorf("tier1 call count = %d, want 1", got)
+	if got := callsA.Load(); got != 1 {
+		t.Errorf("tierA call count = %d, want 1", got)
 	}
-	if got := calls2.Load(); got != 1 {
-		t.Errorf("tier2 call count = %d, want 1", got)
-	}
-	if got := calls3.Load(); got != 0 {
-		t.Errorf("tier3 call count = %d, want 0 (tier 2 succeeded)", got)
+	if got := callsB.Load(); got != 1 {
+		t.Errorf("tierB call count = %d, want 1", got)
 	}
 }
 
-// TestLinkedInCascadeTier1_503Escalates verifies that a Tier-1 503 (err=nil)
+// TestLinkedInCascadeTierA_503Escalates verifies that a Tier-A 503 (err=nil)
 // does NOT short-circuit the cascade as a false success. Regression guard for
 // issue #291: the old classifier's `default: return liOK` misclassified 503
 // error pages as success, recorded linkedinBreaker.Record(true) on the error
 // page, and returned the error-page body to MCP tools.
 //
-// With the fix, 503 → liHardBlock → escalate to Tier-2 (liOK) → return Tier-2
-// body. The breaker records success ONCE for the cascade (at Tier-2), never on
+// With the fix, 503 → liHardBlock → escalate to Tier-B (liOK) → return Tier-B
+// body. The breaker records success ONCE for the cascade (at Tier-B), never on
 // the 503.
-func TestLinkedInCascadeTier1_503Escalates(t *testing.T) {
-	var calls1, calls2, calls3 atomic.Int32
+func TestLinkedInCascadeTierA_503Escalates(t *testing.T) {
+	var callsA, callsB atomic.Int32
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls1.Add(1)
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsA.Add(1)
 		return 503, []byte(`<html><body>503 Service Unavailable</body></html>`), nil // err=nil, must NOT be liOK
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls2.Add(1)
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		callsB.Add(1)
 		return 200, []byte(`<html><body>clean job results</body></html>`), nil // liOK
 	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		calls3.Add(1)
-		return 200, []byte(`should not be called`), nil
-	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	body, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err != nil {
 		t.Fatalf("linkedInRequest returned error: %v (503 should escalate, not fail)", err)
 	}
 	if string(body) != `<html><body>clean job results</body></html>` {
-		t.Errorf("expected tier-2 clean body, got %q (503 short-circuited as false success)", string(body))
+		t.Errorf("expected tier-B clean body, got %q (503 short-circuited as false success)", string(body))
 	}
-	if got := calls1.Load(); got != 1 {
-		t.Errorf("tier1 call count = %d, want 1", got)
+	if got := callsA.Load(); got != 1 {
+		t.Errorf("tierA call count = %d, want 1", got)
 	}
-	if got := calls2.Load(); got != 1 {
-		t.Errorf("tier2 call count = %d, want 1 (503 must escalate)", got)
-	}
-	if got := calls3.Load(); got != 0 {
-		t.Errorf("tier3 call count = %d, want 0 (tier 2 succeeded)", got)
+	if got := callsB.Load(); got != 1 {
+		t.Errorf("tierB call count = %d, want 1 (503 must escalate)", got)
 	}
 }
 
@@ -224,14 +187,14 @@ func TestLinkedInCascadeTier1_503Escalates(t *testing.T) {
 // each call (NOT Record(true)), so the breaker trips after FailThreshold calls.
 // This is the direct observation that 503 is not recorded as success.
 //
-// With the old `default: return liOK` bug, 503 → liOK → Record(true) at Tier-1
+// With the old `default: return liOK` bug, 503 → liOK → Record(true) at Tier-A
 // → the breaker would NEVER trip on a 503 storm (it records success). The fix
 // classifies 503 as liHardBlock, so all-503 → Record(false) → breaker opens.
 func TestLinkedInCascadeAllTiers503TripsBreaker(t *testing.T) {
 	tier503 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return 503, []byte(`<html><body>503 Service Unavailable</body></html>`), nil
 	}
-	withTiers(t, tier503, tier503, tier503)
+	withTiers(t, tier503, tier503)
 	// Isolate breaker: FailThreshold=3 so 3 failed cascades trip it.
 	withBreaker(t, breaker.New(breaker.Options{
 		Name:          "test-linkedin-503",
@@ -267,17 +230,14 @@ func TestLinkedInCascadeAllTiers503TripsBreaker(t *testing.T) {
 // enriched with the LAST tier's classified kind + status so downstream
 // alerting can distinguish rate-limit vs hard-block vs network-down.
 func TestLinkedInCascadeExhaustedErrorEnriched(t *testing.T) {
-	// Last tier (Tier-3) returns a 429 → kind=liRateLimited, status=429.
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	// Last tier (Tier-B) returns a 429 → kind=liRateLimited, status=429.
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return 999, []byte(`blocked`), nil // liHardBlock
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		return 403, []byte(`forbidden`), nil // liHardBlock
-	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return 429, []byte(`rate limited`), nil // liRateLimited — LAST tier
 	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	_, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 	if err == nil {
@@ -289,8 +249,8 @@ func TestLinkedInCascadeExhaustedErrorEnriched(t *testing.T) {
 	}
 	// Enrichment: last tier + status + kind in the message.
 	msg := err.Error()
-	if !strings.Contains(msg, "last tier=3") {
-		t.Errorf("error message missing 'last tier=3': %q", msg)
+	if !strings.Contains(msg, "last tier=B") {
+		t.Errorf("error message missing 'last tier=B': %q", msg)
 	}
 	if !strings.Contains(msg, "status=429") {
 		t.Errorf("error message missing 'status=429' (last tier status): %q", msg)
@@ -313,27 +273,24 @@ func TestLinkedInCascadeEscalationLogs(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(orig) })
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return 503, []byte(`service unavailable`), nil // liHardBlock
 	}
-	tier2 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		return 429, []byte(`rate limited`), nil // liRateLimited
-	}
-	tier3 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return 0, nil, errors.New("gowowa render: connection refused") // network err
 	}
-	withTiers(t, tier1, tier2, tier3)
+	withTiers(t, tierA, tierB)
 
 	_, _ = linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
 
 	out := buf.String()
-	// Expect 3 escalation warn lines (one per tier).
+	// Expect 2 escalation warn lines (one per tier).
 	warnCount := strings.Count(out, "level=WARN")
-	if warnCount != 3 {
-		t.Errorf("expected 3 WARN escalation lines, got %d in:\n%s", warnCount, out)
+	if warnCount != 2 {
+		t.Errorf("expected 2 WARN escalation lines, got %d in:\n%s", warnCount, out)
 	}
 	// Each escalation must carry tier, status, kind fields.
-	for _, want := range []string{"tier=1", "tier=2", "tier=3", "status=", "kind="} {
+	for _, want := range []string{"tier=A", "tier=B", "status=", "kind="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("slog output missing %q in:\n%s", want, out)
 		}
