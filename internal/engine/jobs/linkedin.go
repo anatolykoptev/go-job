@@ -17,6 +17,7 @@ import (
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/ratelimit"
+	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go_job/internal/engine"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
@@ -25,6 +26,21 @@ import (
 
 // LinkedIn Guest API endpoint — returns HTML, no auth required.
 const linkedInGuestAPI = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+
+// linkedInGuestMaxStart is the hard ceiling of the LinkedIn Guest API
+// (jobs-guest/jobs/api/seeMoreJobPostings/search): ~1000 results / 40 pages of
+// 25. Requests past this offset yield no new results and only draw rate-limiting.
+const linkedInGuestMaxStart = 1000
+
+// linkedInPageJitter is the jittered backoff applied between Guest-API pages
+// (before each fetch except the first). Reuses go-stealth.Jitter for a
+// context-cancellable random sleep. Overridable in tests via withPageJitter.
+//
+//nolint:gochecknoglobals // package-level config, overridable in tests
+var linkedInPageJitter = stealth.Jitter{
+	Min: 200 * time.Millisecond,
+	Max: 500 * time.Millisecond,
+}
 
 // linkedinLimiter caps concurrent LinkedIn Guest API calls independently of ATS.
 // LinkedIn Voyager is far more aggressive about rate-limiting parallel requests.
@@ -202,9 +218,22 @@ func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobTyp
 		baseQ.Set("f_JIYN", "true")
 	}
 
-	// Paginate in steps of 25 until we have enough results or LinkedIn returns empty.
+	// Paginate in steps of 25 until we have enough results, LinkedIn returns
+	// empty, or we hit the Guest-API hard ceiling (~1000 results / 40 pages).
+	// A jittered backoff is applied between pages (not before the first, not
+	// after the last) to avoid burst-fetching and draw less rate-limiting.
 	var allJobs []LinkedInJob
-	for start := 0; len(allJobs) < maxResults; start += 25 {
+	for start := 0; len(allJobs) < maxResults && start < linkedInGuestMaxStart; start += 25 {
+		// Jittered backoff before every fetch except the first. The sleep is
+		// context-cancellable so a cancelled search aborts promptly instead of
+		// waiting out the full jitter. On ctx cancellation we return what we
+		// have so far (consistent with linkedInRequest's ctx-aware behaviour).
+		if start > 0 {
+			if err := linkedInPageJitter.Sleep(ctx); err != nil {
+				break
+			}
+		}
+
 		q := baseQ
 		q.Set("start", strconv.Itoa(start))
 		u.RawQuery = q.Encode()
