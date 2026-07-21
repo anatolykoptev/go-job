@@ -102,6 +102,21 @@ type LinkedInJob struct {
 	URL      string `json:"url"`
 	JobID    string `json:"job_id"`
 	Posted   string `json:"posted"`
+	// EasyApply indicates the posting accepts LinkedIn's in-platform "Easy Apply"
+	// flow rather than redirecting to an off-site application. ApplyMethod is the
+	// human-readable apply method ("easy-apply" / "off-site" / "") and
+	// CompanyApplyURL is the off-site apply URL when present.
+	//
+	// Guest-path note: LinkedIn's guest job-detail JSON-LD does NOT emit
+	// schema.org JobPosting.directApply (verified empirically across multiple
+	// real guest job-detail pages — see issue #294), and the guest list card
+	// markup carries no apply-method badge. These fields are therefore NOT
+	// populated by the guest path; they are populated by the authenticated
+	// Voyager detail path in issue #293. Plumbed here so the serialization
+	// contract is locked independently of the future populator.
+	EasyApply       bool   `json:"easy_apply,omitempty"`
+	ApplyMethod     string `json:"apply_method,omitempty"`
+	CompanyApplyURL string `json:"company_apply_url,omitempty"`
 }
 
 // jobIDRe extracts job ID from LinkedIn job URLs.

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -212,4 +213,62 @@ func TestExtractJSONLD(t *testing.T) {
 
 func containsStr(s, sub string) bool {
 return strings.Contains(s, sub)
+}
+
+// TestLinkedInJobApplyMethodPlumbing verifies the EasyApply / ApplyMethod /
+// CompanyApplyURL fields exist on LinkedInJob, serialize with omitempty, and
+// round-trip through JSON.
+//
+// Guest-path context: LinkedIn's guest job-detail JSON-LD does NOT emit
+// schema.org JobPosting.directApply (verified empirically across multiple real
+// guest job-detail pages — see issue #294). These fields are therefore plumbing
+// only on the guest path; they are populated by the authenticated Voyager
+// detail path in issue #293. This test guards the field plumbing so the
+// serialization contract is locked independently of the future populator.
+func TestLinkedInJobApplyMethodPlumbing(t *testing.T) {
+	t.Run("zero values omit fields", func(t *testing.T) {
+		j := LinkedInJob{Title: "Go Dev", Company: "Acme"}
+		b, err := json.Marshal(j)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s := string(b)
+		for _, key := range []string{`"easy_apply"`, `"apply_method"`, `"company_apply_url"`} {
+			if strings.Contains(s, key) {
+				t.Errorf("zero-value job should omit %s; got %s", key, s)
+			}
+		}
+	})
+
+	t.Run("set values serialize and round-trip", func(t *testing.T) {
+		j := LinkedInJob{
+			Title:           "Go Dev",
+			Company:         "Acme",
+			EasyApply:       true,
+			ApplyMethod:     "easy-apply",
+			CompanyApplyURL: "https://acme.com/careers/123",
+		}
+		b, err := json.Marshal(j)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `"easy_apply":true`) {
+			t.Errorf("missing easy_apply:true in %s", s)
+		}
+		if !strings.Contains(s, `"apply_method":"easy-apply"`) {
+			t.Errorf("missing apply_method in %s", s)
+		}
+		if !strings.Contains(s, `"company_apply_url":"https://acme.com/careers/123"`) {
+			t.Errorf("missing company_apply_url in %s", s)
+		}
+
+		var back LinkedInJob
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if back.EasyApply != true || back.ApplyMethod != "easy-apply" || back.CompanyApplyURL != "https://acme.com/careers/123" {
+			t.Errorf("round-trip mismatch: %+v", back)
+		}
+	})
 }
