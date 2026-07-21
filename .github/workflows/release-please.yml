@@ -23,10 +23,20 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # Run release-please as the krolik-release-bot GitHub App, NOT GITHUB_TOKEN.
+      # A release PR opened with GITHUB_TOKEN does NOT trigger workflows (the
+      # recursion guard) — preflight never runs, the PR sits `action_required`,
+      # and the required check blocks merge (this is what stalled #288). An
+      # App-opened PR DOES get CI runs. App ID/key wired via repo var+secret.
+      - uses: actions/create-github-app-token@v2
+        id: bot-token
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
       - uses: googleapis/release-please-action@v5.0.0
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.bot-token.outputs.token }}
           target-branch: main
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
