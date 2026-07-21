@@ -235,9 +235,40 @@ func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobTyp
 	return allJobs, nil
 }
 
-// linkedInRequest fetches a LinkedIn URL using BrowserClient (Chrome TLS fingerprint)
-// when available, falling back to standard net/http client.
-// LinkedIn blocks non-browser TLS fingerprints, so BrowserClient is strongly preferred.
+// linkedInTierFunc is the uniform signature for all three cascade tiers.
+// Each tier returns (status, body, err); the cascade classifier inspects all three.
+type linkedInTierFunc func(ctx context.Context, targetURL string, headers map[string]string) (status int, body []byte, err error)
+
+// linkedInTier1Fetch is the Tier-1 stealth fetch via go-stealth BrowserClient
+// (Chrome TLS fingerprint), with net/http fallback when BrowserClient is nil.
+// Overridable in tests.
+var linkedInTier1Fetch linkedInTierFunc = linkedInTier1Stealth
+
+// linkedInTier2Fetch is the Tier-2 proxy fetch via engine.FetchProxyBody
+// (proxy + ox-browser /fetch-smart anti-bot fallback). Overridable in tests.
+var linkedInTier2Fetch linkedInTierFunc = linkedInTier2Proxy
+
+// linkedInTier3Fetch is the Tier-3 headless render via go-wowa Playwright/Chrome.
+// Overridable in tests.
+var linkedInTier3Fetch linkedInTierFunc = linkedInTier3Render
+
+// linkedInRequest fetches a LinkedIn URL through a three-tier fallback cascade:
+//
+//  1. Tier 1: go-stealth BrowserClient (Chrome JA3) or net/http fallback.
+//  2. Tier 2: engine.FetchProxyBody (proxy pool + ox-browser /fetch-smart).
+//  3. Tier 3: fetchRenderedHTML (go-wowa headless Chrome render).
+//
+// Each response is classified via classifyLinkedInResponse. The first tier that
+// returns liOK short-circuits the cascade. A breaker failure is recorded only
+// after the final tier also returns non-OK; a breaker success is recorded when
+// any tier yields liOK. The linkedinLimiter and FetchTimeout context wrap the
+// entire cascade.
+//
+// Each escalation emits a slog.Warn with {tier, status, kind, err} so operators
+// can distinguish 429-throttle-everywhere from hard-block from network-down.
+// On total failure the returned error wraps errLinkedInCascadeExhausted and is
+// enriched with the LAST tier's classified kind + status for downstream
+// alerting (issue #291).
 func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	if !linkedinBreaker.Allow() {
 		return nil, fmt.Errorf("linkedin breaker open: %w", breaker.ErrOpen)
@@ -253,55 +284,130 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	// Prefer BrowserClient - LinkedIn detects non-browser TLS fingerprints
-	if engine.Cfg.BrowserClient != nil {
-		headers := engine.ChromeHeaders()
-		headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9"
-		headers["referer"] = "https://www.linkedin.com/"
+	headers := engine.ChromeHeaders()
+	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9"
+	headers["referer"] = "https://www.linkedin.com/"
 
-		data, err := engine.RetryDo(ctx, engine.DefaultRetryConfig, func() ([]byte, error) {
-			d, _, s, e := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
-			if e != nil {
-				return nil, e
-			}
-			if s != 200 {
-				return nil, fmt.Errorf("linkedin status %d", s)
-			}
-			return d, nil
-		})
-		if err != nil {
-			linkedinBreaker.Record(false)
-			return nil, err
+	// tierResult captures a tier's classified outcome for escalation logging
+	// and the final enriched error.
+	type tierResult struct {
+		tier   int
+		status int
+		kind   linkedInBlockKind
+		err    error
+	}
+	classify := func(tier int, status int, body []byte, err error) (tierResult, bool) {
+		// A transport error (no HTTP response) is a cascade-level network error,
+		// not a LinkedIn block — distinct kind for alerting.
+		kind := liNetworkError
+		if err == nil {
+			kind = classifyLinkedInResponse(status, body)
 		}
+		ok := err == nil && kind == liOK
+		return tierResult{tier: tier, status: status, kind: kind, err: err}, ok
+	}
+	var last tierResult
+
+	// Tier 1: stealth BrowserClient (or net/http fallback).
+	status, body, ferr := linkedInTier1Fetch(ctx, targetURL, headers)
+	if r, ok := classify(1, status, body, ferr); ok {
 		linkedinBreaker.Record(true)
-		return data, nil
+		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
 	}
 
-	// Fallback: standard HTTP client
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	// Tier 2: proxy + ox-browser /fetch-smart.
+	status, body, ferr = linkedInTier2Fetch(ctx, targetURL, headers)
+	if r, ok := classify(2, status, body, ferr); ok {
+		linkedinBreaker.Record(true)
+		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
+	}
+
+	// Tier 3: go-wowa headless render.
+	status, body, ferr = linkedInTier3Fetch(ctx, targetURL, headers)
+	if r, ok := classify(3, status, body, ferr); ok {
+		linkedinBreaker.Record(true)
+		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
+	}
+
+	linkedinBreaker.Record(false)
+	return nil, fmt.Errorf("linkedin cascade exhausted (last tier=%d status=%d kind=%s): %w",
+		last.tier, last.status, last.kind, errLinkedInCascadeExhausted)
+}
+
+// linkedInTier1Stealth is the Tier-1 fetch: go-stealth BrowserClient (Chrome
+// TLS fingerprint) when available, falling back to standard net/http client.
+// LinkedIn blocks non-browser TLS fingerprints, so BrowserClient is preferred.
+func linkedInTier1Stealth(ctx context.Context, targetURL string, headers map[string]string) (int, []byte, error) {
+	if engine.Cfg.BrowserClient != nil {
+		data, _, status, err := engine.Cfg.BrowserClient.Do("GET", targetURL, headers, nil)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
-		req.Header.Set("User-Agent", engine.UserAgentChrome)
-		req.Header.Set("Accept", "text/html,application/xhtml+xml")
-		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
+		return status, data, nil
+	}
+
+	// Fallback: standard HTTP client (when BrowserClient is nil).
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		linkedinBreaker.Record(false)
-		return nil, err
+		return 0, nil, err
+	}
+	req.Header.Set("User-Agent", engine.UserAgentChrome)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	resp, err := engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
+	if err != nil {
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
+	data, rerr := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	return resp.StatusCode, data, rerr
+}
 
-	if resp.StatusCode != http.StatusOK {
-		linkedinBreaker.Record(false)
-		return nil, fmt.Errorf("linkedin status %d", resp.StatusCode)
+// linkedInTier2Proxy is the Tier-2 fetch: engine.FetchProxyBody routes through
+// the go-engine Fetcher, which has the ox-browser /fetch-smart anti-bot
+// fallback baked in (wired in internal/engine/config.go via fetch.WithOxBrowser
+// when OX_BROWSER_URL is set).
+func linkedInTier2Proxy(ctx context.Context, targetURL string, headers map[string]string) (int, []byte, error) {
+	body, err := engine.FetchProxyBody(ctx, targetURL, headers)
+	if err != nil {
+		return 0, nil, err
 	}
+	return 200, body, nil
+}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	linkedinBreaker.Record(err == nil)
-	return data, err
+// linkedInTier3Render is the Tier-3 fetch: go-wowa headless Playwright/Chrome
+// render via fetchRenderedHTML. Headers are accepted but ignored (go-wowa uses
+// its own browser profile).
+func linkedInTier3Render(ctx context.Context, targetURL string, _ map[string]string) (int, []byte, error) {
+	html, err := fetchRenderedHTML(ctx, targetURL)
+	if err != nil {
+		return 0, nil, err
+	}
+	return 200, []byte(html), nil
 }
 
 // parseLinkedInHTML extracts job cards from the Guest API HTML response
