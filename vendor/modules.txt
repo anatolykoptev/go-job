@@ -67,7 +67,7 @@ github.com/anatolykoptev/go-linkedin
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 github.com/anatolykoptev/go-mcpserver/mcpclient
-# github.com/anatolykoptev/go-panel v0.21.1
+# github.com/anatolykoptev/go-panel v0.22.1
 ## explicit; go 1.26
 github.com/anatolykoptev/go-panel/auth
 github.com/anatolykoptev/go-panel/components
