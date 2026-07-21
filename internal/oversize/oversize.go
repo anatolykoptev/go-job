@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go-kit/pgutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -62,40 +62,70 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// Migrate runs schema migrations in lexical order. Idempotent.
+// oversizeMigrateLockKey is a distinct advisory-lock namespace for the oversize
+// migration runner. The gojob database is shared with hunt (which owns pgutil's
+// default lock key) and resumedb; each package-scoped runner MUST use a unique
+// non-zero LockKey or concurrent boots would serialize unrelated migrations on
+// the same advisory lock.
+// ASCII "OVRSZ_MG" → 0x4F5652535A5F4D47.
+const oversizeMigrateLockKey int64 = 0x4F5652535A5F4D47
+
+// Migrate runs schema migrations in lexical order via go-kit/pgutil.
+// Idempotent: already-applied files are skipped; on an empty tracking table
+// the Baseline predicate adopts an existing prod DB (marks all files applied
+// without re-running them) so the cutover from the old no-tracker runner —
+// which re-applied every file on every startup — never re-runs DDL against
+// the live schema.
+//
+// pgutil owns its own `oversize_schema_migrations(name, checksum, applied_at)`
+// table; the pre-pgutil runner had NO tracking table (it re-ran both files
+// every boot, relying on IF NOT EXISTS / ADD COLUMN IF NOT EXISTS for
+// idempotency). Baseline adopts by probing for the app table
+// (oversize_responses): if it exists, every current DB was brought up by that
+// re-apply-every-boot runner, so all files have already been applied — marking
+// them applied without executing avoids a pointless DDL re-run.
 func (s *Store) Migrate(ctx context.Context) error {
-	entries, err := schemaFS.ReadDir("schema")
+	schemaSub, err := fs.Sub(schemaFS, "schema")
 	if err != nil {
-		return fmt.Errorf("oversize: read schema dir: %w", err)
+		return fmt.Errorf("oversize: schema sub fs: %w", err)
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
+	return pgutil.RunMigrations(ctx, s.pool, schemaSub, pgutil.MigrateOptions{
+		// Package-scoped tracking table — distinct from hunt's "schema_migrations"
+		// and any future resumedb table, since all three share the gojob DB.
+		TableName: "oversize_schema_migrations",
+		LockKey:   oversizeMigrateLockKey,
+		// PreMigrate preserves the old behaviour: ensure search_path is public
+		// before any DDL runs (the migrations use unqualified names).
+		PreMigrate: func(ctx context.Context, conn *pgxpool.Conn) error {
+			if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
+				return fmt.Errorf("oversize: set search_path: %w", err)
+			}
+			return nil
+		},
+		// Baseline: adopt an already-migrated prod DB. The pre-pgutil runner
+		// had no tracking table and re-applied every file on every startup, so
+		// any DB where oversize_responses exists has already had ALL current
+		// files applied. Return true → pgutil marks every file applied without
+		// executing, avoiding a pointless DDL re-run against the live schema.
+		// On a fresh DB to_regclass('public.oversize_responses') IS NULL →
+		// false → pgutil applies all files in order.
+		//
+		// CUTOVER SAFETY (pr-council #309, finding 3): do NOT add a NEW
+		// schema/*.sql file in the same PR that first deploys pgutil to a DB
+		// whose tables already exist. Baseline marks ALL discovered files
+		// applied WITHOUT running their DDL, so a brand-new file would be
+		// silently skipped. New migrations must land in a LATER PR, after
+		// oversize_schema_migrations is already populated.
+		Baseline: func(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
+			var exists bool
+			if err := conn.QueryRow(ctx,
+				`SELECT to_regclass('public.oversize_responses') IS NOT NULL`,
+			).Scan(&exists); err != nil {
+				return false, fmt.Errorf("oversize: baseline probe: %w", err)
+			}
+			return exists, nil
+		},
 	})
-
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("oversize: acquire migration connection: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
-		return fmt.Errorf("oversize: set search_path: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		data, err := schemaFS.ReadFile("schema/" + entry.Name())
-		if err != nil {
-			return fmt.Errorf("oversize: read %s: %w", entry.Name(), err)
-		}
-		if _, err := conn.Exec(ctx, string(data)); err != nil {
-			return fmt.Errorf("oversize: execute %s: %w", entry.Name(), err)
-		}
-	}
-	return nil
 }
 
 // Save inserts an entry, returns generated id.
