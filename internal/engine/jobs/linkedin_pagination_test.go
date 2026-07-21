@@ -101,7 +101,7 @@ func TestSearchLinkedInJobsCeilingCapsStartAt1000(t *testing.T) {
 
 	var starts []int
 	var fetches atomic.Int32
-	tier1 := func(_ context.Context, targetURL string, _ map[string]string) (int, []byte, error) {
+	tierA := func(_ context.Context, targetURL string, _ map[string]string) (int, []byte, error) {
 		fetches.Add(1)
 		starts = append(starts, startFromURL(targetURL))
 		return 200, fakeLinkedInPageHTML(25), nil // liOK, full page
@@ -109,7 +109,7 @@ func TestSearchLinkedInJobsCeilingCapsStartAt1000(t *testing.T) {
 	tierFail := func(context.Context, string, map[string]string) (int, []byte, error) {
 		return 503, []byte("nope"), nil
 	}
-	withTiers(t, tier1, tierFail, tierFail)
+	withTiers(t, tierA, tierFail)
 
 	// maxResults well past the 1000 ceiling (2000 / 25 = 80 pages).
 	jobs, err := SearchLinkedInJobs(context.Background(), "go", "us", "", "", "", "", "", 2000, false)
@@ -148,7 +148,7 @@ func TestSearchLinkedInJobsNoBackoffBeforeFirstPage(t *testing.T) {
 	var firstFetch, secondFetch time.Duration
 	var fetches atomic.Int32
 	t0 := time.Now()
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		switch fetches.Add(1) {
 		case 1:
 			firstFetch = time.Since(t0)
@@ -160,7 +160,7 @@ func TestSearchLinkedInJobsNoBackoffBeforeFirstPage(t *testing.T) {
 	tierFail := func(context.Context, string, map[string]string) (int, []byte, error) {
 		return 503, []byte("nope"), nil
 	}
-	withTiers(t, tier1, tierFail, tierFail)
+	withTiers(t, tierA, tierFail)
 
 	// maxResults=50 → 2 pages: first page immediate, backoff, second page.
 	jobs, err := SearchLinkedInJobs(context.Background(), "go", "us", "", "", "", "", "", 50, false)
@@ -195,7 +195,7 @@ func TestSearchLinkedInJobsBackoffCancellable(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var fetches atomic.Int32
-	tier1 := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		n := fetches.Add(1)
 		if n == 1 {
 			// Cancel during/after the first fetch so the backoff before page 2
@@ -209,7 +209,7 @@ func TestSearchLinkedInJobsBackoffCancellable(t *testing.T) {
 	tierFail := func(context.Context, string, map[string]string) (int, []byte, error) {
 		return 503, []byte("nope"), nil
 	}
-	withTiers(t, tier1, tierFail, tierFail)
+	withTiers(t, tierA, tierFail)
 
 	start := time.Now()
 	// maxResults=50 → 2 pages needed, so a backoff would fire before page 2.
