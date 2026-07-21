@@ -154,10 +154,22 @@ func reportLinkedInAuthError(ctx context.Context) {
 
 // isAuthError reports whether err indicates a LinkedIn auth/block signal that
 // should trigger client rotation. Uses classifyLinkedInError so the Voyager
-// path rotates on 999, 429, and 200-with-challenge-body — not just 302/401/403
+// path rotates on 999 and 200-with-challenge-body — not just 302/401/403
 // (issue #290).
+//
+// A 429 rate limit (liRateLimited) is NOT an auth error: rotating on a
+// transient throttle would invalidate a healthy pooled client, report
+// auth_error to go-social (poisoning the account's health signal), and retry
+// immediately against a rate-limited endpoint with no backoff. The Voyager
+// path has no breaker, so 429 must be surfaced to the caller for backoff — not
+// rotated (issue #291).
 func isAuthError(err error) bool {
-	return classifyLinkedInError(err) != liOK
+	switch classifyLinkedInError(err) {
+	case liHardBlock, liChallenge:
+		return true
+	default:
+		return false
+	}
 }
 
 func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, string, error) {

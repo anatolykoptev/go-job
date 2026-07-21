@@ -1,7 +1,18 @@
 package jobs
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	linkedin "github.com/anatolykoptev/go-linkedin"
+	"github.com/anatolykoptev/go-twitter/social"
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 func TestClassifyLinkedInResponse(t *testing.T) {
@@ -20,7 +31,21 @@ func TestClassifyLinkedInResponse(t *testing.T) {
 		{"403 forbidden", 403, nil, liHardBlock},
 		{"429 rate limited", 429, nil, liRateLimited},
 		{"999 LinkedIn block", 999, nil, liHardBlock},
-		{"500 server error (unclassified)", 500, nil, liOK},
+
+		// Unhandled 4xx/5xx MUST escalate as hard blocks (issue #291: default
+		// returning liOK misclassified error pages as success and short-circuited
+		// the cascade, defeating the 429/503-storm breaker).
+		{"404 not found", 404, nil, liHardBlock},
+		{"500 server error", 500, nil, liHardBlock},
+		{"502 bad gateway", 502, nil, liHardBlock},
+		{"503 service unavailable", 503, nil, liHardBlock},
+
+		// Non-302 3xx redirects → challenge (LinkedIn redirects to authwall/checkpoint).
+		{"301 permanent redirect", 301, nil, liChallenge},
+		{"308 permanent redirect", 308, nil, liChallenge},
+
+		// 2xx non-200 (e.g. 204 No Content) stays OK.
+		{"204 no content", 204, nil, liOK},
 
 		// 200 with challenge-body markers (case-insensitive).
 		{"200 checkpoint body", 200, []byte(`<html><title>Security Verification | LinkedIn</title><body>checkpoint</body></html>`), liChallenge},
@@ -84,8 +109,8 @@ func TestIsAuthErrorUsesClassifier(t *testing.T) {
 	}
 
 	// Cases the OLD string-match MISSED — must now be auth errors.
+	// (429 is NOT here — a rate limit must NOT rotate; see TestIsAuthErrorNoRotateOnRateLimit.)
 	newlyCaught := []error{
-		errStr("voyager /identity/profile: status 429"),
 		errStr("voyager /identity/profile: status 999"),
 		errStr("voyager auth failed: HTML response (session expired or IP blocked)"),
 	}
@@ -100,6 +125,10 @@ func TestIsAuthErrorUsesClassifier(t *testing.T) {
 		nil,
 		errStr("linkedin rate limit exhausted (0 remaining)"),
 		errStr("voyager request /identity/profile: connection refused"),
+		// 429 is a transient rate limit, NOT an auth/block signal — rotating
+		// would poison a healthy account's go-social health signal and retry
+		// immediately against a rate-limited endpoint with no backoff (issue #291).
+		errStr("voyager /identity/profile: status 429"),
 	}
 	for _, e := range notAuth {
 		if isAuthError(e) {
@@ -111,3 +140,100 @@ func TestIsAuthErrorUsesClassifier(t *testing.T) {
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// TestIsAuthErrorNoRotateOnRateLimit verifies that a 429 rate limit does NOT
+// invalidate the pooled client or report auth_error to go-social. The pool's
+// expiresAt must remain unchanged and ReportUsage must not be called.
+//
+// Regression guard for issue #291: the old isAuthError (= "classifier != liOK")
+// treated 429 as an auth error, poisoning a healthy account's health signal and
+// retrying immediately against a rate-limited endpoint with no backoff.
+func TestIsAuthErrorNoRotateOnRateLimit(t *testing.T) {
+	var reportCalls atomic.Int32
+	socialSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			reportCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// AcquireAccount fallback (should not be called — pool is primed).
+		_ = json.NewEncoder(w).Encode(social.Credentials{
+			ID:          "test-id",
+			Credentials: map[string]string{"auth_token": "t", "ct0": "c"},
+		})
+	}))
+	defer socialSrv.Close()
+
+	engine.Cfg.SocialClient = social.NewClient(socialSrv.URL, "tok", "go-job")
+	t.Cleanup(func() { engine.Cfg.SocialClient = nil })
+
+	// Prime the pool with a real client and a future expiry so getLinkedInClient
+	// takes the fast path (no social AcquireAccount call).
+	client, err := linkedin.New(linkedin.ClientConfig{Cookies: map[string]string{"auth_token": "t", "ct0": "c"}})
+	if err != nil {
+		t.Fatalf("linkedin.New: %v", err)
+	}
+	linkedinPool.mu.Lock()
+	linkedinPool.client.Store(client)
+	linkedinPool.accountID = "test-id"
+	linkedinPool.refreshedAt = time.Now()
+	expires := time.Now().Add(10 * time.Minute)
+	linkedinPool.expiresAt = expires
+	linkedinPool.mu.Unlock()
+	t.Cleanup(func() {
+		linkedinPool.mu.Lock()
+		linkedinPool.client.Store(nil)
+		linkedinPool.expiresAt = time.Time{}
+		linkedinPool.mu.Unlock()
+	})
+
+	// withRetry: fn returns a 429-classified error. isAuthError must be false →
+	// no invalidate, no reportLinkedInAuthError, no retry.
+	rateLimitErr := errStr("voyager /identity/profile: status 429")
+	_, callErr := withRetry[any](context.Background(), func(*linkedin.Client) (any, error) {
+		return nil, rateLimitErr
+	})
+	if !errors.Is(callErr, rateLimitErr) {
+		t.Fatalf("withRetry returned err = %v, want the original 429 error unchanged", callErr)
+	}
+
+	// Pool expiry MUST be unchanged (invalidate was not called).
+	linkedinPool.mu.Lock()
+	gotExpires := linkedinPool.expiresAt
+	linkedinPool.mu.Unlock()
+	if !gotExpires.Equal(expires) {
+		t.Errorf("pool expiresAt changed after 429: got %v, want %v (invalidate must NOT run on rate limit)", gotExpires, expires)
+	}
+
+	// go-social ReportUsage MUST NOT be called (no auth_error report).
+	if n := reportCalls.Load(); n != 0 {
+		t.Errorf("go-social ReportUsage called %d times on 429 path, want 0 (no auth_error report on rate limit)", n)
+	}
+}
+
+// TestIsAuthErrorRotatesOnHardBlock verifies the rotation path IS preserved for
+// real auth/block signals (liHardBlock / liChallenge) — the fix to isAuthError
+// must not over-correct and suppress rotation for genuine blocks.
+func TestIsAuthErrorRotatesOnHardBlock(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"401 hard block", errStr("voyager auth failed: status 401 (cookies may be expired)"), true},
+		{"403 hard block", errStr("voyager auth failed: status 403 (cookies may be expired)"), true},
+		{"302 challenge", errStr("voyager /identity/profile: status 302"), true},
+		{"999 hard block", errStr("voyager /identity/profile: status 999"), true},
+		{"200 challenge body", errStr("voyager auth failed: HTML response (session expired or IP blocked)"), true},
+		{"429 rate limit (no rotate)", errStr("voyager /identity/profile: status 429"), false},
+		{"network error (no rotate)", errStr("voyager request /identity/profile: connection refused"), false},
+		{"nil (no rotate)", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isAuthError(c.err); got != c.want {
+				t.Errorf("isAuthError(%q) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}

@@ -263,6 +263,12 @@ var linkedInTier3Fetch linkedInTierFunc = linkedInTier3Render
 // after the final tier also returns non-OK; a breaker success is recorded when
 // any tier yields liOK. The linkedinLimiter and FetchTimeout context wrap the
 // entire cascade.
+//
+// Each escalation emits a slog.Warn with {tier, status, kind, err} so operators
+// can distinguish 429-throttle-everywhere from hard-block from network-down.
+// On total failure the returned error wraps errLinkedInCascadeExhausted and is
+// enriched with the LAST tier's classified kind + status for downstream
+// alerting (issue #291).
 func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	if !linkedinBreaker.Allow() {
 		return nil, fmt.Errorf("linkedin breaker open: %w", breaker.ErrOpen)
@@ -282,26 +288,74 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9"
 	headers["referer"] = "https://www.linkedin.com/"
 
+	// tierResult captures a tier's classified outcome for escalation logging
+	// and the final enriched error.
+	type tierResult struct {
+		tier   int
+		status int
+		kind   linkedInBlockKind
+		err    error
+	}
+	classify := func(tier int, status int, body []byte, err error) (tierResult, bool) {
+		// A transport error (no HTTP response) is a cascade-level network error,
+		// not a LinkedIn block — distinct kind for alerting.
+		kind := liNetworkError
+		if err == nil {
+			kind = classifyLinkedInResponse(status, body)
+		}
+		ok := err == nil && kind == liOK
+		return tierResult{tier: tier, status: status, kind: kind, err: err}, ok
+	}
+	var last tierResult
+
 	// Tier 1: stealth BrowserClient (or net/http fallback).
-	if status, body, err := linkedInTier1Fetch(ctx, targetURL, headers); err == nil && classifyLinkedInResponse(status, body) == liOK {
+	status, body, ferr := linkedInTier1Fetch(ctx, targetURL, headers)
+	if r, ok := classify(1, status, body, ferr); ok {
 		linkedinBreaker.Record(true)
 		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
 	}
 
 	// Tier 2: proxy + ox-browser /fetch-smart.
-	if status, body, err := linkedInTier2Fetch(ctx, targetURL, headers); err == nil && classifyLinkedInResponse(status, body) == liOK {
+	status, body, ferr = linkedInTier2Fetch(ctx, targetURL, headers)
+	if r, ok := classify(2, status, body, ferr); ok {
 		linkedinBreaker.Record(true)
 		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
 	}
 
 	// Tier 3: go-wowa headless render.
-	if status, body, err := linkedInTier3Fetch(ctx, targetURL, headers); err == nil && classifyLinkedInResponse(status, body) == liOK {
+	status, body, ferr = linkedInTier3Fetch(ctx, targetURL, headers)
+	if r, ok := classify(3, status, body, ferr); ok {
 		linkedinBreaker.Record(true)
 		return body, nil
+	} else {
+		last = r
+		slog.Warn("linkedin cascade: escalating from tier",
+			slog.Int("tier", r.tier),
+			slog.Int("status", r.status),
+			slog.String("kind", r.kind.String()),
+			slog.Any("err", r.err),
+		)
 	}
 
 	linkedinBreaker.Record(false)
-	return nil, errLinkedInCascadeExhausted
+	return nil, fmt.Errorf("linkedin cascade exhausted (last tier=%d status=%d kind=%s): %w",
+		last.tier, last.status, last.kind, errLinkedInCascadeExhausted)
 }
 
 // linkedInTier1Stealth is the Tier-1 fetch: go-stealth BrowserClient (Chrome
