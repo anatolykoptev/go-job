@@ -94,6 +94,13 @@ var timeRangeMap = map[string]string{
 	"month": "r2592000",
 }
 
+// Apply-method values for LinkedInJob.ApplyMethod, derived by jobDetailToFields
+// from a linkedin.JobDetail.EasyApply flag.
+const (
+	applyMethodEasyApply = "easy-apply"
+	applyMethodOffSite   = "off-site"
+)
+
 // LinkedInJob represents a parsed job card from the Guest API.
 type LinkedInJob struct {
 	Title    string `json:"title"`
@@ -117,6 +124,76 @@ type LinkedInJob struct {
 	EasyApply       bool   `json:"easy_apply,omitempty"`
 	ApplyMethod     string `json:"apply_method,omitempty"`
 	CompanyApplyURL string `json:"company_apply_url,omitempty"`
+
+	// Voyager detail-path enrichment fields (issue #293). Populated by
+	// jobDetailToFields from a go-linkedin JobDetail returned by VoyagerJobDetail.
+	// All omitempty so the guest list path (which does not set them) serializes
+	// the same as before.
+	ApplicantCount int                 `json:"applicant_count,omitempty"`
+	SeniorityLevel string              `json:"seniority_level,omitempty"`
+	JobFunction    string              `json:"job_function,omitempty"`
+	EmploymentType string              `json:"employment_type,omitempty"`
+	HiringTeam     []HiringTeamMember  `json:"hiring_team,omitempty"`
+}
+
+// HiringTeamMember is a single recruiter/hiring-contact listed on a LinkedIn
+// job posting. A go-job-side mirror of linkedin.HiringTeamMember so the JSON
+// tags and downstream serialization stay under go-job's control.
+type HiringTeamMember struct {
+	Name       string `json:"name"`
+	Title      string `json:"title,omitempty"`
+	ProfileURL string `json:"profile_url,omitempty"`
+}
+
+// jobDetailFields is the subset of LinkedInJob enrichment fields populated from
+// a linkedin.JobDetail by jobDetailToFields. Kept as a value type so the mapper
+// is a pure function with no aliasing of the caller's LinkedInJob.
+type jobDetailFields struct {
+	EasyApply       bool
+	ApplyMethod     string
+	CompanyApplyURL string
+	ApplicantCount  int
+	SeniorityLevel  string
+	JobFunction     string
+	EmploymentType  string
+	HiringTeam      []HiringTeamMember
+}
+
+// jobDetailToFields maps a linkedin.JobDetail onto the go-job-side enrichment
+// fields. EasyApply is taken verbatim; ApplyMethod is derived as "easy-apply"
+// when EasyApply is true and "off-site" otherwise. A nil JobDetail returns the
+// zero value (nil-safe so VoyagerJobDetail callers don't need a separate nil
+// check before populating a LinkedInJob).
+//
+// VALIDATE-WITH-LIVE-li_at (#293): populated from go-linkedin GetJobDetail
+// whose Voyager shape is unverified.
+func jobDetailToFields(d *linkedin.JobDetail) jobDetailFields {
+	if d == nil {
+		return jobDetailFields{}
+	}
+	f := jobDetailFields{
+		EasyApply:       d.EasyApply,
+		ApplicantCount:  d.ApplicantCount,
+		SeniorityLevel:  d.SeniorityLevel,
+		JobFunction:     d.JobFunction,
+		EmploymentType:  d.EmploymentType,
+	}
+	if d.EasyApply {
+		f.ApplyMethod = applyMethodEasyApply
+	} else {
+		f.ApplyMethod = applyMethodOffSite
+	}
+	if len(d.HiringTeam) > 0 {
+		f.HiringTeam = make([]HiringTeamMember, len(d.HiringTeam))
+		for i, m := range d.HiringTeam {
+			f.HiringTeam[i] = HiringTeamMember{
+				Name:       m.Name,
+				Title:      m.Title,
+				ProfileURL: m.ProfileURL,
+			}
+		}
+	}
+	return f
 }
 
 // jobIDRe extracts job ID from LinkedIn job URLs.
@@ -806,6 +883,19 @@ func VoyagerCompany(ctx context.Context, slug string) (*linkedin.Company, error)
 func VoyagerJobs(ctx context.Context, params linkedin.JobSearchParams) ([]linkedin.Job, error) {
 	return withRetry(ctx, func(c *linkedin.Client) ([]linkedin.Job, error) {
 		return c.SearchJobs(ctx, params)
+	})
+}
+
+// VoyagerJobDetail fetches the full detail for a single LinkedIn job posting by
+// its job ID via the Voyager jobPostings endpoint (WebFullJobPosting decoration).
+// Reuses withRetry so it rotates on auth-block exactly like the other Voyager
+// wrappers — do NOT hand-roll retry/rotation.
+//
+// VALIDATE-WITH-LIVE-li_at (#293): populated from go-linkedin GetJobDetail
+// whose Voyager shape is unverified.
+func VoyagerJobDetail(ctx context.Context, jobID string) (*linkedin.JobDetail, error) {
+	return withRetry(ctx, func(c *linkedin.Client) (*linkedin.JobDetail, error) {
+		return c.GetJobDetail(ctx, jobID)
 	})
 }
 
