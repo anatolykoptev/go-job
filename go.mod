@@ -7,7 +7,7 @@ require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
 	github.com/anatolykoptev/go-engine v1.51.5
 	github.com/anatolykoptev/go-kit v0.97.1
-	github.com/anatolykoptev/go-linkedin v0.4.2
+	github.com/anatolykoptev/go-linkedin v0.4.8
 	github.com/anatolykoptev/go-mcpserver v0.18.0
 	github.com/anatolykoptev/go-panel v0.21.1
 	github.com/anatolykoptev/go-stealth v1.19.1
@@ -97,5 +97,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin
