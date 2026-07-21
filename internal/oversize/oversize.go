@@ -65,7 +65,8 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // oversizeMigrateLockKey is a distinct advisory-lock namespace for the oversize
 // migration runner. The gojob database is shared with hunt (which owns pgutil's
 // default lock key) and resumedb; each package-scoped runner MUST use a unique
-// non-zero LockKey or concurrent boots would deadlock on the same advisory lock.
+// non-zero LockKey or concurrent boots would serialize unrelated migrations on
+// the same advisory lock.
 // ASCII "OVRSZ_MG" → 0x4F5652535A5F4D47.
 const oversizeMigrateLockKey int64 = 0x4F5652535A5F4D47
 

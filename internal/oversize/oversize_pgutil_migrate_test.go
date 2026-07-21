@@ -144,11 +144,13 @@ func TestStore_Migrate_PgUtil_FreshDB(t *testing.T) {
 // RED-on-revert: if Store.Migrate is reverted to the old no-tracker loop, it
 // would re-run migrations against the already-created tables (no-op via IF
 // NOT EXISTS) but oversize_schema_migrations would never be created → the
-// tracking-table assertion fails. If Baseline is removed/wrong, pgutil tries
-// to re-run 001_oversize_responses.sql inside a per-file tx; CREATE TABLE IF
-// NOT EXISTS is a no-op so it wouldn't error, BUT the distinguishing proof is
-// that oversize_schema_migrations is populated AND the sentinel row survives
-// untouched.
+// tracking-table assertion fails. If Baseline is removed/wrong (hardwired to
+// return false), pgutil takes the apply-path and re-runs 002_add_deleted_at.sql
+// → `ALTER TABLE ... ADD COLUMN IF NOT EXISTS deleted_at` re-adds the column
+// we dropped post-seed → the deleted_at-still-absent discriminator FAILS. The
+// tracking-table + sentinel assertions alone are NOT enough: the migrations
+// are idempotent (IF NOT EXISTS), so they hold identically under either path.
+// The drop-column probe is what actually distinguishes baseline from apply.
 func TestStore_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 	pool := openEphemeralTestDB(t)
 	ctx := context.Background()
@@ -172,10 +174,38 @@ func TestStore_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 		sentinelSHA, sentinelSHA)
 	require.NoError(t, err, "seed sentinel oversize row")
 
+	// --- Drop the column that 002_add_deleted_at.sql would (re-)add. The app
+	// table still exists so Baseline's to_regclass probe returns true and the
+	// pre-existing state still looks "adopted" (every current file is recorded
+	// as applied by the seed). After Migrate, deleted_at MUST still be absent:
+	// Baseline marks files applied without executing them, so 002's
+	// ADD COLUMN IF NOT EXISTS never runs. If Baseline were broken (returned
+	// false), apply-path would re-run 002 and re-add deleted_at → this probe
+	// fails. The idempotent IF NOT EXISTS makes the column's absence the only
+	// observable difference between the two paths.
+	_, err = pool.Exec(ctx,
+		`ALTER TABLE oversize_responses DROP COLUMN deleted_at`)
+	require.NoError(t, err, "drop deleted_at post-seed to set up the discriminator")
+
 	// --- Call the NEW Migrate. Baseline must fire (oversize_responses exists)
 	// → all files marked applied, none executed.
 	s := oversize.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx), "adopted migrate must succeed without re-running DDL")
+
+	// DISCRIMINATOR: deleted_at must STILL be absent — proves 002's ADD COLUMN
+	// did not execute → Baseline path was taken. A broken Baseline (return
+	// false) would re-add it and this assertion would FAIL.
+	var deletedAtPresent bool
+	err = pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'oversize_responses'
+			  AND column_name = 'deleted_at'
+		)`).Scan(&deletedAtPresent)
+	require.NoError(t, err, "probe information_schema for deleted_at")
+	assert.False(t, deletedAtPresent,
+		"deleted_at must remain absent: Baseline must NOT have re-run 002 (apply-path would re-add it)")
 
 	// oversize_schema_migrations must now list every current file.
 	got := trackingTableRows(t, pool)
