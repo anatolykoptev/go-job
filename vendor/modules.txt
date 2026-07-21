@@ -60,7 +60,7 @@ github.com/anatolykoptev/go-kit/telegram/miniapp
 github.com/anatolykoptev/go-kit/telegram/notify
 github.com/anatolykoptev/go-kit/telegram/tgapi5
 github.com/anatolykoptev/go-kit/uploads
-# github.com/anatolykoptev/go-linkedin v0.4.2 => /home/krolik/src/go-linkedin
+# github.com/anatolykoptev/go-linkedin v0.4.8
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
 # github.com/anatolykoptev/go-mcpserver v0.18.0
@@ -628,4 +628,3 @@ modernc.org/memory
 modernc.org/sqlite
 modernc.org/sqlite/lib
 modernc.org/sqlite/vtab
-# github.com/anatolykoptev/go-linkedin => /home/krolik/src/go-linkedin
