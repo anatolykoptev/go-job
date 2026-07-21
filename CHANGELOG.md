@@ -2,6 +2,21 @@
 
 All notable changes to go_job are documented here.
 
+## [1.12.0](https://github.com/anatolykoptev/go-job/compare/v1.11.0...v1.12.0) (2026-07-21)
+
+
+### Features
+
+* cap LinkedIn guest pagination at ~1000 ceiling + jittered per-page backoff ([#292](https://github.com/anatolykoptev/go-job/issues/292)) ([#300](https://github.com/anatolykoptev/go-job/issues/300)) ([19dad34](https://github.com/anatolykoptev/go-job/commit/19dad34aab310684ce6aa35c3e737da1aaeed04a))
+* LinkedIn block classifier + guest-path API→browser fallback cascade ([#290](https://github.com/anatolykoptev/go-job/issues/290), [#291](https://github.com/anatolykoptev/go-job/issues/291)) ([#297](https://github.com/anatolykoptev/go-job/issues/297)) ([1530b21](https://github.com/anatolykoptev/go-job/commit/1530b216aa6cfe6e4a417fedbfc3143c76b4846c))
+* plumb Easy-Apply fields onto LinkedInJob for Voyager detail path ([#294](https://github.com/anatolykoptev/go-job/issues/294)) ([#301](https://github.com/anatolykoptev/go-job/issues/301)) ([b6904e4](https://github.com/anatolykoptev/go-job/commit/b6904e4c0fa711f7c27347edb97f83ce70d00a83))
+* VoyagerJobDetail wrapper + job-detail enrichment fields ([#293](https://github.com/anatolykoptev/go-job/issues/293)) ([#302](https://github.com/anatolykoptev/go-job/issues/302)) ([baad389](https://github.com/anatolykoptev/go-job/commit/baad3898a49d7b973b1c55251f73b87a9a742eb2))
+
+
+### Bug Fixes
+
+* SSE + tool keepalive via go-mcpserver v0.17.0 ([#287](https://github.com/anatolykoptev/go-job/issues/287)) ([fecd038](https://github.com/anatolykoptev/go-job/commit/fecd0381107bbfbfbf1435e6468b3e9087f45f48))
+
 ## [1.11.0](https://github.com/anatolykoptev/go-job/compare/v1.10.4...v1.11.0) (2026-07-19)
 
 
