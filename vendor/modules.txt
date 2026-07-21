@@ -50,6 +50,7 @@ github.com/anatolykoptev/go-kit/httputil
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/metrics
 github.com/anatolykoptev/go-kit/metrics/mcpmw
+github.com/anatolykoptev/go-kit/pgutil
 github.com/anatolykoptev/go-kit/ratelimit
 github.com/anatolykoptev/go-kit/render
 github.com/anatolykoptev/go-kit/render/typst

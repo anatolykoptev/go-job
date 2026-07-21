@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/pgutil"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -146,81 +147,69 @@ func (s *Store) NotifyJobIfOpen(j Job) {
 	}
 }
 
-// Migrate runs schema migrations in lexical order. Idempotent (all DDL uses IF NOT EXISTS).
-// BH-8: tracks applied migrations in schema_versions table so code/schema
-// drift is detectable at startup.
+// Migrate runs schema migrations in lexical order via go-kit/pgutil.
+// Idempotent: already-applied files are skipped; on an empty tracking table
+// the Baseline predicate adopts an existing prod DB (marks all files applied
+// without re-running them) so the cutover from the old schema_versions tracker
+// never re-runs a migration against a live DB.
+//
+// pgutil owns its own `schema_migrations(name, checksum, applied_at)` table;
+// the legacy `schema_versions(version, applied_at)` table from BH-8 is left
+// orphaned on existing DBs (harmless) and is no longer created on fresh ones.
 func (s *Store) Migrate(ctx context.Context) error {
-	entries, err := schemaFS.ReadDir("schema")
+	schemaSub, err := fs.Sub(schemaFS, "schema")
 	if err != nil {
-		return fmt.Errorf("hunt: read schema dir: %w", err)
+		return fmt.Errorf("hunt: schema sub fs: %w", err)
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("hunt: acquire migration connection: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
-		return fmt.Errorf("hunt: set search_path: %w", err)
-	}
-
-	// BH-8: create schema_versions table before the check loop — the table
-	// itself can't be created by a migration file because the check loop
-	// depends on it existing. Create it inline, then record it as applied.
-	if _, err := conn.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_versions (
-			version     TEXT PRIMARY KEY,
-			applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`); err != nil {
-		return fmt.Errorf("hunt: create schema_versions: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		// BH-8: skip 000_schema_versions.sql — the table is already created
-		// above. Record it as applied if not already.
-		if entry.Name() == "000_schema_versions.sql" {
-			if _, err := conn.Exec(ctx,
-				`INSERT INTO schema_versions (version) VALUES ($1) ON CONFLICT DO NOTHING`,
-				entry.Name()); err != nil {
-				return fmt.Errorf("hunt: record schema_versions %s: %w", entry.Name(), err)
+	return pgutil.RunMigrations(ctx, s.pool, schemaSub, pgutil.MigrateOptions{
+		// PreMigrate preserves the old behaviour: ensure search_path is public
+		// before any DDL runs (pgutil is schema-qualified but the migrations
+		// themselves use unqualified names).
+		PreMigrate: func(ctx context.Context, conn *pgxpool.Conn) error {
+			if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
+				return fmt.Errorf("hunt: set search_path: %w", err)
 			}
-			continue
-		}
-		// BH-8: skip migrations already recorded in schema_versions.
-		var exists bool
-		if err := conn.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM schema_versions WHERE version = $1)`,
-			entry.Name()).Scan(&exists); err != nil {
-			return fmt.Errorf("hunt: check schema_versions for %s: %w", entry.Name(), err)
-		}
-		if exists {
-			continue
-		}
-
-		data, err := schemaFS.ReadFile("schema/" + entry.Name())
-		if err != nil {
-			return fmt.Errorf("hunt: read %s: %w", entry.Name(), err)
-		}
-		if _, err := conn.Exec(ctx, string(data)); err != nil {
-			return fmt.Errorf("hunt: execute %s: %w", entry.Name(), err)
-		}
-		// BH-8: record the applied migration.
-		if _, err := conn.Exec(ctx,
-			`INSERT INTO schema_versions (version) VALUES ($1) ON CONFLICT DO NOTHING`,
-			entry.Name()); err != nil {
-			return fmt.Errorf("hunt: record schema_versions %s: %w", entry.Name(), err)
-		}
-		slog.Info("hunt: migration applied", slog.String("version", entry.Name()))
-	}
-	return nil
+			return nil
+		},
+		// Baseline: adopt an already-migrated prod DB. The old tracker
+		// (schema_versions) existing AND non-empty means this DB was brought
+		// up by the pre-pgutil Migrate; mark every file applied without
+		// executing so no DDL re-runs against the live schema. On a fresh DB
+		// to_regclass('public.schema_versions') IS NULL → false → pgutil
+		// applies all files in order.
+		//
+		// Implemented as two steps (not a single `to_regclass(...) IS NOT NULL
+		// AND EXISTS(...)` expression) because SQL AND is not guaranteed to
+		// short-circuit: Postgres will plan/evaluate the EXISTS subquery even
+		// when the left operand is false, which errors with "relation
+		// schema_versions does not exist" on a fresh DB. Guarding the table
+		// scan behind the to_regclass check in Go makes the predicate actually
+		// defensive, matching the spec's intent.
+		// CUTOVER SAFETY (pr-council #309, finding 3): do NOT add a NEW
+		// schema/*.sql file in the same PR that first deploys pgutil to a DB
+		// whose legacy schema_versions is populated. Baseline marks ALL
+		// discovered files applied WITHOUT running their DDL, so a brand-new
+		// file would be silently skipped. New migrations must land in a LATER
+		// PR, after schema_migrations is already populated.
+		Baseline: func(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
+			var exists bool
+			if err := conn.QueryRow(ctx,
+				`SELECT to_regclass('public.schema_versions') IS NOT NULL`,
+			).Scan(&exists); err != nil {
+				return false, fmt.Errorf("hunt: baseline probe (regclass): %w", err)
+			}
+			if !exists {
+				return false, nil
+			}
+			var populated bool
+			if err := conn.QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM schema_versions LIMIT 1)`,
+			).Scan(&populated); err != nil {
+				return false, fmt.Errorf("hunt: baseline probe (rows): %w", err)
+			}
+			return populated, nil
+		},
+	})
 }
 
 // UpsertBounty inserts a new bounty or updates last_seen_at on dedup_hash conflict.
