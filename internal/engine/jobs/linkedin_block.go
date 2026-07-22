@@ -2,9 +2,9 @@ package jobs
 
 import (
 	"errors"
-	"regexp"
-	"strconv"
 	"strings"
+
+	linkedin "github.com/anatolykoptev/go-linkedin"
 )
 
 // linkedInBlockKind classifies a LinkedIn response into a block category.
@@ -107,26 +107,27 @@ func classifyLinkedInResponse(status int, body []byte) linkedInBlockKind {
 	}
 }
 
-// linkedInErrorStatusRe extracts a 3-digit HTTP status from go-linkedin error
-// strings ("voyager ...: status NNN" or "voyager auth failed: status NNN").
-var linkedInErrorStatusRe = regexp.MustCompile(`status (\d{3})`)
-
-// classifyLinkedInError maps a go-linkedin Voyager error to a block kind.
-// go-linkedin wraps non-200 responses as "voyager ...: status N" and 401/403
-// as "voyager auth failed: status N"; a 200-with-HTML body (challenge wall) is
-// reported as "voyager auth failed: HTML response".
+// classifyLinkedInError maps a go-linkedin Voyager error to a block kind via
+// errors.As on the typed Voyager errors returned since go-linkedin v0.4.9.
+// Replaces the previous regex/substring scraping of error strings, which broke
+// silently on any wording change and could not see through error wrapping
+// (review finding #299).
+//
+//   - *linkedin.VoyagerHTMLResponseError → liChallenge (200 with HTML authwall/challenge body).
+//   - *linkedin.VoyagerStatusError        → classifyLinkedInResponse(vse.Status, nil) (reuses
+//     the shared status classifier so 401/403/999/429/etc mapping lives in ONE place).
+//   - nil or any non-Voyager error → liOK (not an auth signal).
 func classifyLinkedInError(err error) linkedInBlockKind {
 	if err == nil {
 		return liOK
 	}
-	s := err.Error()
-	// 200 + HTML body = challenge wall (session expired or IP blocked).
-	if strings.Contains(s, "HTML response") {
-		return classifyLinkedInResponse(200, []byte("challenge"))
+	var vhe *linkedin.VoyagerHTMLResponseError
+	if errors.As(err, &vhe) {
+		return liChallenge
 	}
-	if m := linkedInErrorStatusRe.FindStringSubmatch(s); m != nil {
-		status, _ := strconv.Atoi(m[1])
-		return classifyLinkedInResponse(status, nil)
+	var vse *linkedin.VoyagerStatusError
+	if errors.As(err, &vse) {
+		return classifyLinkedInResponse(vse.Status, nil)
 	}
 	return liOK
 }

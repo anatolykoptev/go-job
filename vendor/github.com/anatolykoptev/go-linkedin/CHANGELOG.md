@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.9](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.8...v0.4.9) (2026-07-22)
+
+
+### Added
+
+* return typed Voyager errors (VoyagerStatusError / VoyagerHTMLResponseError) for errors.As classification ([#7](https://github.com/anatolykoptev/go-linkedin/issues/7)) ([3eb8588](https://github.com/anatolykoptev/go-linkedin/commit/3eb85889197da9424ec64beeaec3dbfb7fcf7b25))
+
 ## [0.4.8](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.7...v0.4.8) (2026-07-21)
 
 
