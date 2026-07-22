@@ -22,6 +22,10 @@ const geoIDWorldwide = "92000000"
 // jobSearchEndpoint is the voyagerJobsDashJobCards base path.
 const jobSearchEndpoint = "/voyager/api/voyagerJobsDashJobCards"
 
+// defaultEnrichLimit is the cap on per-job detail enrichment when Enrich is
+// true but EnrichLimit is zero or negative. It keeps the extra cost bounded.
+const defaultEnrichLimit = 10
+
 // resolveGeoID maps a free-text location to a LinkedIn geoId. It is
 // case-insensitive and falls back to geoIDWorldwide (92000000, proven 200) for
 // any unknown location — a text locationUnion (e.g. "Remote") yields HTTP 400,
@@ -90,7 +94,76 @@ func (c *Client) SearchJobs(ctx context.Context, params JobSearchParams) ([]Job,
 	if err != nil {
 		return nil, fmt.Errorf("search jobs: %w", err)
 	}
-	return parseJobSearchResults(body)
+	jobs, err := parseJobSearchResults(body)
+	if err != nil {
+		return nil, err
+	}
+	if params.Enrich {
+		c.enrichJobs(ctx, jobs, params.EnrichLimit)
+	}
+	return jobs, nil
+}
+
+// enrichJobs fills the top-K search results with fields from GetJobDetail.
+// It is best-effort: a detail error for one job skips that job and continues.
+// Calls are sequential so the per-session go-wowa browser lock is respected.
+func (c *Client) enrichJobs(ctx context.Context, jobs []Job, limit int) {
+	if limit <= 0 {
+		limit = defaultEnrichLimit
+	}
+	if limit > len(jobs) {
+		limit = len(jobs)
+	}
+
+	fetcher := c.GetJobDetail
+	if c.getJobDetailFn != nil {
+		fetcher = c.getJobDetailFn
+	}
+
+	for i := 0; i < limit; i++ {
+		jobID := jobIDFromURN(jobs[i].URN)
+		if jobID == "" {
+			continue
+		}
+		detail, err := fetcher(ctx, jobID)
+		if err != nil {
+			continue
+		}
+		mergeJobDetail(&jobs[i], detail)
+	}
+}
+
+// mergeJobDetail copies fields from a full job detail into a search Job, but
+// only where the search result left the field empty. Title, URN, and ApplyURL
+// from search are preserved because the search result already has them.
+func mergeJobDetail(job *Job, detail *JobDetail) {
+	if detail == nil {
+		return
+	}
+	if job.Company == "" && detail.Company != "" {
+		job.Company = detail.Company
+	}
+	if job.CompanyURN == "" && detail.CompanyURN != "" {
+		job.CompanyURN = detail.CompanyURN
+	}
+	if job.Location == "" && detail.Location != "" {
+		job.Location = detail.Location
+	}
+	if job.Remote == "" && detail.Remote != "" {
+		job.Remote = detail.Remote
+	}
+	if job.PostedAt.IsZero() && !detail.PostedAt.IsZero() {
+		job.PostedAt = detail.PostedAt
+	}
+	if job.Description == "" && detail.Description != "" {
+		job.Description = detail.Description
+	}
+	if job.SeniorityLevel == "" && detail.SeniorityLevel != "" {
+		job.SeniorityLevel = detail.SeniorityLevel
+	}
+	if job.EmploymentType == "" && detail.EmploymentType != "" {
+		job.EmploymentType = detail.EmploymentType
+	}
 }
 
 // parseJobSearchResults extracts Job entries from a normalized-JSON
@@ -135,7 +208,7 @@ func parseJobSearchResults(body []byte) ([]Job, error) {
 			Title             string `json:"title"`
 			FormattedLoc      string `json:"formattedLocation"`
 			ListedAt          int64  `json:"listedAt"`
-			WorkRemoteAllowed bool   `json:"workRemoteAllowed"`
+			WorkRemoteAllowed *bool  `json:"workRemoteAllowed"`
 			CompanyDetails    struct {
 				Company string `json:"company"`
 			} `json:"companyDetails"`
@@ -150,6 +223,10 @@ func parseJobSearchResults(body []byte) ([]Job, error) {
 			companyURN = j.Company
 		}
 		jobID := jobIDFromURN(j.EntityURN)
+		postedAt := time.Time{}
+		if j.ListedAt > 0 {
+			postedAt = time.UnixMilli(j.ListedAt)
+		}
 		jobs = append(jobs, Job{
 			URN:        j.EntityURN,
 			Title:      j.Title,
@@ -157,7 +234,7 @@ func parseJobSearchResults(body []byte) ([]Job, error) {
 			CompanyURN: companyURN,
 			Location:   j.FormattedLoc,
 			Remote:     remoteFromFlag(j.WorkRemoteAllowed),
-			PostedAt:   time.UnixMilli(j.ListedAt),
+			PostedAt:   postedAt,
 			ApplyURL:   jobViewURL(jobID),
 		})
 	}
@@ -184,10 +261,13 @@ func jobViewURL(jobID string) string {
 }
 
 // remoteFromFlag maps the workRemoteAllowed boolean to the existing Job.Remote
-// vocabulary ("remote" / "onsite"). The JobPosting search entity exposes only
-// the boolean, not the richer workplaceType text the detail endpoint uses.
-func remoteFromFlag(workRemoteAllowed bool) string {
-	if workRemoteAllowed {
+// vocabulary ("remote" / "onsite"). A nil pointer means the field was absent
+// from the source decoration, so the result is left empty for downstream merge.
+func remoteFromFlag(workRemoteAllowed *bool) string {
+	if workRemoteAllowed == nil {
+		return ""
+	}
+	if *workRemoteAllowed {
 		return "remote"
 	}
 	return "onsite"
@@ -245,16 +325,28 @@ func parseJobDetail(body []byte, jobID string) (*JobDetail, error) {
 		SeniorityLevel string   `json:"formattedExperienceLevel"`
 		EmploymentType string   `json:"formattedEmploymentStatus"`
 		JobFunctions   []string `json:"formattedJobFunctions"`
+		FormattedLoc   string   `json:"formattedLocation"`
+		ListedAt       int64    `json:"listedAt"`
+		WorkRemote     *bool    `json:"workRemoteAllowed"`
+		WorkplaceType  string   `json:"workplaceType"`
 		CompanyDetails struct {
 			Company string `json:"company"`
 		} `json:"companyDetails"`
 		ApplyMethod struct {
 			Type string `json:"$type"`
 		} `json:"applyMethod"`
+		Description struct {
+			Text string `json:"text"`
+		} `json:"description"`
 	}
 	// The data field is the JobPosting object itself (single-entity response).
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
 		return nil, fmt.Errorf("parse job detail data: %w", err)
+	}
+
+	postedAt := time.Time{}
+	if data.ListedAt > 0 {
+		postedAt = time.UnixMilli(data.ListedAt)
 	}
 
 	detail := &JobDetail{
@@ -265,10 +357,21 @@ func parseJobDetail(body []byte, jobID string) (*JobDetail, error) {
 		EmploymentType: data.EmploymentType,
 		JobFunction:    strings.Join(data.JobFunctions, ", "),
 		EasyApply:      strings.Contains(data.ApplyMethod.Type, "EasyApply"),
+		Location:       data.FormattedLoc,
+		PostedAt:       postedAt,
+		Description:    data.Description.Text,
 	}
 
 	if data.CompanyDetails.Company != "" {
+		detail.CompanyURN = data.CompanyDetails.Company
 		detail.Company = companyNameFromIncluded(resp.Included, data.CompanyDetails.Company)
+	}
+
+	switch {
+	case data.WorkplaceType != "":
+		detail.Remote = normalizeRemote(data.WorkplaceType)
+	case data.WorkRemote != nil:
+		detail.Remote = remoteFromFlag(data.WorkRemote)
 	}
 
 	detail.HiringTeam = hiringTeamFromIncluded(resp.Included)
