@@ -160,12 +160,17 @@ func TestStore_Migrate_PgUtil_FreshDB(t *testing.T) {
 // RED-on-revert: if Store.Migrate is reverted to the old tracker, it would
 // re-run migrations against the already-created tables (no-op via IF NOT
 // EXISTS) but schema_migrations would never be populated → the
-// schema_migrations assertion fails. If Baseline is removed/wrong, pgutil
-// tries to re-run 001_hunt_bounties.sql inside a per-file tx; CREATE TABLE
-// IF NOT EXISTS is a no-op so it wouldn't error, BUT the sentinel row
-// assertion still holds — the distinguishing proof is that schema_migrations
-// is populated AND schema_versions is left intact (the old code would
-// re-insert into schema_versions, not create schema_migrations).
+// schema_migrations assertion fails. If Baseline is removed/wrong (hardwired
+// to return false), pgutil takes the apply-path and re-runs every file. The
+// migrations are idempotent (CREATE/ALTER … IF NOT EXISTS), so the
+// tracking-table, sentinel-row, and legacy-schema_versions assertions all
+// hold identically under either path — they do NOT discriminate baseline
+// from apply. The drop-column probe below DOES: 007_hunt_status_columns.sql
+// adds hunt_bounties.closed_at via ADD COLUMN IF NOT EXISTS; we drop that
+// column post-seed and assert it stays absent after Migrate. Baseline marks
+// 007 applied without executing it → closed_at stays dropped. A broken
+// Baseline (return false) re-runs 007 → ADD COLUMN IF NOT EXISTS re-adds
+// closed_at → the probe FAILS. This mirrors the oversize T2 discriminator.
 func TestStore_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 	pool := openEphemeralTestDB(t)
 	ctx := context.Background()
@@ -210,10 +215,41 @@ func TestStore_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 		sentinelDedup)
 	require.NoError(t, err, "seed sentinel bounty")
 
+	// 4. Drop a column that 007_hunt_status_columns.sql would (re-)add via
+	//    ADD COLUMN IF NOT EXISTS. The app table still exists so Baseline's
+	//    to_regclass probe returns true and the pre-existing state still
+	//    looks "adopted" (every current file is recorded as applied by the
+	//    seed). After Migrate, closed_at MUST still be absent: Baseline marks
+	//    files applied without executing them, so 007's ADD COLUMN IF NOT
+	//    EXISTS never runs. If Baseline were broken (return false), apply-path
+	//    would re-run 007 and re-add closed_at → the probe below fails. The
+	//    idempotent IF NOT EXISTS makes the column's absence the only
+	//    observable difference between the two paths (the tracking-table,
+	//    sentinel, and legacy-tracker assertions hold identically under
+	//    either path because the migrations are idempotent).
+	_, err = pool.Exec(ctx,
+		`ALTER TABLE hunt_bounties DROP COLUMN closed_at`)
+	require.NoError(t, err, "drop closed_at post-seed to set up the discriminator")
+
 	// --- Call the NEW Migrate. Baseline must fire (schema_versions exists +
 	// non-empty) → all files marked applied, none executed.
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx), "adopted migrate must succeed without re-running DDL")
+
+	// DISCRIMINATOR: closed_at must STILL be absent — proves 007's ADD COLUMN
+	// did not execute → Baseline path was taken. A broken Baseline (return
+	// false) would re-add it and this assertion would FAIL.
+	var closedAtPresent bool
+	err = pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'hunt_bounties'
+			  AND column_name = 'closed_at'
+		)`).Scan(&closedAtPresent)
+	require.NoError(t, err, "probe information_schema for closed_at")
+	assert.False(t, closedAtPresent,
+		"closed_at must remain absent: Baseline must NOT have re-run 007 (apply-path would re-add it)")
 
 	// schema_migrations must now list every current file (001+, no 000).
 	got := schemaMigrationsRows(t, pool)
