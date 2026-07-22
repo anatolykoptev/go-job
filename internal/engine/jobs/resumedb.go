@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go-kit/pgutil"
 	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,61 +120,59 @@ func (db *ResumeDB) Pool() *pgxpool.Pool {
 	return db.pool
 }
 
+// resumeMigrateLockKey is a distinct advisory-lock namespace for the resumedb
+// migration runner. The gojob database is shared with hunt (pgutil's default
+// lock key) and oversize (oversizeMigrateLockKey); each package-scoped runner
+// MUST use a unique non-zero LockKey or concurrent boots would serialize
+// unrelated migrations on the same advisory lock.
+// ASCII "RESUM_MG" → 0x524553554D5F4D47.
+const resumeMigrateLockKey int64 = 0x524553554D5F4D47
+
+// runMigrations applies the embedded resume schema in lexical order via
+// go-kit/pgutil.RunMigrations.
+//
+// pgutil owns soft-migration handling: a file whose first non-whitespace line
+// is "-- soft" (002_resume_graph.sql for Apache AGE, 005_resume_vectors_embedding.sql
+// for pgvector) may fail without aborting the run — the failure is logged and
+// the file is NOT recorded as applied, so a later run retries it once the
+// optional extension is installed. Non-soft failures abort as usual.
+//
+// No Baseline is set: the pre-pgutil runner had NO tracking table and re-applied
+// every file on every startup, relying on IF NOT EXISTS / ADD COLUMN IF NOT
+// EXISTS for idempotency. On the existing prod DB the first pgutil run applies
+// all files in order — a no-op for the idempotent non-soft files, and a
+// self-healing apply-or-soft-skip for 002/005 — then records them in
+// resume_schema_migrations so subsequent boots skip them. A Baseline would
+// instead mark the soft files applied-without-running and they would never
+// retry, so it is intentionally omitted.
+//
+// pgutil runs each file in its own transaction on a single dedicated
+// connection; a soft failure rolls back that file's tx (including any
+// SET search_path it issued), so the ag_catalog contamination the old
+// hand-rolled runner had to reset manually cannot persist across a soft
+// failure. The non-soft files (003, 004_upwork, 006) additionally open with
+// their own `SET search_path TO public`, matching the old behaviour.
 func (db *ResumeDB) runMigrations(ctx context.Context) error {
-	entries, err := schemaFS.ReadDir("schema")
+	schemaSub, err := fs.Sub(schemaFS, "schema")
 	if err != nil {
-		return fmt.Errorf("read schema dir: %w", err)
+		return fmt.Errorf("resumedb: schema sub fs: %w", err)
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
-	// Run migrations on a single dedicated connection to avoid search_path issues
-	// across pooled connections. The memos role has ag_catalog first in search_path.
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire migration connection: %w", err)
-	}
-	defer conn.Release()
-
-	// Ensure we create tables in public schema
-	if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
-		return fmt.Errorf("set search_path: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
-		}
-		data, err := schemaFS.ReadFile("schema/" + entry.Name())
-		if err != nil {
-			return fmt.Errorf("read %s: %w", entry.Name(), err)
-		}
-
-		// Detect soft migrations: first line is "-- soft".
-		// Soft migrations warn-and-continue on failure (same pattern as the 002 AGE migration).
-		isSoft := strings.HasPrefix(strings.TrimSpace(string(data)), "-- soft")
-
-		if _, err := conn.Exec(ctx, string(data)); err != nil {
-			if isSoft {
-				slog.Warn("optional migration failed (extension may not be installed)",
-					slog.String("file", entry.Name()),
-					slog.Any("error", err))
-				_, _ = conn.Exec(ctx, "SET search_path TO public")
-				continue
+	return pgutil.RunMigrations(ctx, db.pool, schemaSub, pgutil.MigrateOptions{
+		// Package-scoped tracking table — distinct from hunt's "schema_migrations"
+		// and oversize's "oversize_schema_migrations", since all three share the
+		// gojob DB.
+		TableName: "resume_schema_migrations",
+		LockKey:   resumeMigrateLockKey,
+		// PreMigrate preserves the old behaviour: ensure search_path is public
+		// before any DDL runs (the migrations use unqualified names, and the
+		// gojob role has ag_catalog first in search_path).
+		PreMigrate: func(ctx context.Context, conn *pgxpool.Conn) error {
+			if _, err := conn.Exec(ctx, "SET search_path TO public"); err != nil {
+				return fmt.Errorf("resumedb: set search_path: %w", err)
 			}
-			return fmt.Errorf("execute %s: %w", entry.Name(), err)
-		}
-
-		// Soft migrations (e.g. 002 AGE graph) set search_path to ag_catalog; reset it.
-		if isSoft {
-			_, _ = conn.Exec(ctx, "SET search_path TO public")
-		}
-
-		slog.Info("migration applied", slog.String("file", entry.Name()))
-	}
-	return nil
+			return nil
+		},
+	})
 }
 
 // --- Person CRUD ---

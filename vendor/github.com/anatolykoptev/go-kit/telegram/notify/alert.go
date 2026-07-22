@@ -14,7 +14,7 @@ import (
 	"github.com/anatolykoptev/go-kit/metrics"
 )
 
-// defaultWebhookURL is the canonical dozor alertmanager endpoint on the krolik box.
+// defaultWebhookURL is the alertmanager endpoint.
 const defaultWebhookURL = "http://127.0.0.1:8765/webhook/alertmanager"
 
 // defaultHTTPTimeout is used by the AlertSink HTTP client when none is supplied.
