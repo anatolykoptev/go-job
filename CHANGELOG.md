@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.14.0](https://github.com/anatolykoptev/go-job/compare/v1.13.0...v1.14.0) (2026-07-22)
+
+
+### Features
+
+* wire opt-in LinkedIn job-search enrichment (enrich/enrich_limit passthrough, default-off; bump go-linkedin v0.4.13) ([#322](https://github.com/anatolykoptev/go-job/issues/322)) ([933c5a7](https://github.com/anatolykoptev/go-job/commit/933c5a77073cce72667e2c3f106c9829ff04ab1c))
+
 ## [1.13.0](https://github.com/anatolykoptev/go-job/compare/v1.12.0...v1.13.0) (2026-07-22)
 
 
