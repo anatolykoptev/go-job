@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.12](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.11...v0.4.12) (2026-07-22)
+
+
+### Fixed
+
+* rewrite job-search to the 2026 Voyager Rest.li query (q=jobSearch + query tuple + geoId + decorationId-220); resolve location-&gt;geoId; parse normalized included[] JobPosting entities (was 400) ([#46](https://github.com/anatolykoptev/go-linkedin/issues/46)) ([bd31e95](https://github.com/anatolykoptev/go-linkedin/commit/bd31e9522323f3d6f13b1a4874877f434394aa09))
+
 ## [0.4.11](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.10...v0.4.11) (2026-07-22)
 
 
