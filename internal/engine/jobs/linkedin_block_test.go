@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -76,14 +77,19 @@ func TestClassifyLinkedInError(t *testing.T) {
 		want linkedInBlockKind
 	}{
 		{"nil error", nil, liOK},
-		{"voyager 401 auth failed", errStr("voyager auth failed: status 401 (cookies may be expired)"), liHardBlock},
-		{"voyager 403 auth failed", errStr("voyager auth failed: status 403 (cookies may be expired)"), liHardBlock},
-		{"voyager 302 redirect", errStr("voyager /identity/profile: status 302"), liChallenge},
-		{"voyager 429 rate limited", errStr("voyager /identity/profile: status 429"), liRateLimited},
-		{"voyager 999 block", errStr("voyager /identity/profile: status 999"), liHardBlock},
-		{"voyager HTML response (200 challenge)", errStr("voyager auth failed: HTML response (session expired or IP blocked)"), liChallenge},
+		{"voyager 401 auth failed", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 401}, liHardBlock},
+		{"voyager 403 auth failed", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 403}, liHardBlock},
+		{"voyager 302 redirect", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 302}, liChallenge},
+		{"voyager 429 rate limited", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 429}, liRateLimited},
+		{"voyager 999 block", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 999}, liHardBlock},
+		{"voyager HTML response (200 challenge)", &linkedin.VoyagerHTMLResponseError{Endpoint: "/identity/profile"}, liChallenge},
 		{"voyager network error (no status)", errStr("voyager request /identity/profile: connection refused"), liOK},
 		{"rate limiter (our own, not LinkedIn 429)", errStr("linkedin rate limit exhausted (0 remaining)"), liOK},
+		// errors.As unwraps wrapped Voyager errors — the whole point over regex
+		// (a regex on the wrapped string would still match here, but a wording
+		// change in the wrapping fmt.Errorf would break regex, not errors.As).
+		{"wrapped voyager 403 (errors.As unwraps)", fmt.Errorf("acquire: %w", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 403}), liHardBlock},
+		{"wrapped voyager HTML challenge", fmt.Errorf("fetch profile: %w", &linkedin.VoyagerHTMLResponseError{Endpoint: "/identity/profile"}), liChallenge},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,9 +104,9 @@ func TestClassifyLinkedInError(t *testing.T) {
 func TestIsAuthErrorUsesClassifier(t *testing.T) {
 	// Cases the OLD string-match caught — must still be auth errors.
 	oldCaught := []error{
-		errStr("voyager auth failed: status 401 (cookies may be expired)"),
-		errStr("voyager auth failed: status 403 (cookies may be expired)"),
-		errStr("voyager /identity/profile: status 302"),
+		&linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 401},
+		&linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 403},
+		&linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 302},
 	}
 	for _, e := range oldCaught {
 		if !isAuthError(e) {
@@ -111,8 +117,8 @@ func TestIsAuthErrorUsesClassifier(t *testing.T) {
 	// Cases the OLD string-match MISSED — must now be auth errors.
 	// (429 is NOT here — a rate limit must NOT rotate; see TestIsAuthErrorNoRotateOnRateLimit.)
 	newlyCaught := []error{
-		errStr("voyager /identity/profile: status 999"),
-		errStr("voyager auth failed: HTML response (session expired or IP blocked)"),
+		&linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 999},
+		&linkedin.VoyagerHTMLResponseError{Endpoint: "/identity/profile"},
 	}
 	for _, e := range newlyCaught {
 		if !isAuthError(e) {
@@ -128,7 +134,7 @@ func TestIsAuthErrorUsesClassifier(t *testing.T) {
 		// 429 is a transient rate limit, NOT an auth/block signal — rotating
 		// would poison a healthy account's go-social health signal and retry
 		// immediately against a rate-limited endpoint with no backoff (issue #291).
-		errStr("voyager /identity/profile: status 429"),
+		&linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 429},
 	}
 	for _, e := range notAuth {
 		if isAuthError(e) {
@@ -189,7 +195,7 @@ func TestIsAuthErrorNoRotateOnRateLimit(t *testing.T) {
 
 	// withRetry: fn returns a 429-classified error. isAuthError must be false →
 	// no invalidate, no reportLinkedInAuthError, no retry.
-	rateLimitErr := errStr("voyager /identity/profile: status 429")
+	rateLimitErr := &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 429}
 	_, callErr := withRetry[any](context.Background(), func(*linkedin.Client) (any, error) {
 		return nil, rateLimitErr
 	})
@@ -220,14 +226,16 @@ func TestIsAuthErrorRotatesOnHardBlock(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"401 hard block", errStr("voyager auth failed: status 401 (cookies may be expired)"), true},
-		{"403 hard block", errStr("voyager auth failed: status 403 (cookies may be expired)"), true},
-		{"302 challenge", errStr("voyager /identity/profile: status 302"), true},
-		{"999 hard block", errStr("voyager /identity/profile: status 999"), true},
-		{"200 challenge body", errStr("voyager auth failed: HTML response (session expired or IP blocked)"), true},
-		{"429 rate limit (no rotate)", errStr("voyager /identity/profile: status 429"), false},
+		{"401 hard block", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 401}, true},
+		{"403 hard block", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 403}, true},
+		{"302 challenge", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 302}, true},
+		{"999 hard block", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 999}, true},
+		{"200 challenge body", &linkedin.VoyagerHTMLResponseError{Endpoint: "/identity/profile"}, true},
+		{"429 rate limit (no rotate)", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 429}, false},
 		{"network error (no rotate)", errStr("voyager request /identity/profile: connection refused"), false},
 		{"nil (no rotate)", nil, false},
+		// Wrapped Voyager error must still rotate via errors.As unwrapping.
+		{"wrapped 403 hard block", fmt.Errorf("acquire: %w", &linkedin.VoyagerStatusError{Endpoint: "/identity/profile", Status: 403}), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

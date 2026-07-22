@@ -104,13 +104,13 @@ func (c *Client) do(ctx context.Context, endpoint string) ([]byte, error) {
 		return nil, fmt.Errorf("voyager request %s: %w", endpoint, err)
 	}
 	if statusCode == 401 || statusCode == 403 {
-		return nil, fmt.Errorf("voyager auth failed: status %d (cookies may be expired)", statusCode)
+		return nil, &VoyagerStatusError{Endpoint: endpoint, Status: statusCode}
 	}
 	if statusCode == 200 && len(body) > 0 && body[0] == '<' {
-		return nil, fmt.Errorf("voyager auth failed: HTML response (session expired or IP blocked)")
+		return nil, &VoyagerHTMLResponseError{Endpoint: endpoint}
 	}
 	if statusCode != 200 {
-		return nil, fmt.Errorf("voyager %s: status %d", endpoint, statusCode)
+		return nil, &VoyagerStatusError{Endpoint: endpoint, Status: statusCode}
 	}
 	return body, nil
 }
