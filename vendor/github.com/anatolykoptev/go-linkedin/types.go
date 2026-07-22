@@ -146,6 +146,13 @@ type JobSearchParams struct {
 	// Start is the Rest.li pagination offset (the `start` query param).
 	// Defaults to 0 when unset.
 	Start int `json:"start,omitempty"`
+	// Enrich triggers a second per-job detail pass for the top EnrichLimit
+	// results. Default false keeps the single search call and returns minimal
+	// fields, preserving existing behavior.
+	Enrich bool `json:"enrich,omitempty"`
+	// EnrichLimit caps the number of search results enriched with GetJobDetail.
+	// If zero or negative while Enrich is true, a sane default (10) is used.
+	EnrichLimit int `json:"enrich_limit,omitempty"`
 }
 
 // JobDetail is the full detail for a single LinkedIn job posting, fetched from
@@ -160,10 +167,15 @@ type JobDetail struct {
 	JobID          string             `json:"job_id"`
 	Title          string             `json:"title"`
 	Company        string             `json:"company"`
+	CompanyURN     string             `json:"company_urn,omitempty"`
 	ApplicantCount int                `json:"applicant_count"`
 	SeniorityLevel string             `json:"seniority_level,omitempty"`
 	JobFunction    string             `json:"job_function,omitempty"`
 	EmploymentType string             `json:"employment_type,omitempty"`
+	Location       string             `json:"location,omitempty"`
+	Remote         string             `json:"remote,omitempty"`
+	PostedAt       time.Time          `json:"posted_at,omitempty"`
+	Description    string             `json:"description,omitempty"`
 	EasyApply      bool               `json:"easy_apply"`
 	HiringTeam     []HiringTeamMember `json:"hiring_team,omitempty"`
 }
