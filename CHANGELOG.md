@@ -2,6 +2,18 @@
 
 All notable changes to go_job are documented here.
 
+## [1.13.0](https://github.com/anatolykoptev/go-job/compare/v1.12.0...v1.13.0) (2026-07-22)
+
+
+### Features
+
+* wire go-linkedin CDP Voyager transport behind LINKEDIN_TRANSPORT flag (default stealth); bump go-linkedin v0.4.11 ([#320](https://github.com/anatolykoptev/go-job/issues/320)) ([134118e](https://github.com/anatolykoptev/go-job/commit/134118e5bf4dd2eec1c1e46ebc75bf8ca6b3a99c))
+
+
+### Bug Fixes
+
+* thread real upstream status through Tier-A LinkedIn fetch so 429 alerts as rate-limited not network-down ([#307](https://github.com/anatolykoptev/go-job/issues/307)) ([#318](https://github.com/anatolykoptev/go-job/issues/318)) ([6ce206c](https://github.com/anatolykoptev/go-job/commit/6ce206c0e2bc39cb78b8c00d19c20a79bbff6abe))
+
 ## [1.12.0](https://github.com/anatolykoptev/go-job/compare/v1.11.0...v1.12.0) (2026-07-21)
 
 
