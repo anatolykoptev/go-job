@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -178,14 +179,41 @@ func acquireLinkedIn(ctx context.Context, sc *social.Client) (*linkedin.Client, 
 		return nil, "", err
 	}
 
-	// No proxy for API calls — LinkedIn doesn't block datacenter IPs for Voyager API.
-	// Cookies are bound to TLS fingerprint (JA3), not IP address.
-	// Proxy is only needed for login (challenge/anti-bot).
-	client, err := linkedin.New(linkedin.ClientConfig{
-		Cookies: creds.Credentials,
-	})
+	client, err := linkedin.New(buildLinkedInClientConfig(creds.Credentials))
 	if err != nil {
 		return nil, "", err
 	}
 	return client, creds.ID, nil
+}
+
+// buildLinkedInClientConfig constructs the go-linkedin ClientConfig from the
+// acquired credential cookies, gating the CDP Voyager transport behind the
+// LINKEDIN_TRANSPORT env flag.
+//
+// Two-way door:
+//   - LINKEDIN_TRANSPORT unset or "stealth" (default): WowaURL stays empty →
+//     go-linkedin uses its existing go-stealth HTTP transport (direct HTTP w/
+//     go-stealth JA3 fingerprint). This is the byte-for-byte current behavior.
+//   - LINKEDIN_TRANSPORT="cdp": WowaURL is set → go-linkedin runs Voyager
+//     calls as an in-page fetch() inside the cloakbrowser via go-wowa's
+//     /api/v1/chrome/interact evaluate seam. The real Chrome on our
+//     datacenter IP passes Cloudflare where standalone HTTP loops forever
+//     (the 302-to-self loop); no proxy needed.
+//
+// GO_WOWA_BASE_URL is the go-wowa BASE url (no path); defaults to the docker
+// backend network name. Do NOT reuse GOWOWA_URL — that carries the /api/v1/render
+// path used by gowowa_render.go.
+func buildLinkedInClientConfig(creds map[string]string) linkedin.ClientConfig {
+	cfg := linkedin.ClientConfig{Cookies: creds}
+	if os.Getenv("LINKEDIN_TRANSPORT") != "cdp" {
+		return cfg
+	}
+	wowaBase := os.Getenv("GO_WOWA_BASE_URL")
+	if wowaBase == "" {
+		wowaBase = "http://go-wowa:8906"
+	}
+	cfg.WowaURL = wowaBase
+	cfg.Session = linkedin.SessionNameLinkedIn
+	cfg.InternalSecret = os.Getenv("INTERNAL_SERVICE_SECRET")
+	return cfg
 }

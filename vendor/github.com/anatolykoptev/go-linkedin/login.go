@@ -157,6 +157,8 @@ func (c *Client) applyLoginCookies(cookies map[string]string) error {
 	if cookies["li_at"] == "" {
 		return fmt.Errorf("%w: li_at cookie not received", ErrLoginFailed)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.cookies == nil {
 		c.cookies = make(map[string]string, len(cookies))
 	}
