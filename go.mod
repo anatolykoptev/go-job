@@ -1,12 +1,12 @@
 module github.com/anatolykoptev/go_job
 
-go 1.26
+go 1.26.3
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260508182159-345479149526
 	github.com/anatolykoptev/go-engine v1.51.5
-	github.com/anatolykoptev/go-kit v0.97.1
+	github.com/anatolykoptev/go-kit v0.97.4
 	github.com/anatolykoptev/go-linkedin v0.4.8
 	github.com/anatolykoptev/go-mcpserver v0.18.0
 	github.com/anatolykoptev/go-panel v0.22.1

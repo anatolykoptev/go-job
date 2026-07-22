@@ -13,6 +13,12 @@ package pgutil
 //     atomically; failure rolls back so next startup retries cleanly.
 //   - Checksum drift on an applied file: Warn + skip (manual intervention).
 //   - PreMigrate hook for search_path / extension bootstrap before any SQL.
+//   - "Soft" migrations: a file whose first non-whitespace line starts with
+//     "-- soft" is allowed to FAIL without aborting the run — the failure is
+//     logged as a warning and the file is NOT recorded as applied, so a later
+//     run retries it (self-healing once an optional extension lands). Used for
+//     optional-extension DDL (Apache AGE, pgvector) that must warn-and-continue
+//     when the extension is absent. Non-soft failures keep the hard-abort path.
 //
 // Constraint: migration files MUST NOT contain explicit transaction control
 // (BEGIN/COMMIT) because each file already runs inside a wrapping transaction.
@@ -22,6 +28,7 @@ package pgutil
 // into DDL (SQL identifiers cannot be parameterised).
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -115,6 +122,12 @@ func (o *MigrateOptions) applyDefaults() error {
 //	//go:embed migrations/*.sql
 //	var migrationsFS embed.FS
 //	pgutil.RunMigrations(ctx, pool, migrationsFS, pgutil.MigrateOptions{...})
+//
+// Soft migrations: a file whose first non-whitespace line is "-- soft" may
+// fail without aborting the run. The failure is logged and the file is NOT
+// recorded as applied, so a later run retries it — self-healing once an
+// optional extension it needs (e.g. Apache AGE or pgvector) is installed.
+// Non-soft failures abort the run as usual.
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, opts MigrateOptions) error {
 	if err := opts.applyDefaults(); err != nil {
 		return err
@@ -267,10 +280,32 @@ func applyFile(
 
 	log.InfoContext(ctx, "pgutil/migrate: applying", slog.String("name", name), slog.String("sha", sum[:12]))
 	if err := applyOne(ctx, conn, name, string(content), sum, table); err != nil {
+		// Soft migrations (first non-whitespace line starts with "-- soft")
+		// are allowed to fail without aborting the run: warn, skip recording,
+		// continue to the next file. The per-file tx already rolled back the
+		// partial DDL, so nothing is committed for this file. Because it is
+		// not recorded, a later run retries it — self-healing once the absent
+		// extension (AGE, pgvector, …) is installed. Mirrors go-job's
+		// hand-rolled runMigrations warn-and-continue behaviour.
+		if isSoftMigration(content) {
+			log.WarnContext(ctx, "pgutil/migrate: soft migration failed — skipped, will retry on next run",
+				slog.String("name", name),
+				slog.Any("error", err))
+			return nil
+		}
 		return fmt.Errorf("pgutil/migrate: apply %s: %w", name, err)
 	}
 	log.InfoContext(ctx, "pgutil/migrate: applied", slog.String("name", name))
 	return nil
+}
+
+// isSoftMigration reports whether the migration file is a "soft" migration:
+// its content, with leading whitespace trimmed, starts with "-- soft". This
+// mirrors go-job's hand-rolled runMigrations detection
+// (strings.HasPrefix(strings.TrimSpace(string(data)), "-- soft")). A soft
+// file is allowed to fail without aborting the run — see applyFile.
+func isSoftMigration(data []byte) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(data), []byte("-- soft"))
 }
 
 // baselineAllFiles inserts every file into the tracking table without running

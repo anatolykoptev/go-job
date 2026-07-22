@@ -1,5 +1,5 @@
 // Package notify provides two opinionated, non-conflatable notification sinks
-// for Go services in the krolik fleet.
+// for Go services.
 //
 // # Two sinks, one rule each
 //

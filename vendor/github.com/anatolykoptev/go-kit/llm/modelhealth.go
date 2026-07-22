@@ -379,7 +379,7 @@ func BuildMultiProxyEndpointsFiltered(
 		for _, p := range proxies {
 			emit(ModelFilterEvent{
 				BaseURL: p.URL, Requested: countModels(primary, chain),
-				Kept: countModels(primary, chain),
+				Kept:     countModels(primary, chain),
 				Degraded: true, Reason: filterReasonNoRegistry,
 			})
 		}
