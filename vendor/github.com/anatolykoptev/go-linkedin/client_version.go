@@ -43,11 +43,14 @@ func (vc *versionCache) set(version string, ttl time.Duration) {
 	vc.expires = time.Now().Add(ttl)
 }
 
-func scrapeClientVersion(ctx context.Context, bc *stealth.BrowserClient, _ map[string]string) (string, error) {
+func scrapeClientVersion(ctx context.Context, bc *stealth.BrowserClient, _ map[string]string, scrapeURL string) (string, error) {
+	if scrapeURL == "" {
+		scrapeURL = "https://www.linkedin.com/"
+	}
 	// The homepage is publicly accessible and contains data-app-version.
 	// Don't send account cookies — invalid/expired cookies cause LinkedIn to
 	// serve different content (error page or redirect instead of guest homepage).
-	body, _, statusCode, err := bc.DoCtx(ctx, "GET", "https://www.linkedin.com/", nil, nil)
+	body, _, statusCode, err := bc.DoCtx(ctx, "GET", scrapeURL, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("scrape client version: %w", err)
 	}

@@ -61,7 +61,7 @@ github.com/anatolykoptev/go-kit/telegram/miniapp
 github.com/anatolykoptev/go-kit/telegram/notify
 github.com/anatolykoptev/go-kit/telegram/tgapi5
 github.com/anatolykoptev/go-kit/uploads
-# github.com/anatolykoptev/go-linkedin v0.4.9
+# github.com/anatolykoptev/go-linkedin v0.4.11
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
 # github.com/anatolykoptev/go-mcpserver v0.18.0

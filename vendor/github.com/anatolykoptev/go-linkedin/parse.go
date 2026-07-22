@@ -48,8 +48,11 @@ func extractTargetURN(data json.RawMessage) string {
 }
 
 // findProfileByURN finds the Profile item in included[] matching the given entityUrn.
-// Falls back to the first Profile-type item if urn is empty (backward compat).
-func findProfileByURN(included []json.RawMessage, urn string) json.RawMessage {
+// Falls back to the first Profile-type item if urn is empty (backward compat for
+// callers that don't have a URN). When urn is non-empty but no matching Profile is
+// found in included[], it returns an error instead of silently falling back to an
+// unrelated profile (e.g. the viewer's own profile).
+func findProfileByURN(included []json.RawMessage, urn string) (json.RawMessage, error) {
 	const profileType = "com.linkedin.voyager.dash.identity.profile.Profile"
 	var firstProfile json.RawMessage
 	for _, raw := range included {
@@ -64,11 +67,11 @@ func findProfileByURN(included []json.RawMessage, urn string) json.RawMessage {
 			firstProfile = raw
 		}
 		if urn != "" && peek.EntityURN == urn {
-			return raw
+			return raw, nil
 		}
 	}
 	if urn == "" {
-		return firstProfile
+		return firstProfile, nil
 	}
-	return firstProfile // fallback if URN not found in included
+	return nil, fmt.Errorf("profile URN %s not found in included[]", urn)
 }

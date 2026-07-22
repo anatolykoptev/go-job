@@ -13,14 +13,17 @@ const (
 	restliVersion    = "2.0.0"
 )
 
-func buildHeaders(csrfToken, clientVersion, userAgent, secChUA string) map[string]string {
+func buildHeaders(csrfToken, clientVersion, userAgent, secChUA string) (map[string]string, error) {
 	if userAgent == "" {
 		userAgent = defaultUserAgent
 	}
 	if secChUA == "" {
 		secChUA = defaultSecChUA
 	}
-	liTrack := buildLiTrack(clientVersion)
+	liTrack, err := buildLiTrack(clientVersion)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]string{
 		"Accept":                    voyagerAccept,
 		"Accept-Language":           "en-US,en;q=0.9",
@@ -34,12 +37,12 @@ func buildHeaders(csrfToken, clientVersion, userAgent, secChUA string) map[strin
 		"sec-fetch-dest":            "empty",
 		"sec-fetch-mode":            "cors",
 		"sec-fetch-site":            "same-origin",
-	}
+	}, nil
 }
 
-func buildLiTrack(clientVersion string) string {
+func buildLiTrack(clientVersion string) (string, error) {
 	if clientVersion == "" {
-		clientVersion = "1.13.43122.3"
+		return "", fmt.Errorf("buildLiTrack: clientVersion is empty")
 	}
 	track := map[string]string{
 		"clientVersion":    clientVersion,
@@ -52,8 +55,11 @@ func buildLiTrack(clientVersion string) string {
 		"displayWidth":     "1920",
 		"displayHeight":    "1080",
 	}
-	b, _ := json.Marshal(track)
-	return string(b)
+	b, err := json.Marshal(track)
+	if err != nil {
+		return "", fmt.Errorf("buildLiTrack: marshal: %w", err)
+	}
+	return string(b), nil
 }
 
 func buildCookieString(cookies map[string]string) string {
