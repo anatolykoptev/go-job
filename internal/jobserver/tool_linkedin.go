@@ -10,15 +10,20 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// voyagerJobs is a test seam for the linkedin op=jobs handler.
+var voyagerJobs = jobs.VoyagerJobs
+
 type linkedInInput struct {
-	Op       string `json:"op"                 jsonschema:"Required. Operation: profile, company, jobs, search, posts, rating"`
-	Handle   string `json:"handle,omitempty"   jsonschema:"LinkedIn handle (required for op=profile/posts/rating)"`
-	Company  string `json:"company,omitempty"  jsonschema:"Company slug (required for op=company)"`
-	Query    string `json:"query,omitempty"    jsonschema:"Search keywords (required for op=jobs/search)"`
-	Type     string `json:"type,omitempty"     jsonschema:"Search type: people, companies (for op=search, default: people)"`
-	Location string `json:"location,omitempty" jsonschema:"Location filter (for op=jobs)"`
-	Remote   string `json:"remote,omitempty"   jsonschema:"Work type: remote, hybrid, onsite (for op=jobs)"`
-	Limit    int    `json:"limit,omitempty"    jsonschema:"Max results"`
+	Op          string `json:"op"                 jsonschema:"Required. Operation: profile, company, jobs, search, posts, rating"`
+	Handle      string `json:"handle,omitempty"   jsonschema:"LinkedIn handle (required for op=profile/posts/rating)"`
+	Company     string `json:"company,omitempty"  jsonschema:"Company slug (required for op=company)"`
+	Query       string `json:"query,omitempty"    jsonschema:"Search keywords (required for op=jobs/search)"`
+	Type        string `json:"type,omitempty"     jsonschema:"Search type: people, companies (for op=search, default: people)"`
+	Location    string `json:"location,omitempty"    jsonschema:"Location filter (for op=jobs)"`
+	Remote      string `json:"remote,omitempty"      jsonschema:"Work type: remote, hybrid, onsite (for op=jobs)"`
+	Limit       int    `json:"limit,omitempty"       jsonschema:"Max results"`
+	Enrich      bool   `json:"enrich,omitempty"      jsonschema:"Opt-in per-job enrichment: fetch full job details for top results (default false)"`
+	EnrichLimit int    `json:"enrich_limit,omitempty" jsonschema:"Cap the number of jobs enriched when enrich=true; 0 lets go-linkedin use its default (10)"`
 }
 
 func registerLinkedIn(server *mcp.Server) {
@@ -60,11 +65,13 @@ func registerLinkedIn(server *mcp.Server) {
 			if limit > 25 {
 				limit = 25
 			}
-			result, err := jobs.VoyagerJobs(ctx, linkedin.JobSearchParams{
-				Query:    input.Query,
-				Location: input.Location,
-				Remote:   input.Remote,
-				Limit:    limit,
+			result, err := voyagerJobs(ctx, linkedin.JobSearchParams{
+				Query:       input.Query,
+				Location:    input.Location,
+				Remote:      input.Remote,
+				Limit:       limit,
+				Enrich:      input.Enrich,
+				EnrichLimit: input.EnrichLimit,
 			})
 			if err != nil {
 				return nil, nil, err

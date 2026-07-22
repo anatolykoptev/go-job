@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.13](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.12...v0.4.13) (2026-07-22)
+
+
+### Added
+
+* opt-in per-job enrichment of job-search results ([#48](https://github.com/anatolykoptev/go-linkedin/issues/48)) ([#49](https://github.com/anatolykoptev/go-linkedin/issues/49)) ([c6ee7eb](https://github.com/anatolykoptev/go-linkedin/commit/c6ee7eb4bd3415b3796bccb0626ac2f51052090c))
+
 ## [0.4.12](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.11...v0.4.12) (2026-07-22)
 
 

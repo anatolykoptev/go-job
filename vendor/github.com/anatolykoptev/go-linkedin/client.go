@@ -96,6 +96,10 @@ type Client struct {
 	verCache      versionCache
 	testBaseURL   string // overrides baseURL in tests
 	testScrapeURL string // overrides LinkedIn homepage URL for version scraping in tests
+
+	// getJobDetailFn is an injectable seam for SearchJobs tests. When nil,
+	// SearchJobs uses the real GetJobDetail method.
+	getJobDetailFn func(context.Context, string) (*JobDetail, error)
 }
 
 // New creates a new LinkedIn Voyager client with the given configuration.
