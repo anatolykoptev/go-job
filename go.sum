@@ -18,8 +18,8 @@ github.com/anatolykoptev/go-engine v1.51.5 h1:eBAcqyc1LghtnfHaXiUhRpLZr/eJ3MLhha
 github.com/anatolykoptev/go-engine v1.51.5/go.mod h1:cJEdCaLVNRFW04gAeRZUtkIxGMVwdPPZ74T3evOXUrI=
 github.com/anatolykoptev/go-kit v0.97.4 h1:DgruCqb6UhbGES1U9QKMPWzW+StMQJnI8ibqtGdLlYY=
 github.com/anatolykoptev/go-kit v0.97.4/go.mod h1:Pj3GXRLNZMi5YfAvWgMWz4VIbYupnLlMgJIRLOotkus=
-github.com/anatolykoptev/go-linkedin v0.4.11 h1:MJWOvWngRk+WqD8TSGsqUF+PAg0nmcSypjQJAiXEDvA=
-github.com/anatolykoptev/go-linkedin v0.4.11/go.mod h1:+GVz8ut1z/AKZ7U3ybkt9WG4pqE1oSvYzuV827WRjwk=
+github.com/anatolykoptev/go-linkedin v0.4.12 h1:dThEJg7895HwuKlJ91uuJX/Z92SHZ9nw4RAn8rsNRcg=
+github.com/anatolykoptev/go-linkedin v0.4.12/go.mod h1:+GVz8ut1z/AKZ7U3ybkt9WG4pqE1oSvYzuV827WRjwk=
 github.com/anatolykoptev/go-mcpserver v0.18.0 h1:NuDgzucheEzJUDmcebM1C7NdfCz2IUKGr9vVqkjICXk=
 github.com/anatolykoptev/go-mcpserver v0.18.0/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
 github.com/anatolykoptev/go-panel v0.22.1 h1:ZhnJjP+xI2RNuQrW/5qACHcZUB4K5B4YagIjg/GV26s=

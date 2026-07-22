@@ -143,6 +143,9 @@ type JobSearchParams struct {
 	Location string `json:"location,omitempty"`
 	Remote   string `json:"remote,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
+	// Start is the Rest.li pagination offset (the `start` query param).
+	// Defaults to 0 when unset.
+	Start int `json:"start,omitempty"`
 }
 
 // JobDetail is the full detail for a single LinkedIn job posting, fetched from

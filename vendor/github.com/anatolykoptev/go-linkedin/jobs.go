@@ -9,53 +9,188 @@ import (
 	"time"
 )
 
+// jobSearchDecorationID is the Rest.li decoration required by the
+// voyagerJobsDashJobCards job-search endpoint. WITHOUT it → HTTP 500 (verified
+// live, 2026). It rotates on LinkedIn web deploys — keep it a single const,
+// easy to bump. Currently JobSearchCardsCollection-220 (proven 200 live).
+const jobSearchDecorationID = "com.linkedin.voyager.dash.deco.jobs.search.JobSearchCardsCollection-220"
+
+// geoIDWorldwide is the proven "worldwide / Remote / empty location" geoId
+// (200 live). Used as the default when no mapping is known.
+const geoIDWorldwide = "92000000"
+
+// jobSearchEndpoint is the voyagerJobsDashJobCards base path.
+const jobSearchEndpoint = "/voyager/api/voyagerJobsDashJobCards"
+
+// resolveGeoID maps a free-text location to a LinkedIn geoId. It is
+// case-insensitive and falls back to geoIDWorldwide (92000000, proven 200) for
+// any unknown location — a text locationUnion (e.g. "Remote") yields HTTP 400,
+// so a geoId is ALWAYS required.
+//
+// TODO: a LIVE typeahead geoId resolver is a follow-up. The
+// /voyager/api/typeahead/hitsV2?keywords=<loc>&q=type&type=GEO form returns 404
+// in 2026 (needs the correct current endpoint); for now use this map + the
+// worldwide default. Only PROVEN geoIds are mapped here (worldwide/Remote/empty
+// = 92000000, United States = 103644278 — both 200 live). Adding more entries
+// without a live capture risks mapping a region to the wrong geoId (worse than
+// the worldwide default, which at worst returns an empty result set, never a
+// 400), so unmapped locations intentionally fall back to worldwide.
+var geoIDMap = map[string]string{
+	"":              geoIDWorldwide,
+	"remote":        geoIDWorldwide,
+	"worldwide":     geoIDWorldwide,
+	"anywhere":      geoIDWorldwide,
+	"united states": "103644278",
+	"usa":           "103644278",
+	"us":            "103644278",
+}
+
+func resolveGeoID(location string) string {
+	if g, ok := geoIDMap[strings.ToLower(strings.TrimSpace(location))]; ok {
+		return g
+	}
+	return geoIDWorldwide
+}
+
+// buildJobSearchEndpoint builds the 2026 Voyager Rest.li job-search query.
+//
+// Proven live form (all responses 200):
+//
+//	GET /voyager/api/voyagerJobsDashJobCards?decorationId=<JobSearchCardsCollection-220>&count=<n>&q=jobSearch&query=(keywords:<KW>,locationUnion:(geoId:<GEOID>),origin:JOB_SEARCH_PAGE_QUERY_EXPANSION)&start=<OFFSET>
+//
+// The `query=(...)` is a Rest.li structural literal: the `( ) : ,` MUST stay
+// LITERAL (NOT percent-encoded) — only the keyword VALUE is URL-encoded
+// (space → %20). A percent-encoded `(` or `:` → HTTP 400 (verified live).
+// geoId is REQUIRED (a text locationUnion → 400); resolveGeoID always returns
+// one. decorationId is REQUIRED (without it → HTTP 500).
+func buildJobSearchEndpoint(params JobSearchParams) string {
+	count := params.Limit
+	if count <= 0 {
+		count = 10
+	}
+	start := params.Start
+	if start < 0 {
+		start = 0
+	}
+	geoID := resolveGeoID(params.Location)
+	// Only the keyword VALUE is encoded; structural chars stay literal.
+	// url.QueryEscape encodes space as "+"; the proven live form uses "%20".
+	kw := strings.ReplaceAll(url.QueryEscape(params.Query), "+", "%20")
+	query := "(keywords:" + kw + ",locationUnion:(geoId:" + geoID + "),origin:JOB_SEARCH_PAGE_QUERY_EXPANSION)"
+	// Param order matches the proven live form: decorationId, count, q, query, start.
+	return fmt.Sprintf(
+		"%s?decorationId=%s&count=%d&q=jobSearch&query=%s&start=%d",
+		jobSearchEndpoint, jobSearchDecorationID, count, query, start,
+	)
+}
+
 func (c *Client) SearchJobs(ctx context.Context, params JobSearchParams) ([]Job, error) {
-	if params.Limit <= 0 {
-		params.Limit = 10
-	}
-	q := url.Values{}
-	q.Set("keywords", params.Query)
-	q.Set("count", fmt.Sprintf("%d", params.Limit))
-	if params.Location != "" {
-		q.Set("locationUnion", params.Location)
-	}
-	endpoint := "/voyager/api/voyagerJobsDashJobCards?" + q.Encode()
+	endpoint := buildJobSearchEndpoint(params)
 	body, err := c.do(ctx, endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("search jobs: %w", err)
 	}
+	return parseJobSearchResults(body)
+}
+
+// parseJobSearchResults extracts Job entries from a normalized-JSON
+// voyagerJobsDashJobCards response (Content-Type
+// application/vnd.linkedin.normalized+json+2.1). The response has an
+// `included[]` array mixing entity types (JobPosting, Company,
+// JobPostingCard, Geo, JobSeekerJobState, JobPostingVerification, Profile).
+//
+// Job postings are the entities with `$type ==
+// com.linkedin.voyager.dash.jobs.JobPosting`. Company names are resolved
+// best-effort by matching each posting's company URN (companyDetails.company)
+// to the organization.Company entities in included[]. If the link is absent or
+// unresolvable, Company is left empty rather than guessed.
+func parseJobSearchResults(body []byte) ([]Job, error) {
 	resp, err := parseVoyagerResponse(body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse job search: %w", err)
 	}
+
+	// Index Company entities by URN for best-effort name resolution.
+	const companyType = "com.linkedin.voyager.dash.organization.Company"
+	companyNames := make(map[string]string)
+	for _, raw := range resp.Included {
+		var peek struct {
+			Type      string `json:"$type"`
+			EntityURN string `json:"entityUrn"`
+			Name      string `json:"name"`
+		}
+		if json.Unmarshal(raw, &peek) != nil {
+			continue
+		}
+		if strings.HasPrefix(peek.Type, companyType) && peek.EntityURN != "" {
+			companyNames[peek.EntityURN] = peek.Name
+		}
+	}
+
 	items := includedByType(resp.Included, "com.linkedin.voyager.dash.jobs.JobPosting")
-	var jobs []Job
+	jobs := make([]Job, 0, len(items))
 	for _, raw := range items {
 		var j struct {
-			EntityURN     string `json:"entityUrn"`
-			Title         string `json:"title"`
-			CompanyName   string `json:"companyName"`
-			FormattedLoc  string `json:"formattedLocation"`
-			ListedAt      int64  `json:"listedAt"`
-			Description   string `json:"description"`
-			WorkplaceType string `json:"workplaceType"`
-			ApplyURL      string `json:"applyUrl"`
+			EntityURN         string `json:"entityUrn"`
+			Title             string `json:"title"`
+			FormattedLoc      string `json:"formattedLocation"`
+			ListedAt          int64  `json:"listedAt"`
+			WorkRemoteAllowed bool   `json:"workRemoteAllowed"`
+			CompanyDetails    struct {
+				Company string `json:"company"`
+			} `json:"companyDetails"`
+			// Some decorations put the company URN at top-level instead.
+			Company string `json:"company"`
 		}
 		if json.Unmarshal(raw, &j) != nil || j.Title == "" {
 			continue
 		}
+		companyURN := j.CompanyDetails.Company
+		if companyURN == "" {
+			companyURN = j.Company
+		}
+		jobID := jobIDFromURN(j.EntityURN)
 		jobs = append(jobs, Job{
-			URN:         j.EntityURN,
-			Title:       j.Title,
-			Company:     j.CompanyName,
-			Location:    j.FormattedLoc,
-			Remote:      normalizeRemote(j.WorkplaceType),
-			PostedAt:    time.UnixMilli(j.ListedAt),
-			Description: j.Description,
-			ApplyURL:    j.ApplyURL,
+			URN:        j.EntityURN,
+			Title:      j.Title,
+			Company:    companyNames[companyURN],
+			CompanyURN: companyURN,
+			Location:   j.FormattedLoc,
+			Remote:     remoteFromFlag(j.WorkRemoteAllowed),
+			PostedAt:   time.UnixMilli(j.ListedAt),
+			ApplyURL:   jobViewURL(jobID),
 		})
 	}
 	return jobs, nil
+}
+
+// jobIDFromURN extracts the numeric job ID from an entityUrn of the form
+// `urn:li:fsd_jobPosting:<ID>`. Returns "" if the URN is malformed.
+func jobIDFromURN(urn string) string {
+	// urn:li:fsd_jobPosting:<ID>
+	idx := strings.LastIndex(urn, ":")
+	if idx < 0 || idx == len(urn)-1 {
+		return ""
+	}
+	return urn[idx+1:]
+}
+
+// jobViewURL builds the human-facing job view URL from a numeric job ID.
+func jobViewURL(jobID string) string {
+	if jobID == "" {
+		return ""
+	}
+	return "https://www.linkedin.com/jobs/view/" + jobID
+}
+
+// remoteFromFlag maps the workRemoteAllowed boolean to the existing Job.Remote
+// vocabulary ("remote" / "onsite"). The JobPosting search entity exposes only
+// the boolean, not the richer workplaceType text the detail endpoint uses.
+func remoteFromFlag(workRemoteAllowed bool) string {
+	if workRemoteAllowed {
+		return "remote"
+	}
+	return "onsite"
 }
 
 func normalizeRemote(workplaceType string) string {
