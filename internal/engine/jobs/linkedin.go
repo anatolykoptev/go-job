@@ -471,12 +471,44 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 // via fetch.WithDirectFirst(true) and fetch.WithOxBrowser when OX_BROWSER_URL
 // is set). A nil/misconfigured proxy fetcher returns an error which the
 // cascade treats as a tier failure → escalates to Tier B (go-wowa render).
+//
+// On failure, the upstream HTTP status (429/403/999/…) is extracted from the
+// typed error returned by the fetcher — engine.FetchProxyBody returns no
+// status directly, but its error IS (or wraps) a *stealth.HttpStatusError
+// (fetch.HttpStatusError is a type alias for stealth.HttpStatusError, so both
+// the direct-first and proxy/stealth tiers carry the same type). A
+// status-carrying error is consumed into the returned status (err=nil) so the
+// cascade's classify closure calls classifyLinkedInResponse with the true code
+// (429→liRateLimited, 403/999→liHardBlock) instead of falling through to its
+// err!=nil → liNetworkError branch. A genuine transport/network failure (no
+// typed status) keeps the pre-#307 behaviour: status 0 + error preserved →
+// liNetworkError. Issue #307.
 func linkedInTierAProxy(ctx context.Context, targetURL string, headers map[string]string) (int, []byte, error) {
 	body, err := engine.FetchProxyBody(ctx, targetURL, headers)
 	if err != nil {
+		if status := proxyErrStatus(err); status > 0 {
+			return status, nil, nil
+		}
 		return 0, nil, err
 	}
 	return 200, body, nil
+}
+
+// proxyErrStatus extracts the upstream HTTP status code from a
+// engine.FetchProxyBody error. The go-engine fetcher returns a
+// *stealth.HttpStatusError{StatusCode int} (re-exported as
+// fetch.HttpStatusError via a type alias) on any non-OK HTTP response from
+// both the direct-first tier (fetcher.go:389) and the proxy/stealth tier
+// (fetcher.go:496/529). errors.As unwraps wrapped errors so a
+// fmt.Errorf("…: %w", &stealth.HttpStatusError{…}) still yields its status.
+// Returns 0 for a genuine transport/network error (no HTTP response) or nil,
+// preserving the liNetworkError classification for true network failures.
+func proxyErrStatus(err error) int {
+	var se *stealth.HttpStatusError
+	if errors.As(err, &se) {
+		return se.StatusCode
+	}
+	return 0
 }
 
 // linkedInTierBRender is the Tier-B fetch: go-wowa headless Playwright/Chrome

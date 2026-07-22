@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/breaker"
+	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
@@ -294,6 +296,116 @@ func TestLinkedInCascadeEscalationLogs(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("slog output missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+// TestLinkedInCascadeTierAStatusErrorClassifiesRateLimited verifies issue #307:
+// when Tier A's underlying fetcher returns a typed *stealth.HttpStatusError
+// carrying a 429 (the real upstream rate-limit), linkedInTierAProxy must
+// consume the error into the returned status (via proxyErrStatus) so the
+// cascade's classify closure calls classifyLinkedInResponse with the true code
+// → liRateLimited — NOT liNetworkError (status 0). The tier-A fake mirrors
+// linkedInTierAProxy's real behaviour: it calls proxyErrStatus on the typed
+// error and returns the extracted status with err=nil, so the real helper is
+// exercised through the real cascade classify path. Tier B also returns 429 so
+// the enriched exhausted error (which reflects the LAST failing tier) reports
+// kind=rate_limited status=429.
+//
+// Before #307, linkedInTierAProxy hardcoded status 0 on every error, so a 429
+// storm alerted as "network-down" (liNetworkError) instead of "rate-limited".
+func TestLinkedInCascadeTierAStatusErrorClassifiesRateLimited(t *testing.T) {
+	// Capture slog to verify Tier A's escalation kind.
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	// Tier A mirrors linkedInTierAProxy: extract the real upstream status from
+	// the typed fetcher error via proxyErrStatus and return it with err=nil so
+	// classifyLinkedInResponse (not the err!=nil → liNetworkError branch) sees
+	// the true code.
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		err := &stealth.HttpStatusError{StatusCode: 429}
+		return proxyErrStatus(err), nil, nil
+	}
+	// Tier B also 429 so the enriched exhausted error reflects rate_limited
+	// (the enriched error carries the LAST failing tier's status+kind).
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		return 429, nil, nil
+	}
+	withTiers(t, tierA, tierB)
+	// Isolate breaker: a fresh closed breaker so prior cascade tests' Record(false)
+	// accumulation doesn't trip it and short-circuit this call.
+	withBreaker(t, breaker.New(breaker.Options{
+		Name:          "test-linkedin-tierA-429",
+		FailThreshold: 10,
+		OpenDuration:  10 * time.Second,
+	}))
+
+	_, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
+	if err == nil {
+		t.Fatal("expected cascade-exhausted error, got nil")
+	}
+	if !errors.Is(err, errLinkedInCascadeExhausted) {
+		t.Fatalf("expected errLinkedInCascadeExhausted, got %v", err)
+	}
+	// Enriched error must report rate_limited + status=429 (not network_error).
+	msg := err.Error()
+	if !strings.Contains(msg, "status=429") {
+		t.Errorf("error message missing 'status=429' (Tier-A 429 must thread through): %q", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "rate_limited") {
+		t.Errorf("error message kind must be rate_limited for 429, got %q (regression of #291/#307: would alert as network-down)", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "network_error") {
+		t.Errorf("error message must NOT classify as network_error for a 429 status error, got %q", msg)
+	}
+	// Tier A's escalation log must show kind=rate_limited (the real upstream
+	// status threaded through, not network_error).
+	out := buf.String()
+	if !strings.Contains(out, "tier=A") {
+		t.Fatalf("slog output missing tier=A line in:\n%s", out)
+	}
+	if !strings.Contains(out, "kind=rate_limited") {
+		t.Errorf("Tier A escalation must classify 429 as rate_limited, got:\n%s", out)
+	}
+}
+
+// TestLinkedInCascadeTierAPlainNetworkErrorStaysNetworkError verifies the
+// counter-guard of #307: a genuine transport error (no typed status) from
+// Tier A must STILL classify as liNetworkError (status 0), unchanged from
+// pre-#307 behaviour. Only status-carrying errors get their real code.
+func TestLinkedInCascadeTierAPlainNetworkErrorStaysNetworkError(t *testing.T) {
+	// Mirror linkedInTierAProxy for a genuine network error: proxyErrStatus
+	// returns 0 (no typed status), so the error is preserved → err!=nil →
+	// liNetworkError in the classify closure.
+	tierA := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		err := errors.New("connection reset by peer")
+		if status := proxyErrStatus(err); status > 0 {
+			return status, nil, nil
+		}
+		return 0, nil, err
+	}
+	tierB := func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		return 0, nil, fmt.Errorf("gowowa render: %w", errors.New("timeout"))
+	}
+	withTiers(t, tierA, tierB)
+	withBreaker(t, breaker.New(breaker.Options{
+		Name:          "test-linkedin-tierA-net",
+		FailThreshold: 10,
+		OpenDuration:  10 * time.Second,
+	}))
+
+	_, err := linkedInRequest(context.Background(), "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=go")
+	if err == nil {
+		t.Fatal("expected cascade-exhausted error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "status=0") {
+		t.Errorf("error message missing 'status=0' for genuine network error: %q", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "network_error") {
+		t.Errorf("error message kind must be network_error for a transport failure, got %q", msg)
 	}
 }
 
