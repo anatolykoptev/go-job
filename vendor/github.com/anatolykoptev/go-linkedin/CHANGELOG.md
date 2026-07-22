@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.11](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.10...v0.4.11) (2026-07-22)
+
+
+### Added
+
+* CDP in-page-fetch Voyager transport via go-wowa (fixes CF 302 loop) ([#43](https://github.com/anatolykoptev/go-linkedin/issues/43)) ([3411ec0](https://github.com/anatolykoptev/go-linkedin/commit/3411ec0fa73a02e6600f4ce9b908db746f89615c))
+
+## [0.4.10](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.9...v0.4.10) (2026-07-22)
+
+
+### Fixed
+
+* **client:** honour context cancellation during jitter sleep ([a1a308c](https://github.com/anatolykoptev/go-linkedin/commit/a1a308ced91b7cd8eef84ca98fa7521172353216))
+* **client:** remove hardcoded clientVersion fallback, make it configurable ([1767095](https://github.com/anatolykoptev/go-linkedin/commit/176709581bbfd6d361ffbaf70f7baf9bbe0dba45))
+* **client:** return error on empty CSRF token when JSESSIONID missing ([71ecd33](https://github.com/anatolykoptev/go-linkedin/commit/71ecd33756c3e3da94c133f0550c86e30c3cf09d))
+* protect Client.cookies with sync.RWMutex to prevent concurrent map access ([2147944](https://github.com/anatolykoptev/go-linkedin/commit/2147944a645c4785380ea9c1be5f97af4c832130))
+* return error instead of silent fallback when profile URN not found ([e16fe4c](https://github.com/anatolykoptev/go-linkedin/commit/e16fe4c377f95c1cca8fc77a0fbcd445e1b9d13a))
+
 ## [0.4.9](https://github.com/anatolykoptev/go-linkedin/compare/v0.4.8...v0.4.9) (2026-07-22)
 
 

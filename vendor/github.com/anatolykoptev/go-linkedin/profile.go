@@ -3,6 +3,7 @@ package linkedin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 )
@@ -43,7 +44,15 @@ func (c *Client) getBasicProfile(ctx context.Context, handle string) (*Profile, 
 	}
 	// Profile data lives in included[] — match by URN from data.*elements
 	targetURN := extractTargetURN(resp.Data)
-	profileItem := findProfileByURN(resp.Included, targetURN)
+	profileItem, err := findProfileByURN(resp.Included, targetURN)
+	if err != nil {
+		slog.Warn("getBasicProfile: target profile URN not found in included[]",
+			slog.String("handle", handle),
+			slog.String("target_urn", targetURN),
+			slog.Int("included_count", len(resp.Included)),
+		)
+		return nil, "", fmt.Errorf("profile %s: %w", handle, err)
+	}
 	if profileItem != nil {
 		var profileData struct {
 			EntityURN        string `json:"entityUrn"`

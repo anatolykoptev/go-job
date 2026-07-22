@@ -44,12 +44,14 @@ func (c *Client) handleChallenge(ctx context.Context, challengeURL string, cooki
 // handleEmailPinChallenge requests a PIN from the user and submits it.
 func (c *Client) handleEmailPinChallenge(ctx context.Context, form url.Values, referer string, cookies map[string]string) error {
 	email := "" // LinkedIn doesn't put email in form; use config or empty
+	c.mu.RLock()
 	for _, v := range c.cookies {
 		if strings.Contains(v, "@") {
 			email = v
 			break
 		}
 	}
+	c.mu.RUnlock()
 
 	slog.Info("linkedin: Email PIN challenge — check your email", "email", email)
 
