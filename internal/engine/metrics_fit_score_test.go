@@ -85,7 +85,7 @@ func TestValidHuntScoreFilterStages_ExactSet(t *testing.T) {
 }
 
 // TestIncrHuntScoreLLM_LabelBounded verifies that:
-//   - all four valid results {"ok","enum_clamp","parse_fail","llm_error"} land
+//   - all valid results {"ok","enum_clamp","parse_fail","llm_error","skipped_budget"} land
 //   - an arbitrary result is dropped
 func TestIncrHuntScoreLLM_LabelBounded(t *testing.T) {
 	orig := reg
@@ -110,13 +110,14 @@ func TestIncrHuntScoreLLM_LabelBounded(t *testing.T) {
 }
 
 // TestValidHuntScoreLLMResults_ExactSet asserts the bounded result set is
-// exactly {"ok","enum_clamp","parse_fail","llm_error"}.
+// exactly {"ok","enum_clamp","parse_fail","llm_error","skipped_budget"}.
 func TestValidHuntScoreLLMResults_ExactSet(t *testing.T) {
 	want := map[string]bool{
-		"ok":         true,
-		"enum_clamp": true,
-		"parse_fail": true,
-		"llm_error":  true,
+		"ok":             true,
+		"enum_clamp":     true,
+		"parse_fail":     true,
+		"llm_error":      true,
+		"skipped_budget": true,
 	}
 	for v := range want {
 		if !validHuntScoreLLMResults[v] {
