@@ -1012,9 +1012,7 @@ func SetHuntScoringDegraded(degraded bool, reason string) {
 	if degraded {
 		v = 1.0
 		slog.Warn("hunt scoring: entering degraded mode", slog.String("reason", reason))
-		if validHuntScoringDegradedReasons[reason] {
-			reg.Incr(MetricHuntScoringDegradedReason + "{reason=" + reason + "}")
-		}
+		IncrHuntScoringDegradedReason(reason)
 	} else {
 		slog.Info("hunt scoring: leaving degraded mode", slog.String("reason", reason))
 	}
