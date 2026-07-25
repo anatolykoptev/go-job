@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -323,6 +324,41 @@ func TestDiscovery_Degraded_FallsBack(t *testing.T) {
 	// distinct source="degraded-fallback" metric label.
 	assert.True(t, errors.Is(err, engine.ErrDiscoveryDegraded),
 		"error must wrap engine.ErrDiscoveryDegraded so callers can errors.Is-detect it; got: %v", err)
+}
+
+// TestDiscovery_Degraded_NoSelfDuplicatingWrap verifies the error message does
+// not self-duplicate — the old wrapping produced
+// "discovery: raw_web_search degraded (reason): discovery: raw_web_search degraded"
+// because the format string repeated the base error text. The fix wraps
+// ErrDiscoveryDegraded with only the reason, producing
+// "discovery: <reason>: discovery: raw_web_search degraded".
+//
+// RED-on-revert: restore the old fmt.Errorf("discovery: raw_web_search degraded
+// (%s): %w", ...) wrapping → the error message contains "raw_web_search
+// degraded" twice, test fails.
+func TestDiscovery_Degraded_NoSelfDuplicatingWrap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(rawDegradedEnvelope(
+			`{"degraded":true,"degrade_reason":"sources_failed","results":[],"total":0}`,
+		))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	_, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
+	require.Error(t, err)
+
+	msg := err.Error()
+	// Count occurrences of the base error text — must appear exactly once
+	// (from ErrDiscoveryDegraded itself), not duplicated by the wrapper.
+	count := strings.Count(msg, "raw_web_search degraded")
+	assert.Equal(t, 1, count,
+		"error message must not self-duplicate 'raw_web_search degraded'; got: %s", msg)
+	assert.Contains(t, msg, "sources_failed",
+		"error must carry the degrade_reason; got: %s", msg)
+	assert.True(t, errors.Is(err, engine.ErrDiscoveryDegraded),
+		"error must still wrap ErrDiscoveryDegraded for errors.Is detection; got: %v", err)
 }
 
 // TestDiscovery_CleanZero_NoFallback asserts that when raw_web_search returns

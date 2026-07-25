@@ -297,10 +297,12 @@ func (c *Client) callRawWebSearch(ctx context.Context, query string) (*rawSearch
 	}
 
 	if out.Degraded {
-		slog.Warn("discovery: raw_web_search degraded, falling back to local",
-			slog.String("query", query),
-			slog.String("degrade_reason", out.DegradeReason))
-		return nil, fmt.Errorf("discovery: raw_web_search degraded (%s): %w", out.DegradeReason, engine.ErrDiscoveryDegraded)
+		// Return an error wrapping ErrDiscoveryDegraded so callers (ats.discoverJobURLs)
+		// can errors.Is-detect it and emit the distinct source="degraded-fallback"
+		// metric label. The caller logs the WARN at the layer that handles the
+		// fallback — logging here too would duplicate the line. The reason is
+		// embedded in the error message (not duplicated from the base error).
+		return nil, fmt.Errorf("discovery: %s: %w", out.DegradeReason, engine.ErrDiscoveryDegraded)
 	}
 
 	if len(out.Results) == 0 {
