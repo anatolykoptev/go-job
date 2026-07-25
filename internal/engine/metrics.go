@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,18 +18,18 @@ import (
 // conventions; the go-kit/metrics Prometheus bridge exposes them under the
 // `gojob_` namespace (e.g. `gojob_search_requests_total`).
 const (
-	MetricSearchRequests        = "search_requests_total"
-	MetricLLMCalls              = "llm_calls_total"
-	MetricLLMErrors             = "llm_errors_total"
+	MetricSearchRequests = "search_requests_total"
+	MetricLLMCalls       = "llm_calls_total"
+	MetricLLMErrors      = "llm_errors_total"
 	// OBS-6: LLM request latency histogram — makes LLM slowness visible
 	// before it hits timeout. Buckets: 0.1s–60s (registered in Init).
-	MetricLLMRequestDuration    = "llm_request_duration_seconds"
+	MetricLLMRequestDuration = "llm_request_duration_seconds"
 	// OBS-6: oversize purge outcome counters — make table growth visible.
-	MetricOversizePurgeDeleted  = "oversize_purge_deleted_total"
-	MetricOversizePurgeErrors   = "oversize_purge_errors_total"
+	MetricOversizePurgeDeleted = "oversize_purge_deleted_total"
+	MetricOversizePurgeErrors  = "oversize_purge_errors_total"
 	// OBS-6: enrichment semaphore skipped counter — makes "semaphore full"
 	// events visible so operators can tune enrichMaxConcurrent.
-	MetricEnrichSemSkipped      = "enrich_semaphore_skipped_total"
+	MetricEnrichSemSkipped = "enrich_semaphore_skipped_total"
 	// OBS-6: admin UI HTTP metrics — request rate, error rate, latency.
 	MetricAdminRequests         = "admin_requests_total"
 	MetricAdminErrors           = "admin_errors_total"
@@ -75,10 +77,11 @@ const (
 
 	// Fit-scoring LLM result labels (hunt_score_llm_total{result}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
-	scoreLLMOk        = "ok"
-	scoreLLMEnumClamp = "enum_clamp"
-	scoreLLMParseFail = "parse_fail"
-	scoreLLMError     = "llm_error"
+	scoreLLMOk          = "ok"
+	scoreLLMEnumClamp   = "enum_clamp"
+	scoreLLMParseFail   = "parse_fail"
+	scoreLLMError       = "llm_error"
+	scoreLLMSkippedBudg = "skipped_budget"
 
 	// MetricLLMModelsDropped counts model ids absent from /v1/models at chain
 	// construction time (gojob_llm_models_dropped_total).
@@ -302,6 +305,15 @@ const (
 	// Alert: == 1 for 10m → GojobHuntScoringDegraded (silent_downgrade).
 	MetricHuntScoringDegraded = "hunt_scoring_degraded"
 
+	// MetricHuntScoringDegradedReason is the labelled counter
+	// gojob_hunt_scoring_degraded_total{reason}.
+	// reason ∈ {"breaker_open","llm_error","parse_fail"} — bounded enum.
+	// Incremented each time the degraded gauge transitions 0→1, carrying the
+	// cause. Budget exhaustion does NOT set the gauge (it is normal operation)
+	// and is tracked separately via hunt_score_llm_total{result="skipped_budget"}.
+	// Pre-touched for all reasons in FormatMetrics so rate()-floor alerts see 0.
+	MetricHuntScoringDegradedReason = "hunt_scoring_degraded_total"
+
 	// MetricRuntimeGoroutines is the gauge gojob_runtime_goroutines.
 	// Updated every 15s with runtime.NumGoroutine(). No labels.
 	// OBS-1 fix: goroutine leak monitoring — the codebase has 53+ `go func()`
@@ -495,9 +507,9 @@ func FormatMetrics() string {
 	for _, stage := range []string{scoreFilterRecency, scoreFilterJaccard, scoreFilterQuality} {
 		keys = append(keys, MetricHuntScoreFiltered+"{stage="+stage+"}")
 	}
-	// Fit-scoring LLM result counters (P6): pre-touch all four results so
-	// rate()-floor alerts see 0 before the first LLM call. 4 results = 4 series.
-	for _, result := range []string{scoreLLMOk, scoreLLMEnumClamp, scoreLLMParseFail, scoreLLMError} {
+	// Fit-scoring LLM result counters (P6): pre-touch all five results so
+	// rate()-floor alerts see 0 before the first LLM call. 5 results = 5 series.
+	for _, result := range []string{scoreLLMOk, scoreLLMEnumClamp, scoreLLMParseFail, scoreLLMError, scoreLLMSkippedBudg} {
 		keys = append(keys, MetricHuntScoreLLM+"{result="+result+"}")
 	}
 	// Circuit breaker trips counter pre-touched so rate()-floor alerts see 0
@@ -516,6 +528,11 @@ func FormatMetrics() string {
 	keys = append(keys, MetricHuntUnscoredJobsCount)
 	keys = append(keys, MetricHuntUnscoredJobsMaxAge)
 	keys = append(keys, MetricHuntScoringDegraded)
+	// Degraded reason counters pre-touched so rate()-floor alerts see 0.
+	// 3 reasons = 3 series (bounded enum).
+	for _, r := range []string{"breaker_open", "llm_error", "parse_fail"} {
+		keys = append(keys, MetricHuntScoringDegradedReason+"{reason="+r+"}")
+	}
 	// OBS-1: goroutine count gauge pre-touched at 0.
 	keys = append(keys, MetricRuntimeGoroutines)
 	// OBS-3: L2 write error counter pre-touched at 0.
@@ -885,13 +902,14 @@ func ObserveHuntCycleDuration(d float64) {
 var validHuntScoreFilterStages = map[string]bool{scoreFilterRecency: true, scoreFilterJaccard: true, scoreFilterQuality: true}
 
 // validHuntScoreLLMResults bounds the result label for hunt_score_llm_total.
-// result ∈ {"ok","enum_clamp","parse_fail","llm_error"}.
-// ok:         LLM returned valid parseable JSON with known enum values.
-// enum_clamp: JSON parsed but an enum field was unknown and clamped.
-// parse_fail: JSON could not be parsed (fail-open → unscored).
-// llm_error:  LLM call itself failed (fail-open → unscored).
+// result ∈ {"ok","enum_clamp","parse_fail","llm_error","skipped_budget"}.
+// ok:            LLM returned valid parseable JSON with known enum values.
+// enum_clamp:    JSON parsed but an enum field was unknown and clamped.
+// parse_fail:    JSON could not be parsed (fail-open → unscored).
+// llm_error:     LLM call itself failed (fail-open → unscored).
+// skipped_budget: per-cycle LLM cap reached before this job could be scored.
 var validHuntScoreLLMResults = map[string]bool{
-	scoreLLMOk: true, scoreLLMEnumClamp: true, scoreLLMParseFail: true, scoreLLMError: true,
+	scoreLLMOk: true, scoreLLMEnumClamp: true, scoreLLMParseFail: true, scoreLLMError: true, scoreLLMSkippedBudg: true,
 }
 
 // IncrHuntScoreFiltered bumps gojob_hunt_score_filtered_total{stage=<s>}.
@@ -965,19 +983,52 @@ func SetHuntUnscoredJobsMaxAge(val float64) {
 	reg.Gauge(MetricHuntUnscoredJobsMaxAge).Set(val)
 }
 
+// validHuntScoringDegradedReasons bounds the reason label for
+// hunt_scoring_degraded_total{reason}. Bounded enum — never a raw error string.
+var validHuntScoringDegradedReasons = map[string]bool{
+	"breaker_open": true, "llm_error": true, "parse_fail": true,
+}
+
+// scoringDegradedState tracks the current gauge value so SetHuntScoringDegraded
+// can detect transitions and log/increment only on actual 0↔1 changes.
+var scoringDegradedState atomic.Bool
+
 // SetHuntScoringDegraded sets gojob_hunt_scoring_degraded to 1 (degraded) or
-// 0 (healthy). Called by the hunt worker: reset to 0 at cycle start, set to 1
-// when the circuit breaker trips or the fail-open path is taken (llm_error or
-// parse_fail in scoreJobIfCreated). No-op before engine.Init() (reg is nil).
-func SetHuntScoringDegraded(degraded bool) {
+// 0 (healthy) and logs the transition with the reason. Called by the hunt
+// worker: reset to 0 at cycle start (reason="cycle_reset"), set to 1 when the
+// circuit breaker trips (reason="breaker_open") or the fail-open path is taken
+// (reason="llm_error" or "parse_fail" in scoreJobIfCreated). No-op before
+// engine.Init() (reg is nil). Only actual 0↔1 transitions produce a log line
+// and counter increment; redundant calls with the same value are silent.
+func SetHuntScoringDegraded(degraded bool, reason string) {
+	prev := scoringDegradedState.Swap(degraded)
+	if prev == degraded {
+		return
+	}
 	if reg == nil {
 		return
 	}
 	v := 0.0
 	if degraded {
 		v = 1.0
+		slog.Warn("hunt scoring: entering degraded mode", slog.String("reason", reason))
+		if validHuntScoringDegradedReasons[reason] {
+			reg.Incr(MetricHuntScoringDegradedReason + "{reason=" + reason + "}")
+		}
+	} else {
+		slog.Info("hunt scoring: leaving degraded mode", slog.String("reason", reason))
 	}
 	reg.Gauge(MetricHuntScoringDegraded).Set(v)
+}
+
+// IncrHuntScoringDegradedReason bumps gojob_hunt_scoring_degraded_total{reason=<r>}.
+// reason ∈ {"breaker_open","llm_error","parse_fail"} — bounded enum. Unknown
+// values are silently dropped (cardinality guard).
+func IncrHuntScoringDegradedReason(reason string) {
+	if reg == nil || !validHuntScoringDegradedReasons[reason] {
+		return
+	}
+	reg.Incr(MetricHuntScoringDegradedReason + "{reason=" + reason + "}")
 }
 
 // ObserveHuntFitScore records a single fit-score observation into the

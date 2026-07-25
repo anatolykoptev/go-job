@@ -332,4 +332,7 @@ func Reg() *kitmetrics.Registry { return reg }
 // in-memory registry. For use in tests in other packages that call metric
 // functions (e.g. IncrHuntDiscoverySource) and need to read counter deltas via
 // GetMetrics(). Call once per test binary via TestMain.
-func InitTestRegistry() { reg = kitmetrics.NewRegistry() }
+func InitTestRegistry() {
+	reg = kitmetrics.NewRegistry()
+	scoringDegradedState.Store(false)
+}
