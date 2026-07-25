@@ -160,11 +160,11 @@ func newLLMBreaker() *breaker.Breaker {
 		OpenDuration:  30 * time.Minute,
 		OnTrip: func(name string) {
 			slog.Warn("hunt LLM cross-cycle breaker tripped", slog.String("breaker", name))
-			engine.SetHuntScoringDegraded(true)
+			engine.SetHuntScoringDegraded(true, "breaker_open")
 		},
 		OnRecover: func(name string) {
 			slog.Info("hunt LLM cross-cycle breaker recovered", slog.String("breaker", name))
-			engine.SetHuntScoringDegraded(false)
+			engine.SetHuntScoringDegraded(false, "breaker_recovered")
 		},
 	})
 }
@@ -328,7 +328,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 
 	// ESC-2: reset scoring degradation flag at cycle start. Set to 1 during the
 	// cycle when the circuit breaker trips or the fail-open path is taken.
-	engine.SetHuntScoringDegraded(false)
+	engine.SetHuntScoringDegraded(false, "cycle_reset")
 
 	platforms := []struct {
 		name   string
@@ -452,15 +452,18 @@ func scoreJobWithLimit(
 
 	maxLLM := score.MaxLLMPerCycle()
 	if llmCallsThisCycle.Load() >= int64(maxLLM) {
-		// Circuit breaker tripped: return unscored result in-memory only.
+		// Per-cycle LLM budget exhausted: return unscored result in-memory only.
 		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
 		// the job from the `scored_at IS NULL` unscored pool, permanently
 		// stranding it without LLM scoring. The sweep (runUnscoredSweep)
 		// will pick it up in the next cycle when budget is available.
+		//
+		// Budget exhaustion is NORMAL operation, not degradation — the gauge
+		// must NOT be set. The skipped_budget LLMResult makes these jobs
+		// countable via gojob_hunt_score_llm_total{result="skipped_budget"}
+		// without falsely triggering the GojobHuntScoringDegraded alert.
 		engine.IncrHuntScoreBreakerTrips()
-		// ESC-2: breaker open = scoring degraded.
-		engine.SetHuntScoringDegraded(true)
-		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored}
+		result := hunt.ScoreResult{FitBand: hunt.FitBandUnscored, LLMResult: "skipped_budget"}
 		return &result
 	}
 
@@ -504,7 +507,7 @@ func scoreJobIfCreated(
 	// ESC-2: signal scoring degradation when the fail-open path is taken
 	// (LLM error or JSON parse failure → job lands as unscored).
 	if result.LLMResult == "llm_error" || result.LLMResult == "parse_fail" {
-		engine.SetHuntScoringDegraded(true)
+		engine.SetHuntScoringDegraded(true, result.LLMResult)
 	}
 
 	_, err := retry.Do(ctx, retry.Options{
