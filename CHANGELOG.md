@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.14.1](https://github.com/anatolykoptev/go-job/compare/v1.14.0...v1.14.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* stop latching hunt_scoring_degraded on budget exhaustion ([#324](https://github.com/anatolykoptev/go-job/issues/324)) ([87b805a](https://github.com/anatolykoptev/go-job/commit/87b805a38fd9d78cccf43815f4d7faf069713f7f))
+
 ## [1.14.0](https://github.com/anatolykoptev/go-job/compare/v1.13.0...v1.14.0) (2026-07-22)
 
 
