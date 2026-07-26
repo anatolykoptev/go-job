@@ -80,7 +80,7 @@ github.com/anatolykoptev/go-panel/resource
 github.com/anatolykoptev/go-panel/shell
 github.com/anatolykoptev/go-panel/shell/internal/assets
 github.com/anatolykoptev/go-panel/tenant
-# github.com/anatolykoptev/go-stealth v1.19.1
+# github.com/anatolykoptev/go-stealth v1.22.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/internal/uri
@@ -144,7 +144,7 @@ github.com/bogdanfinn/quic-go-utls/qlog
 github.com/bogdanfinn/quic-go-utls/qlogwriter
 github.com/bogdanfinn/quic-go-utls/qlogwriter/jsontext
 github.com/bogdanfinn/quic-go-utls/quicvarint
-# github.com/bogdanfinn/tls-client v1.14.0
+# github.com/bogdanfinn/tls-client v1.15.1
 ## explicit; go 1.24.1
 github.com/bogdanfinn/tls-client
 github.com/bogdanfinn/tls-client/bandwidth
