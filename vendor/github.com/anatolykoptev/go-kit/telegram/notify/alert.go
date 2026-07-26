@@ -199,7 +199,14 @@ func (s *alertSink) Alert(ctx context.Context, a Alert) error {
 		s.m.Incr(metrics.Label(MetricAlertTotal, "severity", string(a.Severity), "result", "error"))
 		return nil // best-effort: caller must not fail on dozor outage
 	}
-	defer resp.Body.Close() //nolint:errcheck // response body drain; read-only
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("notify: alert webhook response body close failed",
+				slog.String("url", s.webhookURL),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		slog.Warn("notify: alert webhook non-2xx",
