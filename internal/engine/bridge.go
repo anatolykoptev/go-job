@@ -71,12 +71,21 @@ func RandomUserAgent() string { return fetch.RandomUserAgent() }
 // ChromeHeaders returns common Chrome browser headers.
 func ChromeHeaders() map[string]string { return fetch.ChromeHeaders() }
 
-// User-Agent strings used across HTTP clients.
-const (
-	UserAgentBot    = "GoJob/1.0"
-	UserAgentChrome = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-		"(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
+// UserAgentBot is the self-identifying bot UA for API calls that expect one
+// (GitHub, HuggingFace, YouTube transcripts, etc.) — not a browser
+// impersonation, so it is NOT derived from a stealth TLS profile.
+const UserAgentBot = "GoJob/1.0"
+
+// UserAgentChrome is the browser User-Agent go-job sends on direct HTTP
+// calls. Derived from the fleet's stealth TLS profile (ProfileChrome131 — the
+// profile stealth.defaultConfig installs when no WithProfile is given, which
+// is how go-engine's fetch.New builds the repo's BrowserClient) via
+// stealth.UserAgentForProfile, so the UA agrees with the JA3 fingerprint the
+// fleet presents by contract, not coincidence. A hardcoded literal can drift
+// from the presenting profile (a Chrome/N UA over a Chrome/M JA3 is a
+// self-inconsistent pair no real browser produces); the lookup makes the two
+// agree by construction. See useragent_identity_test.go for the invariant.
+var UserAgentChrome = stealth.UserAgentForProfile(stealth.ProfileChrome131)
 
 // ---- Retry ----
 
