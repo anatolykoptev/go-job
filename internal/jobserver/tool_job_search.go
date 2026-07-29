@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -68,7 +69,7 @@ var jobSearchSem = make(chan struct{}, 8)
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL). Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter.",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = never ran (missing API key); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/blocked/failed source, the summary names those sources instead of the generic 'No results found.'",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
 		if input.Query == "" {
@@ -194,22 +195,29 @@ func registerJobSearch(server *mcp.Server) {
 		if runGenericSearxng {
 			totalGoroutines++
 		}
-		var merged []engine.SearxngResult
-		var linkedInJobs []jobs.LinkedInJob
-		for i := 0; i < totalGoroutines; i++ {
-			r := <-ch
-			// Unified per-platform counter: bumped once per connector return, covering
-			// all 18 platforms uniformly. Per-connector bumps were removed to avoid
-			// double-counting; this is the single authority for platform_results_total.
-			engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
-			merged = append(merged, r.results...)
-			if r.name == platLinkedIn && len(r.liJobs) > 0 {
-				linkedInJobs = r.liJobs
-			}
-		}
+		merged, linkedInJobs, sources := aggregateSourceResults(ctx, srcs, runGenericSearxng, ch, totalGoroutines)
 
 		if len(merged) == 0 {
-			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No results found."}, nil
+			return nil, engine.JobSearchOutput{
+				Query:   input.Query,
+				Summary: buildZeroResultsSummary(sources),
+				Sources: sources,
+			}, nil
+		}
+
+		// Partial-results path: the aggregation was cancelled mid-fan-out (the
+		// ToolTimeoutMiddleware deadline fired, or the client disconnected). The
+		// Sources list is already truthful (un-reported sources marked failed with
+		// a deadline reason). Skip the LLM post-processing — it would either fail
+		// on the cancelled context or burn the remaining budget — and return the
+		// partial answer with an honest summary. This is a SUCCESS path, not an
+		// error: a partial answer with a truthful Sources list beats a hang.
+		if ctx.Err() != nil {
+			return nil, engine.JobSearchOutput{
+				Query:   input.Query,
+				Summary: buildPartialSummary(sources),
+				Sources: sources,
+			}, nil
 		}
 
 		// Dedup pass 1: by URL.
@@ -241,7 +249,7 @@ func registerJobSearch(server *mcp.Server) {
 		if input.Offset > 0 && input.Offset < len(deduped) {
 			deduped = deduped[input.Offset:]
 		} else if input.Offset >= len(deduped) {
-			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total)."}, nil
+			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total).", Sources: sources}, nil
 		}
 
 		top := engine.DedupByDomain(deduped, limit)
@@ -318,6 +326,7 @@ func registerJobSearch(server *mcp.Server) {
 		}
 
 		persistJobListings(ctx, jobOut.Jobs)
+		jobOut.Sources = sources
 		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
 		if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
 			var zero engine.JobSearchOutput
@@ -479,4 +488,151 @@ func persistJobListings(ctx context.Context, jobListings []engine.JobListing) {
 			store.NotifyJobIfOpen(hj)
 		}
 	}
+}
+
+// allSourceNames returns the names of every fan-out participant in order:
+// each selected connector followed by the generic searxng discovery goroutine
+// when it runs. Used to mark un-reported sources as failed on context
+// cancellation.
+func allSourceNames(srcs []connectors.Source, runGenericSearxng bool) []string {
+	names := make([]string, 0, len(srcs)+1)
+	for _, s := range srcs {
+		names = append(names, s.Name())
+	}
+	if runGenericSearxng {
+		names = append(names, "searxng")
+	}
+	return names
+}
+
+// aggregateSourceResults drains the fan-out channel, classifying each source
+// return into a SourceStatus, until every goroutine has reported OR the context
+// is cancelled. On cancellation it returns the partial results collected so far
+// and marks every source that has not yet reported as failed with a deadline
+// reason — so the response stays truthful instead of hanging on a bare
+// `r := <-ch` that ignores ctx.Done().
+//
+// The per-platform results counter (gojob_platform_results_total) is bumped
+// once per connector return here, exactly as the inline loop did before.
+func aggregateSourceResults(
+	ctx context.Context,
+	srcs []connectors.Source,
+	runGenericSearxng bool,
+	ch <-chan sourceResult,
+	totalGoroutines int,
+) (merged []engine.SearxngResult, linkedInJobs []jobs.LinkedInJob, sources []engine.SourceStatus) {
+	expected := allSourceNames(srcs, runGenericSearxng)
+	reported := make(map[string]bool, len(expected))
+	received := 0
+loop:
+	for received < totalGoroutines {
+		select {
+		case r := <-ch:
+			received++
+			reported[r.name] = true
+			engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
+			merged = append(merged, r.results...)
+			if r.name == platLinkedIn && len(r.liJobs) > 0 {
+				linkedInJobs = r.liJobs
+			}
+			sources = append(sources, classifySourceResult(r))
+		case <-ctx.Done():
+			// Partial: mark every expected source that has not reported as failed
+			// with a deadline reason. Sources that DID report (even with a
+			// cancellation error) were already classified above and are not
+			// double-counted.
+			for _, name := range expected {
+				if !reported[name] {
+					sources = append(sources, engine.SourceStatus{
+						Name:    name,
+						Outcome: engine.SourceOutcomeFailed,
+						Reason:  "deadline: source did not report before context cancellation",
+					})
+				}
+			}
+			break loop
+		}
+	}
+	return merged, linkedInJobs, sources
+}
+
+// classifySourceResult maps a single sourceResult into the response-contract
+// SourceStatus vocabulary. Classification precedence:
+//   - nil err + results  -> ok
+//   - nil err + 0 results -> empty (genuine zero — the connector ran and succeeded)
+//   - errors.Is(ErrNoAPIKey) -> skipped (never ran: missing key / opted out)
+//   - errors.Is(breaker.ErrOpen) -> blocked (upstream refused: breaker open)
+//   - context deadline/cancellation -> failed (deadline)
+//   - any other error -> failed (transport / parse / unknown)
+//
+// Note: several connectors historically returned (nil, nil) on failure — that
+// is the bug this classification makes visible as "empty" rather than
+// inheriting. A genuine empty (ran, 0 results) and a masked failure (nil, nil)
+// are indistinguishable at the sourceResult level; the connector-specific
+// remediation is out of scope for this task. The Sources list at least makes
+// the per-source count + outcome visible to the caller.
+func classifySourceResult(r sourceResult) engine.SourceStatus {
+	st := engine.SourceStatus{Name: r.name, Count: len(r.results)}
+	switch {
+	case r.err == nil && len(r.results) > 0:
+		st.Outcome = engine.SourceOutcomeOK
+	case r.err == nil:
+		st.Outcome = engine.SourceOutcomeEmpty
+	case errors.Is(r.err, jobs.ErrNoAPIKey):
+		st.Outcome = engine.SourceOutcomeSkipped
+		st.Reason = r.err.Error()
+	case errors.Is(r.err, breaker.ErrOpen):
+		st.Outcome = engine.SourceOutcomeBlocked
+		st.Reason = r.err.Error()
+	case errors.Is(r.err, context.DeadlineExceeded), errors.Is(r.err, context.Canceled):
+		st.Outcome = engine.SourceOutcomeFailed
+		st.Reason = "deadline: " + r.err.Error()
+	default:
+		st.Outcome = engine.SourceOutcomeFailed
+		st.Reason = r.err.Error()
+	}
+	return st
+}
+
+// buildZeroResultsSummary produces the human-readable summary for the
+// zero-results branch. "No results found." is only correct when every selected
+// source reported ok or empty. If any source was skipped / blocked / failed,
+// the summary names those sources (and their outcome) so the caller can tell
+// "there are no such jobs" apart from "the source never ran / was refused /
+// errored" — the core contract this task fixes.
+func buildZeroResultsSummary(sources []engine.SourceStatus) string {
+	var problems []engine.SourceStatus
+	for _, s := range sources {
+		switch s.Outcome {
+		case engine.SourceOutcomeSkipped, engine.SourceOutcomeBlocked, engine.SourceOutcomeFailed:
+			problems = append(problems, s)
+		}
+	}
+	if len(problems) == 0 {
+		return "No results found."
+	}
+	parts := make([]string, 0, len(problems))
+	for _, p := range problems {
+		reason := p.Reason
+		if reason == "" {
+			reason = p.Outcome
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s: %s)", p.Name, p.Outcome, reason))
+	}
+	return "No results found — sources did not complete successfully: " + strings.Join(parts, "; ") + "."
+}
+
+// buildPartialSummary produces the summary for the partial-results-on-cancellation
+// path. It names the deadline and the sources that did not finish.
+func buildPartialSummary(sources []engine.SourceStatus) string {
+	var unfinished []string
+	for _, s := range sources {
+		if s.Outcome == engine.SourceOutcomeFailed {
+			unfinished = append(unfinished, s.Name)
+		}
+	}
+	if len(unfinished) == 0 {
+		return "Partial results — search deadline reached."
+	}
+	return "Partial results — search deadline reached; sources did not finish: " + strings.Join(unfinished, ", ") + "."
 }

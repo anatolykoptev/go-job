@@ -41,11 +41,41 @@ type JobListing struct {
 	QualityScore   int      `json:"quality_score,omitempty"` // 0-100 deterministic posting-quality score (no LLM)
 }
 
+// Per-source outcome vocabulary reported in JobSearchOutput.Sources[].Outcome.
+// Distinct from the platform_results_total metric vocabulary (ok/empty/error/
+// timeout/no_key/parse_fail): this is the response contract surfaced to the
+// MCP caller, classifying WHY each selected source contributed what it did.
+//
+//   - ok      — ran, returned >=1 result
+//   - empty   — ran, genuinely returned 0 results
+//   - skipped — never ran (missing API key, not selected, opted out)
+//   - blocked — ran, was refused by the upstream (HTTP 403/429, bot challenge, breaker open)
+//   - failed  — ran, errored (transport, parse, deadline)
+const (
+	SourceOutcomeOK      = "ok"
+	SourceOutcomeEmpty   = "empty"
+	SourceOutcomeSkipped = "skipped"
+	SourceOutcomeBlocked = "blocked"
+	SourceOutcomeFailed  = "failed"
+)
+
+// SourceStatus reports the outcome of a single source in a job_search fan-out.
+// Populated for every selected source (and the generic searxng discovery
+// goroutine when it runs). Absent on cache hits and the platform=twitter
+// raw path, which bypass the connector fan-out.
+type SourceStatus struct {
+	Name    string `json:"name" jsonschema:"Source connector name (e.g. linkedin, greenhouse, searxng)"`
+	Outcome string `json:"outcome" jsonschema:"Per-source outcome: ok, empty, skipped, blocked, failed"`
+	Reason  string `json:"reason,omitempty" jsonschema:"Human-readable reason; empty when outcome is ok or empty"`
+	Count   int    `json:"count" jsonschema:"Number of raw results this source contributed"`
+}
+
 // JobSearchOutput is the structured output for job_search.
 type JobSearchOutput struct {
-	Query   string       `json:"query"`
-	Jobs    []JobListing `json:"jobs"`
-	Summary string       `json:"summary"`
+	Query   string         `json:"query"`
+	Jobs    []JobListing   `json:"jobs"`
+	Summary string         `json:"summary"`
+	Sources []SourceStatus `json:"sources,omitempty" jsonschema:"Per-source outcome of the connector fan-out. outcome ∈ {ok, empty, skipped, blocked, failed}. Present whenever job_search runs its fan-out; absent on cache hits and the platform=twitter raw path."`
 }
 
 type FreelanceSearchInput struct {
