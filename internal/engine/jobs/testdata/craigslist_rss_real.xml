@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/"
+ xmlns:enc="http://purl.oclc.org/net/rss_2.0/enc#"
+ xmlns:ev="http://purl.org/rss/1.0/modules/event/"
+ xmlns:content="http://purl.org/rss/1.0/modules/content/"
+ xmlns:dcterms="http://purl.org/dc/terms/"
+ xmlns:syn="http://purl.org/rss/1.0/modules/syndication/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:taxo="http://purl.org/rss/1.0/modules/taxonomy/"
+ xmlns:admin="http://webns.net/mvcb/"
+>
+
+<channel rdf:about="https://sfbay.craigslist.org/search/apa?availabilityMode=0&#x26;format=rss&#x26;max_price=6000&#x26;min_bedrooms=3&#x26;postal=94107&#x26;search_distance=2">
+<title>craigslist SF bay area | apts/housing for rent search </title>
+<link>https://sfbay.craigslist.org/search/apa?availabilityMode=0&#x26;max_price=6000&#x26;min_bedrooms=3&#x26;postal=94107&#x26;search_distance=2</link>
+<description></description>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:publisher>robot@craigslist.org</dc:publisher>
+<dc:creator>robot@craigslist.org</dc:creator>
+<dc:source>https://sfbay.craigslist.org/search/apa?availabilityMode=0&#x26;format=rss&#x26;max_price=6000&#x26;min_bedrooms=3&#x26;postal=94107&#x26;search_distance=2</dc:source>
+<dc:title>craigslist SF bay area | apts/housing for rent search </dc:title>
+<dc:type>Collection</dc:type>
+<syn:updateBase>2017-10-29T17:33:06-07:00</syn:updateBase>
+<syn:updateFrequency>6</syn:updateFrequency>
+<syn:updatePeriod>hourly</syn:updatePeriod>
+<items>
+ <rdf:Seq>
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/top-floor-older-edwardian/6345251923.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/5150-3br-dolores-heights-826/6366101891.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/new-renovation-single-home/6366039118.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6352963058.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/newly-painted-house-in-bernal/6365996969.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/3br-apartment-in-san-francisco/6365871285.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/high-luxury-new-condo-noe/6365867164.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362645740.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362637404.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/freshly-refurbished-victorian/6328468881.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/gorgeous-4br2ba-great/6365772936.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365763513.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365762809.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/large-one-bed-bonus-rooms/6330167078.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/lg-flat-near-20th-st-corridor/6365706671.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/wow-new-remodel-single-home/6342752412.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6350391353.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/bernal-heights-3-br-25-ba/6365619069.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/vacation-like-rustic-home-in/6339754698.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/stunning-renovated-single/6334468165.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/3-4br-2ba-open-home-monday/6365539960.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/just-renovated-gourmet/6365501098.html" />
+  <rdf:li rdf:resource="https://sfbay.craigslist.org/sfc/apa/d/newly-remodeled-3-bed-2ba-on/6359887165.html" />
+ </rdf:Seq>
+</items>
+</channel>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/top-floor-older-edwardian/6345251923.html">
+<title><![CDATA[Top-floor older Edwardian flat, 3-bed 1-bath, private deck & backyard (mission district) &#x0024;4995 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/top-floor-older-edwardian/6345251923.html</link>
+<description><![CDATA[Mazal55Properties
+The flat has older finishes throughout.
+The flat feels like a house and is in a 2-unit Edwardian building. It is comprised of 3 rooms plus a spacious kitchen and a sunny breakfast room which overlooks a private deck. Two of the roo ...]]></description>
+<dc:date>2017-10-29T16:23:15-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/top-floor-older-edwardian/6345251923.html</dc:source>
+<dc:title><![CDATA[Top-floor older Edwardian flat, 3-bed 1-bath, private deck & backyard (mission district) &#x0024;4995 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00505_kUA0GUzsOEq_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T16:23:15-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/5150-3br-dolores-heights-826/6366101891.html">
+<title><![CDATA[$5,150 / 3br - Dolores Heights  826 Dolores Street (noe valley) &#x0024;5150 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/5150-3br-dolores-heights-826/6366101891.html</link>
+<description><![CDATA[826 Dolores &amp; 21st / Lower flat / 3 bedrm-1bd / sunny breakft rm - Deck over yard
+Kitchen: granite top - ss sink - gas range, microwave, dw/gd - hardwood flrs - blinds
+Laundry room and storage area in basemt - yard.
+Available November 7th.
+Tw ...]]></description>
+<dc:date>2017-10-29T15:23:49-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/5150-3br-dolores-heights-826/6366101891.html</dc:source>
+<dc:title><![CDATA[$5,150 / 3br - Dolores Heights  826 Dolores Street (noe valley) &#x0024;5150 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00909_9qNbGpuudqw_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T15:23:49-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/new-renovation-single-home/6366039118.html">
+<title><![CDATA[New Renovation, Single home w garage 3br,2ba (bernal heights) &#x0024;5750 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/new-renovation-single-home/6366039118.html</link>
+<description><![CDATA[This three bedroom, two bath single family home features a fabulous open floor plan, with large bedrooms. Walking distance to Cortland avenue (with Zagat rated restaurants) and Farmer's Market. Great public transportation and easy access to 101 and 2 ...]]></description>
+<dc:date>2017-10-29T14:22:37-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/new-renovation-single-home/6366039118.html</dc:source>
+<dc:title><![CDATA[New Renovation, Single home w garage 3br,2ba (bernal heights) &#x0024;5750 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00l0l_g3b0h1frfVJ_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T14:22:37-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6352963058.html">
+<title><![CDATA[Single Home w garage !!! - New Renovation, 3br/2ba, Convenient Loc (bernal heights) &#x0024;5750 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6352963058.html</link>
+<description><![CDATA[This three bedroom, two bath single family home features a fabulous open floor plan, with large bedrooms. Walking distance to Cortland avenue and Farmer's Market. Great public transportation and easy access to 101 and 280. Chariot transportation and  ...]]></description>
+<dc:date>2017-10-29T14:21:53-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6352963058.html</dc:source>
+<dc:title><![CDATA[Single Home w garage !!! - New Renovation, 3br/2ba, Convenient Loc (bernal heights) &#x0024;5750 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00P0P_axCq7ad7NEY_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T14:21:53-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/newly-painted-house-in-bernal/6365996969.html">
+<title><![CDATA[Newly painted house in Bernal Heights close to everything!!! (bernal heights) &#x0024;4800 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/newly-painted-house-in-bernal/6365996969.html</link>
+<description><![CDATA[The house has 3br 1ba. The house has recently been updated. Parking is easy on the street. The house has a small white picket fenced front yard, and a small back yard.
+The lease is for 12 months
+1st month and last month plus $2,000 security deposit ...]]></description>
+<dc:date>2017-10-29T13:54:37-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/newly-painted-house-in-bernal/6365996969.html</dc:source>
+<dc:title><![CDATA[Newly painted house in Bernal Heights close to everything!!! (bernal heights) &#x0024;4800 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00m0m_23iG5FAohAS_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T13:54:37-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/3br-apartment-in-san-francisco/6365871285.html">
+<title><![CDATA[3BR Apartment in San Francisco (mission district) &#x0024;4680 3bd 1300ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/3br-apartment-in-san-francisco/6365871285.html</link>
+<description><![CDATA[This 3 bedroom apartment is located in the East edge of the Mission district, bordering Potrero Hill. The home is located on a quiet, residential street with access to lots of great food and shops, as well as highway 101.
+Bustling 24th Street is jus ...]]></description>
+<dc:date>2017-10-29T12:06:14-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/3br-apartment-in-san-francisco/6365871285.html</dc:source>
+<dc:title><![CDATA[3BR Apartment in San Francisco (mission district) &#x0024;4680 3bd 1300ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00D0D_8fTVCQBL5K3_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T12:06:14-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/high-luxury-new-condo-noe/6365867164.html">
+<title><![CDATA[High Luxury New Condo Noe Valley Exotic Views 1/4 Blk. Google Shuttle (noe valley) &#x0024;5495 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/high-luxury-new-condo-noe/6365867164.html</link>
+<description><![CDATA[High luxury brand new, just remodeled, 3Br 1 split bath Condo in a 1907 Edwardian Building in Noe Valley with exotic views from bedrooms, living room and outside deck. 1/4 Block from Google Shuttles. Large quiet backyard with flowering shrubs, fruit  ...]]></description>
+<dc:date>2017-10-29T12:03:10-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/high-luxury-new-condo-noe/6365867164.html</dc:source>
+<dc:title><![CDATA[High Luxury New Condo Noe Valley Exotic Views 1/4 Blk. Google Shuttle (noe valley) &#x0024;5495 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00a0a_6JZZ0gpjbw_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T12:03:10-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362645740.html">
+<title><![CDATA[Pristine Historic Renovation-New Building Systems & Wiring-Must See! (mission district) &#x0024;5600 4bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362645740.html</link>
+<description><![CDATA[LOCATION: 513A Potrero Avenue (Mariposa/18th)
+FEATURES:
+•Pristinely renovated full floor flat in a 1911 Edwardian building with all new systems and wiring.
+•The unit consists of a living room, double parlor, kitchen, formal dining room, one be ...]]></description>
+<dc:date>2017-10-29T12:01:03-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362645740.html</dc:source>
+<dc:title><![CDATA[Pristine Historic Renovation-New Building Systems & Wiring-Must See! (mission district) &#x0024;5600 4bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00u0u_axsyWxATKLa_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T12:01:03-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362637404.html">
+<title><![CDATA[Pristine Historic Renovation-New Building Systems & Wiring-Must See! (mission district) &#x0024;5600 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362637404.html</link>
+<description><![CDATA[LOCATION: 513A Potrero Avenue (Mariposa/18th)
+FEATURES:
+•Pristinely renovated full floor flat in a 1911 Edwardian building with all new systems and wiring.
+•The unit consists of a living room, double parlor, kitchen, formal dining room, one be ...]]></description>
+<dc:date>2017-10-29T12:00:27-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/pristine-historic-renovation/6362637404.html</dc:source>
+<dc:title><![CDATA[Pristine Historic Renovation-New Building Systems & Wiring-Must See! (mission district) &#x0024;5600 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00T0T_3UR5DDNZJyv_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T12:00:27-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/freshly-refurbished-victorian/6328468881.html">
+<title><![CDATA[Freshly Refurbished Victorian Flat (Valencia/Dolores Corridor) (mission district) &#x0024;5650 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/freshly-refurbished-victorian/6328468881.html</link>
+<description><![CDATA[Splendidly Freshly Restored 3 Bedroom, 2 Baths, Living Room, Big Kitchen Spacious Flat.
+High Ceiling, Hardwood Floor. Large Kitchen with Dining Area. Great Floor Plan - Large Hall
+Leads to Independent Rooms. Nice Backyard Garden for Relaxation. Con ...]]></description>
+<dc:date>2017-10-29T11:20:54-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/freshly-refurbished-victorian/6328468881.html</dc:source>
+<dc:title><![CDATA[Freshly Refurbished Victorian Flat (Valencia/Dolores Corridor) (mission district) &#x0024;5650 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00C0C_5hIFqSAVxGU_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T11:20:54-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/gorgeous-4br2ba-great/6365772936.html">
+<title><![CDATA[Gorgeous 4BR2BA! Great Location! 1 short block from Google Shuttle! (mission district) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/gorgeous-4br2ba-great/6365772936.html</link>
+<description><![CDATA[Stunning and Spacious 4BR2BA home in Noe Valley! $4,995per month for unfurnished rental $5,495per month for furnished rental There are total 4 bedrooms 2 bathrooms There are total 3 bathroom area. The first bathroom area has a tub and sink. The secon ...]]></description>
+<dc:date>2017-10-29T11:17:33-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/gorgeous-4br2ba-great/6365772936.html</dc:source>
+<dc:title><![CDATA[Gorgeous 4BR2BA! Great Location! 1 short block from Google Shuttle! (mission district) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00C0C_1rchcByzOBA_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T11:17:33-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365763513.html">
+<title><![CDATA[1 short block away from Google Shuttle line! Spacious 4BR2BA!!! (noe valley) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365763513.html</link>
+<description><![CDATA[Stunning and Spacious 4BR2BA home in Noe Valley! $4,995 per month for unfurnished rental $5,495 per month for furnished rental There are total 4 bedrooms 2 bathrooms There are total 3 bathroom area. The first bathroom area has a tub and sink. The sec ...]]></description>
+<dc:date>2017-10-29T11:08:26-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365763513.html</dc:source>
+<dc:title><![CDATA[1 short block away from Google Shuttle line! Spacious 4BR2BA!!! (noe valley) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00C0C_1rchcByzOBA_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T11:08:26-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365762809.html">
+<title><![CDATA[1 short block away from Google Shuttle line! Spacious 4BR2BA!!! (noe valley) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365762809.html</link>
+<description><![CDATA[Stunning and Spacious 4BR2BA home in Noe Valley! $4,995 per month for unfurnished rental $5,495 per month for furnished rental There are total 4 bedrooms 2 bathrooms There are total 3 bathroom area. The first bathroom area has a tub and sink. The sec ...]]></description>
+<dc:date>2017-10-29T11:07:57-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/1-short-block-away-from/6365762809.html</dc:source>
+<dc:title><![CDATA[1 short block away from Google Shuttle line! Spacious 4BR2BA!!! (noe valley) &#x0024;4995 4bd 1800ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00C0C_1rchcByzOBA_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T11:07:57-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/large-one-bed-bonus-rooms/6330167078.html">
+<title><![CDATA[Large One Bed - Bonus Rooms with Endless Possibilities! $1500 Special! (SOMA) &#x0024;5090 5bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/large-one-bed-bonus-rooms/6330167078.html</link>
+<description><![CDATA[Perched high above the city this 1BR/1ba floor plan with floor to ceiling, double pane windows, overlooking the city and areas like Union Square and Financial District. The apartment features brand new hardwood floors throughout, new hardware and a W ...]]></description>
+<dc:date>2017-10-29T10:44:06-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/large-one-bed-bonus-rooms/6330167078.html</dc:source>
+<dc:title><![CDATA[Large One Bed - Bonus Rooms with Endless Possibilities! $1500 Special! (SOMA) &#x0024;5090 5bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00T0T_elQxF5UZlBR_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T10:44:06-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/lg-flat-near-20th-st-corridor/6365706671.html">
+<title><![CDATA[LG FLAT NEAR 20TH ST CORRIDOR REMODELED KIT AND BA  LAUNDRY IN UNIT (mission district) &#x0024;5300 3bd 1300ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/lg-flat-near-20th-st-corridor/6365706671.html</link>
+<description><![CDATA[Spacious flat in three unit building, located near the 20th. ST. Corridor. Has three bedrooms and a split bathroom. The kitchen has cherry wood cabinets and all new stainless steel appliances. Including microwave and dishwasher. The counter is Italia ...]]></description>
+<dc:date>2017-10-29T10:03:16-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/lg-flat-near-20th-st-corridor/6365706671.html</dc:source>
+<dc:title><![CDATA[LG FLAT NEAR 20TH ST CORRIDOR REMODELED KIT AND BA  LAUNDRY IN UNIT (mission district) &#x0024;5300 3bd 1300ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/01717_3PjQdnAcLxY_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T10:03:16-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/wow-new-remodel-single-home/6342752412.html">
+<title><![CDATA[WOW!!! - New Remodel, Single Home w garage & yard, 3br/2ba (bernal heights) &#x0024;5750 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/wow-new-remodel-single-home/6342752412.html</link>
+<description><![CDATA[This three bedroom, two bath single family home features a fabulous open floor plan, with large bedrooms. Walking distance to Cortland avenue and Farmer's Market. Great public transportation and easy access to 101 and 280. Chariot transportation and  ...]]></description>
+<dc:date>2017-10-29T09:57:29-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/wow-new-remodel-single-home/6342752412.html</dc:source>
+<dc:title><![CDATA[WOW!!! - New Remodel, Single Home w garage & yard, 3br/2ba (bernal heights) &#x0024;5750 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00a0a_ighoQ7d31sz_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T09:57:29-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6350391353.html">
+<title><![CDATA[Single Home w garage !!! - New Renovation, 3br/2ba, Convenient Loc (bernal heights) &#x0024;5750 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6350391353.html</link>
+<description><![CDATA[This three bedroom, two bath single family home features a fabulous open floor plan, with large bedrooms. Walking distance to Cortland avenue and Farmer's Market. Great public transportation and easy access to 101 and 280. Chariot transportation and  ...]]></description>
+<dc:date>2017-10-29T09:57:15-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/single-home-garage-new/6350391353.html</dc:source>
+<dc:title><![CDATA[Single Home w garage !!! - New Renovation, 3br/2ba, Convenient Loc (bernal heights) &#x0024;5750 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00P0P_axCq7ad7NEY_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T09:57:15-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/bernal-heights-3-br-25-ba/6365619069.html">
+<title><![CDATA[Bernal Heights - 3 BR, 2.5 BA Apartment - Storage & Parking Option (bernal heights) &#x0024;4995 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/bernal-heights-3-br-25-ba/6365619069.html</link>
+<description><![CDATA[Bernal Heights - 3 BR, 2.5 BA Apartment - Storage &amp; Parking Option
+Property Address
+55 Valley Street | San Francisco, CA 94110
+Offered By
+G2Properties DBA Golden Gate Properties | ***
+Description
+This 3 bed, 2.5 bath Bernal Heights Apartment  ...]]></description>
+<dc:date>2017-10-29T08:55:20-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/bernal-heights-3-br-25-ba/6365619069.html</dc:source>
+<dc:title><![CDATA[Bernal Heights - 3 BR, 2.5 BA Apartment - Storage & Parking Option (bernal heights) &#x0024;4995 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/01010_735Nkus6XZs_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T08:55:20-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/vacation-like-rustic-home-in/6339754698.html">
+<title><![CDATA[VACATION LIKE RUSTIC HOME IN PRIME POTRERO HILL 3BR/2BA (potrero hill) &#x0024;6000 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/vacation-like-rustic-home-in/6339754698.html</link>
+<description><![CDATA[600 De Haro Street Stunning Rustic 3BR/2BA View Home $6,000
+YOU WILL LOVE LIVING IN THIS RUSTIC HOME THAT WILL MAKE YOU
+FEEL LIKE YOU ARE ON PERMANENT VACATION WHILE LIVING IN SF
+*Historic Home Built Pre 1900, Moved to Current Location in 1924
+*C ...]]></description>
+<dc:date>2017-10-29T08:27:08-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/vacation-like-rustic-home-in/6339754698.html</dc:source>
+<dc:title><![CDATA[VACATION LIKE RUSTIC HOME IN PRIME POTRERO HILL 3BR/2BA (potrero hill) &#x0024;6000 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/01111_l4EorksYAdh_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T08:27:08-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/stunning-renovated-single/6334468165.html">
+<title><![CDATA[STUNNING RENOVATED SINGLE FAMILY HOME 3BR/2BA  BONUS ROOM DECK YARD (bernal heights) &#x0024;5500 3bd 1588ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/stunning-renovated-single/6334468165.html</link>
+<description><![CDATA[Renovated Single Family Home 3BR/2BA Plus 126 Bronte Street $5,500.00
+YOU WILL LOVE LIVING IN THIS ARCHITECTURALLY RENOVATED HOME
+*Stunning Contemporary Renovation
+*High End Finishes &amp; Fixtures Throughout
+*Perfectly Designed for Modern Living ...]]></description>
+<dc:date>2017-10-29T08:26:48-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/stunning-renovated-single/6334468165.html</dc:source>
+<dc:title><![CDATA[STUNNING RENOVATED SINGLE FAMILY HOME 3BR/2BA  BONUS ROOM DECK YARD (bernal heights) &#x0024;5500 3bd 1588ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/01616_aQXHTPX2WhO_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T08:26:48-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/3-4br-2ba-open-home-monday/6365539960.html">
+<title><![CDATA[3-4br/2ba ►OPEN HOME MONDAY ►REMODELED FULL-FLOOR FLAT (SOMA / south beach) &#x0024;5499 4bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/3-4br-2ba-open-home-monday/6365539960.html</link>
+<description><![CDATA[OPEN HOME: MONDAY OCTOBER 30, FROM 6:00 P.M. TO 6:30 P.M.
+ADDRESS: 1355 HARRISON STREET. Please confirm if you plan to attend.
+KEY DETAILS
+•Bedrooms: 3-4 Bedrooms
+•Bathrooms: 2 Bathrooms
+•Property Type: Flat
+•Lease Duration: 1 Year (Plea ...]]></description>
+<dc:date>2017-10-29T07:46:46-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/3-4br-2ba-open-home-monday/6365539960.html</dc:source>
+<dc:title><![CDATA[3-4br/2ba ►OPEN HOME MONDAY ►REMODELED FULL-FLOOR FLAT (SOMA / south beach) &#x0024;5499 4bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00j0j_lXNTw9xyu9D_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T07:46:46-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/just-renovated-gourmet/6365501098.html">
+<title><![CDATA[Just renovated! Gourmet kitchen and marble bathrooms! ~ J.Wavro (mission district) &#x0024;5300 3bd]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/just-renovated-gourmet/6365501098.html</link>
+<description><![CDATA[San Francisco - Mission District - Flat for rent
+Just renovated! Gourmet kitchen and marble bathrooms!
+Link to mobile layout:   http://www.jwavro.com/rental_details.php?id=3308816-0
+Summary:
+Rent: $5300
+Bed / Bath: 3 / 2
+Type: Flat
+Term: 1 Year  ...]]></description>
+<dc:date>2017-10-29T07:08:23-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/just-renovated-gourmet/6365501098.html</dc:source>
+<dc:title><![CDATA[Just renovated! Gourmet kitchen and marble bathrooms! ~ J.Wavro (mission district) &#x0024;5300 3bd]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/00303_4XUJAyFrEQ1_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-29T07:08:23-07:00</dcterms:issued>
+</item>
+<item rdf:about="https://sfbay.craigslist.org/sfc/apa/d/newly-remodeled-3-bed-2ba-on/6359887165.html">
+<title><![CDATA[Newly remodeled 3 bed/2ba on 2 levels, Downtown views, laundry in unit (potrero hill) &#x0024;4750 3bd 1100ft<sup>2</sup>]]></title>
+<link>https://sfbay.craigslist.org/sfc/apa/d/newly-remodeled-3-bed-2ba-on/6359887165.html</link>
+<description><![CDATA[*Newly remodeled corner 3 bedrooms/2 bath on 2 levels with Downtown Views (including Salesforce Tower views)
+*Living room,kitchen,dining area, 2 bedrooms/1 ba on main level + 1 master suite on 2nd floor w/ private bath and views!
+*Kitchen has stain ...]]></description>
+<dc:date>2017-10-28T23:57:19-07:00</dc:date>
+<dc:language>en-us</dc:language>
+<dc:rights>copyright 2017 craiglist</dc:rights>
+<dc:source>https://sfbay.craigslist.org/sfc/apa/d/newly-remodeled-3-bed-2ba-on/6359887165.html</dc:source>
+<dc:title><![CDATA[Newly remodeled 3 bed/2ba on 2 levels, Downtown views, laundry in unit (potrero hill) &#x0024;4750 3bd 1100ft<sup>2</sup>]]></dc:title>
+<dc:type>text</dc:type>
+<enc:enclosure resource="https://images.craigslist.org/01717_bofn1TP4RCJ_300x300.jpg" type="image/jpeg"/>
+<dcterms:issued>2017-10-28T23:57:19-07:00</dcterms:issued>
+</item>
+</rdf:RDF>

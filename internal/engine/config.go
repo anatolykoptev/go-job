@@ -106,7 +106,7 @@ type Config struct {
 
 	// Computed fields — populated by Init(), not set by caller.
 	HTTPClient    *http.Client   // plain HTTP client for API calls
-	BrowserClient *BrowserClient // proxy browser client (nil if no proxy)
+	BrowserClient *BrowserClient // stealth Chrome-TLS client; proxy-backed when ProxyPool is set, direct (no-proxy) in direct-first mode — never nil after Init unless both tiers are unavailable
 }
 
 // Package-level go-engine instances, set by Init().
@@ -295,7 +295,17 @@ func Init(c Config) {
 
 	// Populate computed Config fields for sub-packages (jobs, sources).
 	cfg.HTTPClient = httpClient
+	// BrowserClient: prefer the proxy-backed stealth client; fall back to the
+	// no-proxy direct Chrome-TLS client when running in direct-first mode
+	// (FETCH_DIRECT_FIRST=direct → ProxyPool nil → BrowserClient() nil).
+	// A stealth HTTP client does not need a proxy to be useful — its value
+	// is the TLS/JA3/header fingerprint. Without this fallback, connectors
+	// that guard on `Cfg.BrowserClient != nil` (e.g. Craigslist RSS) silently
+	// skip the stealth tier in direct mode and report empty results.
 	cfg.BrowserClient = fetcherProxy.BrowserClient()
+	if cfg.BrowserClient == nil {
+		cfg.BrowserClient = fetcherProxy.DirectClient()
+	}
 
 	slog.Info("engine: initialized",
 		slog.Bool("proxy", c.ProxyPool != nil),
