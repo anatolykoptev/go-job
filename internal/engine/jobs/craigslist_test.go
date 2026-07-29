@@ -2,8 +2,10 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -18,12 +20,14 @@ import (
 func saveFetchVars(t *testing.T) {
 	t.Helper()
 	origStealth := craigslistStealthFetch
+	origOxFetch := craigslistOxFetchFetch
 	origOx := craigslistOxBrowserFetch
-	origOxRead := craigslistOxBrowserReadFetch
+	origOxURL := engine.Cfg.OxBrowserURL
 	t.Cleanup(func() {
 		craigslistStealthFetch = origStealth
+		craigslistOxFetchFetch = origOxFetch
 		craigslistOxBrowserFetch = origOx
-		craigslistOxBrowserReadFetch = origOxRead
+		engine.Cfg.OxBrowserURL = origOxURL
 	})
 }
 
@@ -39,42 +43,42 @@ func stubStealthSuccess(body []byte) func(context.Context, string, map[string]st
 	}
 }
 
-// stubOxSuccess returns the given body with status 200.
-func stubOxSuccess(body []byte) func(context.Context, string, map[string]string) (int, []byte, error) {
+// stubOxFetchSuccess returns the given body with status 200 (simulates a
+// successful ox-browser /fetch response — wrapper 200, inner 200, body present).
+func stubOxFetchSuccess(body []byte) func(context.Context, string, map[string]string) (int, []byte, error) {
 	return func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 		return http.StatusOK, body, nil
 	}
 }
 
-// stubOx403 returns a 403 — both tiers refused.
+// stubOx403 returns a 403 — both tiers refused (used for RSS tier stub).
 func stubOx403(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 	return http.StatusForbidden, []byte("blocked"), nil
 }
 
-// stubOxError returns a transport error.
+// stubOxError returns a transport error (used for RSS tier stub).
 func stubOxError(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
 	return 0, nil, errors.New("ox-browser: connection refused")
 }
 
 // --- HTML parser tests ---
 
-// TestParseCraigslistHTMLStatic_RealFixture validates the tier-1 parser against
-// a REAL captured Craigslist no-JS search page (cat=jjj, query=warehouse,
-// sfbay). The fixture has 20 li.cl-static-search-result rows with title, URL
-// and location. Captured live via curl from www.craigslist.org — the front door
-// that stands open while the RSS door is locked.
-func TestParseCraigslistHTMLStatic_RealFixture(t *testing.T) {
-	body, err := os.ReadFile("testdata/craigslist_html_static_jjj.html")
+// TestParseCraigslistHTML_PopulatedPage (test 1): a real captured populated
+// Craigslist search page (cat=jjj, query=warehouse, sfbay) with 112 listings.
+// Captured live from ox-browser POST /fetch on 2026-07-28. Must parse to N
+// results with title, URL, location, entity-decoded.
+func TestParseCraigslistHTML_PopulatedPage(t *testing.T) {
+	body, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	results, err := parseCraigslistHTMLStatic(body, 100)
+	results, err := parseCraigslistHTML(body, 100)
 	if err != nil {
-		t.Fatalf("parseCraigslistHTMLStatic failed on real fixture: %v", err)
+		t.Fatalf("parseCraigslistHTML failed on real fixture: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("parseCraigslistHTMLStatic returned 0 results from a real 20-item fixture")
+		t.Fatal("parseCraigslistHTML returned 0 results from a real 112-item fixture")
 	}
 
 	first := results[0]
@@ -87,17 +91,13 @@ func TestParseCraigslistHTMLStatic_RealFixture(t *testing.T) {
 	if !strings.Contains(first.URL, "craigslist.org") {
 		t.Errorf("first result URL does not contain craigslist.org: %s", first.URL)
 	}
-	// Location must be populated and entity-decoded.
 	if first.Metadata["location"] == "" {
 		t.Errorf("first result missing location metadata: %+v", first.Metadata)
 	}
-	// Content must carry the location.
 	if !strings.Contains(first.Content, "Location:") {
 		t.Errorf("first result content missing location: %s", first.Content)
 	}
-	// Entity decoding: the fixture has titles with &amp; — html.Parse decodes
-	// entities in text nodes and attributes, so the title must NOT contain
-	// literal "&amp;".
+	// Entity decoding: html.Parse decodes entities in text nodes and attributes.
 	for i, r := range results {
 		if strings.Contains(r.Title, "&amp;") {
 			t.Errorf("result %d title has undecoded &amp;: %s", i, r.Title)
@@ -106,88 +106,63 @@ func TestParseCraigslistHTMLStatic_RealFixture(t *testing.T) {
 			t.Errorf("result %d title has undecoded &#39;: %s", i, r.Title)
 		}
 	}
-	t.Logf("parsed %d results from real static fixture; first: title=%q url=%q loc=%q",
+	t.Logf("parsed %d results from real fixture; first: title=%q url=%q loc=%q",
 		len(results), first.Title, first.URL, first.Metadata["location"])
 }
 
-// TestParseCraigslistHTMLRendered_RealFixture validates the tier-2 parser
-// against a REAL captured ox-browser-rendered Craigslist search page
-// (cat=jjj, query=warehouse forklift operator, sfbay). The fixture has 12
-// div.cl-search-result rows with posting-title, href and result-location.
-// Captured live via go-wowa chrome_interact evaluate on the rendered DOM.
-func TestParseCraigslistHTMLRendered_RealFixture(t *testing.T) {
-	body, err := os.ReadFile("testdata/craigslist_html_rendered_jjj.html")
+// TestParseCraigslistHTML_ZeroResultPage (test 2): a real captured zero-result
+// Craigslist search page (cat=jjj, query=zzqqxxnothingmatches12345, sfbay).
+// The page has <ol class="cl-static-search-results"> with zero
+// li.cl-static-search-result children (it has li.cl-static-hub-links instead).
+// Must return (nil, nil) — genuine empty, NOT ErrParse, NOT discovery fallback.
+//
+// MUTATION-CHECK: if the genuine-empty branch (len(results)==0 → return nil,nil)
+// is reverted to return ErrParse, this test goes red.
+func TestParseCraigslistHTML_ZeroResultPage(t *testing.T) {
+	body, err := os.ReadFile("testdata/craigslist_html_jjj_zero.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	results, err := parseCraigslistHTMLRendered(body, 100)
+	results, err := parseCraigslistHTML(body, 100)
 	if err != nil {
-		t.Fatalf("parseCraigslistHTMLRendered failed on real fixture: %v", err)
+		t.Fatalf("parseCraigslistHTML on zero-result page must return (nil, nil), got error: %v", err)
 	}
-	if len(results) == 0 {
-		t.Fatal("parseCraigslistHTMLRendered returned 0 results from a real 12-item fixture")
-	}
-
-	first := results[0]
-	if first.Title == "" {
-		t.Error("first result has empty title")
-	}
-	if first.URL == "" {
-		t.Error("first result has empty URL")
-	}
-	if !strings.Contains(first.URL, "craigslist.org") {
-		t.Errorf("first result URL does not contain craigslist.org: %s", first.URL)
-	}
-	if first.Metadata["location"] == "" {
-		t.Errorf("first result missing location metadata: %+v", first.Metadata)
-	}
-	t.Logf("parsed %d results from real rendered fixture; first: title=%q url=%q loc=%q",
-		len(results), first.Title, first.URL, first.Metadata["location"])
-}
-
-// TestParseCraigslistHTML_WrongFixture_ReturnsErrParse is test 1b: a tier whose
-// fetch succeeds but whose selector matches nothing returns ErrParse, NOT an
-// empty result. Swapping the two fixtures between the two parsers must produce
-// errors, not silent zeros — the two tiers serve DIFFERENT markup and using one
-// selector for both yields a silent zero from the other.
-func TestParseCraigslistHTML_WrongFixture_ReturnsErrParse(t *testing.T) {
-	staticBody, err := os.ReadFile("testdata/craigslist_html_static_jjj.html")
-	if err != nil {
-		t.Fatalf("read static fixture: %v", err)
-	}
-	renderedBody, err := os.ReadFile("testdata/craigslist_html_rendered_jjj.html")
-	if err != nil {
-		t.Fatalf("read rendered fixture: %v", err)
-	}
-
-	// Static parser on rendered markup: 0 li.cl-static-search-result → ErrParse.
-	if _, err := parseCraigslistHTMLStatic(renderedBody, 100); err == nil {
-		t.Fatal("parseCraigslistHTMLStatic on rendered markup returned nil error — must be ErrParse (selector mismatch is not silent empty)")
-	} else if !errors.Is(err, ErrParse) {
-		t.Errorf("parseCraigslistHTMLStatic on rendered markup: error does not wrap ErrParse: %v", err)
-	}
-
-	// Rendered parser on static markup: 0 div.cl-search-result → ErrParse.
-	if _, err := parseCraigslistHTMLRendered(staticBody, 100); err == nil {
-		t.Fatal("parseCraigslistHTMLRendered on static markup returned nil error — must be ErrParse (selector mismatch is not silent empty)")
-	} else if !errors.Is(err, ErrParse) {
-		t.Errorf("parseCraigslistHTMLRendered on static markup: error does not wrap ErrParse: %v", err)
+	if results != nil {
+		t.Errorf("expected nil results for genuine empty page, got %d results", len(results))
 	}
 }
 
-// TestParseCraigslistHTML_EntityDecoding is test 5: a title containing &amp;
+// TestParseCraigslistHTML_NoResultsOL_ReturnsErrParse (test 3): a body with no
+// <ol class="cl-static-search-results"> is not a Craigslist search page →
+// ErrParse, NOT (nil, nil).
+func TestParseCraigslistHTML_NoResultsOL_ReturnsErrParse(t *testing.T) {
+	body := []byte(`<!DOCTYPE html><html><head><title>Are you human?</title></head>
+<body><div class="challenge">verify you are not a bot</div></body></html>`)
+
+	results, err := parseCraigslistHTML(body, 100)
+	if err == nil {
+		t.Fatal("expected ErrParse for non-Craigslist page, got nil error")
+	}
+	if results != nil {
+		t.Errorf("expected nil results for ErrParse, got %d", len(results))
+	}
+	if !errors.Is(err, ErrParse) {
+		t.Errorf("error does not wrap ErrParse: %v", err)
+	}
+}
+
+// TestParseCraigslistHTML_EntityDecoding (test 7): a title containing &amp;
 // and &#x0024; must be decoded in the returned result. html.Parse decodes
 // entities in text nodes and attributes automatically.
 func TestParseCraigslistHTML_EntityDecoding(t *testing.T) {
-	// Synthetic static-markup li with both &amp; and &#x0024; in the title.
 	body := []byte(`<ol class="cl-static-search-results">
 <li class="cl-static-search-result" title="Warehouse &amp; Delivery &#x0024;25/hr">
 <a href="https://www.craigslist.org/view/d/test-warehouse/abc123"><div class="title">Warehouse &amp; Delivery &#x0024;25/hr</div><div class="details"><div class="price">$0</div><div class="location">downtown</div></div></a>
 </li>
 </ol>`)
 
-	results, err := parseCraigslistHTMLStatic(body, 100)
+	results, err := parseCraigslistHTML(body, 100)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
@@ -202,11 +177,11 @@ func TestParseCraigslistHTML_EntityDecoding(t *testing.T) {
 
 // TestParseCraigslistHTML_LimitRespected verifies the limit parameter caps results.
 func TestParseCraigslistHTML_LimitRespected(t *testing.T) {
-	body, err := os.ReadFile("testdata/craigslist_html_static_jjj.html")
+	body, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	results, err := parseCraigslistHTMLStatic(body, 5)
+	results, err := parseCraigslistHTML(body, 5)
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -215,15 +190,28 @@ func TestParseCraigslistHTML_LimitRespected(t *testing.T) {
 	}
 }
 
-// --- RSS parser tests (updated to assert decoded content — 3b) ---
+// TestParseCraigslistHTML_SubstringTrap verifies that the parser does NOT
+// false-positive on the CSS literal "cl-static-search-result" that appears 3
+// times in the page's own CSS even on a zero-result page. A substring count
+// would return 3; the token-based hasClassToken must return 0 elements.
+func TestParseCraigslistHTML_SubstringTrap(t *testing.T) {
+	body, err := os.ReadFile("testdata/craigslist_html_jjj_zero.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	results, err := parseCraigslistHTML(body, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("substring trap: zero-result page must return nil, got %d results (hasClassToken is matching CSS text, not elements)", len(results))
+	}
+}
+
+// --- RSS parser tests ---
 
 // TestParseCraigslistRSS_RealFixture validates the RSS parser against a REAL
-// captured Craigslist RSS feed (RDF/XML, RSS 1.0 format). The fixture is from
-// anaisbetts/cl-apartment-finder — a real sfbay.craigslist.org RSS capture (23 items).
-//
-// 3b: the fixture's first title contains encoded entities (&#x0024; for $, raw
-// & in CDATA). The parser must decode them — assert on decoded content, not
-// just Title != "".
+// captured Craigslist RSS feed (RDF/XML, RSS 1.0 format).
 func TestParseCraigslistRSS_RealFixture(t *testing.T) {
 	body, err := os.ReadFile("testdata/craigslist_rss_real.xml")
 	if err != nil {
@@ -235,7 +223,7 @@ func TestParseCraigslistRSS_RealFixture(t *testing.T) {
 		t.Fatalf("parseCraigslistRSS failed on real fixture: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("parseCraigslistRSS returned 0 results from a real 23-item fixture — parser does not handle the RDF/XML format Craigslist serves")
+		t.Fatal("parseCraigslistRSS returned 0 results from a real 23-item fixture")
 	}
 
 	first := results[0]
@@ -254,23 +242,19 @@ func TestParseCraigslistRSS_RealFixture(t *testing.T) {
 	if !strings.Contains(first.Content, "Posted:") {
 		t.Errorf("first result content missing posted date: %s", first.Content)
 	}
-	// 3b: entity decoding — the fixture title has &#x0024; (hex $) which must
-	// decode to "$", and must NOT contain the raw entity.
 	if strings.Contains(first.Title, "&#x0024;") {
 		t.Errorf("first result title has undecoded &#x0024;: %s", first.Title)
 	}
 	if !strings.Contains(first.Title, "$") {
 		t.Errorf("first result title missing decoded $ sign: %s", first.Title)
 	}
-	// 3b: description must have HTML tags stripped (CDATA carries raw HTML).
 	if strings.Contains(first.Content, "<br") || strings.Contains(first.Content, "<p>") {
 		t.Errorf("first result content has unstripped HTML tags: %s", first.Content)
 	}
 	t.Logf("parsed %d results; first title=%q", len(results), first.Title)
 }
 
-// TestParseCraigslistRSS_EntityDecoding is test 5 for the RSS path: a title
-// with &amp; and &#x0024; in CDATA must be decoded.
+// TestParseCraigslistRSS_EntityDecoding is test 5 for the RSS path.
 func TestParseCraigslistRSS_EntityDecoding(t *testing.T) {
 	rdf := `<?xml version="1.0" encoding="UTF-8"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -294,7 +278,6 @@ func TestParseCraigslistRSS_EntityDecoding(t *testing.T) {
 	if results[0].Title != wantTitle {
 		t.Errorf("RSS title not decoded:\n  got:  %q\n  want: %q", results[0].Title, wantTitle)
 	}
-	// Description: tags stripped + entity decoded.
 	if strings.Contains(results[0].Content, "<p>") || strings.Contains(results[0].Content, "<b>") {
 		t.Errorf("RSS description has unstripped tags: %s", results[0].Content)
 	}
@@ -340,47 +323,209 @@ func TestParseCraigslistRSS_LimitRespected(t *testing.T) {
 	}
 }
 
-// --- Ladder / SearchCraigslistJobs tests ---
+// --- ox-browser /fetch classification tests (tests 4, 5, 6) ---
+//
+// These tests use httptest.Server to serve a FAKE ox-browser /fetch endpoint,
+// so the REAL craigslistOxFetchFetch classification code processes the response.
+// Stubbing the function variable directly would bypass the classification
+// logic — the exact defect the reviewer found (test feeds a shape production
+// cannot produce).
 
-// TestSearchCraigslistJobs_Stealth403OxBrowserSuccess verifies the two-tier
-// escalation: stealth returns 403, ox-browser /read returns the rendered page →
-// results returned. This is the observable escalation: if the fallback didn't
-// fire, we'd get a blocked error instead of results.
-func TestSearchCraigslistJobs_Stealth403OxBrowserReadSuccess(t *testing.T) {
+// oxFetchTestServer starts an httptest server that responds to POST /fetch
+// with the given wrapper status code and oxFetchResponse JSON body.
+func oxFetchTestServer(t *testing.T, wrapperStatus int, oxResp oxFetchResponse) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(wrapperStatus)
+		body, _ := json.Marshal(oxResp)
+		_, _ = w.Write(body)
+	}))
+}
+
+// TestSearchCraigslistJobs_OxFetchInner403_Blocked (test 4a): ox-browser /fetch
+// returns wrapper 200 with inner status 403 → errCraigslistBlocked.
+func TestSearchCraigslistJobs_OxFetchInner403_Blocked(t *testing.T) {
 	saveFetchVars(t)
 
-	fixture, err := os.ReadFile("testdata/craigslist_html_rendered_jjj.html")
+	srv := oxFetchTestServer(t, http.StatusOK, oxFetchResponse{
+		Status: http.StatusForbidden,
+		Body:   "",
+	})
+	defer srv.Close()
+	engine.Cfg.OxBrowserURL = srv.URL
+
+	craigslistStealthFetch = stubStealth403
+	craigslistOxBrowserFetch = stubOx403
+
+	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err == nil {
+		t.Fatal("expected blocked error, got nil")
+	}
+	if !errors.Is(err, errCraigslistBlocked) {
+		t.Errorf("expected errCraigslistBlocked, got: %v", err)
+	}
+}
+
+// TestSearchCraigslistJobs_OxFetchCFDetected_Blocked (test 4b): ox-browser /fetch
+// returns wrapper 200 with cf_detected=true → errCraigslistBlocked.
+func TestSearchCraigslistJobs_OxFetchCFDetected_Blocked(t *testing.T) {
+	saveFetchVars(t)
+
+	srv := oxFetchTestServer(t, http.StatusOK, oxFetchResponse{
+		Status:     http.StatusOK,
+		Body:       "<html>cf challenge</html>",
+		CfDetected: true,
+	})
+	defer srv.Close()
+	engine.Cfg.OxBrowserURL = srv.URL
+
+	craigslistStealthFetch = stubStealth403
+	craigslistOxBrowserFetch = stubOx403
+
+	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err == nil {
+		t.Fatal("expected blocked error, got nil")
+	}
+	if !errors.Is(err, errCraigslistBlocked) {
+		t.Errorf("expected errCraigslistBlocked, got: %v", err)
+	}
+}
+
+// TestSearchCraigslistJobs_OxFetchSolverCascade_Blocked (test 5): ox-browser
+// /fetch returns wrapper 502 with a solver/cf_clearance cascade error →
+// errCraigslistBlocked. This is the real production block signature: ox-browser
+// absorbs 403, escalates to its proxy pool and CF solver, and on exhaustion
+// returns wrapper 502 / status 0 / "proxy pool error: solver failed: ...".
+func TestSearchCraigslistJobs_OxFetchSolverCascade_Blocked(t *testing.T) {
+	saveFetchVars(t)
+
+	srv := oxFetchTestServer(t, http.StatusBadGateway, oxFetchResponse{
+		Status: 0,
+		Error:  "proxy pool error: solver failed: timeout waiting for cf_clearance",
+	})
+	defer srv.Close()
+	engine.Cfg.OxBrowserURL = srv.URL
+
+	craigslistStealthFetch = stubStealth403
+	craigslistOxBrowserFetch = stubOx403
+
+	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err == nil {
+		t.Fatal("expected blocked error, got nil")
+	}
+	if !errors.Is(err, errCraigslistBlocked) {
+		t.Errorf("expected errCraigslistBlocked, got: %v", err)
+	}
+}
+
+// TestSearchCraigslistJobs_OxFetchConnectError_NotBlocked (test 6): ox-browser
+// /fetch returns wrapper 502 with a connect error (NOT a solver cascade) → the
+// returned error carries the underlying cause, and errors.Is(err,
+// errCraigslistBlocked) is FALSE. A connect error is not a block;
+// context.DeadlineExceeded must still reach engine.PlatformOutcome as
+// outcome=timeout.
+//
+// MUTATION-CHECK: if the connect-error branch is changed to return
+// errCraigslistBlocked, this test goes red.
+func TestSearchCraigslistJobs_OxFetchConnectError_NotBlocked(t *testing.T) {
+	saveFetchVars(t)
+
+	srv := oxFetchTestServer(t, http.StatusBadGateway, oxFetchResponse{
+		Status: 0,
+		Error:  "request failed: error sending request for uri (https://...): client error (Connect)",
+	})
+	defer srv.Close()
+	engine.Cfg.OxBrowserURL = srv.URL
+
+	stealthErr := errors.New("stealth: dial timeout")
+	craigslistStealthFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		return 0, nil, stealthErr
+	}
+	craigslistOxBrowserFetch = stubOxError
+
+	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err == nil {
+		t.Fatal("expected error when all tiers fail with transport errors, got nil")
+	}
+	if errors.Is(err, errCraigslistBlocked) {
+		t.Errorf("connect errors must NOT be classified as blocked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dial timeout") && !strings.Contains(err.Error(), "Connect") {
+		t.Errorf("returned error does not carry the underlying cause: %v", err)
+	}
+}
+
+// --- isOxBrowserCascadeError unit tests ---
+
+// TestIsOxBrowserCascadeError verifies the substring match against ox-browser's
+// error strings (source: ox-browser crates/http/src/middleware_solver.rs:107,122
+// and error.rs:19 HttpError::ProxyPool).
+func TestIsOxBrowserCascadeError(t *testing.T) {
+	cases := []struct {
+		err  string
+		want bool
+		why  string
+	}{
+		{"proxy pool error: solver failed: timeout waiting for cf_clearance", true, "solver cascade (row 5)"},
+		{"proxy pool error: solver failed: navigate: navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE", true, "solver cascade (row 6)"},
+		{"proxy pool error: solver negcache: domain craigslist.org on cooldown", true, "solver negcache cooldown"},
+		{"request failed: error sending request for uri (https://...): client error (Connect)", false, "connect error (row 7)"},
+		{"timeout after 30s", false, "timeout"},
+		{"invalid URL: bad scheme", false, "client error"},
+		{"", false, "empty error"},
+	}
+	for _, c := range cases {
+		got := isOxBrowserCascadeError(c.err)
+		if got != c.want {
+			t.Errorf("isOxBrowserCascadeError(%q) = %v, want %v (%s)", c.err, got, c.want, c.why)
+		}
+	}
+}
+
+// --- Ladder / SearchCraigslistJobs tests ---
+
+// TestSearchCraigslistJobs_Stealth403OxFetchSuccess verifies the two-tier
+// escalation: stealth returns 403, ox-browser /fetch returns the page → results.
+func TestSearchCraigslistJobs_Stealth403OxFetchSuccess(t *testing.T) {
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
 	craigslistStealthFetch = stubStealth403
-	craigslistOxBrowserReadFetch = stubOxSuccess(fixture)
-	craigslistOxBrowserFetch = stubOx403 // RSS tier-2 shouldn't be needed
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
 
 	results, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
 	if err != nil {
 		t.Fatalf("expected results, got error: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("expected results from ox-browser /read fallback, got 0 — escalation did not fire")
+		t.Fatal("expected results from ox-browser /fetch fallback, got 0 — escalation did not fire")
 	}
 }
 
-// TestSearchCraigslistJobs_AllTiers403_ReturnsBlockedError is test 2: all tiers
-// refused (403) → blocked error, NOT (nil, nil). This is the EXACT regression
-// that shipped: both tiers refused and the connector returned (nil, nil) —
-// reporting success with zero rows.
-func TestSearchCraigslistJobs_AllTiers403_ReturnsBlockedError(t *testing.T) {
+// TestSearchCraigslistJobs_AllTiersBlocked_ReturnsBlockedError: all tiers
+// refused → blocked error, NOT (nil, nil).
+func TestSearchCraigslistJobs_AllTiersBlocked_ReturnsBlockedError(t *testing.T) {
 	saveFetchVars(t)
 
+	srv := oxFetchTestServer(t, http.StatusOK, oxFetchResponse{
+		Status: http.StatusForbidden,
+	})
+	defer srv.Close()
+	engine.Cfg.OxBrowserURL = srv.URL
+
 	craigslistStealthFetch = stubStealth403
-	craigslistOxBrowserReadFetch = stubOx403
 	craigslistOxBrowserFetch = stubOx403
 
 	results, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
 	if err == nil {
-		t.Fatal("expected blocked error when all tiers return 403, got nil — this is the shipped defect (nil, nil → outcome=empty, error=0)")
+		t.Fatal("expected blocked error, got nil — this is the shipped defect (nil, nil → outcome=empty)")
 	}
 	if results != nil {
 		t.Errorf("expected nil results on blocked, got %d results", len(results))
@@ -390,22 +535,22 @@ func TestSearchCraigslistJobs_AllTiers403_ReturnsBlockedError(t *testing.T) {
 	}
 }
 
-// TestSearchCraigslistJobs_Tier1ChallengeEscalates is test 3 (3e): HTTP 200
-// with a challenge/HTML body on tier 1 → escalates rather than aborting. A
-// 200 carrying a challenge page has no cl-static-search-result elements, so the
-// parser returns ErrParse; the ladder must treat this as a soft-block signal
-// and escalate to tier 2, NOT return the parse error immediately.
+// TestSearchCraigslistJobs_Tier1ChallengeEscalates: HTTP 200 with a challenge
+// body on tier 1 → escalates to tier 2. A 200 carrying a challenge page has no
+// ol.cl-static-search-results, so the parser returns ErrParse; the ladder
+// treats this as a soft-block signal and escalates.
 func TestSearchCraigslistJobs_Tier1ChallengeEscalates(t *testing.T) {
 	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	challenge := []byte(`<!DOCTYPE html><html><head><title>Are you human?</title></head><body><div class="challenge">verify you are not a bot</div></body></html>`)
-	fixture, err := os.ReadFile("testdata/craigslist_html_rendered_jjj.html")
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
 	craigslistStealthFetch = stubStealthSuccess(challenge)
-	craigslistOxBrowserReadFetch = stubOxSuccess(fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
 	craigslistOxBrowserFetch = stubOx403
 
 	results, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
@@ -413,86 +558,53 @@ func TestSearchCraigslistJobs_Tier1ChallengeEscalates(t *testing.T) {
 		t.Fatalf("expected escalation to tier 2 to yield results, got error: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatal("tier 1 challenge did not escalate to tier 2 — got 0 results (3e: 200 but wrong format must escalate, not abort)")
+		t.Fatal("tier 1 challenge did not escalate to tier 2 — got 0 results")
 	}
 }
 
-// TestSearchCraigslistJobs_AllTiersTransportError_NotBlocked is test 4 (3a):
-// transport error (not a refusal) on every tier → the returned error carries
-// the underlying cause, and errors.Is(err, errCraigslistBlocked) is FALSE.
-// This prevents an ox-browser outage from reading to an operator as "Craigslist
-// blocked our IP" and keeps context.DeadlineExceeded reaching PlatformOutcome
-// as outcome=timeout, not downgraded to outcome=error.
-func TestSearchCraigslistJobs_AllTiersTransportError_NotBlocked(t *testing.T) {
+// TestSearchCraigslistJobs_GenuineEmpty_ReturnsNil: stealth returns the
+// zero-result page → parser returns (nil, nil) → connector returns (nil, nil),
+// NOT discovery-fallback listings. This is the defect the reviewer found:
+// a zero-match query fell through to discovery and returned unrelated listings
+// as outcome=ok.
+func TestSearchCraigslistJobs_GenuineEmpty_ReturnsNil(t *testing.T) {
 	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
-	stealthErr := errors.New("stealth: dial timeout")
-	craigslistStealthFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		return 0, nil, stealthErr
-	}
-	craigslistOxBrowserReadFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		return 0, nil, errors.New("ox-browser /read: connection refused")
-	}
-	craigslistOxBrowserFetch = stubOxError
-
-	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
-	if err == nil {
-		t.Fatal("expected error when all tiers fail with transport errors, got nil")
-	}
-	if errors.Is(err, errCraigslistBlocked) {
-		t.Errorf("transport errors must NOT be classified as blocked (3a): %v", err)
-	}
-	// The underlying cause must be preserved.
-	if !strings.Contains(err.Error(), "dial timeout") && !strings.Contains(err.Error(), "connection refused") {
-		t.Errorf("returned error does not carry the underlying cause: %v", err)
-	}
-}
-
-// TestSearchCraigslistJobs_ValidEmptyRSS_ReturnsNil is test 6: a valid RSS feed
-// with zero items returns (nil, nil) — genuine empty stays genuine empty.
-// The HTML tiers get the RSS XML (wrong format → ErrParse → escalate), and the
-// RSS tier parses it as a valid 0-item feed → nil, nil.
-func TestSearchCraigslistJobs_ValidEmptyRSS_ReturnsNil(t *testing.T) {
-	saveFetchVars(t)
-
-	emptyRDF := `<?xml version="1.0" encoding="UTF-8"?>
-<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/">
-<channel rdf:about="https://sfbay.craigslist.org/search/jjj?format=rss">
-<title>craigslist SF bay area | all jobs search </title>
-<link>https://sfbay.craigslist.org/search/jjj</link>
-<description></description>
-<items><rdf:Seq></rdf:Seq></items>
-</channel>
-</rdf:RDF>`
-
-	craigslistStealthFetch = stubStealthSuccess([]byte(emptyRDF))
-	craigslistOxBrowserReadFetch = stubOx403 // HTML tier-2 refused → escalate to RSS
-	craigslistOxBrowserFetch = stubOx403     // RSS tier-2 shouldn't be called (tier-1 succeeds)
-
-	results, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
-	if err != nil {
-		t.Fatalf("expected nil error for genuine empty feed, got: %v", err)
-	}
-	if results != nil {
-		t.Errorf("expected nil results for genuine empty feed, got %d results", len(results))
-	}
-}
-
-// TestSearchCraigslistJobs_StealthSuccess_NoEscalation verifies that when
-// stealth HTML tier-1 succeeds, the ox-browser tiers are never called.
-func TestSearchCraigslistJobs_StealthSuccess_NoEscalation(t *testing.T) {
-	saveFetchVars(t)
-
-	fixture, err := os.ReadFile("testdata/craigslist_html_static_jjj.html")
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_zero.html")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	oxReadCalled := false
+	craigslistStealthFetch = stubStealthSuccess(fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "zzqqxxnothingmatches12345", "sfbay", 100)
+	if err != nil {
+		t.Fatalf("expected nil error for genuine empty, got: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results for genuine empty, got %d results (discovery fallback laundering)", len(results))
+	}
+}
+
+// TestSearchCraigslistJobs_StealthSuccess_NoEscalation verifies that when
+// stealth HTML tier-1 succeeds, the ox-browser tier is never called.
+func TestSearchCraigslistJobs_StealthSuccess_NoEscalation(t *testing.T) {
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	oxFetchCalled := false
 	oxCalled := false
 	craigslistStealthFetch = stubStealthSuccess(fixture)
-	craigslistOxBrowserReadFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
-		oxReadCalled = true
+	craigslistOxFetchFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		oxFetchCalled = true
 		return http.StatusOK, nil, nil
 	}
 	craigslistOxBrowserFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
@@ -507,11 +619,42 @@ func TestSearchCraigslistJobs_StealthSuccess_NoEscalation(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected results from stealth tier")
 	}
-	if oxReadCalled {
-		t.Error("ox-browser /read tier was called even though stealth succeeded — should short-circuit")
+	if oxFetchCalled {
+		t.Error("ox-browser /fetch tier was called even though stealth succeeded — should short-circuit")
 	}
 	if oxCalled {
-		t.Error("ox-browser /fetch-smart tier was called even though stealth succeeded — should short-circuit")
+		t.Error("ox-browser RSS tier was called even though stealth succeeded — should short-circuit")
+	}
+}
+
+// TestSearchCraigslistJobs_OxBrowserURLEmpty_SkipsTier2 verifies that when
+// OxBrowserURL is empty, tier 2 is skipped (and the skip is reported via log).
+func TestSearchCraigslistJobs_OxBrowserURLEmpty_SkipsTier2(t *testing.T) {
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = ""
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	oxFetchCalled := false
+	craigslistStealthFetch = stubStealthSuccess(fixture)
+	craigslistOxFetchFetch = func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		oxFetchCalled = true
+		return http.StatusOK, nil, nil
+	}
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results from stealth tier")
+	}
+	if oxFetchCalled {
+		t.Error("ox-browser /fetch tier was called even though OxBrowserURL is empty — should be skipped")
 	}
 }
 
