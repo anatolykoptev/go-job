@@ -738,6 +738,7 @@ func buildZeroResultsSummary(sources []engine.SourceStatus) string {
 //     acquired). Action: raise the timeout or reduce the fan-out.
 //   - skipped: ran but declined (missing API key). Action: set the API key env var.
 //   - failed: ran but didn't finish (deadline). Action: investigate the source.
+//
 // Merging them into one "did not finish" list sends the operator after the
 // wrong fix (e.g. raising the timeout when the real problem is a missing key).
 func buildUnprocessedSummary(sources []engine.SourceStatus, rawCount int) string {
