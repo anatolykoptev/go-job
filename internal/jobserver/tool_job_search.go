@@ -71,269 +71,314 @@ func registerJobSearch(server *mcp.Server) {
 		Name:        "job_search",
 		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = never ran (missing API key); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/blocked/failed source, the summary names those sources instead of the generic 'No results found.'",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
-		if input.Query == "" {
-			return nil, engine.JobSearchOutput{}, errors.New("query is required")
-		}
+	}, runJobSearch)
+}
 
-		// raw=true with platform=twitter: bypass fan-out and LLM, return raw tweet objects.
-		if input.Raw && strings.ToLower(strings.TrimSpace(input.Platform)) == platTwitter {
-			rawTweets, err := jobs.SearchTwitterJobsRaw(ctx, input.Query, 30)
-			if err != nil {
-				return nil, engine.JobSearchOutput{}, fmt.Errorf("twitter raw search: %w", err)
-			}
-			encoded, mErr := json.Marshal(rawTweets)
-			if mErr != nil {
-				return nil, engine.JobSearchOutput{}, fmt.Errorf("marshal raw tweets: %w", mErr)
-			}
-			cr := &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
-			}
-			return cr, engine.JobSearchOutput{}, nil
-		}
+// runJobSearch is the job_search tool handler, extracted from registerJobSearch
+// so handler-level tests can invoke it directly without an MCP server round-trip.
+//
+//nolint:funlen // multi-platform aggregation
+func runJobSearch(ctx context.Context, req *mcp.CallToolRequest, input engine.JobSearchInput) (*mcp.CallToolResult, engine.JobSearchOutput, error) {
+	if input.Query == "" {
+		return nil, engine.JobSearchOutput{}, errors.New("query is required")
+	}
 
-		cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform, fmt.Sprintf("limit_%d_offset_%d", input.Limit, input.Offset))
-		if out, ok := engine.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
-			return nil, out, nil
-		}
-
-		// Apply user profile defaults.
-		profile := jobs.LoadProfile()
-		if input.Platform == "" && profile.DefaultPlatform != "" {
-			input.Platform = profile.DefaultPlatform
-		}
-		if input.Limit <= 0 && profile.DefaultLimit > 0 {
-			input.Limit = profile.DefaultLimit
-		}
-		if input.Location == "" && profile.DefaultLocation != "" {
-			input.Location = profile.DefaultLocation
-		}
-		if input.Remote == "" && profile.DefaultRemote != "" {
-			input.Remote = profile.DefaultRemote
-		}
-		if input.Blacklist == "" && profile.Blacklist != "" {
-			input.Blacklist = profile.Blacklist
-		}
-
-		lang := engine.NormLang(input.Language)
-
-		platform := strings.ToLower(strings.TrimSpace(input.Platform))
-		if platform == "" {
-			platform = platAll
-		}
-		// Unknown/typo'd platform (e.g. "greehouse") would otherwise route to NO
-		// connector AND suppress the generic searxng goroutine → a guaranteed
-		// "No results found." Fall back to platAll (broad search) and warn, so a
-		// typo degrades to results rather than silence (reviewer MINOR).
-		if !knownPlatform(platform) {
-			slog.Warn("job_search: unknown platform, falling back to all",
-				slog.String("platform", platform))
-			platform = platAll
-		}
-
-		limit := input.Limit
-		if limit <= 0 {
-			limit = 15
-		}
-		if limit > 50 {
-			limit = 50
-		}
-
-		srcs := jobRegistry.Select(platform)
-		q := connectors.Query{
-			Query:      input.Query,
-			Location:   input.Location,
-			Experience: input.Experience,
-			JobType:    input.JobType,
-			Remote:     input.Remote,
-			TimeRange:  input.TimeRange,
-			Salary:     input.Salary,
-			Limit:      limit,
-			Offset:     input.Offset,
-			EasyApply:  input.EasyApply,
-			Language:   lang,
-		}
-
-		ch := make(chan sourceResult, len(srcs)+1)
-
-		// BH-1: Bound connector goroutine fan-out. Without a cap, 10 concurrent
-		// job_search(platform=all) calls spawn 180 goroutines (18 sources × 10
-		// requests), each holding a 90s timeout → FD exhaustion, OOM. Blocking
-		// acquire preserves the "all sources run" contract, just bounds concurrency.
-		for _, src := range srcs {
-			jobSearchSem <- struct{}{}
-			go func(s connectors.Source) {
-				defer func() { <-jobSearchSem }()
-				runSource(ctx, s, q, ch)
-			}(src)
-		}
-
-		// Generic web-search discovery (go-engine DIRECT + SearXNG) is broad and
-		// only appropriate for platform=all. When the caller asks for a SPECIFIC
-		// connector (greenhouse/lever/ashby/yc/indeed/…), this goroutine's
-		// engine-wide web search surfaces stale Wikipedia/Marginalia hits (2017-
-		// 2021) that masquerade as ATS results — exactly the discovery-collapse
-		// symptom (2026-06-23, H3). Gate it off for specific platforms so the
-		// merged output reflects only the chosen connector's structured results.
-		runGenericSearxng := shouldRunGenericSearxng(platform)
-		if runGenericSearxng {
-			go func() {
-				var searxQuery string
-				if input.Location != "" {
-					searxQuery = input.Query + " " + input.Location + " jobs"
-				} else {
-					searxQuery = input.Query + " jobs"
-				}
-				// SearchWeb: go-search primary (Brave API + ox-browser + DDG via
-				// proxy), SearchDirect fallback (local direct scrapers).
-				results := engine.SearchWeb(ctx, searxQuery, lang)
-				ch <- sourceResult{name: "searxng", results: results, err: nil}
-			}()
-		}
-
-		totalGoroutines := len(srcs)
-		if runGenericSearxng {
-			totalGoroutines++
-		}
-		merged, linkedInJobs, sources := aggregateSourceResults(ctx, srcs, runGenericSearxng, ch, totalGoroutines)
-
-		if len(merged) == 0 {
-			return nil, engine.JobSearchOutput{
-				Query:   input.Query,
-				Summary: buildZeroResultsSummary(sources),
-				Sources: sources,
-			}, nil
-		}
-
-		// Partial-results path: the aggregation was cancelled mid-fan-out (the
-		// ToolTimeoutMiddleware deadline fired, or the client disconnected). The
-		// Sources list is already truthful (un-reported sources marked failed with
-		// a deadline reason). Skip the LLM post-processing — it would either fail
-		// on the cancelled context or burn the remaining budget — and return the
-		// partial answer with an honest summary. This is a SUCCESS path, not an
-		// error: a partial answer with a truthful Sources list beats a hang.
-		if ctx.Err() != nil {
-			return nil, engine.JobSearchOutput{
-				Query:   input.Query,
-				Summary: buildPartialSummary(sources),
-				Sources: sources,
-			}, nil
-		}
-
-		// Dedup pass 1: by URL.
-		seen := make(map[string]bool)
-		var deduped []engine.SearxngResult
-		for _, r := range merged {
-			if r.URL != "" && !seen[r.URL] {
-				seen[r.URL] = true
-				deduped = append(deduped, r)
-			}
-		}
-
-		// Dedup pass 2: by canonical key (same job from different sources).
-		canonSeen := make(map[string]bool)
-		var canonDeduped []engine.SearxngResult
-		for _, r := range deduped {
-			key := engine.CanonicalJobKey(r.Title, "")
-			if !canonSeen[key] {
-				canonSeen[key] = true
-				canonDeduped = append(canonDeduped, r)
-			}
-		}
-		deduped = canonDeduped
-
-		// Apply blacklist filter.
-		deduped = applyBlacklist(deduped, input.Blacklist)
-
-		// Apply pagination offset.
-		if input.Offset > 0 && input.Offset < len(deduped) {
-			deduped = deduped[input.Offset:]
-		} else if input.Offset >= len(deduped) {
-			return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total).", Sources: sources}, nil
-		}
-
-		top := engine.DedupByDomain(deduped, limit)
-		if len(top) > limit {
-			top = top[:limit]
-		}
-
-		contents := make(map[string]string)
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		for _, r := range top {
-			if r.Content != "" && strings.Contains(r.Content, "**Source:**") {
-				mu.Lock()
-				contents[r.URL] = r.Content
-				mu.Unlock()
-				continue
-			}
-			if r.Content != "" && strings.Contains(r.Content, "**") {
-				mu.Lock()
-				contents[r.URL] = r.Content
-				mu.Unlock()
-				continue
-			}
-			wg.Add(1)
-			go func(u string) {
-				defer wg.Done()
-				_, text, err := engine.FetchURLContent(ctx, u)
-				if err == nil && text != "" {
-					mu.Lock()
-					contents[u] = text
-					mu.Unlock()
-				}
-			}(r.URL)
-		}
-		wg.Wait()
-
-		jobOut, err := engine.SummarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
+	// raw=true with platform=twitter: bypass fan-out and LLM, return raw tweet objects.
+	if input.Raw && strings.ToLower(strings.TrimSpace(input.Platform)) == platTwitter {
+		rawTweets, err := jobs.SearchTwitterJobsRaw(ctx, input.Query, 30)
 		if err != nil {
-			return nil, engine.JobSearchOutput{}, fmt.Errorf("LLM summarization failed: %w", err)
+			return nil, engine.JobSearchOutput{}, fmt.Errorf("twitter raw search: %w", err)
 		}
+		encoded, mErr := json.Marshal(rawTweets)
+		if mErr != nil {
+			return nil, engine.JobSearchOutput{}, fmt.Errorf("marshal raw tweets: %w", mErr)
+		}
+		cr := &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+		}
+		return cr, engine.JobSearchOutput{}, nil
+	}
 
-		liByJobID := make(map[string]*jobs.LinkedInJob)
-		for i := range linkedInJobs {
-			if linkedInJobs[i].JobID != "" {
-				liByJobID[linkedInJobs[i].JobID] = &linkedInJobs[i]
-			}
-		}
+	cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience, input.JobType, input.Remote, input.TimeRange, input.Platform, fmt.Sprintf("limit_%d_offset_%d", input.Limit, input.Offset))
+	if out, ok := engine.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
+		return nil, out, nil
+	}
 
-		for i := range jobOut.Jobs {
-			j := &jobOut.Jobs[i]
-			if j.URL == "" && i < len(top) {
-				j.URL = top[i].URL
-			}
-			if j.JobID == "" && j.URL != "" {
-				j.JobID = jobs.ExtractJobID(j.URL)
-			}
-			if lj, ok := liByJobID[j.JobID]; ok {
-				if j.Company == "" {
-					j.Company = lj.Company
-				}
-				if j.Location == "" {
-					j.Location = lj.Location
-				}
-				if j.Posted == "" || j.Posted == "not specified" {
-					j.Posted = lj.Posted
-				}
-			}
-			// Annotate each result with a deterministic quality score (no LLM).
-			// Source is inferred from the URL when the listing has no Source field.
-			if j.Source == "" {
-				j.Source = extractSourceForQuality(j.URL)
-			}
-			j.QualityScore = qualityScoreFromListing(*j).Score
-		}
+	// Apply user profile defaults.
+	profile := jobs.LoadProfile()
+	if input.Platform == "" && profile.DefaultPlatform != "" {
+		input.Platform = profile.DefaultPlatform
+	}
+	if input.Limit <= 0 && profile.DefaultLimit > 0 {
+		input.Limit = profile.DefaultLimit
+	}
+	if input.Location == "" && profile.DefaultLocation != "" {
+		input.Location = profile.DefaultLocation
+	}
+	if input.Remote == "" && profile.DefaultRemote != "" {
+		input.Remote = profile.DefaultRemote
+	}
+	if input.Blacklist == "" && profile.Blacklist != "" {
+		input.Blacklist = profile.Blacklist
+	}
 
-		persistJobListings(ctx, jobOut.Jobs)
-		jobOut.Sources = sources
-		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
-		if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
-			var zero engine.JobSearchOutput
-			return cr, zero, nil
+	lang := engine.NormLang(input.Language)
+
+	platform := strings.ToLower(strings.TrimSpace(input.Platform))
+	if platform == "" {
+		platform = platAll
+	}
+	// Unknown/typo'd platform (e.g. "greehouse") would otherwise route to NO
+	// connector AND suppress the generic searxng goroutine → a guaranteed
+	// "No results found." Fall back to platAll (broad search) and warn, so a
+	// typo degrades to results rather than silence (reviewer MINOR).
+	if !knownPlatform(platform) {
+		slog.Warn("job_search: unknown platform, falling back to all",
+			slog.String("platform", platform))
+		platform = platAll
+	}
+
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 15
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	srcs := jobRegistry.Select(platform)
+	q := connectors.Query{
+		Query:      input.Query,
+		Location:   input.Location,
+		Experience: input.Experience,
+		JobType:    input.JobType,
+		Remote:     input.Remote,
+		TimeRange:  input.TimeRange,
+		Salary:     input.Salary,
+		Limit:      limit,
+		Offset:     input.Offset,
+		EasyApply:  input.EasyApply,
+		Language:   lang,
+	}
+
+	ch := make(chan sourceResult, len(srcs)+1)
+
+	// BH-1: Bound connector goroutine fan-out. Without a cap, 10 concurrent
+	// job_search(platform=all) calls spawn 180 goroutines (18 sources × 10
+	// requests), each holding a 90s timeout → FD exhaustion, OOM. Blocking
+	// acquire preserves the "all sources run" contract, just bounds concurrency.
+	//
+	// BLOCKER 4 fix: the blocking acquire had no ctx.Done() arm, so the spawn
+	// loop could burn the entire client timeout waiting for a semaphore slot
+	// (cap 8, 16 sources in groupAll → 2 waves × 90s = 180s) before any
+	// cancellation handling in aggregateSourceResults ever ran. Now: on
+	// ctx.Done() we stop spawning and mark the never-dispatched sources.
+	dispatched := make(map[string]bool, len(srcs)+1)
+spawn:
+	for _, src := range srcs {
+		select {
+		case jobSearchSem <- struct{}{}:
+		case <-ctx.Done():
+			slog.Info("job_search: spawn loop cancelled before all sources dispatched",
+				slog.Int("dispatched", len(dispatched)),
+				slog.Int("total", len(srcs)))
+			break spawn
 		}
-		return nil, *jobOut, nil
-	})
+		dispatched[src.Name()] = true
+		go func(s connectors.Source) {
+			defer func() { <-jobSearchSem }()
+			runSource(ctx, s, q, ch)
+		}(src)
+	}
+
+	// Generic web-search discovery (go-engine DIRECT + SearXNG) is broad and
+	// only appropriate for platform=all. When the caller asks for a SPECIFIC
+	// connector (greenhouse/lever/ashby/yc/indeed/…), this goroutine's
+	// engine-wide web search surfaces stale Wikipedia/Marginalia hits (2017-
+	// 2021) that masquerade as ATS results — exactly the discovery-collapse
+	// symptom (2026-06-23, H3). Gate it off for specific platforms so the
+	// merged output reflects only the chosen connector's structured results.
+	runGenericSearxng := shouldRunGenericSearxng(platform)
+	if runGenericSearxng {
+		dispatched["searxng"] = true
+		go func() {
+			var searxQuery string
+			if input.Location != "" {
+				searxQuery = input.Query + " " + input.Location + " jobs"
+			} else {
+				searxQuery = input.Query + " jobs"
+			}
+			// SearchWeb: go-search primary (Brave API + ox-browser + DDG via
+			// proxy), SearchDirect fallback (local direct scrapers).
+			results := engine.SearchWeb(ctx, searxQuery, lang)
+			ch <- sourceResult{name: "searxng", results: results, err: nil}
+		}()
+	}
+
+	totalGoroutines := len(srcs)
+	if runGenericSearxng {
+		totalGoroutines++
+	}
+	merged, linkedInJobs, sources, partial := aggregateSourceResults(ctx, srcs, runGenericSearxng, ch, totalGoroutines, dispatched)
+
+	if len(merged) == 0 {
+		return nil, engine.JobSearchOutput{
+			Query:   input.Query,
+			Summary: buildZeroResultsSummary(sources),
+			Sources: sources,
+		}, nil
+	}
+
+	// Partial-results path: the aggregation was cut short (not all expected
+	// goroutines reported — the ToolTimeoutMiddleware deadline fired, the
+	// client disconnected, or the spawn loop was cancelled at the semaphore).
+	// The Sources list is already truthful (un-reported sources marked failed
+	// or skipped). Skip the LLM post-processing — it would either fail on the
+	// cancelled context or burn the remaining budget.
+	//
+	// BLOCKER 2 fix: there is no deterministic SearxngResult→JobListing mapping
+	// in this codebase, so Jobs stays nil. The summary must NOT claim "partial
+	// results" — it states exactly what happened: raw results were collected but
+	// not processed into job listings.
+	//
+	// BLOCKER 3 fix: branch on the explicit `partial` flag returned by
+	// aggregateSourceResults (received < totalGoroutines), NOT on ctx.Err().
+	// A complete search whose context expires a microsecond after the last
+	// source reports must NOT take this path.
+	if partial {
+		return nil, engine.JobSearchOutput{
+			Query:   input.Query,
+			Summary: buildUnprocessedSummary(sources, len(merged)),
+			Sources: sources,
+		}, nil
+	}
+
+	// Dedup pass 1: by URL.
+	seen := make(map[string]bool)
+	var deduped []engine.SearxngResult
+	for _, r := range merged {
+		if r.URL != "" && !seen[r.URL] {
+			seen[r.URL] = true
+			deduped = append(deduped, r)
+		}
+	}
+
+	// Dedup pass 2: by canonical key (same job from different sources).
+	canonSeen := make(map[string]bool)
+	var canonDeduped []engine.SearxngResult
+	for _, r := range deduped {
+		key := engine.CanonicalJobKey(r.Title, "")
+		if !canonSeen[key] {
+			canonSeen[key] = true
+			canonDeduped = append(canonDeduped, r)
+		}
+	}
+	deduped = canonDeduped
+
+	// Apply blacklist filter.
+	deduped = applyBlacklist(deduped, input.Blacklist)
+
+	// Apply pagination offset.
+	if input.Offset > 0 && input.Offset < len(deduped) {
+		deduped = deduped[input.Offset:]
+	} else if input.Offset >= len(deduped) {
+		return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total).", Sources: sources}, nil
+	}
+
+	top := engine.DedupByDomain(deduped, limit)
+	if len(top) > limit {
+		top = top[:limit]
+	}
+
+	contents := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, r := range top {
+		if r.Content != "" && strings.Contains(r.Content, "**Source:**") {
+			mu.Lock()
+			contents[r.URL] = r.Content
+			mu.Unlock()
+			continue
+		}
+		if r.Content != "" && strings.Contains(r.Content, "**") {
+			mu.Lock()
+			contents[r.URL] = r.Content
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			_, text, err := engine.FetchURLContent(ctx, u)
+			if err == nil && text != "" {
+				mu.Lock()
+				contents[u] = text
+				mu.Unlock()
+			}
+		}(r.URL)
+	}
+	wg.Wait()
+
+	jobOut, err := engine.SummarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
+	if err != nil {
+		// BLOCKER 5 fix: the MCP SDK discards the typed output entirely when
+		// err != nil (go-sdk/mcp/server.go:345-352), so returning an error here
+		// drops the populated Sources list — the exact "did it even run?"
+		// blindness this PR exists to remove, on one of the most failure-prone
+		// steps. Mirror the cancellation branch: return a SUCCESS with an
+		// honest summary and the populated Sources.
+		slog.Warn("job_search: LLM summarization failed, returning unprocessed results",
+			slog.Any("error", err),
+			slog.Int("raw_results", len(top)))
+		return nil, engine.JobSearchOutput{
+			Query:   input.Query,
+			Summary: fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top)),
+			Sources: sources,
+		}, nil
+	}
+
+	liByJobID := make(map[string]*jobs.LinkedInJob)
+	for i := range linkedInJobs {
+		if linkedInJobs[i].JobID != "" {
+			liByJobID[linkedInJobs[i].JobID] = &linkedInJobs[i]
+		}
+	}
+
+	for i := range jobOut.Jobs {
+		j := &jobOut.Jobs[i]
+		if j.URL == "" && i < len(top) {
+			j.URL = top[i].URL
+		}
+		if j.JobID == "" && j.URL != "" {
+			j.JobID = jobs.ExtractJobID(j.URL)
+		}
+		if lj, ok := liByJobID[j.JobID]; ok {
+			if j.Company == "" {
+				j.Company = lj.Company
+			}
+			if j.Location == "" {
+				j.Location = lj.Location
+			}
+			if j.Posted == "" || j.Posted == "not specified" {
+				j.Posted = lj.Posted
+			}
+		}
+		// Annotate each result with a deterministic quality score (no LLM).
+		// Source is inferred from the URL when the listing has no Source field.
+		if j.Source == "" {
+			j.Source = extractSourceForQuality(j.URL)
+		}
+		j.QualityScore = qualityScoreFromListing(*j).Score
+	}
+
+	persistJobListings(ctx, jobOut.Jobs)
+	jobOut.Sources = sources
+	engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+	if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
+		var zero engine.JobSearchOutput
+		return cr, zero, nil
+	}
+	return nil, *jobOut, nil
 }
 
 // knownPlatform reports whether platform is a recognized job_search platform.
@@ -492,7 +537,7 @@ func persistJobListings(ctx context.Context, jobListings []engine.JobListing) {
 
 // allSourceNames returns the names of every fan-out participant in order:
 // each selected connector followed by the generic searxng discovery goroutine
-// when it runs. Used to mark un-reported sources as failed on context
+// when it runs. Used to mark un-reported sources as failed/skipped on context
 // cancellation.
 func allSourceNames(srcs []connectors.Source, runGenericSearxng bool) []string {
 	names := make([]string, 0, len(srcs)+1)
@@ -508,9 +553,23 @@ func allSourceNames(srcs []connectors.Source, runGenericSearxng bool) []string {
 // aggregateSourceResults drains the fan-out channel, classifying each source
 // return into a SourceStatus, until every goroutine has reported OR the context
 // is cancelled. On cancellation it returns the partial results collected so far
-// and marks every source that has not yet reported as failed with a deadline
-// reason — so the response stays truthful instead of hanging on a bare
+// and marks every source that has not yet reported — failed if it was dispatched
+// but didn't finish, skipped if it was never dispatched (spawn loop cancelled at
+// the semaphore) — so the response stays truthful instead of hanging on a bare
 // `r := <-ch` that ignores ctx.Done().
+//
+// BLOCKER 1 fix: Go's select chooses uniformly at random among ready arms. At
+// the deadline the buffered channel typically still holds every result that
+// finished. A fair select would drop ~50% of buffered results in favour of
+// ctx.Done(). The priority-drain pattern below drains the buffer non-blocking
+// FIRST; only when the channel is empty does it fall through to the blocking
+// select that honours ctx.Done(). A result already in the buffer is never
+// discarded, and a source that reported is never labelled as not having reported.
+//
+// BLOCKER 3 fix: returns an explicit `partial bool` (received < totalGoroutines)
+// so the handler branches on the aggregation truth, not on ctx.Err() — a
+// complete search whose context expires a microsecond after the last source
+// reports must NOT take the partial path.
 //
 // The per-platform results counter (gojob_platform_results_total) is bumped
 // once per connector return here, exactly as the inline loop did before.
@@ -520,40 +579,81 @@ func aggregateSourceResults(
 	runGenericSearxng bool,
 	ch <-chan sourceResult,
 	totalGoroutines int,
-) (merged []engine.SearxngResult, linkedInJobs []jobs.LinkedInJob, sources []engine.SourceStatus) {
+	dispatched map[string]bool,
+) (merged []engine.SearxngResult, linkedInJobs []jobs.LinkedInJob, sources []engine.SourceStatus, partial bool) {
 	expected := allSourceNames(srcs, runGenericSearxng)
 	reported := make(map[string]bool, len(expected))
 	received := 0
+
+	// handle processes one sourceResult: bumps metrics, merges results, classifies.
+	handle := func(r sourceResult) {
+		received++
+		reported[r.name] = true
+		engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
+		merged = append(merged, r.results...)
+		if r.name == platLinkedIn && len(r.liJobs) > 0 {
+			linkedInJobs = r.liJobs
+		}
+		sources = append(sources, classifySourceResult(r))
+	}
+
+	// markUnreported fills in SourceStatus for every expected source that did
+	// not report: failed if dispatched but didn't finish, skipped if never
+	// dispatched (spawn loop cancelled at the semaphore before it could run).
+	markUnreported := func() {
+		for _, name := range expected {
+			if reported[name] {
+				continue
+			}
+			if dispatched[name] {
+				sources = append(sources, engine.SourceStatus{
+					Name:    name,
+					Outcome: engine.SourceOutcomeFailed,
+					Reason:  "deadline: source did not report before context cancellation",
+				})
+			} else {
+				sources = append(sources, engine.SourceStatus{
+					Name:    name,
+					Outcome: engine.SourceOutcomeSkipped,
+					Reason:  "not dispatched: search deadline reached before concurrency slot acquired",
+				})
+			}
+		}
+	}
+
 loop:
 	for received < totalGoroutines {
+		// Priority drain: a result already in the buffer must never be discarded
+		// in favour of ctx.Done() (Go's select is uniform-random among ready arms).
 		select {
 		case r := <-ch:
-			received++
-			reported[r.name] = true
-			engine.IncrPlatformResults(r.name, engine.PlatformOutcome(len(r.results), r.err))
-			merged = append(merged, r.results...)
-			if r.name == platLinkedIn && len(r.liJobs) > 0 {
-				linkedInJobs = r.liJobs
-			}
-			sources = append(sources, classifySourceResult(r))
+			handle(r)
+			continue
+		default:
+		}
+		// Buffer is empty — now safe to block, honouring cancellation.
+		select {
+		case r := <-ch:
+			handle(r)
 		case <-ctx.Done():
-			// Partial: mark every expected source that has not reported as failed
-			// with a deadline reason. Sources that DID report (even with a
-			// cancellation error) were already classified above and are not
-			// double-counted.
-			for _, name := range expected {
-				if !reported[name] {
-					sources = append(sources, engine.SourceStatus{
-						Name:    name,
-						Outcome: engine.SourceOutcomeFailed,
-						Reason:  "deadline: source did not report before context cancellation",
-					})
+			// Final non-blocking drain: results that arrived between the
+			// priority drain above and this cancellation must not be lost.
+		drain:
+			for {
+				select {
+				case r := <-ch:
+					handle(r)
+				default:
+					break drain
 				}
 			}
+			markUnreported()
 			break loop
 		}
 	}
-	return merged, linkedInJobs, sources
+
+	partial = received < totalGoroutines
+	return merged, linkedInJobs, sources, partial
 }
 
 // classifySourceResult maps a single sourceResult into the response-contract
@@ -622,17 +722,22 @@ func buildZeroResultsSummary(sources []engine.SourceStatus) string {
 	return "No results found — sources did not complete successfully: " + strings.Join(parts, "; ") + "."
 }
 
-// buildPartialSummary produces the summary for the partial-results-on-cancellation
-// path. It names the deadline and the sources that did not finish.
-func buildPartialSummary(sources []engine.SourceStatus) string {
+// buildUnprocessedSummary produces the summary for the deadline-reached path.
+// BLOCKER 2 fix: there is no deterministic SearxngResult→JobListing mapping in
+// this codebase, so Jobs stays nil and the summary must NOT claim "partial
+// results" — it states exactly what happened: raw results were collected but
+// not processed into job listings. Names the sources that did not finish
+// (failed = dispatched but didn't report; skipped = never dispatched).
+func buildUnprocessedSummary(sources []engine.SourceStatus, rawCount int) string {
 	var unfinished []string
 	for _, s := range sources {
-		if s.Outcome == engine.SourceOutcomeFailed {
+		if s.Outcome == engine.SourceOutcomeFailed || s.Outcome == engine.SourceOutcomeSkipped {
 			unfinished = append(unfinished, s.Name)
 		}
 	}
-	if len(unfinished) == 0 {
-		return "Partial results — search deadline reached."
+	base := fmt.Sprintf("Search deadline reached; %d raw results collected but not processed into job listings.", rawCount)
+	if len(unfinished) > 0 {
+		base += " Sources did not finish: " + strings.Join(unfinished, ", ") + "."
 	}
-	return "Partial results — search deadline reached; sources did not finish: " + strings.Join(unfinished, ", ") + "."
+	return base
 }

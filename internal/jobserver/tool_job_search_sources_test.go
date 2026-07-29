@@ -94,15 +94,17 @@ func TestAggregateSourceResults_Cancellation_ReturnsPartialAndDoesNotHang(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan sourceResult, 1) // no sender — the source never reports
 	srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
+	dispatched := map[string]bool{"test-slow": true} // was dispatched but won't report
 
 	cancel() // cancel BEFORE calling so the ctx.Done() arm fires immediately
 
 	done := make(chan struct{})
 	var merged []engine.SearxngResult
 	var sources []engine.SourceStatus
+	var partial bool
 	go func() {
 		defer close(done)
-		merged, _, sources = aggregateSourceResults(ctx, srcs, false, ch, 1)
+		merged, _, sources, partial = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	}()
 
 	select {
@@ -113,6 +115,9 @@ func TestAggregateSourceResults_Cancellation_ReturnsPartialAndDoesNotHang(t *tes
 
 	if len(merged) != 0 {
 		t.Errorf("merged = %d, want 0 (no source reported)", len(merged))
+	}
+	if !partial {
+		t.Error("partial = false, want true (source did not report)")
 	}
 	if len(sources) != 1 {
 		t.Fatalf("sources = %d, want 1 (the un-reported source marked failed)", len(sources))
@@ -134,11 +139,15 @@ func TestAggregateSourceResults_HappyPath_DrainsAndClassifies(t *testing.T) {
 	ctx := context.Background()
 	ch := make(chan sourceResult, 1)
 	srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
+	dispatched := map[string]bool{"test-slow": true}
 	ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 2), err: nil}
 
-	merged, _, sources := aggregateSourceResults(ctx, srcs, false, ch, 1)
+	merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	if len(merged) != 2 {
 		t.Fatalf("merged = %d, want 2", len(merged))
+	}
+	if partial {
+		t.Error("partial = true, want false (all sources reported)")
 	}
 	if len(sources) != 1 || sources[0].Outcome != engine.SourceOutcomeOK {
 		t.Fatalf("sources = %+v, want one ok", sources)
@@ -152,13 +161,14 @@ func TestAggregateSourceResults_GenericSearxngCancelled_MarkedFailed(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan sourceResult, 2)
 	srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
+	dispatched := map[string]bool{"test-slow": true, "searxng": true}
 	cancel()
 
 	done := make(chan struct{})
 	var sources []engine.SourceStatus
 	go func() {
 		defer close(done)
-		_, _, sources = aggregateSourceResults(ctx, srcs, true, ch, 2)
+		_, _, sources, _ = aggregateSourceResults(ctx, srcs, true, ch, 2, dispatched)
 	}()
 	select {
 	case <-done:
@@ -175,6 +185,82 @@ func TestAggregateSourceResults_GenericSearxngCancelled_MarkedFailed(t *testing.
 	}
 	if !names["test-slow"] || !names["searxng"] {
 		t.Errorf("expected both test-slow and searxng marked failed; got %v", names)
+	}
+}
+
+// TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancellation
+// is the BLOCKER 1 regression test. Go's select is uniform-random among ready
+// arms. With a fair select, a buffered result + cancelled context drops the
+// result ~50% of the time (measured: 5063/10000). The priority-drain pattern
+// must collect the buffered result BEFORE honouring ctx.Done(). Run 200
+// iterations to make the ~50% failure visible.
+//
+// Revert-red: replace the priority-drain select with a single fair select
+// (both case r and case <-ctx.Done() in the same select) and ~50% of
+// iterations will fail.
+func TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancellation(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := make(chan sourceResult, 2)
+		srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
+		dispatched := map[string]bool{"test-slow": true}
+
+		// Buffer a result, THEN cancel — the result is already in the channel.
+		ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 1), err: nil}
+		cancel()
+
+		merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+
+		if len(merged) != 1 {
+			t.Fatalf("iter %d: merged = %d, want 1 (buffered result must not be dropped)", i, len(merged))
+		}
+		if len(sources) != 1 || sources[0].Outcome != engine.SourceOutcomeOK {
+			t.Fatalf("iter %d: sources = %+v, want one ok (buffered result must be classified, not marked failed)", i, sources)
+		}
+		if partial {
+			t.Errorf("iter %d: partial = true, want false (the one expected goroutine reported)", i)
+		}
+		cancel()
+	}
+}
+
+// TestAggregateSourceResults_NeverDispatched_MarkedSkipped is the BLOCKER 4
+// regression test for the never-dispatched marking. A source that was never
+// dispatched (spawn loop cancelled at the semaphore before it could run) must
+// be marked "skipped", not "failed" — it never ran, so "failed" (ran, errored)
+// would be a lie.
+//
+// Revert-red: if markUnreported stops differentiating dispatched vs
+// never-dispatched and marks both as "failed", the outcome assertion fails.
+func TestAggregateSourceResults_NeverDispatched_MarkedSkipped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan sourceResult, 1)
+	srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
+	dispatched := map[string]bool{} // test-slow was never dispatched
+
+	cancel()
+
+	done := make(chan struct{})
+	var sources []engine.SourceStatus
+	go func() {
+		defer close(done)
+		_, _, sources, _ = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("hung")
+	}
+
+	if len(sources) != 1 {
+		t.Fatalf("sources = %d, want 1", len(sources))
+	}
+	if sources[0].Outcome != engine.SourceOutcomeSkipped {
+		t.Errorf("outcome = %q, want %q (never dispatched → skipped, not failed)",
+			sources[0].Outcome, engine.SourceOutcomeSkipped)
+	}
+	if sources[0].Reason == "" {
+		t.Error("skipped source must carry a 'not dispatched' reason")
 	}
 }
 
