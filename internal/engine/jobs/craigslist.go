@@ -1,15 +1,20 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -21,12 +26,14 @@ const craigslistSiteSearch = "site:craigslist.org"
 var craigslistListingRe = regexp.MustCompile(`craigslist\.org/.+/\d+\.html`)
 
 // craigslistJobCategories are the Craigslist sections that contain job postings.
+// Used by the discovery fallback to filter SearXNG results to job-category URLs.
 var craigslistJobCategories = []string{
 	"/sof/", "/web/", "/cps/", "/tch/", "/eng/", "/sci/",
 	"/jjj/", "/bus/", "/ofc/", "/mnu/", "/sls/", "/trp/",
 	"/med/", "/hea/", "/edu/", "/acc/", "/fbh/", "/lab/",
 	"/sec/", "/ret/", "/mar/", "/hum/", "/lgl/", "/npo/",
 	"/rej/", "/spa/", "/gov/", "/art/", "/wri/",
+	"/trd/", "/csr/",
 }
 
 // --- RSS types ---
@@ -99,6 +106,24 @@ func resolveRegion(location string) string {
 	return "www"
 }
 
+// --- HTML search URL ---
+
+// craigslistHTMLSearchURL builds the no-JS HTML search URL that Craigslist
+// serves to crawlers. Measured: this URL returns 200 with 115+ listings from
+// a plain curl (no stealth, no proxy, no browser), while the RSS endpoint
+// (format=rss) is IP-blocked (403) from the same host.
+//
+// URL shape (after following the redirect from the regional host):
+//
+//	https://www.craigslist.org/search/area/{region}?cat=jjj&query={query}
+//
+// cat=jjj is the "all jobs" category — it includes every job sub-category
+// (fbh, lab, trd, csr, etc.), so a single fetch covers the full job board.
+func craigslistHTMLSearchURL(region, query string) string {
+	return fmt.Sprintf("https://www.craigslist.org/search/area/%s?cat=jjj&query=%s",
+		region, url.QueryEscape(query))
+}
+
 // --- Transport seams (overridable in tests) ---
 
 // craigslistStealthFetch is the Tier-1 transport: go-stealth Chrome-TLS client.
@@ -115,7 +140,58 @@ var craigslistStealthFetch = func(ctx context.Context, feedURL string, headers m
 	return status, body, err
 }
 
-// craigslistOxBrowserFetch is the Tier-2 transport: ox-browser /fetch-smart.
+// craigslistOxBrowserReadFetch is the HTML Tier-2 transport: ox-browser /read
+// with format=html. The ox-browser service renders the page in a real Chrome
+// instance and returns the full DOM, which uses a DIFFERENT markup shape
+// (div.cl-search-result) from the no-JS fallback (li.cl-static-search-result).
+//
+// /read REQUIRES an explicit "format":"html" — the default ("text") routes
+// through Readability, which strips a search-results list to a placeholder and
+// returns zero listings.
+//
+// Returns (status, body, err) matching the stealth tier signature. body is the
+// HTML extracted from the /read JSON response's "content" field.
+var craigslistOxBrowserReadFetch = func(ctx context.Context, pageURL string, headers map[string]string) (status int, body []byte, err error) {
+	if engine.Cfg.OxBrowserURL == "" {
+		return 0, nil, errors.New("craigslist: ox-browser /read not configured")
+	}
+	readURL := strings.TrimRight(engine.Cfg.OxBrowserURL, "/") + "/read"
+	payload, err := json.Marshal(map[string]string{"url": pageURL, "format": "html"})
+	if err != nil {
+		return 0, nil, fmt.Errorf("craigslist ox-browser /read marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, readURL, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, fmt.Errorf("craigslist ox-browser /read request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("craigslist ox-browser /read: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return resp.StatusCode, nil, fmt.Errorf("craigslist ox-browser /read body: %w", readErr)
+	}
+	// /read returns JSON: {"content":"<html>...","format":"html",...}.
+	// Extract the content field; fall back to raw body if not JSON.
+	var readResp struct {
+		Content string `json:"content"`
+		HTML    string `json:"html"`
+	}
+	if jsonErr := json.Unmarshal(respBody, &readResp); jsonErr == nil {
+		if readResp.Content != "" {
+			return resp.StatusCode, []byte(readResp.Content), nil
+		}
+		if readResp.HTML != "" {
+			return resp.StatusCode, []byte(readResp.HTML), nil
+		}
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+// craigslistOxBrowserFetch is the RSS Tier-2 transport: ox-browser /fetch-smart.
 // Reuses engine.FetchProxyBody, which owns the stealth → ox-browser cascade
 // wired in config.go via fetch.WithOxBrowser(Config.OxBrowserURL). When the
 // stealth tier already failed, FetchProxyBody's direct-first classifier
@@ -130,11 +206,226 @@ var craigslistOxBrowserFetch = func(ctx context.Context, feedURL string, headers
 	return http.StatusOK, body, nil
 }
 
-// --- RSS fetch ---
+// --- Error sentinels ---
 
 // errCraigslistBlocked is returned when every tier was refused (403/429/challenge).
-// Distinct from a transport error or a genuine empty feed.
+// Distinct from a transport error or a genuine empty feed. It is ONLY returned
+// when every tier returned a genuine refusal status — a transport error or parse
+// failure on any tier means the wrapped tier error is returned instead, so
+// context.DeadlineExceeded and similar reach engine.PlatformOutcome undowngraded.
 var errCraigslistBlocked = errors.New("craigslist: blocked (all tiers refused)")
+
+// --- HTML parsing helpers ---
+
+// hasClassToken returns true if the node's "class" attribute contains token as a
+// whitespace-separated token (NOT a substring — "cl-search-result" does not
+// match "cl-static-search-result"). The package-level hasClass (linkedin.go)
+// uses strings.Contains, which would false-positive on class prefixes; this
+// token-based variant is required for the Craigslist two-tier selectors.
+func hasClassToken(n *html.Node, token string) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if attr.Key == "class" {
+			for _, c := range strings.Fields(attr.Val) {
+				if c == token {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// nodeText returns the concatenated text content of a node's descendants,
+// with HTML entities already decoded by html.Parse.
+func nodeText(n *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.TextNode {
+			b.WriteString(node.Data)
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.TrimSpace(b.String())
+}
+
+// findFirstDescendant returns the first descendant element with the given class token.
+func findFirstDescendantC(n *html.Node, class string) *html.Node {
+	var walk func(*html.Node) *html.Node
+	walk = func(node *html.Node) *html.Node {
+		if node.Type == html.ElementNode && hasClass(node, class) {
+			return node
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			if found := walk(c); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	return walk(n)
+}
+
+// findFirstAnchor returns the first descendant <a> element with an href.
+func findFirstAnchor(n *html.Node) *html.Node {
+	var walk func(*html.Node) *html.Node
+	walk = func(node *html.Node) *html.Node {
+		if node.Type == html.ElementNode && node.Data == "a" && getAttr(node, "href") != "" {
+			return node
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			if found := walk(c); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	return walk(n)
+}
+
+// --- HTML parsers ---
+
+// parseCraigslistHTMLStatic parses the no-JS fallback HTML (tier-1 markup).
+// Each result is a <li class="cl-static-search-result" title="..."> containing
+// an <a href> and a <div class="location">.
+//
+// If the selector matches zero elements, returns ErrParse — a format mismatch
+// is NOT a silent empty result. (Genuine empty is handled by the RSS tier,
+// whose XML structure unambiguously distinguishes 0-item feeds from wrong-format
+// responses.)
+func parseCraigslistHTMLStatic(body []byte, limit int) ([]engine.SearxngResult, error) {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("craigslist HTML static parse: %w: %v", ErrParse, err)
+	}
+
+	var results []engine.SearxngResult
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "li" && hasClassToken(n, "cl-static-search-result") {
+			title := getAttr(n, "title")
+			if title == "" {
+				if td := findFirstDescendantC(n, "title"); td != nil {
+					title = nodeText(td)
+				}
+			}
+			href := ""
+			if a := findFirstAnchor(n); a != nil {
+				href = getAttr(a, "href")
+			}
+			location := ""
+			if loc := findFirstDescendantC(n, "location"); loc != nil {
+				location = nodeText(loc)
+			}
+			if title == "" || href == "" {
+				return
+			}
+			results = append(results, buildCraigslistResult(title, href, location, ""))
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("craigslist HTML static parse: %w: 0 cl-static-search-result elements", ErrParse)
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// parseCraigslistHTMLRendered parses the ox-browser-rendered DOM (tier-2 markup).
+// Each result is a <div class="cl-search-result" title="..."> containing a
+// <a class="posting-title" href> with <span class="label"> and a
+// <span class="result-location">.
+//
+// In the rendered DOM, cl-static-search-result occurs ZERO times — the static
+// class only exists in the no-JS fallback markup, and the SPA view replaces it.
+// Using one selector for both tiers yields a silent zero from the other.
+func parseCraigslistHTMLRendered(body []byte, limit int) ([]engine.SearxngResult, error) {
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("craigslist HTML rendered parse: %w: %v", ErrParse, err)
+	}
+
+	var results []engine.SearxngResult
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "div" && hasClassToken(n, "cl-search-result") {
+			title := getAttr(n, "title")
+			if title == "" {
+				if pt := findFirstDescendantC(n, "posting-title"); pt != nil {
+					title = nodeText(pt)
+				}
+			}
+			href := ""
+			if pt := findFirstDescendantC(n, "posting-title"); pt != nil {
+				href = getAttr(pt, "href")
+			}
+			if href == "" {
+				if a := findFirstAnchor(n); a != nil {
+					href = getAttr(a, "href")
+				}
+			}
+			location := ""
+			if loc := findFirstDescendantC(n, "result-location"); loc != nil {
+				location = nodeText(loc)
+			}
+			if title == "" || href == "" {
+				return
+			}
+			results = append(results, buildCraigslistResult(title, href, location, ""))
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("craigslist HTML rendered parse: %w: 0 cl-search-result elements", ErrParse)
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+// buildCraigslistResult assembles a SearxngResult from the parsed fields.
+// title is already entity-decoded by html.Parse; location is also decoded.
+func buildCraigslistResult(title, href, location, posted string) engine.SearxngResult {
+	content := "**Source:** Craigslist"
+	if location != "" {
+		content += " | **Location:** " + location
+	}
+	if posted != "" {
+		content += " | **Posted:** " + posted
+	}
+	md := map[string]string{"source": "craigslist"}
+	if location != "" {
+		md["location"] = location
+	}
+	return engine.SearxngResult{
+		Title:    title,
+		Content:  content,
+		URL:      href,
+		Score:    0.8,
+		Metadata: md,
+	}
+}
+
+// --- RSS fetch ---
 
 // fetchCraigslistRSS fetches and parses the Craigslist RSS feed using a two-tier
 // transport ladder:
@@ -209,13 +500,41 @@ func fetchCraigslistRSS(ctx context.Context, query, location string, limit int) 
 			slog.Int("ox_status", oxStatus))
 	}
 
-	return nil, fmt.Errorf("%w (stealth status=%d, ox-browser status=%d)", errCraigslistBlocked, status, oxStatus)
+	// 3a: return errCraigslistBlocked ONLY when both tiers returned a genuine
+	// refusal status (403/429). If either tier had a transport error (dial
+	// timeout, connection refused, context deadline), return the wrapped tier
+	// error(s) WITHOUT the sentinel — so context.DeadlineExceeded reaches
+	// engine.PlatformOutcome undowngraded (outcome=timeout, not outcome=error),
+	// and an ox-browser outage does not read to an operator as "Craigslist
+	// blocked our IP".
+	stealthRefused := err == nil && isRefusalStatus(status)
+	oxRefused := oxErr == nil && isRefusalStatus(oxStatus)
+	if stealthRefused && oxRefused {
+		return nil, errCraigslistBlocked
+	}
+	var tierErrs []error
+	if err != nil {
+		tierErrs = append(tierErrs, fmt.Errorf("craigslist rss stealth: %w", err))
+	}
+	if oxErr != nil {
+		tierErrs = append(tierErrs, fmt.Errorf("craigslist rss ox-browser: %w", oxErr))
+	}
+	if len(tierErrs) == 0 {
+		tierErrs = append(tierErrs, fmt.Errorf("craigslist rss: stealth status=%d ox-browser status=%d", status, oxStatus))
+	}
+	return nil, errors.Join(tierErrs...)
+}
+
+// isRefusalStatus returns true for HTTP status codes that represent a genuine
+// anti-bot refusal (as opposed to a transport error or a successful response).
+func isRefusalStatus(status int) bool {
+	return status == http.StatusForbidden || status == http.StatusTooManyRequests
 }
 
 func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) {
 	var rss craigslistRSS
 	if err := xml.Unmarshal(body, &rss); err != nil {
-		return nil, fmt.Errorf("craigslist RSS parse: %w", err)
+		return nil, fmt.Errorf("craigslist RSS parse: %w: %v", ErrParse, err)
 	}
 
 	var results []engine.SearxngResult
@@ -224,24 +543,34 @@ func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) 
 			continue
 		}
 
+		// Craigslist wraps titles and descriptions in CDATA containing encoded
+		// HTML entities; Go's xml decoder correctly leaves CDATA content literal,
+		// so we must decode entities ourselves. Descriptions carry raw HTML,
+		// so strip tags after unescaping.
+		title := html.UnescapeString(item.Title)
 		posted := ""
 		if len(item.Date) >= 10 {
 			posted = item.Date[:10]
+		}
+		desc := ""
+		if item.Description != "" {
+			desc = engine.CleanHTML(html.UnescapeString(item.Description))
 		}
 
 		content := "**Source:** Craigslist"
 		if posted != "" {
 			content += " | **Posted:** " + posted
 		}
-		if item.Description != "" {
-			content += "\n\n" + engine.TruncateAtWord(item.Description, 300)
+		if desc != "" {
+			content += "\n\n" + engine.TruncateAtWord(desc, 300)
 		}
 
 		results = append(results, engine.SearxngResult{
-			Title:   item.Title,
-			Content: content,
-			URL:     item.Link,
-			Score:   0.8,
+			Title:    title,
+			Content:  content,
+			URL:      item.Link,
+			Score:    0.8,
+			Metadata: map[string]string{"source": "craigslist"},
 		})
 
 		if len(results) >= limit {
@@ -252,11 +581,146 @@ func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) 
 	return results, nil
 }
 
+// --- HTML-first listing ladder ---
+
+// tierOutcome records the result of a single tier attempt.
+type tierOutcome struct {
+	name    string // "html-static", "html-rendered", "rss"
+	results []engine.SearxngResult
+	empty   bool // genuine empty (nil, nil from a successful parse)
+	err     error
+	refused bool // HTTP 403/429 — a genuine refusal, not a transport/parse error
+}
+
+// fetchCraigslistListings is the HTML-first transport ladder:
+//  1. HTML static (stealth Chrome-TLS) — li.cl-static-search-result, ~0.4s, no browser.
+//  2. HTML rendered (ox-browser /read format=html) — div.cl-search-result, ~4.6s, fuller set.
+//  3. RSS (stealth → ox-browser /fetch-smart) — secondary, may be unblocked for other consumers.
+//
+// Escalation rules:
+//   - A tier that returns results → stop, return them.
+//   - A tier that returns genuine empty (nil, nil) → stop, return nil, nil.
+//   - A tier refused (403/429) → escalate.
+//   - A tier transport error → record, escalate.
+//   - A tier 200 but selector matches nothing (ErrParse) → treat as a soft-block
+//     signal and escalate (3e), NOT a silent empty result.
+//
+// Error semantics (3a):
+//   - every tier refused (403/429) → errCraigslistBlocked
+//   - any tier had a transport/parse error → the wrapped tier error(s), WITHOUT
+//     the blocked sentinel, so context.DeadlineExceeded reaches PlatformOutcome
+//     undowngraded (outcome=timeout, not outcome=error).
+func fetchCraigslistListings(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
+	region := resolveRegion(location)
+	htmlURL := craigslistHTMLSearchURL(region, query)
+	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
+	defer cancel()
+
+	htmlHeaders := engine.ChromeHeaders()
+	htmlHeaders["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+	var outcomes []tierOutcome
+
+	// --- Tier 1: HTML static (stealth) ---
+	sStatus, sBody, sErr := craigslistStealthFetch(ctx, htmlURL, htmlHeaders)
+	if sErr == nil && sStatus == http.StatusOK && len(sBody) > 0 {
+		results, parseErr := parseCraigslistHTMLStatic(sBody, limit)
+		if parseErr == nil {
+			if len(results) > 0 {
+				return results, nil
+			}
+			return nil, nil // genuine empty
+		}
+		// 200 but wrong format → soft-block signal, escalate (3e).
+		slog.Warn("craigslist: HTML static parse failed (soft-block?), escalating",
+			slog.String("url", htmlURL),
+			slog.Any("error", parseErr))
+		outcomes = append(outcomes, tierOutcome{name: "html-static", err: parseErr})
+	} else {
+		outcomes = append(outcomes, recordTransportFailure("html-static", sStatus, sErr))
+	}
+
+	// --- Tier 2: HTML rendered (ox-browser /read format=html) ---
+	rStatus, rBody, rErr := craigslistOxBrowserReadFetch(ctx, htmlURL, htmlHeaders)
+	if rErr == nil && rStatus == http.StatusOK && len(rBody) > 0 {
+		results, parseErr := parseCraigslistHTMLRendered(rBody, limit)
+		if parseErr == nil {
+			if len(results) > 0 {
+				return results, nil
+			}
+			return nil, nil // genuine empty
+		}
+		slog.Warn("craigslist: HTML rendered parse failed (soft-block?), escalating to RSS",
+			slog.String("url", htmlURL),
+			slog.Any("error", parseErr))
+		outcomes = append(outcomes, tierOutcome{name: "html-rendered", err: parseErr})
+	} else {
+		outcomes = append(outcomes, recordTransportFailure("html-rendered", rStatus, rErr))
+	}
+
+	// --- Tier 3: RSS (stealth → ox-browser /fetch-smart) ---
+	rssResults, rssErr := fetchCraigslistRSS(ctx, query, location, limit)
+	if rssErr == nil {
+		if len(rssResults) > 0 {
+			return rssResults, nil
+		}
+		return nil, nil // genuine empty (RSS 0-item feed)
+	}
+	outcomes = append(outcomes, tierOutcome{name: "rss", err: rssErr, refused: errors.Is(rssErr, errCraigslistBlocked)})
+
+	// --- All tiers exhausted ---
+	return synthesizeLadderError(outcomes)
+}
+
+// recordTransportFailure builds a tierOutcome from a non-200 or errored fetch.
+func recordTransportFailure(name string, status int, err error) tierOutcome {
+	o := tierOutcome{name: name}
+	if err != nil {
+		o.err = fmt.Errorf("craigslist %s transport: %w", name, err)
+		slog.Warn("craigslist: tier transport error, escalating",
+			slog.String("tier", name),
+			slog.Int("status", status),
+			slog.Any("error", err))
+		return o
+	}
+	// No error but non-200 → refusal.
+	o.refused = isRefusalStatus(status)
+	o.err = fmt.Errorf("craigslist %s refused: HTTP %d", name, status)
+	slog.Warn("craigslist: tier refused, escalating",
+		slog.String("tier", name),
+		slog.Int("status", status))
+	return o
+}
+
+// synthesizeLadderError builds the final error from all tier outcomes.
+// Returns errCraigslistBlocked ONLY when every tier was a genuine refusal (403/429).
+// Otherwise returns the joined tier errors WITHOUT the sentinel, preserving the
+// underlying cause (context.DeadlineExceeded, parse error, etc.).
+func synthesizeLadderError(outcomes []tierOutcome) ([]engine.SearxngResult, error) {
+	if len(outcomes) == 0 {
+		return nil, errCraigslistBlocked
+	}
+	allRefused := true
+	var errs []error
+	for _, o := range outcomes {
+		if o.err != nil {
+			errs = append(errs, o.err)
+		}
+		if !o.refused {
+			allRefused = false
+		}
+	}
+	if allRefused {
+		return nil, errCraigslistBlocked
+	}
+	return nil, errors.Join(errs...)
+}
+
 // --- Main search function ---
 
-// SearchCraigslistJobs searches Craigslist job listings via a two-tier transport
-// ladder (stealth Chrome-TLS → ox-browser /fetch-smart), with a discovery
-// fallback (go-search/SearXNG) as a last resort.
+// SearchCraigslistJobs searches Craigslist job listings via an HTML-first
+// transport ladder (stealth static HTML → ox-browser rendered HTML → RSS), with
+// a discovery fallback (go-search/SearXNG) as a last resort.
 //
 // Error semantics (Task 1 — never report success when nothing was fetched):
 //   - every tier refused (403/429/challenge) → returns a blocked error
@@ -271,24 +735,31 @@ func parseCraigslistRSS(body []byte, limit int) ([]engine.SearxngResult, error) 
 func SearchCraigslistJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrCraigslistRequests()
 
-	// Tier 1+2: stealth → ox-browser (via fetchCraigslistRSS).
-	results, err := fetchCraigslistRSS(ctx, query, location, limit)
+	// HTML-first ladder (static → rendered → RSS).
+	results, err := fetchCraigslistListings(ctx, query, location, limit)
 	if err == nil {
 		if len(results) > 0 {
-			slog.Debug("craigslist: RSS search complete", slog.Int("results", len(results)))
+			slog.Debug("craigslist: search complete", slog.Int("results", len(results)))
 			return results, nil
 		}
-		// Genuine empty: RSS fetched OK, no matching listings.
-		slog.Debug("craigslist: RSS returned no listings",
+		// Genuine empty: a tier fetched OK and Craigslist has no matching listings.
+		slog.Debug("craigslist: no listings",
 			slog.String("query", query),
 			slog.String("location", location))
 		return nil, nil
 	}
 
-	// RSS failed (blocked or errored). Try discovery as a last resort.
-	slog.Warn("craigslist: RSS failed, trying discovery fallback",
+	// All direct tiers failed (blocked or errored). Try discovery as a last
+	// resort. Discovery results are URL-shape-only (no region, freshness or
+	// liveness check) and Craigslist posts expire in 30-45 days while a search
+	// index does not — so a blocked connector can serve dead links. This tier
+	// MUST be observable and MUST NOT convert a blocked state into a silent
+	// success (3d).
+	blocked := errors.Is(err, errCraigslistBlocked)
+	slog.Warn("craigslist: direct tiers failed, trying discovery fallback",
 		slog.String("query", query),
 		slog.String("location", location),
+		slog.Bool("blocked", blocked),
 		slog.Any("error", err))
 
 	searxQuery := query + " jobs " + craigslistSiteSearch
@@ -306,8 +777,12 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		if !isCraigslistJobCategory(r.URL) {
 			continue
 		}
-		r.Content = "**Source:** Craigslist\n\n" + r.Content
+		r.Content = "**Source:** Craigslist (discovery fallback)\n\n" + r.Content
 		r.Score = 0.7
+		if r.Metadata == nil {
+			r.Metadata = map[string]string{}
+		}
+		r.Metadata["source"] = "craigslist-discovery"
 		discResults = append(discResults, r)
 	}
 	if len(discResults) > limit {
@@ -315,21 +790,27 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 	}
 
 	if len(discResults) > 0 {
-		slog.Debug("craigslist: discovery fallback complete",
+		// Discovery found results — log prominently so operators can distinguish
+		// discovery-sourced results from a real fetch. If the direct tiers were
+		// blocked, this is masking a block with potentially-stale discovery URLs.
+		slog.Warn("craigslist: discovery fallback serving results (direct tiers blocked/failed)",
+			slog.String("query", query),
+			slog.String("location", location),
+			slog.Bool("direct_blocked", blocked),
 			slog.Int("raw", len(discovered)),
 			slog.Int("listings", len(discResults)))
 		return discResults, nil
 	}
 
-	// All tiers exhausted: RSS blocked/errored AND discovery found nothing.
-	// Return the RSS error (which is errCraigslistBlocked or a wrapped tier
+	// All tiers exhausted: direct failed AND discovery found nothing.
+	// Return the direct-tier error (errCraigslistBlocked or a wrapped tier
 	// error) — NOT (nil, nil), which is the defect that shipped as
 	// outcome=empty with error=0.
-	slog.Warn("craigslist: all tiers exhausted (RSS failed, discovery empty)",
+	slog.Warn("craigslist: all tiers exhausted (direct failed, discovery empty)",
 		slog.String("query", query),
 		slog.String("location", location),
 		slog.Int("discovered_raw", len(discovered)),
-		slog.Any("rss_error", err))
+		slog.Any("direct_error", err))
 	return nil, err
 }
 
