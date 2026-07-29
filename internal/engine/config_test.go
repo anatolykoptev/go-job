@@ -39,3 +39,34 @@ func TestResolveBrowserClient_FallbackCoversNilProxy(t *testing.T) {
 		t.Errorf("both nil: expected nil, got %p", got)
 	}
 }
+
+// TestInit_WiresBrowserClientViaResolveBrowserClient (MAJOR 2): Init() must
+// wire Cfg.BrowserClient via resolveBrowserClient, not via a bare
+// fetcherProxy.BrowserClient() assignment. In direct-first mode
+// (FetchDirectFirst=true, ProxyPool nil), BrowserClient() is nil but
+// DirectClient() is non-nil — resolveBrowserClient's fallback is what
+// supplies Cfg.BrowserClient in production (the container runs
+// FETCH_DIRECT_FIRST=direct).
+//
+// Extracting the fallback into a free function means deleting its call site
+// in Init() is no longer a compile error (an unused Go function is legal),
+// and the helper's own test keeps passing — so the gate protects the helper
+// while the production wiring vanishes silently. This test asserts Init()
+// actually wired it, mirroring the TestInit_WarmsPlatformResultsMatrix idiom
+// (metrics_platform_warmup_test.go:63-70).
+//
+// MUTATION-CHECK: revert Init() to `cfg.BrowserClient = fetcherProxy.BrowserClient()`
+// → BrowserClient() is nil (no proxy pool) → Cfg.BrowserClient = nil → RED.
+// Restore the resolveBrowserClient call → Cfg.BrowserClient = direct (non-nil) → GREEN.
+func TestInit_WiresBrowserClientViaResolveBrowserClient(t *testing.T) {
+	// FetchDirectFirst=true builds a no-proxy directClient (stealth Chrome-TLS).
+	// ProxyPool nil → BrowserClient() returns nil. So resolveBrowserClient's
+	// fallback is the ONLY path that supplies a non-nil Cfg.BrowserClient.
+	Init(Config{FetchDirectFirst: true})
+
+	if Cfg.BrowserClient == nil {
+		t.Fatal("Init() did not wire Cfg.BrowserClient via resolveBrowserClient — " +
+			"the call site was deleted (BrowserClient() is nil in direct-first mode, " +
+			"only the fallback to DirectClient() supplies a non-nil client)")
+	}
+}

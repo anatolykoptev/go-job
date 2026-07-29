@@ -53,18 +53,19 @@ const (
 	// the discovery fallback serves results AFTER the direct tiers (HTML/RSS)
 	// were refused or errored. Without it, a permanently IP-blocked connector
 	// reports outcome=ok via PlatformOutcome(n>0, nil) — the block is laundered
-	// into a silent success (H2). reason ∈ {"blocked","failed"}:
-	//   - "blocked" = direct tiers returned errCraigslistBlocked (anti-bot refusal)
-	//   - "failed"  = direct tiers errored (transport/parse/timeout), not a block
+	// into a silent success (H2). reason ∈ {"blocked","failed","unmapped"}:
+	//   - "blocked"  = direct tiers returned errCraigslistBlocked (anti-bot refusal)
+	//   - "failed"   = direct tiers errored (transport/parse/timeout), not a block
+	//   - "unmapped" = location not in craigslistRegions (never reached the network)
 	// An alert on reason="blocked" contradicts the healthy outcome=ok and makes
 	// the laundering observable.
 	MetricCraigslistDiscoveryFallback = "craigslist_discovery_fallback_total"
-	MetricAlgoraRequests        = "algora_requests_total"
-	MetricAlgoraJobsRequests    = "algora_jobs_requests_total"
-	MetricSherlockRequests      = "sherlock_requests_total"
-	MetricCantinaRequests       = "cantina_requests_total"
-	MetricCode4renaRequests     = "code4rena_requests_total"
-	MetricToolCalls             = "tool_calls_total"
+	MetricAlgoraRequests              = "algora_requests_total"
+	MetricAlgoraJobsRequests          = "algora_jobs_requests_total"
+	MetricSherlockRequests            = "sherlock_requests_total"
+	MetricCantinaRequests             = "cantina_requests_total"
+	MetricCode4renaRequests           = "code4rena_requests_total"
+	MetricToolCalls                   = "tool_calls_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
@@ -473,7 +474,7 @@ func FormatMetrics() string {
 	}
 	// H2: craigslist discovery-fallback counter pre-touched so a block-laundered
 	// outcome=ok is visible to rate()-floor alerts before the first fire.
-	for _, r := range []string{"blocked", "failed"} {
+	for _, r := range []string{"blocked", "failed", "unmapped"} {
 		keys = append(keys, MetricCraigslistDiscoveryFallback+"{reason="+r+"}")
 	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
@@ -574,27 +575,28 @@ func FormatMetrics() string {
 
 // Job-domain metric incrementors for sub-packages.
 
-func IncrHNJobsRequests()        { reg.Incr(MetricHNJobsRequests) }
-func IncrGreenhouseRequests()    { reg.Incr(MetricGreenhouseRequests) }
-func IncrLeverRequests()         { reg.Incr(MetricLeverRequests) }
-func IncrAshbyRequests()         { reg.Incr(MetricAshbyRequests) }
-func IncrYCJobsRequests()        { reg.Incr(MetricYCJobsRequests) }
-func IncrRemoteOKRequests()      { reg.Incr(MetricRemoteOKRequests) }
-func IncrWWRRequests()           { reg.Incr(MetricWWRRequests) }
-func IncrIndeedRequests()        { reg.Incr(MetricIndeedRequests) }
-func IncrHabrRequests()          { reg.Incr(MetricHabrRequests) }
-func IncrCraigslistRequests()    { reg.Incr(MetricCraigslistRequests) }
+func IncrHNJobsRequests()     { reg.Incr(MetricHNJobsRequests) }
+func IncrGreenhouseRequests() { reg.Incr(MetricGreenhouseRequests) }
+func IncrLeverRequests()      { reg.Incr(MetricLeverRequests) }
+func IncrAshbyRequests()      { reg.Incr(MetricAshbyRequests) }
+func IncrYCJobsRequests()     { reg.Incr(MetricYCJobsRequests) }
+func IncrRemoteOKRequests()   { reg.Incr(MetricRemoteOKRequests) }
+func IncrWWRRequests()        { reg.Incr(MetricWWRRequests) }
+func IncrIndeedRequests()     { reg.Incr(MetricIndeedRequests) }
+func IncrHabrRequests()       { reg.Incr(MetricHabrRequests) }
+func IncrCraigslistRequests() { reg.Incr(MetricCraigslistRequests) }
 
 // validCraigslistDiscoveryReasons bounds the reason label for
 // craigslist_discovery_fallback_total. "blocked" = direct tiers returned
-// errCraigslistBlocked; "failed" = direct tiers errored (not a block).
+// errCraigslistBlocked; "failed" = direct tiers errored (not a block);
+// "unmapped" = location not in craigslistRegions (never reached the network).
 var validCraigslistDiscoveryReasons = map[string]bool{
-	"blocked": true, "failed": true,
+	"blocked": true, "failed": true, "unmapped": true,
 }
 
 // IncrCraigslistDiscoveryFallback bumps
 // gojob_craigslist_discovery_fallback_total{reason=<r>}. reason ∈
-// {"blocked","failed"}. Unrecognised values are dropped silently (allowlist
+// {"blocked","failed","unmapped"}. Unrecognised values are dropped silently (allowlist
 // guard prevents cardinality explosion). Called when the discovery fallback
 // serves results after the direct tiers were refused/errored — makes a
 // block-laundered outcome=ok observable (H2).

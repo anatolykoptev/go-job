@@ -299,6 +299,14 @@ var craigslistOxBrowserFetch = func(ctx context.Context, feedURL string, headers
 // engine.PlatformOutcome undowngraded.
 var errCraigslistBlocked = errors.New("craigslist: blocked (anti-bot refusal detected)")
 
+// errCraigslistUnmapped is returned when resolveRegion cannot map the
+// free-text location to a Craigslist area slug. Distinct from a transport
+// error or a block: the connector never reached the network. Surfaced as
+// reason="unmapped" on the discovery-fallback counter so a default-empty
+// q.Location (the common case via adapters.go) is distinguishable from a
+// real transport failure (reason="failed") in the metric noise floor.
+var errCraigslistUnmapped = errors.New("craigslist: location not mapped to a Craigslist area")
+
 // --- HTML parsing helpers ---
 
 // hasClassToken returns true if the node's "class" attribute contains token as a
@@ -501,7 +509,7 @@ func buildCraigslistResult(title, href, location, posted string) engine.SearxngR
 func fetchCraigslistRSS(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	region, ok := resolveRegion(location)
 	if !ok {
-		return nil, fmt.Errorf("craigslist: location %q not mapped to a Craigslist area", location)
+		return nil, fmt.Errorf("%w: %q", errCraigslistUnmapped, location)
 	}
 	feedURL := fmt.Sprintf("https://%s.craigslist.org/search/jjj?query=%s&format=rss",
 		region, url.QueryEscape(query))
@@ -687,7 +695,7 @@ type tierOutcome struct {
 func fetchCraigslistListings(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	region, ok := resolveRegion(location)
 	if !ok {
-		return nil, fmt.Errorf("craigslist: location %q not mapped to a Craigslist area", location)
+		return nil, fmt.Errorf("%w: %q", errCraigslistUnmapped, location)
 	}
 	htmlURL := craigslistHTMLSearchURL(region, query)
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
@@ -898,6 +906,9 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		reason := "failed"
 		if blocked {
 			reason = "blocked"
+		}
+		if errors.Is(err, errCraigslistUnmapped) {
+			reason = "unmapped"
 		}
 		engine.IncrCraigslistDiscoveryFallback(reason)
 		slog.Warn("craigslist: discovery fallback serving results (direct tiers blocked/failed)",

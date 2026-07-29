@@ -764,6 +764,135 @@ func TestSynthesizeLadderError_BlockedPreservesDeadlineAnd404(t *testing.T) {
 	}
 }
 
+// --- MAJOR 1: caller-level resolveRegion guard coverage ---
+//
+// The pure helper resolveRegion is tested above, but the invariant that
+// actually ships is "no empty or sentinel region reaches /search/area/<region>"
+// — and that lives in the CALLERS' `if !ok` guards. Deleting both guards
+// (mutation M1b) leaves the entire ./internal/engine/jobs/ suite GREEN because
+// no test exercises the caller path with an unmapped location. These two
+// tests close that gap: an unmapped location must produce an error containing
+// "not mapped" AND must not invoke ANY transport seam (the guard returns
+// before any fetch).
+
+// transportCalledStub returns a transport seam function that fails the test if
+// invoked — the guard must return before any transport call.
+func transportCalledStub(t *testing.T, name string) func(context.Context, string, map[string]string) (int, []byte, error) {
+	t.Helper()
+	return func(_ context.Context, _ string, _ map[string]string) (int, []byte, error) {
+		t.Errorf("transport seam %s was invoked for an unmapped location — the resolveRegion guard was deleted", name)
+		return 0, nil, errors.New("transport should not have been called")
+	}
+}
+
+// TestFetchCraigslistListings_UnmappedLocation_NoTransportCall (MAJOR 1):
+// fetchCraigslistListings with an unmapped location must return an error
+// containing "not mapped" and must NOT invoke any transport seam.
+//
+// MUTATION-CHECK: delete the `if !ok` guard at the top of
+// fetchCraigslistListings (replacing `ok` with `_`) → region="" → the function
+// builds a URL and calls craigslistStealthFetch → the transport stub fires →
+// RED. Also the error no longer contains "not mapped" → RED.
+func TestFetchCraigslistListings_UnmappedLocation_NoTransportCall(t *testing.T) {
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxFetchFetch = transportCalledStub(t, "ox-fetch")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	_, err := fetchCraigslistListings(context.Background(), "warehouse", "Berlin", 1)
+	if err == nil {
+		t.Fatal("expected error for unmapped location, got nil — the resolveRegion guard was deleted")
+	}
+	if !strings.Contains(err.Error(), "not mapped") {
+		t.Errorf("error must contain \"not mapped\", got: %v", err)
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Errorf("error must wrap errCraigslistUnmapped, got: %v", err)
+	}
+}
+
+// TestFetchCraigslistRSS_UnmappedLocation_NoTransportCall (MAJOR 1):
+// fetchCraigslistRSS with an unmapped location must return an error containing
+// "not mapped" and must NOT invoke any transport seam.
+//
+// MUTATION-CHECK: delete the `if !ok` guard at the top of fetchCraigslistRSS
+// → region="" → the function builds a URL and calls craigslistStealthFetch →
+// the transport stub fires → RED.
+func TestFetchCraigslistRSS_UnmappedLocation_NoTransportCall(t *testing.T) {
+	saveFetchVars(t)
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	_, err := fetchCraigslistRSS(context.Background(), "warehouse", "Berlin", 1)
+	if err == nil {
+		t.Fatal("expected error for unmapped location, got nil — the resolveRegion guard was deleted")
+	}
+	if !strings.Contains(err.Error(), "not mapped") {
+		t.Errorf("error must contain \"not mapped\", got: %v", err)
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Errorf("error must wrap errCraigslistUnmapped, got: %v", err)
+	}
+}
+
+// --- MINOR 1: H2 counter increment coverage ---
+//
+// The IncrCraigslistDiscoveryFallback call at the discovery-fallback success
+// path is itself unguarded by a test (mutation M2: delete the line → GREEN).
+// This test stubs the direct tiers to fail and the ATS discoverer to return
+// craigslist URLs, then asserts the counter incremented.
+
+// mockATSDiscoverer returns a fixed set of results for any query.
+type mockATSDiscoverer struct {
+	results []engine.SearxngResult
+}
+
+func (m *mockATSDiscoverer) DiscoverBoardURLs(_ context.Context, _ string) ([]engine.SearxngResult, error) {
+	return m.results, nil
+}
+
+// TestSearchCraigslistJobs_DiscoveryFallback_IncrsCounter (MINOR 1):
+// when the direct tiers fail and the discovery fallback serves results, the
+// craigslist_discovery_fallback_total{reason} counter MUST increment.
+//
+// MUTATION-CHECK: delete the `engine.IncrCraigslistDiscoveryFallback(reason)`
+// line in SearchCraigslistJobs → the counter delta is 0 → RED.
+func TestSearchCraigslistJobs_DiscoveryFallback_IncrsCounter(t *testing.T) {
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Direct tiers: all fail (stealth 403, ox-fetch 403, RSS 403).
+	craigslistStealthFetch = stubStealth403
+	craigslistOxFetchFetch = stubOx403
+	craigslistOxBrowserFetch = stubOx403
+
+	// Discovery: return a craigslist job URL so the fallback serves results.
+	origATS := ATSDiscoverer
+	t.Cleanup(func() { ATSDiscoverer = origATS })
+	SetATSDiscoverer(&mockATSDiscoverer{
+		results: []engine.SearxngResult{
+			{Title: "Warehouse Worker", URL: "https://sfbay.craigslist.org/sfc/sof/d/test-warehouse/123.html"},
+		},
+	})
+
+	// Snapshot the counter before.
+	key := engine.MetricCraigslistDiscoveryFallback + "{reason=blocked}"
+	before := engine.GetMetrics()[key]
+
+	_, err := SearchCraigslistJobs(context.Background(), "warehouse", "sfbay", 100)
+	if err != nil {
+		t.Fatalf("expected discovery fallback to serve results, got error: %v", err)
+	}
+
+	after := engine.GetMetrics()[key]
+	if after <= before {
+		t.Errorf("craigslist_discovery_fallback_total{reason=blocked} did not increment (before=%d after=%d) — IncrCraigslistDiscoveryFallback call was deleted", before, after)
+	}
+}
+
 // Ensure engine.Config is initialized for tests that reference engine.Cfg fields.
 var _ = engine.Config{}
 var _ stealth.BrowserClient
