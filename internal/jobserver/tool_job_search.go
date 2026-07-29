@@ -69,7 +69,7 @@ var jobSearchSem = make(chan struct{}, 8)
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, not_dispatched, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = ran but declined (missing API key — set the source's API key env var); not_dispatched = never ran (search deadline arrived before a concurrency slot was acquired — raise the timeout or reduce the fan-out); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/not_dispatched/blocked/failed source, the summary names those sources instead of the generic 'No results found.' When the search deadline fires mid-fan-out (partial results), the output carries the raw results collected so far, a summary describing which sources did not complete grouped by cause, the populated `sources` array, and NO job listings (raw results are not processed into JobListing when the context is cancelled).",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, not_dispatched, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = ran but declined (missing API key — set the source's API key env var); not_dispatched = never ran (search deadline arrived before a concurrency slot was acquired — raise the timeout or reduce the fan-out); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/not_dispatched/blocked/failed source, the summary names those sources instead of the generic 'No results found.' When the search deadline fires mid-fan-out and at least one raw result was collected, the output carries NO job listings (raw results are not processed into JobListing when the context is cancelled), a `summary` reporting how many raw results were collected but not processed into job listings and which sources did not complete grouped by cause, and the populated `sources` array; the raw results themselves are not surfaced as a separate field. A deadline that fires with zero raw results takes the zero-results summary shape described above instead.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, runJobSearch)
 }
@@ -233,7 +233,7 @@ spawn:
 	// goroutines reported — the ToolTimeoutMiddleware deadline fired, the
 	// client disconnected, or the spawn loop was cancelled at the semaphore).
 	// The Sources list is already truthful (un-reported sources marked failed
-	// or skipped). Skip the LLM post-processing — it would either fail on the
+	// or not_dispatched). Skip the LLM post-processing — it would either fail on the
 	// cancelled context or burn the remaining budget.
 	//
 	// BLOCKER 2 fix: there is no deterministic SearxngResult→JobListing mapping
@@ -537,7 +537,7 @@ func persistJobListings(ctx context.Context, jobListings []engine.JobListing) {
 
 // allSourceNames returns the names of every fan-out participant in order:
 // each selected connector followed by the generic searxng discovery goroutine
-// when it runs. Used to mark un-reported sources as failed/skipped on context
+// when it runs. Used to mark un-reported sources as failed/not_dispatched on context
 // cancellation.
 func allSourceNames(srcs []connectors.Source, runGenericSearxng bool) []string {
 	names := make([]string, 0, len(srcs)+1)
@@ -554,7 +554,7 @@ func allSourceNames(srcs []connectors.Source, runGenericSearxng bool) []string {
 // return into a SourceStatus, until every goroutine has reported OR the context
 // is cancelled. On cancellation it returns the partial results collected so far
 // and marks every source that has not yet reported — failed if it was dispatched
-// but didn't finish, skipped if it was never dispatched (spawn loop cancelled at
+// but didn't finish, not_dispatched if it was never dispatched (spawn loop cancelled at
 // the semaphore) — so the response stays truthful instead of hanging on a bare
 // `r := <-ch` that ignores ctx.Done().
 //
@@ -664,7 +664,7 @@ loop:
 // SourceStatus vocabulary. Classification precedence:
 //   - nil err + results  -> ok
 //   - nil err + 0 results -> empty (genuine zero — the connector ran and succeeded)
-//   - errors.Is(ErrNoAPIKey) -> skipped (never ran: missing key / opted out)
+//   - errors.Is(ErrNoAPIKey) -> skipped (ran but declined: missing API key)
 //   - errors.Is(breaker.ErrOpen) -> blocked (upstream refused: breaker open)
 //   - context deadline/cancellation -> failed (deadline)
 //   - any other error -> failed (transport / parse / unknown)

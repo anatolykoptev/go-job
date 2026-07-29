@@ -308,6 +308,10 @@ func TestBuildUnprocessedSummary_NeverDispatched_DistinguishedFromNoKey(t *testi
 	sources := []engine.SourceStatus{
 		{Name: "indeed", Outcome: engine.SourceOutcomeNotDispatched, Reason: "not dispatched: search deadline reached before concurrency slot acquired"},
 	}
+	// rawCount=0 is unreachable in production (the handler's len(merged)==0
+	// branch diverts to buildZeroResultsSummary before buildUnprocessedSummary
+	// can run), but the assertion targets the grouping logic, which is
+	// rawCount-independent, so the value is irrelevant to what this test proves.
 	summary := buildUnprocessedSummary(sources, 0)
 	if !contains(summary, "never dispatched") {
 		t.Errorf("summary must label never-dispatched sources distinctly; got: %s", summary)
@@ -330,12 +334,41 @@ func TestBuildUnprocessedSummary_NoKey_DistinguishedFromNeverDispatched(t *testi
 	sources := []engine.SourceStatus{
 		{Name: "indeed", Outcome: engine.SourceOutcomeSkipped, Reason: "no API key: indeed key not configured"},
 	}
+	// rawCount=0 is unreachable in production (see note in the test above);
+	// the assertion targets the grouping logic, which is rawCount-independent.
 	summary := buildUnprocessedSummary(sources, 0)
 	if !contains(summary, "API key") {
 		t.Errorf("summary must label missing-API-key sources distinctly; got: %s", summary)
 	}
 	if contains(summary, "never dispatched") {
 		t.Errorf("summary must not confuse missing-API-key with never-dispatched; got: %s", summary)
+	}
+}
+
+// TestBuildZeroResultsSummary_NotDispatched_NamesSourceWithOutcomeAndReason:
+// the zero-results branch (len(merged)==0) is the path the original OOM incident
+// actually took — every source was still waiting for a concurrency slot when the
+// deadline fired, so merged was empty and buildZeroResultsSummary ran, NOT
+// buildUnprocessedSummary. A not_dispatched source must appear in that summary
+// with BOTH its outcome and its reason, so a future refactor of the formatter
+// cannot silently drop the outcome/reason distinction and collapse it back to
+// the generic "No results found."
+//
+// Revert-red: if buildZeroResultsSummary stops surfacing not_dispatched sources
+// (or drops the reason), the outcome/reason assertions fail.
+func TestBuildZeroResultsSummary_NotDispatched_NamesSourceWithOutcomeAndReason(t *testing.T) {
+	sources := []engine.SourceStatus{
+		{Name: "indeed", Outcome: engine.SourceOutcomeNotDispatched, Reason: "not dispatched: search deadline reached before concurrency slot acquired"},
+	}
+	summary := buildZeroResultsSummary(sources)
+	if !contains(summary, "indeed") {
+		t.Fatalf("summary must name the not_dispatched source, not the generic 'No results found.'; got: %s", summary)
+	}
+	if !contains(summary, engine.SourceOutcomeNotDispatched) {
+		t.Errorf("summary must carry the outcome %q; got: %s", engine.SourceOutcomeNotDispatched, summary)
+	}
+	if !contains(summary, "not dispatched") {
+		t.Errorf("summary must carry the reason; got: %s", summary)
 	}
 }
 
