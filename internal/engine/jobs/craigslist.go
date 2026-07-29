@@ -93,17 +93,36 @@ var craigslistRegions = map[string]string{
 	"las vegas": "lasvegas", "vegas": "lasvegas",
 }
 
-func resolveRegion(location string) string {
+// resolveRegion maps a free-text location to a Craigslist area slug. Returns
+// (region, true) on a match, ("", false) when the location is not in the
+// craigslistRegions map and no substring key matches.
+//
+// The previous implementation returned the literal sentinel "www" for any
+// unmatched location. That was harmless when the region was a SUBDOMAIN
+// (https://www.craigslist.org/...) but this branch moved it into the PATH
+// (https://www.craigslist.org/search/area/<region>?...), where "www" is a
+// bogus area slug that 404s (measured live: /search/area/www?cat=jjj&... →
+// 404 "Page Not Found", identical to /search/area/bogusregion). Returning
+// false lets the caller fail the direct tiers with an error that NAMES the
+// unmapped location, instead of silently building a 404 URL that is
+// indistinguishable from an IP block in the logs.
+//
+// Non-determinism from the map-iteration substring pass is tracked in #347
+// and is NOT fixed here; only the sentinel-in-path bug is.
+func resolveRegion(location string) (string, bool) {
 	loc := strings.ToLower(strings.TrimSpace(location))
+	if loc == "" {
+		return "", false
+	}
 	if region, ok := craigslistRegions[loc]; ok {
-		return region
+		return region, true
 	}
 	for key, region := range craigslistRegions {
 		if strings.Contains(loc, key) {
-			return region
+			return region, true
 		}
 	}
-	return "www"
+	return "", false
 }
 
 // --- HTML search URL ---
@@ -173,7 +192,19 @@ var craigslistOxFetchFetch = func(ctx context.Context, pageURL string, headers m
 		return 0, nil, fmt.Errorf("craigslist ox-browser /fetch request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	// H4: route through engine.Cfg.HTTPClient (PF-13: MaxIdleConns=100,
+	// MaxConnsPerHost=10, MaxIdleConnsPerHost=10, IdleConnTimeout=90s) instead
+	// of http.DefaultClient (MaxIdleConnsPerHost=2, unbounded MaxConnsPerHost).
+	// A platform=all fan-out against http.DefaultClient recreates the exact
+	// FD-exhaustion condition PF-13 fixed. go-stealth's OxBrowserClient.post()
+	// already owns this marshal→POST→read→unmarshal boilerplate against a
+	// configured client (60s timeout, optional proxy); a Fetch() method reusing
+	// it is the preferred fix but requires a cross-repo tag+vendor-bump of
+	// go-stealth, out of scope for this PR — see report.
+	if engine.Cfg.HTTPClient == nil {
+		return 0, nil, errors.New("craigslist: ox-browser /fetch: HTTPClient not configured")
+	}
+	resp, err := engine.Cfg.HTTPClient.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("craigslist ox-browser /fetch: %w", err)
 	}
@@ -468,7 +499,10 @@ func buildCraigslistResult(title, href, location, posted string) engine.SearxngR
 // the wrapped error. If a tier succeeds, returns parsed results (which may be
 // empty if the feed genuinely has no matching listings).
 func fetchCraigslistRSS(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
-	region := resolveRegion(location)
+	region, ok := resolveRegion(location)
+	if !ok {
+		return nil, fmt.Errorf("craigslist: location %q not mapped to a Craigslist area", location)
+	}
 	feedURL := fmt.Sprintf("https://%s.craigslist.org/search/jjj?query=%s&format=rss",
 		region, url.QueryEscape(query))
 
@@ -541,7 +575,14 @@ func fetchCraigslistRSS(ctx context.Context, query, location string, limit int) 
 	stealthRefused := err == nil && isRefusalStatus(status)
 	oxRefused := oxErr == nil && isRefusalStatus(oxStatus)
 	if stealthRefused && oxRefused {
-		return nil, errCraigslistBlocked
+		// Join the sentinel WITH the status context so a block is still
+		// distinguishable from a transport error in the logs (the bare
+		// sentinel dropped the status codes). errors.Is(err, errCraigslistBlocked)
+		// still matches; the status context survives to the operator.
+		return nil, errors.Join(
+			errCraigslistBlocked,
+			fmt.Errorf("craigslist rss: stealth status=%d ox-browser status=%d", status, oxStatus),
+		)
 	}
 	var tierErrs []error
 	if err != nil {
@@ -644,7 +685,10 @@ type tierOutcome struct {
 //     WITHOUT the sentinel, so context.DeadlineExceeded reaches PlatformOutcome
 //     undowngraded (outcome=timeout, not outcome=error).
 func fetchCraigslistListings(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
-	region := resolveRegion(location)
+	region, ok := resolveRegion(location)
+	if !ok {
+		return nil, fmt.Errorf("craigslist: location %q not mapped to a Craigslist area", location)
+	}
 	htmlURL := craigslistHTMLSearchURL(region, query)
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
@@ -739,10 +783,17 @@ func recordTransportFailure(name string, status int, err error) tierOutcome {
 }
 
 // synthesizeLadderError builds the final error from all tier outcomes.
-// Returns errCraigslistBlocked if ANY tier detected a block (403/429 or
-// errCraigslistBlocked). Otherwise returns the joined tier errors WITHOUT the
-// sentinel, preserving the underlying cause (context.DeadlineExceeded, parse
-// error, etc.).
+// Returns errCraigslistBlocked (joined with the tier errors) if ANY tier
+// detected a block (403/429 or errCraigslistBlocked). Otherwise returns the
+// joined tier errors WITHOUT the sentinel, preserving the underlying cause
+// (context.DeadlineExceeded, parse error, etc.).
+//
+// The sentinel is JOINED with the tier errors, not returned alone, so that
+// errors.Is(err, errCraigslistBlocked) still matches while the
+// DeadlineExceeded / 404 / parse causes survive to engine.PlatformOutcome
+// (outcome=timeout, not outcome=error) and to the operator. Returning the
+// bare sentinel dropped errs — a 404 from a URL-construction bug was
+// indistinguishable from an IP block, and a ladder timeout read as "error".
 func synthesizeLadderError(outcomes []tierOutcome) ([]engine.SearxngResult, error) {
 	if len(outcomes) == 0 {
 		return nil, errCraigslistBlocked
@@ -758,7 +809,7 @@ func synthesizeLadderError(outcomes []tierOutcome) ([]engine.SearxngResult, erro
 		}
 	}
 	if anyRefused {
-		return nil, errCraigslistBlocked
+		return nil, errors.Join(append(errs, errCraigslistBlocked)...)
 	}
 	return nil, errors.Join(errs...)
 }
@@ -840,10 +891,20 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 		// Discovery found results — log prominently so operators can distinguish
 		// discovery-sourced results from a real fetch. If the direct tiers were
 		// blocked, this is masking a block with potentially-stale discovery URLs.
+		// H2: increment a LABELLED counter so the laundering is observable —
+		// PlatformOutcome(len>0, nil) reports outcome=ok, but this counter
+		// contradicts it and an alert on reason="blocked" fires. A WARN log
+		// alone satisfied neither the stated invariant nor any deployed alert.
+		reason := "failed"
+		if blocked {
+			reason = "blocked"
+		}
+		engine.IncrCraigslistDiscoveryFallback(reason)
 		slog.Warn("craigslist: discovery fallback serving results (direct tiers blocked/failed)",
 			slog.String("query", query),
 			slog.String("location", location),
 			slog.Bool("direct_blocked", blocked),
+			slog.String("reason", reason),
 			slog.Int("raw", len(discovered)),
 			slog.Int("listings", len(discResults)))
 		return discResults, nil

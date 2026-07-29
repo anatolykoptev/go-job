@@ -64,6 +64,39 @@ groups:
 
             Fix: wire the key into compose/apps.yml go-job environment, redeploy.
 
+      # H2: Craigslist discovery-fallback laundering. When the direct tiers
+      # (HTML/RSS) are IP-blocked, the discovery fallback serves stale
+      # site:craigslist.org URLs and PlatformOutcome reports outcome=ok — a
+      # permanently blocked connector reads as healthy. This counter fires
+      # ONLY when discovery serves results after the direct tiers were
+      # refused/errored, so reason="blocked" contradicts the healthy outcome
+      # and makes the laundering observable. Tuning: require 3+ in 1h
+      # sustained 10m — a single transient block that self-clears is normal.
+      - alert: GojobCraigslistBlockedLaundered
+        expr: increase(gojob_craigslist_discovery_fallback_total{reason="blocked"}[1h]) > 3
+        for: 10m
+        labels:
+          severity: warning
+          service: go-job
+          receiver: dozor
+          failure_class: silent_downgrade
+        annotations:
+          summary: "go-job: Craigslist IP-blocked but reporting outcome=ok via discovery fallback"
+          description: |
+            The Craigslist direct tiers (HTML static, ox-browser /fetch, RSS)
+            were refused (errCraigslistBlocked) 3+ times in the last hour,
+            sustained 10m, but the discovery fallback served site:craigslist.org
+            URLs so PlatformOutcome reported outcome=ok. The connector is
+            permanently IP-blocked but reads as healthy — the block is laundered
+            into a silent success. Discovery URLs are stale (Craigslist posts
+            expire in 30-45 days; the search index does not), so listings may
+            be dead links.
+
+            Triage:
+              docker logs go-job --since 1h | grep "craigslist.*direct_blocked=true"
+              curl -sI --max-time 6 'https://www.craigslist.org/search/area/sfbay?cat=jjj&query=warehouse'
+            Fix class: rotate the IP / proxy pool, or re-point ox-browser.
+
       # Delegation health: when ATS discovery falls back to the local single-source
       # SearchDirect path, go-search (the multi-source delegation backend) is
       # unreachable or empty. go-job is then back on the degraded DDG-only floor.

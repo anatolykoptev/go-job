@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,11 +24,21 @@ func saveFetchVars(t *testing.T) {
 	origOxFetch := craigslistOxFetchFetch
 	origOx := craigslistOxBrowserFetch
 	origOxURL := engine.Cfg.OxBrowserURL
+	origHTTPClient := engine.Cfg.HTTPClient
+	// H4: craigslistOxFetchFetch now routes through engine.Cfg.HTTPClient
+	// (PF-13 connection-pooled client) instead of http.DefaultClient. The
+	// classification tests below exercise the REAL craigslistOxFetchFetch body
+	// against an httptest server, so HTTPClient must be non-nil. Production
+	// engine.Init always sets it; tests don't call Init, so seed a plain client.
+	if engine.Cfg.HTTPClient == nil {
+		engine.Cfg.HTTPClient = &http.Client{}
+	}
 	t.Cleanup(func() {
 		craigslistStealthFetch = origStealth
 		craigslistOxFetchFetch = origOxFetch
 		craigslistOxBrowserFetch = origOx
 		engine.Cfg.OxBrowserURL = origOxURL
+		engine.Cfg.HTTPClient = origHTTPClient
 	})
 }
 
@@ -667,10 +678,89 @@ func TestResolveRegion_SFBayVariants(t *testing.T) {
 		"SF Bay",
 	}
 	for _, loc := range cases {
-		got := resolveRegion(loc)
-		if got != craigslistCitySFBay {
-			t.Errorf("resolveRegion(%q) = %q, want %q", loc, got, craigslistCitySFBay)
+		got, ok := resolveRegion(loc)
+		if !ok || got != craigslistCitySFBay {
+			t.Errorf("resolveRegion(%q) = (%q, %v), want (%q, true)", loc, got, ok, craigslistCitySFBay)
 		}
+	}
+}
+
+// TestResolveRegion_UnmappedLocationsNotWWW (H1): the sentinel "www" must NOT
+// reach the URL path segment. Unmapped locations return ("", false) so the
+// caller fails the direct tiers with a named error instead of building a
+// /search/area/www?... URL that 404s (measured live: /search/area/www → 404).
+// "Portland, OR" resolves via the substring pass (ok=true) and MUST produce a
+// searchable area slug — the sentinel never reaches the path.
+//
+// NOTE: which area "Portland, OR" resolves to is non-deterministic (#347 —
+// "portland, or" contains the substring "la", so map iteration may match
+// "losangeles" before "portland"). #347 is out of scope; this test asserts
+// ONLY the H1 invariant (no "www" sentinel, ok=true for mapped-via-substring
+// inputs, ok=false for genuinely unmapped inputs), not a specific region.
+//
+// MUTATION-CHECK: revert resolveRegion to return ("www", true) for unmatched →
+// the unmapped cases fail (ok=true, region="www") and craigslistHTMLSearchURL
+// produces /area/www → red.
+func TestResolveRegion_UnmappedLocationsNotWWW(t *testing.T) {
+	unmapped := []string{"", "Remote", "Berlin"}
+	for _, loc := range unmapped {
+		region, ok := resolveRegion(loc)
+		if ok {
+			t.Errorf("resolveRegion(%q): ok=true (region=%q), want false — unmapped location must not produce a region", loc, region)
+			continue
+		}
+		if region != "" {
+			t.Errorf("resolveRegion(%q): region=%q on miss, want empty", loc, region)
+		}
+	}
+
+	// "Portland, OR" matches via the substring pass (ok=true). Assert the
+	// sentinel never reaches the path and the URL is a searchable area — but
+	// NOT which area (#347 non-determinism).
+	region, ok := resolveRegion("Portland, OR")
+	if !ok {
+		t.Fatalf("resolveRegion(%q): ok=false, want true — must match via substring pass", "Portland, OR")
+	}
+	if region == "www" {
+		t.Fatalf("resolveRegion(%q): returned sentinel \"www\" — must not reach the URL path", "Portland, OR")
+	}
+	u := craigslistHTMLSearchURL(region, "warehouse")
+	if strings.Contains(u, "/area/www") {
+		t.Errorf("resolveRegion(%q): built URL contains /area/www: %s", "Portland, OR", u)
+	}
+	if !strings.Contains(u, "/area/"+region) {
+		t.Errorf("resolveRegion(%q): built URL missing /area/%s: %s", "Portland, OR", region, u)
+	}
+}
+
+// TestSynthesizeLadderError_BlockedPreservesDeadlineAnd404 (H3): when any tier
+// was refused (block) AND another tier had a transport error, the returned
+// error must wrap errCraigslistBlocked AND preserve the underlying causes
+// (context.DeadlineExceeded, a 404 message). The previous code returned the
+// bare sentinel, dropping errs — so errors.Is(err, context.DeadlineExceeded)
+// was FALSE (PlatformOutcome reported "error" not "timeout") and a 404 cause
+// was absent (a URL-construction bug was indistinguishable from an IP block).
+//
+// MUTATION-CHECK: revert synthesizeLadderError to `return nil, errCraigslistBlocked`
+// on anyRefused → errors.Is(err, context.DeadlineExceeded) becomes FALSE and the
+// 404 string is absent → red.
+func TestSynthesizeLadderError_BlockedPreservesDeadlineAnd404(t *testing.T) {
+	outcomes := []tierOutcome{
+		{name: "html-static", err: errors.New("craigslist html-static refused: HTTP 404"), refused: true},
+		{name: "ox-fetch", err: fmt.Errorf("craigslist ox-fetch: %w", context.DeadlineExceeded), refused: false},
+	}
+	_, err := synthesizeLadderError(outcomes)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, errCraigslistBlocked) {
+		t.Errorf("error must still wrap errCraigslistBlocked: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error must preserve context.DeadlineExceeded (PlatformOutcome needs outcome=timeout): %v", err)
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error message must carry the 404 cause (URL-construction bug must be distinguishable from IP block): %v", err)
 	}
 }
 

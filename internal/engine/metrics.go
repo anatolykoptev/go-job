@@ -49,6 +49,16 @@ const (
 	MetricIndeedRequests        = "indeed_requests_total"
 	MetricHabrRequests          = "habr_requests_total"
 	MetricCraigslistRequests    = "craigslist_requests_total"
+	// MetricCraigslistDiscoveryFallback is a labelled counter that fires when
+	// the discovery fallback serves results AFTER the direct tiers (HTML/RSS)
+	// were refused or errored. Without it, a permanently IP-blocked connector
+	// reports outcome=ok via PlatformOutcome(n>0, nil) — the block is laundered
+	// into a silent success (H2). reason ∈ {"blocked","failed"}:
+	//   - "blocked" = direct tiers returned errCraigslistBlocked (anti-bot refusal)
+	//   - "failed"  = direct tiers errored (transport/parse/timeout), not a block
+	// An alert on reason="blocked" contradicts the healthy outcome=ok and makes
+	// the laundering observable.
+	MetricCraigslistDiscoveryFallback = "craigslist_discovery_fallback_total"
 	MetricAlgoraRequests        = "algora_requests_total"
 	MetricAlgoraJobsRequests    = "algora_jobs_requests_total"
 	MetricSherlockRequests      = "sherlock_requests_total"
@@ -461,6 +471,11 @@ func FormatMetrics() string {
 	for _, src := range []string{"go-search", "local-fallback", "degraded-fallback"} {
 		keys = append(keys, MetricHuntDiscoverySource+"{source="+src+"}")
 	}
+	// H2: craigslist discovery-fallback counter pre-touched so a block-laundered
+	// outcome=ok is visible to rate()-floor alerts before the first fire.
+	for _, r := range []string{"blocked", "failed"} {
+		keys = append(keys, MetricCraigslistDiscoveryFallback+"{reason="+r+"}")
+	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
 		keys = append(keys, MetricHuntDiscoveryURLs+"{platform="+p+"}")
 	}
@@ -569,6 +584,26 @@ func IncrWWRRequests()           { reg.Incr(MetricWWRRequests) }
 func IncrIndeedRequests()        { reg.Incr(MetricIndeedRequests) }
 func IncrHabrRequests()          { reg.Incr(MetricHabrRequests) }
 func IncrCraigslistRequests()    { reg.Incr(MetricCraigslistRequests) }
+
+// validCraigslistDiscoveryReasons bounds the reason label for
+// craigslist_discovery_fallback_total. "blocked" = direct tiers returned
+// errCraigslistBlocked; "failed" = direct tiers errored (not a block).
+var validCraigslistDiscoveryReasons = map[string]bool{
+	"blocked": true, "failed": true,
+}
+
+// IncrCraigslistDiscoveryFallback bumps
+// gojob_craigslist_discovery_fallback_total{reason=<r>}. reason ∈
+// {"blocked","failed"}. Unrecognised values are dropped silently (allowlist
+// guard prevents cardinality explosion). Called when the discovery fallback
+// serves results after the direct tiers were refused/errored — makes a
+// block-laundered outcome=ok observable (H2).
+func IncrCraigslistDiscoveryFallback(reason string) {
+	if !validCraigslistDiscoveryReasons[reason] {
+		return
+	}
+	reg.Incr(MetricCraigslistDiscoveryFallback + "{reason=" + reason + "}")
+}
 func IncrFreelancerAPIRequests() { reg.Incr(MetricFreelancerAPIRequests) }
 func IncrAlgoraRequests()        { reg.Incr(MetricAlgoraRequests) }
 func IncrAlgoraJobsRequests()    { reg.Incr(MetricAlgoraJobsRequests) }
@@ -704,6 +739,13 @@ func warmAlertBoundedMetrics() {
 	}
 	for src := range validDiscoverySources {
 		reg.Add(MetricHuntDiscoverySource+"{source="+src+"}", 0)
+	}
+	// H2: pre-register craigslist_discovery_fallback_total{reason} so the
+	// FIRST block-laundered outcome=ok after a restart is visible to
+	// increase()-based alerts (same gap warmAlertBoundedMetrics fixes for
+	// parse_fail/no_key).
+	for reason := range validCraigslistDiscoveryReasons {
+		reg.Add(MetricCraigslistDiscoveryFallback+"{reason="+reason+"}", 0)
 	}
 }
 

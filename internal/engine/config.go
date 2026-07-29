@@ -302,10 +302,7 @@ func Init(c Config) {
 	// is the TLS/JA3/header fingerprint. Without this fallback, connectors
 	// that guard on `Cfg.BrowserClient != nil` (e.g. Craigslist RSS) silently
 	// skip the stealth tier in direct mode and report empty results.
-	cfg.BrowserClient = fetcherProxy.BrowserClient()
-	if cfg.BrowserClient == nil {
-		cfg.BrowserClient = fetcherProxy.DirectClient()
-	}
+	cfg.BrowserClient = resolveBrowserClient(fetcherProxy.BrowserClient(), fetcherProxy.DirectClient())
 
 	slog.Info("engine: initialized",
 		slog.Bool("proxy", c.ProxyPool != nil),
@@ -337,6 +334,28 @@ func Init(c Config) {
 // Reg returns the package-level metrics registry for wiring middleware
 // (e.g. mcpmw.Middleware) and any external Prometheus integration.
 func Reg() *kitmetrics.Registry { return reg }
+
+// resolveBrowserClient picks the proxy-backed stealth BrowserClient, falling
+// back to the no-proxy direct Chrome-TLS client when the proxy-backed one is
+// nil (direct-first mode: FETCH_DIRECT_FIRST=direct → ProxyPool nil →
+// BrowserClient() nil). A stealth HTTP client does not need a proxy to be
+// useful — its value is the TLS/JA3/header fingerprint. Without this fallback,
+// connectors that guard on `Cfg.BrowserClient != nil` (e.g. Craigslist)
+// silently skip the stealth tier in direct mode and report empty results.
+//
+// Returns nil only when BOTH clients are nil (neither tier was built — e.g.
+// go-engine built no stealth client at all).
+//
+// Extracted from Init() so the fallback is unit-testable in isolation (H5):
+// Init() is too heavy to exercise (goroutines, metrics, LLM ping), and every
+// unit test overrides the craigslist transport vars wholesale, so the real
+// fallback body never ran under test — reverting it would not turn anything red.
+func resolveBrowserClient(proxy, direct *BrowserClient) *BrowserClient {
+	if proxy != nil {
+		return proxy
+	}
+	return direct
+}
 
 // InitTestRegistry replaces the package-level metrics registry with a fresh
 // in-memory registry. For use in tests in other packages that call metric
