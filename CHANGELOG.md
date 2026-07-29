@@ -2,6 +2,14 @@
 
 All notable changes to go_job are documented here.
 
+## [1.14.2](https://github.com/anatolykoptev/go-job/compare/v1.14.1...v1.14.2) (2026-07-29)
+
+
+### Bug Fixes
+
+* **craigslist:** ox-browser /fetch transport, single parser, reachable blocked + genuine-empty ([#346](https://github.com/anatolykoptev/go-job/issues/346)) ([8c19a47](https://github.com/anatolykoptev/go-job/commit/8c19a4773e3af041e323fb79938224c1824b3ef8))
+* **job_search:** report per-source outcome + return partial on deadline ([#340](https://github.com/anatolykoptev/go-job/issues/340)) ([c6e2a71](https://github.com/anatolykoptev/go-job/commit/c6e2a71b27662f14a9fe3e077a13fe46cce6eca6))
+
 ## [1.14.1](https://github.com/anatolykoptev/go-job/compare/v1.14.0...v1.14.1) (2026-07-25)
 
 
