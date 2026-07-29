@@ -190,14 +190,41 @@ func TestAggregateSourceResults_GenericSearxngCancelled_MarkedFailed(t *testing.
 
 // TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancellation
 // is the BLOCKER 1 regression test. Go's select is uniform-random among ready
-// arms. With a fair select, a buffered result + cancelled context drops the
-// result ~50% of the time (measured: 5063/10000). The priority-drain pattern
-// must collect the buffered result BEFORE honouring ctx.Done(). Run 200
-// iterations to make the ~50% failure visible.
+// arms. With a fair select and no drain protection, a buffered result +
+// cancelled context drops the result ~50% of the time (measured: 5063/10000).
+// The aggregator guards against this with TWO drains: a priority drain
+// (non-blocking select at the top of each loop iteration) and a final drain
+// (non-blocking loop inside the ctx.Done() arm). Run 200 iterations to make
+// the ~50% failure visible.
 //
-// Revert-red: replace the priority-drain select with a single fair select
-// (both case r and case <-ctx.Done() in the same select) and ~50% of
-// iterations will fail.
+// What this test actually guarantees: the test goes RED only when BOTH drains
+// are removed (replacing the whole loop body with a single fair select). A
+// 4-cell revert matrix confirms this:
+//
+//	priority drain | final drain | result
+//	---------------+-------------+--------
+//	present        | present     | pass
+//	removed        | present     | pass (200/200 — final drain catches the buffered result)
+//	present        | removed     | pass (priority drain catches it before ctx.Done())
+//	removed        | removed     | fail (~50% of iterations drop the result)
+//
+// The test guards the COMBINED drain, not the priority drain in isolation.
+//
+// Why no isolating test for the priority drain alone exists: when the final
+// drain is present, the priority drain has no independently observable effect.
+// The final drain is a perfect functional backstop — it catches any buffered
+// result that the priority drain would have caught, via a non-blocking loop
+// inside the ctx.Done() arm. Whether the result is taken by the priority drain
+// (loop continues normally, partial=false) or by the final drain (markUnreported
+// runs but finds nothing unreported, break loop, partial=false), the observable
+// output is identical: the same results merged, the same sources classified,
+// the same partial flag. The only difference is internal control flow
+// (markUnreported runs vs doesn't), which is not externally observable. An
+// isolating test would require a seam to detect which code path executed
+// (e.g. a hook or counter), which means modifying the aggregator's internal
+// structure — out of scope for this task ("do not redesign the aggregator").
+// The priority drain's value is defense-in-depth: if the final drain is
+// removed in a future refactor, the priority drain still protects.
 func TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancellation(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -224,15 +251,19 @@ func TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancella
 	}
 }
 
-// TestAggregateSourceResults_NeverDispatched_MarkedSkipped is the BLOCKER 4
-// regression test for the never-dispatched marking. A source that was never
-// dispatched (spawn loop cancelled at the semaphore before it could run) must
-// be marked "skipped", not "failed" — it never ran, so "failed" (ran, errored)
-// would be a lie.
+// TestAggregateSourceResults_NeverDispatched_MarkedNotDispatched is the
+// BLOCKER 4 regression test for the never-dispatched marking. A source that
+// was never dispatched (spawn loop cancelled at the semaphore before it could
+// run) must be marked "not_dispatched", not "failed" — it never ran, so
+// "failed" (ran, errored) would be a lie. And it must NOT be "skipped" either,
+// because "skipped" means "ran but declined (missing API key)" — a different
+// cause with a different operator action.
 //
 // Revert-red: if markUnreported stops differentiating dispatched vs
 // never-dispatched and marks both as "failed", the outcome assertion fails.
-func TestAggregateSourceResults_NeverDispatched_MarkedSkipped(t *testing.T) {
+// If it collapses never-dispatched back into "skipped", the outcome assertion
+// also fails.
+func TestAggregateSourceResults_NeverDispatched_MarkedNotDispatched(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan sourceResult, 1)
 	srcs := []connectors.Source{testSlowSource{sleep: time.Hour}}
@@ -255,12 +286,56 @@ func TestAggregateSourceResults_NeverDispatched_MarkedSkipped(t *testing.T) {
 	if len(sources) != 1 {
 		t.Fatalf("sources = %d, want 1", len(sources))
 	}
-	if sources[0].Outcome != engine.SourceOutcomeSkipped {
-		t.Errorf("outcome = %q, want %q (never dispatched → skipped, not failed)",
-			sources[0].Outcome, engine.SourceOutcomeSkipped)
+	if sources[0].Outcome != engine.SourceOutcomeNotDispatched {
+		t.Errorf("outcome = %q, want %q (never dispatched → not_dispatched, not failed or skipped)",
+			sources[0].Outcome, engine.SourceOutcomeNotDispatched)
 	}
 	if sources[0].Reason == "" {
-		t.Error("skipped source must carry a 'not dispatched' reason")
+		t.Error("not_dispatched source must carry a 'not dispatched' reason")
+	}
+}
+
+// TestBuildUnprocessedSummary_NeverDispatched_DistinguishedFromNoKey: a source
+// that was never dispatched (deadline arrived before a concurrency slot) must
+// appear in the summary under the "never dispatched" label, NOT under the
+// "skipped (set API key)" label. These are different causes with different
+// operator actions — conflating them sends the operator after the wrong fix.
+//
+// Revert-red: if buildUnprocessedSummary lumps not_dispatched and skipped into
+// one "did not finish" list (the pre-fix code), the summary contains neither
+// "never dispatched" nor "API key" and both assertions fail.
+func TestBuildUnprocessedSummary_NeverDispatched_DistinguishedFromNoKey(t *testing.T) {
+	sources := []engine.SourceStatus{
+		{Name: "indeed", Outcome: engine.SourceOutcomeNotDispatched, Reason: "not dispatched: search deadline reached before concurrency slot acquired"},
+	}
+	summary := buildUnprocessedSummary(sources, 0)
+	if !contains(summary, "never dispatched") {
+		t.Errorf("summary must label never-dispatched sources distinctly; got: %s", summary)
+	}
+	if contains(summary, "API key") {
+		t.Errorf("summary must not confuse never-dispatched with missing-API-key; got: %s", summary)
+	}
+}
+
+// TestBuildUnprocessedSummary_NoKey_DistinguishedFromNeverDispatched: a source
+// that ran but declined (missing API key) must appear under the "skipped (set
+// API key)" label, NOT under "never dispatched". The source WAS dispatched and
+// DID run — it returned immediately for want of a credential. The operator
+// action is "set INDEED_API_KEY", not "raise the timeout".
+//
+// Revert-red: if buildUnprocessedSummary lumps skipped and not_dispatched into
+// one "did not finish" list (the pre-fix code), the summary contains neither
+// "API key" nor "never dispatched" and both assertions fail.
+func TestBuildUnprocessedSummary_NoKey_DistinguishedFromNeverDispatched(t *testing.T) {
+	sources := []engine.SourceStatus{
+		{Name: "indeed", Outcome: engine.SourceOutcomeSkipped, Reason: "no API key: indeed key not configured"},
+	}
+	summary := buildUnprocessedSummary(sources, 0)
+	if !contains(summary, "API key") {
+		t.Errorf("summary must label missing-API-key sources distinctly; got: %s", summary)
+	}
+	if contains(summary, "never dispatched") {
+		t.Errorf("summary must not confuse missing-API-key with never-dispatched; got: %s", summary)
 	}
 }
 

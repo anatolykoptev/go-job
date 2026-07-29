@@ -46,17 +46,24 @@ type JobListing struct {
 // timeout/no_key/parse_fail): this is the response contract surfaced to the
 // MCP caller, classifying WHY each selected source contributed what it did.
 //
-//   - ok      — ran, returned >=1 result
-//   - empty   — ran, genuinely returned 0 results
-//   - skipped — never ran (missing API key, not selected, opted out)
-//   - blocked — ran, was refused by the upstream (HTTP 403/429, bot challenge, breaker open)
-//   - failed  — ran, errored (transport, parse, deadline)
+//   - ok             — ran, returned >=1 result
+//   - empty          — ran, genuinely returned 0 results
+//   - skipped        — ran but declined (missing API key); the source was
+//                      selected and dispatched but returned immediately without
+//                      fetching. Operator action: set the API key env var.
+//   - not_dispatched — never ran; the search deadline arrived before the source
+//                      acquired a concurrency slot (spawn loop cancelled at the
+//                      semaphore). Operator action: raise the timeout or reduce
+//                      the fan-out.
+//   - blocked        — ran, was refused by the upstream (HTTP 403/429, bot challenge, breaker open)
+//   - failed         — ran, errored (transport, parse, deadline)
 const (
-	SourceOutcomeOK      = "ok"
-	SourceOutcomeEmpty   = "empty"
-	SourceOutcomeSkipped = "skipped"
-	SourceOutcomeBlocked = "blocked"
-	SourceOutcomeFailed  = "failed"
+	SourceOutcomeOK            = "ok"
+	SourceOutcomeEmpty         = "empty"
+	SourceOutcomeSkipped       = "skipped"
+	SourceOutcomeNotDispatched = "not_dispatched"
+	SourceOutcomeBlocked       = "blocked"
+	SourceOutcomeFailed        = "failed"
 )
 
 // SourceStatus reports the outcome of a single source in a job_search fan-out.
@@ -65,7 +72,7 @@ const (
 // raw path, which bypass the connector fan-out.
 type SourceStatus struct {
 	Name    string `json:"name" jsonschema:"Source connector name (e.g. linkedin, greenhouse, searxng)"`
-	Outcome string `json:"outcome" jsonschema:"Per-source outcome: ok, empty, skipped, blocked, failed"`
+	Outcome string `json:"outcome" jsonschema:"Per-source outcome: ok, empty, skipped, not_dispatched, blocked, failed"`
 	Reason  string `json:"reason,omitempty" jsonschema:"Human-readable reason; empty when outcome is ok or empty"`
 	Count   int    `json:"count" jsonschema:"Number of raw results this source contributed"`
 }
@@ -75,7 +82,7 @@ type JobSearchOutput struct {
 	Query   string         `json:"query"`
 	Jobs    []JobListing   `json:"jobs"`
 	Summary string         `json:"summary"`
-	Sources []SourceStatus `json:"sources,omitempty" jsonschema:"Per-source outcome of the connector fan-out. outcome ∈ {ok, empty, skipped, blocked, failed}. Present whenever job_search runs its fan-out; absent on cache hits and the platform=twitter raw path."`
+	Sources []SourceStatus `json:"sources,omitempty" jsonschema:"Per-source outcome of the connector fan-out. outcome ∈ {ok, empty, skipped, not_dispatched, blocked, failed}. Present whenever job_search runs its fan-out; absent on cache hits and the platform=twitter raw path."`
 }
 
 type FreelanceSearchInput struct {

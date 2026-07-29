@@ -69,7 +69,7 @@ var jobSearchSem = make(chan struct{}, 8)
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "job_search",
-		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = never ran (missing API key); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/blocked/failed source, the summary names those sources instead of the generic 'No results found.'",
+		Description: "Search for job listings on LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Craigslist, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Inspira (careers.un.org UN Secretariat), and UNDP (jobs.undp.org). Returns structured JSON with job details (title, company, location, salary, skills, URL) plus a `sources` array reporting the per-source outcome of the fan-out. Supports filters for experience level, job type, remote/onsite, time range, and platform. UN sources are opt-in: platform=inspira queries careers.un.org only, platform=undp queries jobs.undp.org only, platform=un fans out to both. The default platform=all DOES NOT query Inspira or UNDP — set platform explicitly when looking for UN-system openings. raw=true skips LLM processing and returns raw tweet objects — only meaningful when platform=twitter. The `sources` field (absent on cache hits and the twitter raw path) carries one SourceStatus per selected source with outcome ∈ {ok, empty, skipped, not_dispatched, blocked, failed} and a reason: ok = ran and returned >=1 result; empty = ran and returned 0; skipped = ran but declined (missing API key — set the source's API key env var); not_dispatched = never ran (search deadline arrived before a concurrency slot was acquired — raise the timeout or reduce the fan-out); blocked = refused by upstream (breaker open, HTTP 403/429, bot challenge); failed = errored (transport, parse, deadline). When zero results coincide with any skipped/not_dispatched/blocked/failed source, the summary names those sources instead of the generic 'No results found.' When the search deadline fires mid-fan-out (partial results), the output carries the raw results collected so far, a summary describing which sources did not complete grouped by cause, the populated `sources` array, and NO job listings (raw results are not processed into JobListing when the context is cancelled).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, runJobSearch)
 }
@@ -598,8 +598,12 @@ func aggregateSourceResults(
 	}
 
 	// markUnreported fills in SourceStatus for every expected source that did
-	// not report: failed if dispatched but didn't finish, skipped if never
-	// dispatched (spawn loop cancelled at the semaphore before it could run).
+	// not report: failed if dispatched but didn't finish, not_dispatched if
+	// never dispatched (spawn loop cancelled at the semaphore before it could
+	// run). These are distinct causes with distinct operator actions —
+	// not_dispatched means "raise the timeout or reduce the fan-out", failed
+	// means "the source ran but didn't finish in time" — so they get separate
+	// outcome constants, not a shared "skipped" label.
 	markUnreported := func() {
 		for _, name := range expected {
 			if reported[name] {
@@ -614,7 +618,7 @@ func aggregateSourceResults(
 			} else {
 				sources = append(sources, engine.SourceStatus{
 					Name:    name,
-					Outcome: engine.SourceOutcomeSkipped,
+					Outcome: engine.SourceOutcomeNotDispatched,
 					Reason:  "not dispatched: search deadline reached before concurrency slot acquired",
 				})
 			}
@@ -704,7 +708,7 @@ func buildZeroResultsSummary(sources []engine.SourceStatus) string {
 	var problems []engine.SourceStatus
 	for _, s := range sources {
 		switch s.Outcome {
-		case engine.SourceOutcomeSkipped, engine.SourceOutcomeBlocked, engine.SourceOutcomeFailed:
+		case engine.SourceOutcomeSkipped, engine.SourceOutcomeNotDispatched, engine.SourceOutcomeBlocked, engine.SourceOutcomeFailed:
 			problems = append(problems, s)
 		}
 	}
@@ -726,18 +730,41 @@ func buildZeroResultsSummary(sources []engine.SourceStatus) string {
 // BLOCKER 2 fix: there is no deterministic SearxngResult→JobListing mapping in
 // this codebase, so Jobs stays nil and the summary must NOT claim "partial
 // results" — it states exactly what happened: raw results were collected but
-// not processed into job listings. Names the sources that did not finish
-// (failed = dispatched but didn't report; skipped = never dispatched).
+// not processed into job listings.
+//
+// The sources that did not complete are grouped by outcome, because the three
+// non-completing outcomes have different operator actions:
+//   - not_dispatched: never ran (deadline arrived before a concurrency slot was
+//     acquired). Action: raise the timeout or reduce the fan-out.
+//   - skipped: ran but declined (missing API key). Action: set the API key env var.
+//   - failed: ran but didn't finish (deadline). Action: investigate the source.
+// Merging them into one "did not finish" list sends the operator after the
+// wrong fix (e.g. raising the timeout when the real problem is a missing key).
 func buildUnprocessedSummary(sources []engine.SourceStatus, rawCount int) string {
-	var unfinished []string
+	var notDispatched, skipped, failed []string
 	for _, s := range sources {
-		if s.Outcome == engine.SourceOutcomeFailed || s.Outcome == engine.SourceOutcomeSkipped {
-			unfinished = append(unfinished, s.Name)
+		switch s.Outcome {
+		case engine.SourceOutcomeNotDispatched:
+			notDispatched = append(notDispatched, s.Name)
+		case engine.SourceOutcomeSkipped:
+			skipped = append(skipped, s.Name)
+		case engine.SourceOutcomeFailed:
+			failed = append(failed, s.Name)
 		}
 	}
 	base := fmt.Sprintf("Search deadline reached; %d raw results collected but not processed into job listings.", rawCount)
-	if len(unfinished) > 0 {
-		base += " Sources did not finish: " + strings.Join(unfinished, ", ") + "."
+	var parts []string
+	if len(notDispatched) > 0 {
+		parts = append(parts, "never dispatched (raise timeout or reduce fan-out): "+strings.Join(notDispatched, ", "))
+	}
+	if len(skipped) > 0 {
+		parts = append(parts, "skipped (set API key): "+strings.Join(skipped, ", "))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, "did not finish: "+strings.Join(failed, ", "))
+	}
+	if len(parts) > 0 {
+		base += " Sources — " + strings.Join(parts, "; ") + "."
 	}
 	return base
 }
