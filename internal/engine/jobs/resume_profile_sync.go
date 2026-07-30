@@ -133,14 +133,15 @@ func buildDerivedEntries(ctx context.Context, db *ResumeDB, personID int) ([]der
 		return nil, err
 	}
 	for _, exp := range exps {
-		// GetAllExperiences does not return the extended domain field, so the
-		// synced experience text omits the domain tag that master_resume (which
-		// has the parsed domain) includes. The editable experience content
-		// (title/company/dates/description/highlights) is reflected faithfully.
+		// GetAllExperiences returns the extended domain field, so the synced
+		// experience text is byte-identical to what master_resume builds from
+		// the parsed resume (formatExperienceTextExtended with exp.Domain) —
+		// same content_hash, so the ON CONFLICT dedup converges instead of
+		// inserting a duplicate row for the same ref_id.
 		entries = append(entries, derivedEntry{
 			memType: memTypeResumeExp,
 			refID:   int64(exp.ID),
-			content: formatExperienceTextExtended(exp.Title, exp.Company, exp.StartDate, exp.EndDate, exp.Description, exp.Highlights, ""),
+			content: formatExperienceTextExtended(exp.Title, exp.Company, exp.StartDate, exp.EndDate, exp.Description, exp.Highlights, exp.Domain),
 		})
 	}
 

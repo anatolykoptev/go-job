@@ -322,3 +322,85 @@ func TestSyncProfileVectors_RemovesOrphansOnDelete(t *testing.T) {
 			"sync must remove derived rows when the entity is deleted", expID, rowCount)
 	}
 }
+
+// TestSyncProfileVectors_ExperienceDomainMatchesMasterResume is the F2
+// regression: master_resume builds the experience vector with the parsed domain
+// (formatExperienceTextExtended ... exp.Domain), but the sync used to build it
+// with an EMPTY domain because GetAllExperiences never SELECTed the domain
+// column. Different content → different content_hash → ON CONFLICT
+// (user_name, content_hash) missed → a second resume_experience row for the
+// same ref_id. Orphan-delete kept both (both ref_ids in keepIDs), so search
+// returned duplicates and the no-op-on-unchanged invariant never converged.
+//
+// The test simulates the master_resume write (a source='profile' row with the
+// domain-tagged content) for an experience whose domain is non-empty, then runs
+// the sync and asserts a single row (no duplicate ref_id). With an empty domain
+// the bug is invisible, so the experience is seeded with a non-empty domain.
+//
+// Mutant — revert buildDerivedEntries to pass "" (or revert GetAllExperiences to
+// not SELECT domain) → the sync writes a second row with a different
+// content_hash → rowCount=2 → RED.
+func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
+	db, pid := testResumeDBWithPerson(t)
+	ctx := context.Background()
+
+	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+		Title:       "Staff Engineer",
+		Company:     "Acme",
+		StartDate:   "2020-01",
+		EndDate:     "2023-12",
+		Description: "Led platform team",
+		Highlights:  []string{"cut p99 by 40%"},
+	})
+	if err != nil {
+		t.Fatalf("InsertExperience: %v", err)
+	}
+	// Set a non-empty domain — the condition under which the bug is visible.
+	const domain = "Platform Engineering"
+	if err := db.UpdateExperienceMeta(ctx, expID, nil, nil, domain, false); err != nil {
+		t.Fatalf("UpdateExperienceMeta: %v", err)
+	}
+
+	// Simulate the master_resume write: a source='profile' row with the
+	// domain-tagged content (exactly what BuildMasterResume produces).
+	masterContent := formatExperienceTextExtended(
+		"Staff Engineer", "Acme", "2020-01", "2023-12",
+		"Led platform team", []string{"cut p99 by 40%"}, domain)
+	expIDi64 := int64(expID)
+	if _, err := db.UpsertVectorWithSource(ctx, masterContent, memTypeResumeExp, &expIDi64, nil, sourceProfile); err != nil {
+		t.Fatalf("seed master_resume row: %v", err)
+	}
+
+	// Re-derive via the sync. With the fix, the re-derived content is
+	// byte-identical (same domain) → ON CONFLICT updates the existing row →
+	// still 1 row. Without the fix (empty domain), content_hash differs → a
+	// second row is inserted.
+	if err := SyncProfileVectors(ctx, pid); err != nil {
+		t.Fatalf("SyncProfileVectors: %v", err)
+	}
+
+	var rowCount int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 derived experience row (no duplicate ref_id), got %d — "+
+			"sync content must match master_resume content (domain included)", rowCount)
+	}
+
+	// The surviving row must carry the domain-tagged content, not the
+	// empty-domain variant.
+	var content string
+	if err := db.pool.QueryRow(ctx,
+		`SELECT content FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != masterContent {
+		t.Errorf("derived content mismatch:\n got %q\nwant %q", content, masterContent)
+	}
+}
