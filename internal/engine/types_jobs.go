@@ -13,10 +13,10 @@ type JobSearchInput struct {
 	Salary     string `json:"salary,omitempty" jsonschema:"Minimum salary filter for LinkedIn: 40k+, 60k+, 80k+, 100k+, 120k+, 140k+, 160k+, 180k+, 200k+"`
 	EasyApply  bool   `json:"easy_apply,omitempty" jsonschema:"LinkedIn only: filter to Easy Apply jobs (one-click apply)"`
 	Language   string `json:"language,omitempty" jsonschema:"Language code for the answer (default: all)"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"Max results to return (default 15, max 50)"`
-	Offset   int    `json:"offset,omitempty" jsonschema:"Skip first N results for pagination (default 0)"`
-	Blacklist string `json:"blacklist,omitempty" jsonschema:"Comma-separated company names or keywords to exclude from results (e.g. Google, Meta, staffing)"`
-	Raw      bool   `json:"raw,omitempty"      jsonschema:"Skip LLM processing, return raw tweets — only meaningful for platform=twitter"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"Max results to return (default 15, max 50)"`
+	Offset     int    `json:"offset,omitempty" jsonschema:"Skip first N results for pagination (default 0)"`
+	Blacklist  string `json:"blacklist,omitempty" jsonschema:"Comma-separated company names or keywords to exclude from results (e.g. Google, Meta, staffing)"`
+	Raw        bool   `json:"raw,omitempty"      jsonschema:"Skip LLM processing, return raw tweets — only meaningful for platform=twitter"`
 }
 
 // JobListing is a structured representation of a job listing.
@@ -27,7 +27,7 @@ type JobListing struct {
 	JobID          string   `json:"job_id,omitempty"`
 	Source         string   `json:"source,omitempty"`
 	Location       string   `json:"location"`
-	Salary         string   `json:"salary"`          // human-readable: "$80k–120k USD/yr"
+	Salary         string   `json:"salary"`                    // human-readable: "$80k–120k USD/yr"
 	SalaryMin      *int     `json:"salary_min,omitempty"`      // numeric min (annual, in currency units)
 	SalaryMax      *int     `json:"salary_max,omitempty"`      // numeric max
 	SalaryCurrency string   `json:"salary_currency,omitempty"` // e.g. "USD", "EUR", "RUB"
@@ -49,12 +49,12 @@ type JobListing struct {
 //   - ok             — ran, returned >=1 result
 //   - empty          — ran, genuinely returned 0 results
 //   - skipped        — ran but declined (missing API key); the source was
-//                      selected and dispatched but returned immediately without
-//                      fetching. Operator action: set the API key env var.
+//     selected and dispatched but returned immediately without
+//     fetching. Operator action: set the API key env var.
 //   - not_dispatched — never ran; the search deadline arrived before the source
-//                      acquired a concurrency slot (spawn loop cancelled at the
-//                      semaphore). Operator action: raise the timeout or reduce
-//                      the fan-out.
+//     acquired a concurrency slot (spawn loop cancelled at the
+//     semaphore). Operator action: raise the timeout or reduce
+//     the fan-out.
 //   - blocked        — ran, was refused by the upstream (HTTP 403/429, bot challenge, breaker open)
 //   - failed         — ran, errored (transport, parse, deadline)
 const (
@@ -154,7 +154,7 @@ type JobMatchResult struct {
 	Location         string   `json:"location,omitempty"`
 	Source           string   `json:"source,omitempty"`
 	Snippet          string   `json:"snippet,omitempty"`
-	MatchScore       float64  `json:"match_score"`        // 0–100 Jaccard keyword overlap
+	MatchScore       float64  `json:"match_score"`       // 0–100 Jaccard keyword overlap
 	MatchingKeywords []string `json:"matching_keywords"` // resume skills this job wants
 	MissingKeywords  []string `json:"missing_keywords"`  // job keywords absent from resume
 }
@@ -184,10 +184,10 @@ type JobQualityScoreInput struct {
 
 // JobQualityScoreOutput is the structured output for job_quality_score.
 type JobQualityScoreOutput struct {
-	Score     int                   `json:"score"`     // 0-100 deterministic quality score
-	Verdict   string                `json:"verdict"`   // "high" | "medium" | "low" | "skip"
-	Breakdown map[string]int        `json:"breakdown"` // per-factor point contributions
-	Summary   string                `json:"summary"`
+	Score     int            `json:"score"`     // 0-100 deterministic quality score
+	Verdict   string         `json:"verdict"`   // "high" | "medium" | "low" | "skip"
+	Breakdown map[string]int `json:"breakdown"` // per-factor point contributions
+	Summary   string         `json:"summary"`
 }
 
 // SalaryResearchInput is the input for salary_research.
@@ -204,8 +204,8 @@ type CompanyResearchInput struct {
 
 // ResumeAnalyzeInput is the input for resume_analyze.
 type ResumeAnalyzeInput struct {
-	Resume          string `json:"resume"`
-	JobDescription  string `json:"job_description"`
+	Resume         string `json:"resume"`
+	JobDescription string `json:"job_description"`
 }
 
 // CoverLetterInput is the input for cover_letter_generate.
@@ -252,6 +252,11 @@ type ResumeGenerateInput struct {
 type ResumeProfileInput struct {
 	Section string `json:"section,omitempty" jsonschema:"Optional: filter by section (experiences, skills, projects, achievements, educations, certifications, domains, methodologies, summary). Empty = return all."`
 }
+
+// ResumeProfileSyncInput is the input for resume_profile_sync (full re-sync of
+// the structured-profile derived vectors). No parameters — it re-derives from
+// the latest person's current entity state.
+type ResumeProfileSyncInput struct{}
 
 // ResumeMemorySearchInput is the input for resume_memory_search.
 type ResumeMemorySearchInput struct {

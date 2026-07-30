@@ -35,7 +35,8 @@ func (db *ResumeDB) InsertExperience(ctx context.Context, personID int, e Experi
 func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]ExperienceRecord, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
-		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
+		        COALESCE(domain, '')
 		 FROM resume_experiences WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -46,7 +47,7 @@ func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]Expe
 	for rows.Next() {
 		var r ExperienceRecord
 		if err := rows.Scan(&r.ID, &r.PersonID, &r.Title, &r.Company, &r.Location,
-			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights); err != nil {
+			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -60,7 +61,8 @@ func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]Exper
 	}
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
-		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
+		        COALESCE(domain, '')
 		 FROM resume_experiences WHERE id = ANY($1) ORDER BY id`, ids)
 	if err != nil {
 		return nil, err
@@ -71,7 +73,7 @@ func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]Exper
 	for rows.Next() {
 		var r ExperienceRecord
 		if err := rows.Scan(&r.ID, &r.PersonID, &r.Title, &r.Company, &r.Location,
-			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights); err != nil {
+			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain); err != nil {
 			return nil, err
 		}
 		results = append(results, r)

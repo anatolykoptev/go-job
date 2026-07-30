@@ -30,6 +30,7 @@ func resumeProjectCreateHandler() http.HandlerFunc {
 			http.Error(w, "insert failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }
@@ -43,7 +44,7 @@ func resumeProjectDeleteHandler() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		db, personID, ok2 := requireResumeDB(w, r)
 		if !ok2 {
 			return
 		}
@@ -52,6 +53,7 @@ func resumeProjectDeleteHandler() http.HandlerFunc {
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }

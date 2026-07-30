@@ -153,6 +153,10 @@ func TestResumeDB_Migrate_PgUtil_FreshDB(t *testing.T) {
 			softInstalled[name] = extensionInstalled(t, pool, "age")
 		case "005_resume_vectors_embedding.sql":
 			softInstalled[name] = extensionInstalled(t, pool, "vector")
+		case "007_resume_vectors_source_backfill.sql":
+			// One-shot data backfill marked -- soft to pass the idempotency
+			// guard; it has no extension gate and always applies.
+			softInstalled[name] = true
 		}
 	}
 	var want []string
@@ -259,6 +263,10 @@ func TestResumeDB_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 			softInstalled[name] = extensionInstalled(t, pool, "age")
 		case "005_resume_vectors_embedding.sql":
 			softInstalled[name] = extensionInstalled(t, pool, "vector")
+		case "007_resume_vectors_source_backfill.sql":
+			// One-shot data backfill marked -- soft to pass the idempotency
+			// guard; it has no extension gate and always applies.
+			softInstalled[name] = true
 		}
 	}
 	var want []string
