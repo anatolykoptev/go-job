@@ -404,3 +404,79 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 		t.Errorf("derived content mismatch:\n got %q\nwant %q", content, masterContent)
 	}
 }
+
+// TestSyncProfileVectors_ChangedContentReconciles is the N1 regression: editing
+// an experience (changing any field that affects formatExperienceTextExtended
+// output) and re-syncing must produce exactly ONE derived row carrying the NEW
+// content — not a stale duplicate carrying the old content_hash.
+//
+// Before the fix, the sync upserted on ON CONFLICT (user_name, content_hash).
+// Changed content → different hash → no conflict → a SECOND source='profile'
+// row was inserted with the same ref_id. DeleteDerivedVectorsNotIn only removed
+// rows whose ref_id was absent from keepIDs — the stale row's ref_id was
+// present, so both survived permanently.
+//
+// The fix reconciles by identity (mem_type, ref_id): delete all source='profile'
+// rows for that identity, then insert the current content.
+//
+// Mutant — remove the DeleteDerivedVectorByID call before the upsert (revert to
+// content-hash-only reconcile) → the upsert inserts a second row (new
+// content_hash, no conflict) and the orphan-delete keeps both (same ref_id in
+// keepIDs) → rowCount=2 → RED.
+func TestSyncProfileVectors_ChangedContentReconciles(t *testing.T) {
+	db, pid := testResumeDBWithPerson(t)
+	ctx := context.Background()
+
+	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+		Title:       "Staff Engineer",
+		Company:     "Acme",
+		Description: "Led platform team",
+	})
+	if err != nil {
+		t.Fatalf("InsertExperience: %v", err)
+	}
+	if err := SyncProfileVectors(ctx, pid); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// Edit the experience — change the description so the derived content
+	// (and thus the content_hash) changes.
+	if _, err := db.pool.Exec(ctx,
+		`UPDATE resume_experiences SET description = $2 WHERE id = $1`,
+		expID, "Led infrastructure team and scaled to 10M users",
+	); err != nil {
+		t.Fatalf("update experience: %v", err)
+	}
+
+	if err := SyncProfileVectors(ctx, pid); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	// Exactly ONE derived row for this (mem_type, ref_id).
+	var rowCount int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 derived row after content change, got %d — "+
+			"stale duplicate not reconciled by identity", rowCount)
+	}
+
+	// The surviving row must carry the NEW content.
+	wantContent := formatExperienceTextExtended(
+		"Staff Engineer", "Acme", "", "",
+		"Led infrastructure team and scaled to 10M users", nil, "")
+	var content string
+	if err := db.pool.QueryRow(ctx,
+		`SELECT content FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != wantContent {
+		t.Errorf("derived content after edit:\n got %q\nwant %q", content, wantContent)
+	}
+}

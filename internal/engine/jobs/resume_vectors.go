@@ -296,6 +296,19 @@ func (db *ResumeDB) DeleteDerivedVectorsNotIn(ctx context.Context, memType strin
 	return err
 }
 
+// DeleteDerivedVectorByID removes all source='profile' derived rows for a single
+// (mem_type, ref_id). Used by SyncProfileVectors to clear stale rows before
+// re-inserting with new content, so editing an entity does not leave a duplicate
+// row carrying the old content_hash. Scoped to source='profile' so manual
+// source='agent' rows are never deleted.
+func (db *ResumeDB) DeleteDerivedVectorByID(ctx context.Context, memType string, refID int64) error {
+	_, err := db.pool.Exec(ctx, `
+		DELETE FROM resume_vectors
+		WHERE user_name = $1 AND source = $2 AND mem_type = $3 AND ref_id = $4
+	`, resumeVectorUser, sourceProfile, memType, refID)
+	return err
+}
+
 // UpdateVector atomically updates content, content_hash, and embedding for a row.
 // embedding may be nil (FTS-only update).
 func (db *ResumeDB) UpdateVector(

@@ -70,17 +70,26 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 	}
 
 	// Index existing source='profile' derived rows by (mem_type, ref_id) →
-	// content, so unchanged rows can be skipped (no-op, no updated_at churn).
+	// content + count, so unchanged single rows can be skipped (no-op, no
+	// updated_at churn) while duplicate stale rows are always reconciled.
 	existing, err := db.ListDerivedVectors(ctx, derivedMemTypes)
 	if err != nil {
 		return err
 	}
-	existingContent := make(map[string]string, len(existing))
+	type existingDerived struct {
+		content string
+		count   int
+	}
+	existingRows := make(map[string]existingDerived, len(existing))
 	for _, r := range existing {
 		if r.RefID == nil {
 			continue
 		}
-		existingContent[derivedKey(r.MemType, *r.RefID)] = r.Content
+		key := derivedKey(r.MemType, *r.RefID)
+		e := existingRows[key]
+		e.content = r.Content
+		e.count++
+		existingRows[key] = e
 	}
 
 	// keepIDs[memType] = the entity ids that still exist → used for orphan delete.
@@ -93,9 +102,24 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 	for _, e := range desired {
 		keepIDs[e.memType] = append(keepIDs[e.memType], e.refID)
 
-		if prev, ok := existingContent[derivedKey(e.memType, e.refID)]; ok && prev == e.content {
-			// Unchanged content — skip the upsert entirely so updated_at is
-			// not churned and an embedder outage cannot degrade a good row.
+		key := derivedKey(e.memType, e.refID)
+		if prev, ok := existingRows[key]; ok && prev.count == 1 && prev.content == e.content {
+			// Unchanged content, single row — skip the upsert entirely so
+			// updated_at is not churned and an embedder outage cannot degrade
+			// a good row.
+			continue
+		}
+
+		// Content changed, new, or duplicate stale rows exist — reconcile by
+		// identity (mem_type, ref_id), not content hash. Delete all
+		// source='profile' rows for this identity first, then insert the
+		// current content. Delete-then-insert (not update-in-place) because it
+		// also cleans up pre-existing duplicate rows that update-in-place would
+		// leave behind. A failed insert leaves a gap that the next sync fills;
+		// stale content (the alternative) serves wrong search results.
+		if err := db.DeleteDerivedVectorByID(ctx, e.memType, e.refID); err != nil {
+			slog.Warn("profile_sync: stale derived delete failed",
+				slog.String("mem_type", e.memType), slog.Int64("ref_id", e.refID), slog.Any("error", err))
 			continue
 		}
 
