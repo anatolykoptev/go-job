@@ -216,14 +216,18 @@ func (db *ResumeDB) FetchVectorMeta(ctx context.Context, id int64) (memType stri
 	return
 }
 
-// ClearVectors deletes all resume_vectors rows for the current user whose
-// mem_type matches any of the provided values. Only the caller's own mem_types
-// are affected; other consumers' rows (including resume_memory "note" rows) are untouched.
+// ClearVectors deletes the source='profile' derived resume_vectors rows for the
+// current user whose mem_type matches any of the provided values. The delete is
+// scoped to source='profile' so manual source='agent' memories (including a
+// manual row tagged with a derived mem_type like resume_experience) are never
+// destroyed by a rebuild. Other consumers' mem_types (e.g. enrich_project) are
+// also untouched. The single caller is BuildMasterResume, which clears the
+// derived rows it is about to re-derive from the structured profile.
 func (db *ResumeDB) ClearVectors(ctx context.Context, memTypes ...string) error {
 	_, err := db.pool.Exec(ctx, `
 		DELETE FROM resume_vectors
-		WHERE user_name = $1 AND mem_type = ANY($2::text[])
-	`, resumeVectorUser, memTypes)
+		WHERE user_name = $1 AND source = $2 AND mem_type = ANY($3::text[])
+	`, resumeVectorUser, sourceProfile, memTypes)
 	return err
 }
 

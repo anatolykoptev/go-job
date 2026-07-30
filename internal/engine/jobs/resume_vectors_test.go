@@ -439,8 +439,11 @@ func TestResumeDB_VectorPath(t *testing.T) {
 	}
 }
 
-// TestResumeDB_ClearVectors_Scoped verifies that ClearVectors only removes rows
-// whose mem_type is in the provided list, leaving other mem_types intact.
+// TestResumeDB_ClearVectors_Scoped verifies that ClearVectors only removes
+// source='profile' rows whose mem_type is in the provided list, leaving other
+// mem_types intact. Rows are seeded as source='profile' (the source ClearVectors
+// is scoped to); the source-scope invariant itself is covered by
+// TestResumeDB_ClearVectors_PreservesAgentRows.
 //
 // Falsification: reverting ClearVectors to a non-scoped DELETE (or deleting by
 // user_name only) causes the "other_type" row to be wiped, so the final count
@@ -449,12 +452,12 @@ func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
 	db := testResumeDB(t)
 	ctx := context.Background()
 
-	// Insert one row with the type to be cleared and one that must survive.
-	if _, err := db.UpsertVector(ctx, "clear target", memTypeResumeExp, nil, nil); err != nil {
-		t.Fatalf("UpsertVector target: %v", err)
+	// Insert one source='profile' row with the type to be cleared and one that must survive.
+	if _, err := db.UpsertVectorWithSource(ctx, "clear target", memTypeResumeExp, nil, nil, sourceProfile); err != nil {
+		t.Fatalf("UpsertVectorWithSource target: %v", err)
 	}
-	if _, err := db.UpsertVector(ctx, "must survive", memTypeEnrichProj, nil, nil); err != nil {
-		t.Fatalf("UpsertVector survivor: %v", err)
+	if _, err := db.UpsertVectorWithSource(ctx, "must survive", memTypeEnrichProj, nil, nil, sourceProfile); err != nil {
+		t.Fatalf("UpsertVectorWithSource survivor: %v", err)
 	}
 
 	// Clear only the resume_experience type.
@@ -484,6 +487,53 @@ func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
 	}
 	if survived != 1 {
 		t.Errorf("ClearVectors: survivor row missing or duplicated (count=%d, want 1)", survived)
+	}
+}
+
+// TestResumeDB_ClearVectors_PreservesAgentRows is the F1 regression: a manual
+// source='agent' memory tagged with a derived mem_type (resume_experience) must
+// survive ClearVectors — the exact call BuildMasterResume makes before a
+// rebuild. Before the source scope, ClearVectors deleted by mem_type only and
+// destroyed such a manual row on every rebuild.
+//
+// Mutant — drop the `source = $2` filter from ClearVectors (back to
+// `WHERE user_name=$1 AND mem_type=ANY($2)`) → the manual resume_experience
+// row is deleted → RED.
+func TestResumeDB_ClearVectors_PreservesAgentRows(t *testing.T) {
+	db := testResumeDB(t)
+	ctx := context.Background()
+
+	// Manual memory sharing a derived mem_type but source='agent', ref_id=NULL —
+	// the row a rebuild must never destroy.
+	manualID, err := db.UpsertVector(ctx, "manual agent resume_experience memory", memTypeResumeExp, nil, nil)
+	if err != nil {
+		t.Fatalf("UpsertVector manual: %v", err)
+	}
+
+	// The exact call BuildMasterResume makes before re-deriving.
+	if err := db.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+		t.Fatalf("ClearVectors: %v", err)
+	}
+
+	var exists int
+	if err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE id=$1`,
+		manualID,
+	).Scan(&exists); err != nil {
+		t.Fatalf("query manual row: %v", err)
+	}
+	if exists != 1 {
+		t.Fatalf("manual source='agent' row tagged resume_experience was deleted by ClearVectors "+
+			"(exists=%d) — ClearVectors must be scoped to source='profile'", exists)
+	}
+	var source string
+	if err := db.pool.QueryRow(ctx,
+		`SELECT source FROM resume_vectors WHERE id=$1`, manualID,
+	).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != sourceAgent {
+		t.Errorf("manual row source changed: got %q, want %q", source, sourceAgent)
 	}
 }
 

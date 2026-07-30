@@ -317,7 +317,9 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		return nil, fmt.Errorf("clear graph failed before rebuild: %w", err)
 	}
 
-	// Clear resume_vectors rows owned by master_resume (preserves resume_memory and enrich_project rows).
+	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
+	// re-derives (resume_experience/project/achievement). Scoped to source='profile' so
+	// manual source='agent' memories and enrich_project rows are preserved.
 	if rdb := GetResumeDB(); rdb != nil {
 		if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
 			slog.Error("clear resume vectors failed before rebuild", slog.Any("error", err))
