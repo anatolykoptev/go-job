@@ -285,7 +285,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
 					refID := int64(projID)
 					embedding, _ := embedPassage(ctx, rdb, text, "resume_enrich add")
-					if _, err := rdb.UpsertVector(ctx, text, memTypeEnrichProj, &refID, embedding); err != nil {
+					if _, err := rdb.UpsertVectorWithSource(ctx, text, memTypeEnrichProj, &refID, embedding, sourceProfile); err != nil {
 						slog.Debug("resume_vectors add project failed", slog.Any("error", err))
 					}
 				}

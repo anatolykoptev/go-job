@@ -71,7 +71,8 @@ type VectorRow struct {
 	Score   float64
 }
 
-// UpsertVector inserts or updates a resume memory row.
+// UpsertVector inserts or updates a resume memory row with source='agent'
+// (manual free-text memories). It delegates to UpsertVectorWithSource.
 // embedding may be nil or empty — in that case the row is stored without a vector (FTS-only).
 // embedding dimension must be 1024 when provided; mismatched dims are silently ignored (FTS fallback).
 func (db *ResumeDB) UpsertVector(
@@ -80,7 +81,25 @@ func (db *ResumeDB) UpsertVector(
 	refID *int64,
 	embedding []float32,
 ) (int64, error) {
+	return db.UpsertVectorWithSource(ctx, content, memType, refID, embedding, sourceAgent)
+}
+
+// UpsertVectorWithSource is the single write path for resume_vectors, with the
+// row source parameterized so derived rows (source='profile') and manual rows
+// (source='agent') share the same SQL and content-hash dedup. On conflict the
+// source label is refreshed to EXCLUDED.source so a re-sync corrects the label
+// on pre-existing rows.
+func (db *ResumeDB) UpsertVectorWithSource(
+	ctx context.Context,
+	content, memType string,
+	refID *int64,
+	embedding []float32,
+	source string,
+) (int64, error) {
 	hash := vectorContentHash(resumeVectorUser, memType, refID, content)
+	if source == "" {
+		source = sourceAgent
+	}
 
 	useVec := len(embedding) == 1024 && hasEmbeddingCol
 	var id int64
@@ -88,24 +107,26 @@ func (db *ResumeDB) UpsertVector(
 		vec := vectorLiteral(embedding)
 		err := db.pool.QueryRow(ctx, `
 			INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash, embedding)
-			VALUES ($1, $2, $3, 'agent', $4, $5, $6::vector)
+			VALUES ($1, $2, $3, $4, $5, $6, $7::vector)
 			ON CONFLICT (user_name, content_hash) DO UPDATE
-			  SET content    = EXCLUDED.content,
-			      embedding  = EXCLUDED.embedding,
+			  SET content   = EXCLUDED.content,
+			      embedding = EXCLUDED.embedding,
+			      source     = EXCLUDED.source,
 			      updated_at = now()
 			RETURNING id
-		`, resumeVectorUser, content, memType, refID, hash, vec).Scan(&id)
+		`, resumeVectorUser, content, memType, source, refID, hash, vec).Scan(&id)
 		return id, err
 	}
 
 	err := db.pool.QueryRow(ctx, `
 		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
-		VALUES ($1, $2, $3, 'agent', $4, $5)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_name, content_hash) DO UPDATE
 		  SET content    = EXCLUDED.content,
+		      source     = EXCLUDED.source,
 		      updated_at = now()
 		RETURNING id
-	`, resumeVectorUser, content, memType, refID, hash).Scan(&id)
+	`, resumeVectorUser, content, memType, source, refID, hash).Scan(&id)
 	return id, err
 }
 
@@ -206,6 +227,19 @@ func (db *ResumeDB) ClearVectors(ctx context.Context, memTypes ...string) error 
 	return err
 }
 
+// ResumeVectorUser returns the user_name under which all resume_vectors rows
+// are stored. Exported for cross-package tests that need to scope verification
+// queries to the same user the production code writes.
+func ResumeVectorUser() string { return resumeVectorUser }
+
+// SourceProfile returns the source label for derived rows re-derived from the
+// structured profile entities. Exported for cross-package tests.
+func SourceProfile() string { return sourceProfile }
+
+// SourceAgent returns the source label for manual free-text memories.
+// Exported for cross-package tests.
+func SourceAgent() string { return sourceAgent }
+
 // CountVectors returns the number of resume_vectors rows for the current user
 // whose mem_type matches any of the provided values.
 func (db *ResumeDB) CountVectors(ctx context.Context, memTypes ...string) (int, error) {
@@ -215,6 +249,47 @@ func (db *ResumeDB) CountVectors(ctx context.Context, memTypes ...string) (int, 
 		WHERE user_name = $1 AND mem_type = ANY($2::text[])
 	`, resumeVectorUser, memTypes).Scan(&n)
 	return n, err
+}
+
+// ListDerivedVectors returns the source='profile' derived vector rows whose
+// mem_type is in memTypes, for the current user. Used by SyncProfileVectors to
+// detect unchanged rows (no-op) vs changed/new rows (upsert). Only
+// source='profile' rows are returned — manual source='agent' rows are never
+// listed and therefore never compared or touched by the sync.
+func (db *ResumeDB) ListDerivedVectors(ctx context.Context, memTypes []string) ([]VectorRow, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT id, content, mem_type, ref_id, 0::float8
+		FROM resume_vectors
+		WHERE user_name = $1
+		  AND source = $2
+		  AND mem_type = ANY($3::text[])
+	`, resumeVectorUser, sourceProfile, memTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVectorRows(rows)
+}
+
+// DeleteDerivedVectorsNotIn removes source='profile' derived rows of memType
+// whose ref_id is not in keepIDs (or whose ref_id is NULL). Scoped to
+// source='profile' AND the single mem_type so manual source='agent' rows and
+// other consumers' mem_types are never deleted. When keepIDs is empty, all
+// source='profile' rows of memType are removed (the entity set is empty).
+func (db *ResumeDB) DeleteDerivedVectorsNotIn(ctx context.Context, memType string, keepIDs []int64) error {
+	if len(keepIDs) == 0 {
+		_, err := db.pool.Exec(ctx, `
+			DELETE FROM resume_vectors
+			WHERE user_name = $1 AND source = $2 AND mem_type = $3
+		`, resumeVectorUser, sourceProfile, memType)
+		return err
+	}
+	_, err := db.pool.Exec(ctx, `
+		DELETE FROM resume_vectors
+		WHERE user_name = $1 AND source = $2 AND mem_type = $3
+		  AND (ref_id IS NULL OR NOT (ref_id = ANY($4::bigint[])))
+	`, resumeVectorUser, sourceProfile, memType, keepIDs)
+	return err
 }
 
 // UpdateVector atomically updates content, content_hash, and embedding for a row.

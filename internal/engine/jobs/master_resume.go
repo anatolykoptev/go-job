@@ -14,22 +14,22 @@ import (
 
 // MasterResumeBuildResult is the structured output of master_resume_build.
 type MasterResumeBuildResult struct {
-	PersonID       int    `json:"person_id"`
-	Experiences    int    `json:"experiences"`
-	Skills         int    `json:"skills"`
-	Projects       int    `json:"projects"`
-	Achievements   int    `json:"achievements"`
-	Educations     int    `json:"educations"`
-	Certifications int    `json:"certifications"`
-	Domains        int    `json:"domains"`
-	Methodologies  int    `json:"methodologies"`
-	ImplicitSkills int    `json:"implicit_skills"`
-	SubProjects    int    `json:"sub_projects"`
-	GraphNodes     int    `json:"graph_nodes"`
-	GraphEdges     int    `json:"graph_edges"`
+	PersonID           int    `json:"person_id"`
+	Experiences        int    `json:"experiences"`
+	Skills             int    `json:"skills"`
+	Projects           int    `json:"projects"`
+	Achievements       int    `json:"achievements"`
+	Educations         int    `json:"educations"`
+	Certifications     int    `json:"certifications"`
+	Domains            int    `json:"domains"`
+	Methodologies      int    `json:"methodologies"`
+	ImplicitSkills     int    `json:"implicit_skills"`
+	SubProjects        int    `json:"sub_projects"`
+	GraphNodes         int    `json:"graph_nodes"`
+	GraphEdges         int    `json:"graph_edges"`
 	VectorsStored      int    `json:"vectors_stored"`
 	Truncated          bool   `json:"truncated,omitempty"`
-	TruncatedFromRunes  int    `json:"truncated_from_runes,omitempty"`
+	TruncatedFromRunes int    `json:"truncated_from_runes,omitempty"`
 	Summary            string `json:"summary"`
 }
 
@@ -759,7 +759,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	if rdb := GetResumeDB(); rdb != nil {
 		for _, ve := range vectorTexts {
 			embedding, _ := embedPassage(ctx, rdb, ve.content, "master_resume add")
-			if _, err := rdb.UpsertVector(ctx, ve.content, ve.memType, ve.refID, embedding); err != nil {
+			if _, err := rdb.UpsertVectorWithSource(ctx, ve.content, ve.memType, ve.refID, embedding, sourceProfile); err != nil {
 				slog.Debug("resume_vectors add failed", slog.Any("error", err))
 				continue
 			}

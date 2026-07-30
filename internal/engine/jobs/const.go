@@ -59,9 +59,9 @@ const craigslistCityNewYork = "newyork"
 
 // Additional source identifiers.
 const (
-	sourceUNDP          = "undp"
+	sourceUNDP           = "undp"
 	sourceWeWorkRemotely = "weworkremotely"
-	sourceSherlock      = "sherlock"
+	sourceSherlock       = "sherlock"
 )
 
 // Craigslist city slugs.
@@ -77,6 +77,17 @@ const (
 	memTypeResumeProj = "resume_project"
 	memTypeResumeAchv = "resume_achievement"
 	memTypeEnrichProj = "enrich_project"
+)
+
+// source discriminators for resume_vectors rows.
+// sourceAgent: manually-added free-text memories (resume_memory op=add/update),
+// ref_id IS NULL — never touched by the profile vector sync.
+// sourceProfile: derived rows re-derived from the structured profile entities
+// (experiences/projects/achievements/enrich_project), carrying the entity id as
+// ref_id — created/updated/removed by SyncProfileVectors and master_resume.
+const (
+	sourceAgent   = "agent"
+	sourceProfile = "profile"
 )
 
 // Tone options (additional).
