@@ -129,7 +129,7 @@ func TestSyncProfileVectors_ManualAgentRowsUntouched(t *testing.T) {
 
 	// Manual memory sharing a derived mem_type but source='agent', ref_id=NULL.
 	const manualContent = "manual agent memory that must survive sync"
-	manualID, err := db.UpsertVector(ctx, manualContent, memTypeResumeExp, nil, nil)
+	manualID, err := db.UpsertVector(ctx, manualContent, memTypeResumeExp, nil)
 	if err != nil {
 		t.Fatalf("UpsertVector manual: %v", err)
 	}

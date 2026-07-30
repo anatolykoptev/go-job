@@ -72,16 +72,17 @@ type VectorRow struct {
 }
 
 // UpsertVector inserts or updates a resume memory row with source='agent'
-// (manual free-text memories). It delegates to UpsertVectorWithSource.
+// (manual free-text memories). It delegates to UpsertVectorWithSource with a
+// nil ref_id — manual memories never carry a ref_id, and this method makes
+// that pairing impossible to express at compile time (no refID parameter).
 // embedding may be nil or empty — in that case the row is stored without a vector (FTS-only).
 // embedding dimension must be 1024 when provided; mismatched dims are silently ignored (FTS fallback).
 func (db *ResumeDB) UpsertVector(
 	ctx context.Context,
 	content, memType string,
-	refID *int64,
 	embedding []float32,
 ) (int64, error) {
-	return db.UpsertVectorWithSource(ctx, content, memType, refID, embedding, sourceAgent)
+	return db.UpsertVectorWithSource(ctx, content, memType, nil, embedding, sourceAgent)
 }
 
 // UpsertVectorWithSource is the single write path for resume_vectors, with the
@@ -96,6 +97,17 @@ func (db *ResumeDB) UpsertVectorWithSource(
 	embedding []float32,
 	source string,
 ) (int64, error) {
+	// Mechanical invariant: source='agent' rows must always have ref_id IS NULL.
+	// The 007 backfill predicate (ref_id IS NOT NULL AND source='agent') and the
+	// ON CONFLICT re-label (SET source = EXCLUDED.source) both depend on this.
+	// A source='agent' row with a non-nil ref_id would be silently re-labelled
+	// 'profile' by the backfill and again by any derived upsert with matching
+	// content — corrupting a real user memory. The UpsertVector wrapper makes
+	// the common agent path impossible to express at compile time (no refID
+	// parameter); this guard catches any direct UpsertVectorWithSource caller.
+	if source == sourceAgent && refID != nil {
+		return 0, fmt.Errorf("resume_vectors: source='agent' rows must have nil ref_id (got ref_id=%d) — use source='profile' for derived rows", *refID)
+	}
 	hash := vectorContentHash(resumeVectorUser, memType, refID, content)
 	if source == "" {
 		source = sourceAgent

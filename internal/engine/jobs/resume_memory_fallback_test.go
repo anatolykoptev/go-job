@@ -88,7 +88,7 @@ func TestResumeMemory_EmptyVectorFallsBackToFTS(t *testing.T) {
 	// Row with a NULL embedding: the vector path (embedding IS NOT NULL) skips
 	// it, but plainto_tsquery matches it — exactly the post-migration-005 state.
 	const ftsContent = "kubernetes orchestration fallback probe zeta"
-	if _, err := db.UpsertVector(ctx, ftsContent, "note", nil, nil); err != nil {
+	if _, err := db.UpsertVector(ctx, ftsContent, "note", nil); err != nil {
 		t.Fatalf("UpsertVector FTS-only row: %v", err)
 	}
 
@@ -145,13 +145,13 @@ func TestResumeMemory_NonEmptyVectorReturnedUntouched(t *testing.T) {
 
 	// Row V: has a real embedding (== query vector) → vector path returns it.
 	const vecContent = "zeta vector wins untouched marker alpha"
-	if _, err := db.UpsertVector(ctx, vecContent, "note", nil, vec); err != nil {
+	if _, err := db.UpsertVector(ctx, vecContent, "note", vec); err != nil {
 		t.Fatalf("UpsertVector vector row: %v", err)
 	}
 	// Row F: NULL embedding, but its tsv matches the same query terms → FTS
 	// would return it (and V) if the fallback fired incorrectly.
 	const ftsContent = "zeta fts only marker sigma beta"
-	if _, err := db.UpsertVector(ctx, ftsContent, "note", nil, nil); err != nil {
+	if _, err := db.UpsertVector(ctx, ftsContent, "note", nil); err != nil {
 		t.Fatalf("UpsertVector FTS-only row: %v", err)
 	}
 

@@ -116,7 +116,7 @@ func AddResumeMemory(ctx context.Context, content, memType string) (*ResumeMemor
 
 	embedding, backend := embedPassage(ctx, db, content, "resume_memory add")
 
-	if _, err := db.UpsertVector(ctx, content, memType, nil, embedding); err != nil {
+	if _, err := db.UpsertVector(ctx, content, memType, embedding); err != nil {
 		return nil, err
 	}
 

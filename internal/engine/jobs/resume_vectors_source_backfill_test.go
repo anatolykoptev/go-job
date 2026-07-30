@@ -46,17 +46,26 @@ func TestResumeVectors_SourceBackfill_PreservesManualRows(t *testing.T) {
 	ctx := context.Background()
 
 	// Manual free-text memory: ref_id=NULL, source='agent' (the schema default).
-	manualID, err := db.UpsertVector(ctx, "manual memory that must stay agent", "note", nil, nil)
+	manualID, err := db.UpsertVector(ctx, "manual memory that must stay agent", "note", nil)
 	if err != nil {
 		t.Fatalf("UpsertVector manual: %v", err)
 	}
 
 	// Pre-existing derived row written before the source discriminator existed:
 	// ref_id NOT NULL, source='agent' (the schema-004 default it would carry).
+	// Inserted via raw SQL because the API now mechanically rejects
+	// source='agent' with a non-nil ref_id — exactly the bad pairing this row
+	// represents (a historical artifact the backfill exists to fix).
 	derivedRefID := int64(99999)
-	derivedID, err := db.UpsertVectorWithSource(ctx, "stale derived row from pre-branch build", memTypeResumeExp, &derivedRefID, nil, sourceAgent)
-	if err != nil {
-		t.Fatalf("UpsertVectorWithSource derived: %v", err)
+	derivedContent := "stale derived row from pre-branch build"
+	derivedHash := vectorContentHash(resumeVectorUser, memTypeResumeExp, &derivedRefID, derivedContent)
+	var derivedID int64
+	if err := db.pool.QueryRow(ctx, `
+		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`, resumeVectorUser, derivedContent, memTypeResumeExp, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
+		t.Fatalf("seed stale derived row: %v", err)
 	}
 
 	runBackfillMigration(t, db)
@@ -91,10 +100,19 @@ func TestResumeVectors_SourceBackfill_Idempotent(t *testing.T) {
 	db := testResumeDB(t)
 	ctx := context.Background()
 
+	// Pre-existing derived row: source='agent' (schema-004 default), ref_id NOT
+	// NULL. Inserted via raw SQL — the API now rejects source='agent' + non-nil
+	// ref_id, so the historical state must be seeded directly.
 	derivedRefID := int64(88888)
-	derivedID, err := db.UpsertVectorWithSource(ctx, "derived row for idempotency check", memTypeResumeProj, &derivedRefID, nil, sourceAgent)
-	if err != nil {
-		t.Fatalf("UpsertVectorWithSource: %v", err)
+	derivedContent := "derived row for idempotency check"
+	derivedHash := vectorContentHash(resumeVectorUser, memTypeResumeProj, &derivedRefID, derivedContent)
+	var derivedID int64
+	if err := db.pool.QueryRow(ctx, `
+		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`, resumeVectorUser, derivedContent, memTypeResumeProj, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
+		t.Fatalf("seed stale derived row: %v", err)
 	}
 
 	runBackfillMigration(t, db)
