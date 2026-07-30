@@ -20,6 +20,11 @@ const (
 	// backendFTS / backendVector are metric label values for the backend dimension.
 	backendFTS    = "fts"
 	backendVector = "vector"
+	// backendFTSFallback labels the case where the vector path succeeded but
+	// returned zero rows and the FTS path was used instead — a third state
+	// distinguishable from a plain vector answer (had rows) and a plain FTS
+	// answer (no embedder / embed failed). Feeds resumeMemoryOpsTotal.
+	backendFTSFallback = "fts_fallback"
 )
 
 // --- Search ---
@@ -111,7 +116,7 @@ func AddResumeMemory(ctx context.Context, content, memType string) (*ResumeMemor
 
 	embedding, backend := embedPassage(ctx, db, content, "resume_memory add")
 
-	if _, err := db.UpsertVector(ctx, content, memType, nil, embedding); err != nil {
+	if _, err := db.UpsertVector(ctx, content, memType, embedding); err != nil {
 		return nil, err
 	}
 
@@ -215,11 +220,25 @@ func embedOrFTS(
 				slog.Int("got", len(qvec)), slog.Int("want", expectedEmbedDim))
 			resumeEmbedFailuresTotal.Inc()
 		case containsNonFinite(qvec):
-			slog.Warn(op+": embed returned non-finite vector, using FTS")
+			slog.Warn(op + ": embed returned non-finite vector, using FTS")
 			resumeEmbedFailuresTotal.Inc()
 		default:
 			rows, err := vecFn(qvec)
-			return rows, backendVector, err
+			if err != nil {
+				return nil, backendVector, err
+			}
+			if len(rows) > 0 {
+				// Vector path has results — return them verbatim. No re-ranking,
+				// no merge with FTS: vector wins whenever it has anything.
+				return rows, backendVector, nil
+			}
+			// Vector path succeeded but returned zero rows. Fall back to FTS so
+			// an empty vector index (e.g. all embeddings NULL right after
+			// migration 005) does not silently zero out results that
+			// plainto_tsquery would match. Labelled fts_fallback to keep the
+			// signal distinguishable from a plain vector or plain FTS answer.
+			ftsRows, ftsErr := txtFn()
+			return ftsRows, backendFTSFallback, ftsErr
 		}
 	}
 	rows, err := txtFn()
@@ -263,7 +282,7 @@ func embedPassage(ctx context.Context, db *ResumeDB, content, op string) ([]floa
 		resumeEmbedFailuresTotal.Inc()
 		return nil, backendFTS
 	case containsNonFinite(vecs[0]):
-		slog.Warn(op+": embed returned non-finite vector, storing FTS-only")
+		slog.Warn(op + ": embed returned non-finite vector, storing FTS-only")
 		resumeEmbedFailuresTotal.Inc()
 		return nil, backendFTS
 	default:

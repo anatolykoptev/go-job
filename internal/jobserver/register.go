@@ -51,6 +51,7 @@ func RegisterTools(server *mcp.Server, authority *applications.Authority) {
 	registerResumeEnrich(server)
 	// Resume Profile & Memory
 	registerResumeProfile(server)
+	registerResumeProfileSync(server)
 	registerResumeMemory(server)
 	// Oversize store management
 	registerOversize(server)

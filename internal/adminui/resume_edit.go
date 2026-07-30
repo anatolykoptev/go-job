@@ -185,6 +185,7 @@ func resumeExperienceCreateHandler() http.HandlerFunc {
 			http.Error(w, "insert failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }
@@ -198,7 +199,7 @@ func resumeExperienceDeleteHandler() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		db, personID, ok2 := requireResumeDB(w, r)
 		if !ok2 {
 			return
 		}
@@ -207,6 +208,7 @@ func resumeExperienceDeleteHandler() http.HandlerFunc {
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }
@@ -317,6 +319,7 @@ func resumeAchievementCreateHandler() http.HandlerFunc {
 			http.Error(w, "insert failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }
@@ -329,7 +332,7 @@ func resumeAchievementDeleteHandler() http.HandlerFunc {
 		if !ok {
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		db, personID, ok2 := requireResumeDB(w, r)
 		if !ok2 {
 			return
 		}
@@ -338,6 +341,7 @@ func resumeAchievementDeleteHandler() http.HandlerFunc {
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
 		}
+		syncProfileVectorsBestEffort(r, personID)
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
 	}
 }
@@ -455,4 +459,16 @@ func parseIDParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// syncProfileVectorsBestEffort re-derives the structured-profile resume_vectors
+// rows after a profile mutation. It is best-effort: the entity mutation has
+// already persisted, so an embedder outage or a vector-store error must NOT
+// fail the HTTP response — the derived rows degrade to NULL embeddings for a
+// later backfill. Manual source='agent' memories are never touched by the sync.
+func syncProfileVectorsBestEffort(r *http.Request, personID int) {
+	if err := jobs.SyncProfileVectors(r.Context(), personID); err != nil {
+		slog.Warn("resume edit: profile vector sync failed (mutation already persisted)",
+			slog.Int("person_id", personID), slog.Any("err", err))
+	}
 }
