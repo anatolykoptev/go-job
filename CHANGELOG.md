@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.14.3](https://github.com/anatolykoptev/go-job/compare/v1.14.2...v1.14.3) (2026-07-30)
+
+
+### Bug Fixes
+
+* **resume:** FTS fallback on empty vector result + profile-derived vector sync ([#355](https://github.com/anatolykoptev/go-job/issues/355)) ([ddf7a20](https://github.com/anatolykoptev/go-job/commit/ddf7a20f5a9367cdb21dc05b23d7f816bb62d2a6))
+
 ## [1.14.2](https://github.com/anatolykoptev/go-job/compare/v1.14.1...v1.14.2) (2026-07-29)
 
 
