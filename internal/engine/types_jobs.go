@@ -239,6 +239,16 @@ type PersonResearchInput struct {
 // MasterResumeBuildInput is the input for master_resume_build.
 type MasterResumeBuildInput struct {
 	Resume string `json:"resume" jsonschema:"Full resume text — all experience, education, skills, projects, achievements, certifications"`
+	// Replace must be true to rebuild when a profile already exists. A rebuild
+	// DESTROYS the existing profile (resume_persons and every ON DELETE CASCADE
+	// child: skills, projects, experiences, achievements, educations,
+	// certifications, domains, methodologies, plus upwork_profile data) and
+	// rebuilds from the resume text. When a profile exists and replace is false
+	// (the default) the call refuses and returns what would be destroyed — pass
+	// true only when you intentionally want to replace the whole profile. A
+	// failed/timed-out/cancelled rebuild leaves the existing profile intact
+	// (the clear and all inserts share one transaction).
+	Replace bool `json:"replace,omitempty" jsonschema:"If true, destroy the existing profile and rebuild from scratch. If false (default) and a profile already exists, the call refuses and reports what would be destroyed — pass true only when you intentionally want to replace the whole profile."`
 }
 
 // ResumeGenerateInput is the input for resume_generate.

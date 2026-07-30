@@ -14,6 +14,7 @@ import (
 	"github.com/anatolykoptev/go-kit/pgutil"
 	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -120,6 +121,40 @@ func (db *ResumeDB) Pool() *pgxpool.Pool {
 	return db.pool
 }
 
+// execConn is the common subset of *pgxpool.Pool and pgx.Tx that the resume
+// write/read methods use. It lets a method run against either the pool (the
+// normal path) or a transaction (the atomic rebuild path) without changing its
+// signature: the caller threads a context carrying the tx (see withTx) and
+// conn(ctx) returns the tx in place of the pool.
+type execConn interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// txCtxKey is the context key under which BuildMasterResume publishes its
+// transaction so the tx-aware write methods (conn) pick it up.
+type txCtxKey struct{}
+
+// withTx returns a copy of ctx carrying tx so that db.conn(ctx) returns tx
+// instead of the pool. Callers MUST commit/rollback tx themselves; the context
+// only routes the per-call executor.
+func withTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, txCtxKey{}, tx)
+}
+
+// conn returns the executor for ctx: the transaction carried in ctx (set by
+// withTx) if present, otherwise the pool. Methods that participate in the
+// atomic rebuild call conn(ctx) instead of using db.pool directly, so the same
+// method runs inside the rebuild's transaction when invoked from the build and
+// against the pool when invoked from any other caller (admin UI, sync, etc.).
+func (db *ResumeDB) conn(ctx context.Context) execConn {
+	if tx, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok && tx != nil {
+		return tx
+	}
+	return db.pool
+}
+
 // resumeMigrateLockKey is a distinct advisory-lock namespace for the resumedb
 // migration runner. The gojob database is shared with hunt (pgutil's default
 // lock key) and oversize (oversizeMigrateLockKey); each package-scoped runner
@@ -192,7 +227,7 @@ type PersonRecord struct {
 func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, error) {
 	linksJSON, _ := json.Marshal(p.Links)
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_persons (name, email, phone, location, links, summary)
 		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary,
@@ -201,20 +236,20 @@ func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, erro
 }
 
 func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
-	_, err := db.pool.Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, personID)
+	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, personID)
 	return err
 }
 
 // ClearAllPersons deletes all resume data (single-user system, rebuild from scratch).
 func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
-	_, err := db.pool.Exec(ctx, `DELETE FROM resume_persons`)
+	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons`)
 	return err
 }
 
 // GetLatestPersonID returns the ID of the most recently created person, or 0 if none.
 func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	var id int
-	err := db.pool.QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
+	err := db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
 	if err != nil {
 		return 0
 	}

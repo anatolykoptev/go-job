@@ -10,7 +10,21 @@ import (
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/jackc/pgx/v5"
 )
+
+// callLLM is the seam BuildMasterResume uses for its two LLM calls. It defaults
+// to engine.CallLLM; tests swap it to inject deterministic parse/enrichment
+// output without a live LLM. Scoped to this file's build path — the other
+// engine.CallLLM call sites are untouched.
+var callLLM = engine.CallLLM
+
+// masterResumeWriteHook, when non-nil, is invoked once right after the new
+// person row is inserted (step 4) and before any further entity inserts. If it
+// returns a non-nil error the build aborts immediately, rolling back the
+// transaction. It exists so the atomic-rebuild test (F1) can force a failure
+// partway through the write phase deterministically; it is nil in production.
+var masterResumeWriteHook func() error
 
 // MasterResumeBuildResult is the structured output of master_resume_build.
 type MasterResumeBuildResult struct {
@@ -261,7 +275,29 @@ Do NOT duplicate items already in the parsed data.
 Return ONLY the JSON object, no markdown, no explanation.`
 
 // BuildMasterResume parses resume text into SQL tables, AGE graph, and resume_vectors.
-func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBuildResult, error) { //nolint:funlen
+//
+// Atomicity invariant: a call that fails, times out, or is cancelled must leave
+// the existing profile byte-identical to what it was before the call. The
+// relational writes (resume_persons and all ON DELETE CASCADE children) and the
+// resume_vectors writes share ONE transaction and commit only when the whole
+// build succeeds; any error after the transaction begins rolls it back.
+//
+// The AGE graph writes (ClearGraph / UpsertGraphNode / UpsertGraphEdge) are
+// best-effort and run OUTSIDE the transaction on the pool: a cypher statement
+// that errors aborts the whole transaction in Postgres, so placing them inside
+// would let a transient graph/AGE failure (or an environment without AGE) take
+// down the relational rebuild. The trade-off is that the graph is NOT atomic
+// with the profile — a failed rebuild may leave stale/orphan graph nodes
+// (their id properties reference rolled-back entity ids, which is harmless:
+// graph queries join to the relational tables and find nothing). The profile
+// itself (relational + vectors) is always atomic.
+//
+// replace gates the destructive clear: when a profile already exists and
+// replace is false, the call refuses and returns what would be destroyed
+// (person id + entity counts) so the caller must opt in explicitly. This
+// prevents the incident class where a retried/accidental second run destroyed
+// a good profile.
+func BuildMasterResume(ctx context.Context, resumeText string, replace bool) (*MasterResumeBuildResult, error) { //nolint:funlen
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
@@ -275,7 +311,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	}
 	prompt := fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)
 
-	raw, err := engine.CallLLM(ctx, prompt)
+	raw, err := callLLM(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("master_resume_build LLM: %w", err)
 	}
@@ -294,7 +330,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		engine.TruncateRunes(resumeText, 6000, ""),
 	)
 
-	enrichRaw, err := engine.CallLLM(ctx, enrichPrompt)
+	enrichRaw, err := callLLM(ctx, enrichPrompt)
 	if err != nil {
 		slog.Warn("enrichment LLM call failed, continuing without enrichment", slog.Any("error", err))
 	}
@@ -307,27 +343,70 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 	}
 
-	// 3. Clear existing data (single-user, rebuild from scratch)
-	if err := db.ClearAllPersons(ctx); err != nil {
-		slog.Error("clear persons failed before rebuild", slog.Any("error", err))
-		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
+	// 3. Explicit destructive consent. A profile already exists and the caller
+	// did not pass replace=true → refuse and name what would be destroyed, so a
+	// retried/accidental second run cannot silently clear a good profile.
+	if existingID := db.GetLatestPersonID(ctx); existingID > 0 {
+		if !replace {
+			return nil, fmt.Errorf("master_resume_build: a profile already exists (person_id=%d)%s — "+
+				"rebuilding destroys it and all of its skills/projects/experiences/achievements/educations/"+
+				"certifications/domains/methodologies plus upwork_profile data (ON DELETE CASCADE). "+
+				"Pass replace=true only if you intend to replace the whole profile",
+				existingID, describeExistingProfile(ctx, db, existingID))
+		}
+		slog.Warn("master_resume_build: replacing existing profile", slog.Int("person_id", existingID))
 	}
+
+	// 4. Respect the caller's deadline. Both LLM calls above ran against ctx;
+	// if the caller is already gone (timeout/cancel) by the time we reach the
+	// destructive write phase, abort WITHOUT touching the database rather than
+	// beginning a clear that a retry could race. The transaction below also
+	// honours ctx, but this guard aborts earlier with an unambiguous cause and
+	// avoids opening a transaction at all.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("master_resume_build: caller deadline exceeded before write phase: %w", err)
+	}
+
+	// 5. Atomic write phase. The graph clear is best-effort and outside the tx
+	// (see the function doc); a missing/broken AGE must not abort the profile
+	// rebuild. The relational clear + every insert + the vector clear/upsert
+	// share one transaction.
 	if err := db.ClearGraph(ctx); err != nil {
-		slog.Error("clear graph failed before rebuild", slog.Any("error", err))
-		return nil, fmt.Errorf("clear graph failed before rebuild: %w", err)
+		slog.Warn("clear graph failed before rebuild (graph is best-effort; continuing)", slog.Any("error", err))
+	}
+
+	tx, err := db.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("master_resume_build: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, context.Canceled) {
+				slog.Warn("master_resume_build: rollback failed", slog.Any("error", rbErr))
+			}
+		}
+	}()
+
+	// Rebind ctx to carry the transaction: every relational/vector write and
+	// read below runs through db.conn(ctx), which now returns the tx instead of
+	// the pool, so the whole write phase shares this transaction. The graph
+	// methods (UpsertGraphNode/Edge) bypass conn and use db.pool.Acquire, so
+	// they stay outside the transaction regardless of the value carried here.
+	ctx = withTx(ctx, tx)
+
+	if err := db.ClearAllPersons(ctx); err != nil {
+		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
 	}
 
 	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
 	// re-derives (resume_experience/project/achievement). Scoped to source='profile' so
 	// manual source='agent' memories and enrich_project rows are preserved.
-	if rdb := GetResumeDB(); rdb != nil {
-		if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
-			slog.Error("clear resume vectors failed before rebuild", slog.Any("error", err))
-			return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
-		}
+	if err := db.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+		return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 	}
 
-	// 4. Insert person
+	// 6. Insert person
 	personID, err := db.InsertPerson(ctx, PersonRecord{
 		Name:     parsed.Person.Name,
 		Email:    parsed.Person.Email,
@@ -338,6 +417,15 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert person: %w", err)
+	}
+
+	// Test seam (F1): force a failure partway through the write phase, after the
+	// person insert has executed inside the transaction, so the rollback path is
+	// exercised. nil in production.
+	if hookErr := masterResumeWriteHook; hookErr != nil {
+		if err := hookErr(); err != nil {
+			return nil, fmt.Errorf("master_resume_build: write hook aborted rebuild: %w", err)
+		}
 	}
 
 	result := &MasterResumeBuildResult{PersonID: personID}
@@ -799,7 +887,42 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		slog.Int("vectors", result.VectorsStored),
 	)
 
+	// Commit the atomic write phase. Until this point every relational and
+	// vector write above was uncommitted inside the transaction; a failure
+	// anywhere in the build returned early and the deferred rollback discarded
+	// it all, leaving the pre-call profile intact. Only on a fully successful
+	// build do the new rows become visible.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("master_resume_build: commit: %w", err)
+	}
+	committed = true
+
 	return result, nil
+}
+
+// describeExistingProfile returns a human-readable summary of the profile that a
+// rebuild without replace=true would destroy, for the refuse error. It reads
+// committed state (the guard runs before the transaction begins).
+func describeExistingProfile(ctx context.Context, db *ResumeDB, personID int) string {
+	var (
+		exps   int
+		skills int
+		projs  int
+		achvs  int
+	)
+	if v, err := db.GetAllExperiences(ctx, personID); err == nil {
+		exps = len(v)
+	}
+	if v, err := db.GetAllSkills(ctx, personID); err == nil {
+		skills = len(v)
+	}
+	if v, err := db.GetAllProjects(ctx, personID); err == nil {
+		projs = len(v)
+	}
+	if v, err := db.GetAllAchievements(ctx, personID); err == nil {
+		achvs = len(v)
+	}
+	return fmt.Sprintf(" with %d experiences, %d skills, %d projects, %d achievements", exps, skills, projs, achvs)
 }
 
 // ensureSkill inserts or retrieves a skill, updating the tracking map and result counter.
