@@ -8,6 +8,7 @@ package pdfrender
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -20,6 +21,33 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// resumeTypstPreamble is the approved resume theme preamble, measured over
+// eleven iterations against the host's IBM Plex build. Embedded verbatim from
+// the approved design source — every number (17.8mm margins, 10pt size, 0.6em
+// leading, 0.78em spacing, the level-2/3/4 v() values, the level-4 #show rule)
+// was set by rendering a PDF and adjusting; retyping or rounding any value
+// silently discards that work.
+//
+//go:embed resume.typ
+var resumeTypstPreamble string
+
+// init registers go-job's resume theme under the name "resume", replacing
+// go-kit's built-in of the same name. This is the supported mechanism for a
+// product to own its look without editing the shared theme set.
+//
+// The hazard: if this registration never runs, or runs after the first render,
+// the built-in renders instead and nothing reports a fault — the output is
+// still a plausible resume, just in the wrong layout. The built-in has 16mm
+// margins and no level-4 show rule; ours has 17.8mm margins and a level-4
+// show rule. TestThemeRegistration anchors on both directions.
+func init() {
+	typst.RegisterTheme(typst.Theme{
+		Name:         "resume",
+		Preamble:     resumeTypstPreamble,
+		PageMarginPt: 24,
+	})
+}
 
 // pdfRendererAvailableGauge is set to 1 at startup when both typst and pandoc
 // are on PATH, 0 otherwise. Alerts on this gauge catch silently-degraded

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go-kit/render/typst"
 )
 
 // TestNormalizeTitleBlock covers the pure normalizeTitleBlock helper.
@@ -204,4 +206,51 @@ func firstLines(s string, n int) string {
 		}
 	}
 	return strings.Join(out, " | ")
+}
+
+// TestThemeRegistration verifies that go-job's init() registered the approved
+// resume theme under the name "resume", replacing go-kit's built-in of the
+// same name. This is the silent-failure surface: if the registration never
+// runs, the built-in renders instead and nothing reports a fault — the output
+// is still a plausible resume, just in the wrong layout.
+//
+// typst.LookupTheme is the exported API that resolveTypstTheme calls
+// internally during a real render (a.PDF → r.Render → pdfSource →
+// resolveTypstTheme). So this test checks exactly what the adapter would
+// resolve when it passes Theme: "resume".
+//
+// Anchors on values that DIFFER between the two themes:
+//   - go-job template: 17.8mm margins, level-4 #show rule
+//   - go-kit built-in: 16mm margins, no level-4 rule
+//
+// Asserts both directions: ours present, theirs absent. A test that only
+// checks "some resume theme resolved" passes with the bug in place.
+//
+// Falsification: comment out the RegisterTheme call in init() → the built-in
+// is returned instead → the 17.8mm assertion fails AND the 16mm assertion
+// fails (built-in has 16mm, which we assert absent).
+func TestThemeRegistration(t *testing.T) {
+	t.Parallel()
+
+	theme, ok := typst.LookupTheme("resume")
+	if !ok {
+		t.Fatal("typst.LookupTheme(\"resume\") returned ok=false — no theme registered under \"resume\"")
+	}
+
+	preamble := theme.Preamble
+
+	// Ours present: 17.8mm margins (go-job template).
+	if !strings.Contains(preamble, "17.8mm") {
+		t.Errorf("resume theme preamble does NOT contain 17.8mm — go-job template is not registered; got built-in or wrong theme.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	}
+
+	// Ours present: level-4 #show rule (go-job template has it, built-in does not).
+	if !strings.Contains(preamble, "level: 4") {
+		t.Errorf("resume theme preamble does NOT contain 'level: 4' — go-job template's level-4 show rule is missing; got built-in or wrong theme.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	}
+
+	// Theirs absent: 16mm margins (go-kit built-in has these, ours does not).
+	if strings.Contains(preamble, "16mm") {
+		t.Errorf("resume theme preamble contains 16mm — go-kit built-in is registered instead of go-job template.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	}
 }
