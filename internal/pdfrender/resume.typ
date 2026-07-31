@@ -21,16 +21,29 @@
   v(2.2mm, weak: true)
 }
 // Headings are "bold" (700), not "semibold" (600), and that is deliberate.
-// Measured in the deployed image: family "IBM Plex Sans" carries weights
-// 100/200/300/400/700 only — typst exposes 600 as a SEPARATE family, "IBM Plex
-// Sans SmBld". Asking for 600 here resolved to 700 by nearest-weight, silently,
-// so the approved layout has always been Bold. Naming 700 changes nothing on the
-// page (verified: 942 glyph boxes, every one at an identical position) and stops
-// the preamble asking for a face this image cannot supply.
 //
-// Wanting real SemiBold means naming "IBM Plex Sans SmBld" — the file ships in
-// the image already, no Dockerfile change — and re-approving the result, because
-// it does change the rendering.
+// In the image this service ships, family "IBM Plex Sans" carries weights
+// 100/200/300/400/700 only — typst exposes 500 and 600 as SEPARATE families,
+// "IBM Plex Sans Medm" and "IBM Plex Sans SmBld". Asking for 600 here resolved
+// to 700 by nearest-weight, silently, so the approved layout has always been
+// Bold. Naming 700 changes nothing on the page and stops the preamble asking for
+// a face the image cannot supply.
+//
+// Verified by rendering a document that exercises every weight site in this
+// file, including the table-header rule below, before and after: identical text,
+// identical glyph geometry, identical font subsets. Reproduce it with any
+// markdown covering h1-h4 plus a table; the claim is scoped to this image's font
+// set, and a box carrying a variable-axis IBM Plex could resolve 600 differently.
+//
+// Wanting real SemiBold means naming "IBM Plex Sans SmBld" — the file already
+// ships, the Dockerfile glob carries it, no image change — AND adding that
+// family to requiredFontFamilies in adapter.go, or the preamble/required-list
+// agreement test fails. It also moves the page, so it needs re-approval.
+//
+// Note what does NOT guard this: requiredFontFamilies and
+// gojob_pdf_font_available check font FAMILIES, never weights. Reintroducing
+// "semibold" would substitute silently again with no signal. This comment is the
+// only thing standing there.
 #show heading.where(level: 2): it => {
   v(4.5mm, weak: true)
   block(below: 3mm, breakable: false)[
