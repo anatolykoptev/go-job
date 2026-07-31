@@ -278,10 +278,39 @@ spawn:
 	// Apply blacklist filter.
 	deduped = applyBlacklist(deduped, input.Blacklist)
 
-	// Apply pagination offset.
+	// Relevance gate: score every candidate against the query via cosine
+	// similarity (embedder + rerank.MathReranker), then filter by threshold.
+	// Fail-open: if the embedder is unavailable, results pass through
+	// unfiltered and the degradation is made visible in the output summary +
+	// the job_search_relevance_degraded_total{reason} metric. The floor
+	// (minKeep) and any candidate-cap truncation surface as a separate
+	// `notice` string (B2/M3) — distinct from the fail-open `degraded` reason.
+	//
+	// NOTE (M4): input.Offset now indexes a relevance-sorted, gate-truncated
+	// list, NOT the raw candidate set. A caller paging offset=0,15,30 walks
+	// the gate's output, not the full fan-out. "offset beyond total" is
+	// distinguishable from a genuinely exhausted set below.
+	var degraded string
+	var notice string
+	preGateCount := len(deduped)
+	deduped, degraded, notice = applyRelevanceGate(ctx, input.Query, deduped)
+
+	// B1: when the gate ran successfully (degraded=="") but rejected every
+	// candidate, return an honest summary — NOT the generic "No results
+	// found." (which misattributes the empty set to the sources) and NOT
+	// "offset beyond total" (which misattributes it to pagination). The gate
+	// answering "nothing matched" is a correct, useful result.
+	if len(deduped) == 0 && degraded == "" && preGateCount > 0 {
+		summary := fmt.Sprintf("No results met the relevance threshold (%.3f) — %d candidate(s) scored below the bar.", jobSearchMinRelevance, preGateCount)
+		return nil, engine.JobSearchOutput{Query: input.Query, Summary: summary, Sources: sources}, nil
+	}
+
+	// Apply pagination offset (M4: indexes the gate-truncated, relevance-
+	// sorted list). "offset beyond total" is distinct from the gate-emptied
+	// case above (which has len(deduped)==0 && offset==0).
 	if input.Offset > 0 && input.Offset < len(deduped) {
 		deduped = deduped[input.Offset:]
-	} else if input.Offset >= len(deduped) {
+	} else if input.Offset >= len(deduped) && len(deduped) > 0 {
 		return nil, engine.JobSearchOutput{Query: input.Query, Summary: "No more results (offset beyond total).", Sources: sources}, nil
 	}
 
@@ -330,11 +359,24 @@ spawn:
 		slog.Warn("job_search: LLM summarization failed, returning unprocessed results",
 			slog.Any("error", err),
 			slog.Int("raw_results", len(top)))
+		summary := fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top))
+		if degraded != "" {
+			summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + summary
+		}
+		if notice != "" {
+			summary = "⚠ " + notice + ". " + summary
+		}
 		return nil, engine.JobSearchOutput{
 			Query:   input.Query,
-			Summary: fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top)),
+			Summary: summary,
 			Sources: sources,
 		}, nil
+	}
+	if degraded != "" {
+		jobOut.Summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + jobOut.Summary
+	}
+	if notice != "" {
+		jobOut.Summary = "⚠ " + notice + ". " + jobOut.Summary
 	}
 
 	liByJobID := make(map[string]*jobs.LinkedInJob)
@@ -344,11 +386,11 @@ spawn:
 		}
 	}
 
+	// M2: positional URL fallback — extracted into assignFallbackURLs so the
+	// correspondence guard is unit-testable (the LLM path is nil in tests).
+	assignFallbackURLs(jobOut.Jobs, top)
 	for i := range jobOut.Jobs {
 		j := &jobOut.Jobs[i]
-		if j.URL == "" && i < len(top) {
-			j.URL = top[i].URL
-		}
 		if j.JobID == "" && j.URL != "" {
 			j.JobID = jobs.ExtractJobID(j.URL)
 		}
@@ -469,6 +511,26 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 			slog.Any("error", err))
 	}
 	ch <- sourceResult{name: src.Name(), results: results, err: err}
+}
+
+// assignFallbackURLs fills empty JobListing URLs from the top results
+// positionally, but ONLY when the two slices demonstrably correspond (equal
+// lengths). The LLM prompt rule tells the model to DROP non-matching listings,
+// so jobOut.Jobs is a filtered subsequence and the positional index no longer
+// maps. Unconditional fallback → wrong URL → wrong ExtractJobID → wrong
+// liByJobID merge → another company's location/posted grafted onto the
+// listing → persistJobListings writes corrupt data (M2). When the lengths
+// differ, leave the URL empty rather than mis-assign. Do not invent a fuzzy
+// title match.
+func assignFallbackURLs(jobListings []engine.JobListing, top []engine.SearxngResult) {
+	if len(jobListings) != len(top) {
+		return // filtered subsequence — positional map is broken
+	}
+	for i := range jobListings {
+		if jobListings[i].URL == "" {
+			jobListings[i].URL = top[i].URL
+		}
+	}
 }
 
 func applyBlacklist(results []engine.SearxngResult, blacklist string) []engine.SearxngResult {

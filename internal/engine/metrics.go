@@ -419,7 +419,64 @@ const (
 	// kind ∈ validHuntSourceKinds, source ∈ registeredHuntSources[kind].
 	// Pre-touched at 0 for every known source×outcome in warmAlertBoundedMetrics.
 	MetricHuntSourceOutcome = "hunt_source_outcome_total"
+
+	// MetricJobSearchRelevance is the labelled counter
+	// gojob_job_search_relevance_total{outcome}. Bumped once per candidate in
+	// the relevance-gate stage of runJobSearch. outcome ∈ {scored, kept,
+	// floor_kept, rejected} — bounded enum. scored = cosine computed; kept =
+	// passed the threshold gate; floor_kept = below threshold but retained by
+	// the min-keep floor (a DISTINCT visible state from a real match — see B2);
+	// rejected = below threshold and dropped. Pre-touched for all four outcomes
+	// in FormatMetrics + warmAlertBoundedMetrics so rate()-floor alerts see 0
+	// before the first job_search call.
+	MetricJobSearchRelevance = "job_search_relevance_total"
+
+	// MetricJobSearchRelevanceDegraded is the labelled counter
+	// gojob_job_search_relevance_degraded_total{reason}. Bumped once per
+	// job_search call that took the fail-open degraded path (embedder
+	// unavailable). reason ∈ {not_configured, embed_error, circuit_open,
+	// timeout, empty_vectors} — bounded enum, no free-form strings, no query
+	// text. Pre-touched for all reasons so a rate()-floor alert sees 0 before
+	// the first degradation.
+	MetricJobSearchRelevanceDegraded = "job_search_relevance_degraded_total"
 )
+
+// Relevance gate outcome label values (job_search_relevance_total{outcome}).
+// Exported so the jobserver package can use them.
+const (
+	RelevanceScored    = "scored"
+	RelevanceKept      = "kept"
+	RelevanceFloorKept = "floor_kept"
+	RelevanceRejected  = "rejected"
+)
+
+// validRelevanceOutcomes bounds the outcome label for job_search_relevance_total.
+var validRelevanceOutcomes = map[string]bool{
+	RelevanceScored: true, RelevanceKept: true, RelevanceFloorKept: true, RelevanceRejected: true,
+}
+
+// Relevance degraded reason label values (job_search_relevance_degraded_total{reason}).
+// Exported so the jobserver package can use them in the output summary.
+const (
+	RelevanceReasonNotConfigured = "not_configured"
+	RelevanceReasonEmbedError    = "embed_error"
+	RelevanceReasonCircuitOpen   = "circuit_open"
+	RelevanceReasonTimeout       = "timeout"
+	RelevanceReasonEmptyVectors  = "empty_vectors"
+	RelevanceReasonTruncated     = "truncated"
+)
+
+// validRelevanceDegradedReasons bounds the reason label for
+// job_search_relevance_degraded_total. Unrecognised values are dropped silently
+// (cardinality guard — no free-form strings, no query text).
+var validRelevanceDegradedReasons = map[string]bool{
+	RelevanceReasonNotConfigured: true,
+	RelevanceReasonEmbedError:    true,
+	RelevanceReasonCircuitOpen:   true,
+	RelevanceReasonTimeout:       true,
+	RelevanceReasonEmptyVectors:  true,
+	RelevanceReasonTruncated:     true,
+}
 
 // Source outcome label values for gojob_hunt_source_outcome_total.
 const (
@@ -689,6 +746,14 @@ func FormatMetrics() string {
 			}
 		}
 	}
+	// Relevance gate counters pre-touched so rate()-floor alerts see 0 before
+	// the first job_search call. 4 outcomes + 6 degraded reasons = 10 series.
+	for _, oc := range []string{RelevanceScored, RelevanceKept, RelevanceFloorKept, RelevanceRejected} {
+		keys = append(keys, MetricJobSearchRelevance+"{outcome="+oc+"}")
+	}
+	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeout, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
+		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
+	}
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -779,6 +844,30 @@ func IncrCode4renaRequests()     { reg.Incr(MetricCode4renaRequests) }
 func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall()              { reg.Incr(MetricToolCalls) }
+
+// AddJobSearchRelevance adds n to gojob_job_search_relevance_total{outcome=<o>}
+// in one reg.Add call, for the per-batch counts (scored/kept/floor_kept/rejected)
+// the gate derives from slice lengths — avoids a per-candidate Incr loop.
+func AddJobSearchRelevance(outcome string, n int) {
+	if n <= 0 || !validRelevanceOutcomes[outcome] {
+		return
+	}
+	reg.Add(MetricJobSearchRelevance+"{outcome="+outcome+"}", int64(n))
+}
+
+// IncrJobSearchRelevanceDegraded bumps
+// gojob_job_search_relevance_degraded_total{reason=<r>}. reason ∈
+// {not_configured, embed_error, circuit_open, timeout, empty_vectors, truncated}
+// — bounded label. Called once per job_search call that took the fail-open
+// degraded path, or once when the candidate cap trims (truncated — the gate
+// still runs on the capped set, so it is NOT fail-open, but the coverage gap is
+// made observable).
+func IncrJobSearchRelevanceDegraded(reason string) {
+	if !validRelevanceDegradedReasons[reason] {
+		return
+	}
+	reg.Incr(MetricJobSearchRelevanceDegraded + "{reason=" + reason + "}")
+}
 
 // validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
 // Unknown kinds are rejected to prevent Prometheus cardinality explosion.
@@ -934,6 +1023,16 @@ func warmAlertBoundedMetrics() {
 	// fallback counter).
 	for tier := range validCraigslistDefaultLocationTiers {
 		reg.Add(MetricCraigslistDefaultLocation+"{tier="+tier+"}", 0)
+	}
+	// Pre-register job_search_relevance_total{outcome} and
+	// job_search_relevance_degraded_total{reason} so the FIRST relevance-gate
+	// event after a restart is visible to increase()-based alerts (same gap
+	// warmAlertBoundedMetrics fixes for platform_results / discovery).
+	for oc := range validRelevanceOutcomes {
+		reg.Add(MetricJobSearchRelevance+"{outcome="+oc+"}", 0)
+	}
+	for reason := range validRelevanceDegradedReasons {
+		reg.Add(MetricJobSearchRelevanceDegraded+"{reason="+reason+"}", 0)
 	}
 }
 
