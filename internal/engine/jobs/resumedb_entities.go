@@ -24,7 +24,7 @@ type ExperienceRecord struct {
 
 func (db *ResumeDB) InsertExperience(ctx context.Context, personID int, e ExperienceRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_experiences (person_id, title, company, location, start_date, end_date, description, highlights)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		personID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights,
@@ -33,7 +33,7 @@ func (db *ResumeDB) InsertExperience(ctx context.Context, personID int, e Experi
 }
 
 func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]ExperienceRecord, error) {
-	rows, err := db.pool.Query(ctx,
+	rows, err := db.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
 		        COALESCE(domain, '')
@@ -140,7 +140,7 @@ type ProjectRecord struct {
 
 func (db *ResumeDB) InsertProject(ctx context.Context, personID int, p ProjectRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_projects (person_id, name, description, url, tech, highlights)
 		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights,
@@ -149,7 +149,7 @@ func (db *ResumeDB) InsertProject(ctx context.Context, personID int, p ProjectRe
 }
 
 func (db *ResumeDB) GetAllProjects(ctx context.Context, personID int) ([]ProjectRecord, error) {
-	rows, err := db.pool.Query(ctx,
+	rows, err := db.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
 		 FROM resume_projects WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
@@ -206,7 +206,7 @@ type AchievementRecord struct {
 
 func (db *ResumeDB) InsertAchievement(ctx context.Context, personID int, a AchievementRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_achievements (person_id, text, metric, value, context)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		personID, a.Text, a.Metric, a.Value, a.Context,
@@ -215,7 +215,7 @@ func (db *ResumeDB) InsertAchievement(ctx context.Context, personID int, a Achie
 }
 
 func (db *ResumeDB) GetAllAchievements(ctx context.Context, personID int) ([]AchievementRecord, error) {
-	rows, err := db.pool.Query(ctx,
+	rows, err := db.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
 		 FROM resume_achievements WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
@@ -273,7 +273,7 @@ type EducationRecord struct {
 
 func (db *ResumeDB) InsertEducation(ctx context.Context, personID int, e EducationRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_educations (person_id, school, degree, field, start_date, end_date, gpa, highlights)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		personID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights,
@@ -316,7 +316,7 @@ type CertificationRecord struct {
 
 func (db *ResumeDB) InsertCertification(ctx context.Context, personID int, c CertificationRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_certifications (person_id, name, issuer, year, url)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 		personID, c.Name, c.Issuer, c.Year, c.URL,
@@ -353,7 +353,7 @@ type DomainRecord struct {
 
 func (db *ResumeDB) InsertDomain(ctx context.Context, personID int, name string) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO public.resume_domains (person_id, name) VALUES ($1, $2)
 		 ON CONFLICT (person_id, name) DO UPDATE SET name = EXCLUDED.name
 		 RETURNING id`,
@@ -390,7 +390,7 @@ type MethodologyRecord struct {
 
 func (db *ResumeDB) InsertMethodology(ctx context.Context, personID int, name, desc string) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO public.resume_methodologies (person_id, name, description) VALUES ($1, $2, $3)
 		 ON CONFLICT (person_id, name) DO UPDATE SET description = EXCLUDED.description
 		 RETURNING id`,
@@ -400,7 +400,7 @@ func (db *ResumeDB) InsertMethodology(ctx context.Context, personID int, name, d
 }
 
 func (db *ResumeDB) GetAllMethodologies(ctx context.Context, personID int) ([]MethodologyRecord, error) {
-	rows, err := db.pool.Query(ctx,
+	rows, err := db.conn(ctx).Query(ctx,
 		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies WHERE person_id = $1 ORDER BY id`, personID)
 	if err != nil {
 		return nil, err
@@ -421,7 +421,7 @@ func (db *ResumeDB) GetAllMethodologies(ctx context.Context, personID int) ([]Me
 
 // UpdateExperienceMeta updates the extended metadata on an experience row.
 func (db *ResumeDB) UpdateExperienceMeta(ctx context.Context, expID int, teamSize, budgetUSD *int, domain string, isVolunteer bool) error {
-	_, err := db.pool.Exec(ctx,
+	_, err := db.conn(ctx).Exec(ctx,
 		`UPDATE resume_experiences SET team_size = $2, budget_usd = $3, domain = $4, is_volunteer = $5 WHERE id = $1`,
 		expID, teamSize, budgetUSD, domain, isVolunteer,
 	)
@@ -431,7 +431,7 @@ func (db *ResumeDB) UpdateExperienceMeta(ctx context.Context, expID int, teamSiz
 // InsertProjectWithParent inserts a project linked to a parent experience.
 func (db *ResumeDB) InsertProjectWithParent(ctx context.Context, personID int, parentExpID *int, p ProjectRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_projects (person_id, name, description, url, tech, highlights, parent_experience_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights, parentExpID,
@@ -441,7 +441,7 @@ func (db *ResumeDB) InsertProjectWithParent(ctx context.Context, personID int, p
 
 // MarkPersonEnriched sets the enriched_at timestamp on a person.
 func (db *ResumeDB) MarkPersonEnriched(ctx context.Context, personID int) error {
-	_, err := db.pool.Exec(ctx,
+	_, err := db.conn(ctx).Exec(ctx,
 		`UPDATE resume_persons SET enriched_at = now() WHERE id = $1`, personID)
 	return err
 }
@@ -449,7 +449,7 @@ func (db *ResumeDB) MarkPersonEnriched(ctx context.Context, personID int) error 
 // InsertSkillExtended inserts a skill with implicit/source tracking.
 func (db *ResumeDB) InsertSkillExtended(ctx context.Context, personID int, s SkillRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_skills (person_id, name, category, level, is_implicit, source)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (person_id, name) DO UPDATE SET category = EXCLUDED.category, level = EXCLUDED.level, is_implicit = EXCLUDED.is_implicit, source = EXCLUDED.source
@@ -462,7 +462,7 @@ func (db *ResumeDB) InsertSkillExtended(ctx context.Context, personID int, s Ski
 // InsertAchievementExtended inserts an achievement with parsed metric fields.
 func (db *ResumeDB) InsertAchievementExtended(ctx context.Context, personID int, a AchievementRecord) (int, error) {
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := db.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_achievements (person_id, text, metric, value, context, metric_numeric, metric_unit)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		personID, a.Text, a.Metric, a.Value, a.Context, a.MetricNumeric, a.MetricUnit,

@@ -10,7 +10,34 @@ import (
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/jackc/pgx/v5"
 )
+
+// callLLM is the seam BuildMasterResume uses for its two LLM calls. It defaults
+// to engine.CallLLM; tests swap it to inject deterministic parse/enrichment
+// output without a live LLM. Scoped to this file's build path — the other
+// engine.CallLLM call sites are untouched.
+var callLLM = engine.CallLLM
+
+// masterResumeWriteHook, when non-nil, is invoked once immediately BEFORE
+// tx.Commit — after every relational/vector write in the build phase has
+// executed inside the transaction. If it returns a non-nil error the build
+// aborts, rolling back the transaction. Firing at the latest possible point
+// (not right after InsertPerson) makes it an exhaustiveness oracle: a
+// contributor who routes any write to db.pool instead of conn(ctx) leaves a
+// row that survives the hook-induced rollback, which the total-row-count
+// assertion in the atomic test catches. It is nil in production.
+var masterResumeWriteHook func() error
+
+// masterResumeGuardHook, when non-nil, is invoked at the destructive-consent
+// guard to inject a query error in tests (F4). nil in production.
+var masterResumeGuardHook func() error
+
+// masterResumeGraphOpRecorder, when non-nil, records each post-commit graph
+// operation ("clear", "node", "edge") so the F5 test can assert that NO graph
+// statement runs during a rolled-back build (the buffer is replayed only after
+// commit). nil in production.
+var masterResumeGraphOpRecorder func(op string)
 
 // MasterResumeBuildResult is the structured output of master_resume_build.
 type MasterResumeBuildResult struct {
@@ -261,7 +288,41 @@ Do NOT duplicate items already in the parsed data.
 Return ONLY the JSON object, no markdown, no explanation.`
 
 // BuildMasterResume parses resume text into SQL tables, AGE graph, and resume_vectors.
-func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBuildResult, error) { //nolint:funlen
+//
+// Atomicity invariant: a call that fails, times out, or is cancelled must leave
+// the existing profile byte-identical to what it was before the call. The
+// relational writes (resume_persons and all ON DELETE CASCADE children) and the
+// resume_vectors writes share ONE transaction and commit only when the whole
+// build succeeds; any error after the transaction begins rolls it back.
+//
+// The AGE graph writes are rebuild-then-swap: during the build NO graph
+// statement executes. UpsertGraphNode/UpsertGraphEdge calls are buffered in
+// memory in call order; only after tx.Commit succeeds does ClearGraph run and
+// the buffer replay. A rolled-back build therefore never touches the graph —
+// the old graph survives intact alongside the old profile. (Previously the
+// graph was cleared before the transaction, so a rollback left a live profile
+// with an empty graph and resume_generate silently returned a degraded resume.)
+// If the post-commit replay fails, the profile is committed and correct but
+// the graph is stale: a WARN is logged naming that state; the call does not
+// report success as though the graph were rebuilt, and a real cypher error
+// (as opposed to AGE simply being absent) is surfaced, not tolerated.
+//
+// replacePersonID is the non-replayable destructive consent. When a profile
+// already exists, the call refuses unless replacePersonID equals the id of the
+// profile actually present — so a blind retry of the same arguments fails as
+// soon as the id has changed (e.g. after a successful rebuild created a new
+// profile). What protects the data on a retry is the transaction (a failed
+// build rolls back and the old profile survives); the consent gate exists to
+// stop an accidental/agent-replayed second run from running at all, and to
+// make that stop hold against a retry that carries the same arguments.
+//
+// TOCTOU: the consent is checked twice — once before opening the transaction
+// (an early refuse that avoids opening one when consent is clearly missing)
+// and again inside the transaction after acquiring a transaction-scoped
+// advisory lock (pg_advisory_xact_lock). The in-tx re-read under the lock is
+// authoritative: two concurrent builds serialize on the lock, so the second
+// sees the first's committed id and its stale consent no longer matches.
+func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) { //nolint:funlen
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
@@ -275,7 +336,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 	}
 	prompt := fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)
 
-	raw, err := engine.CallLLM(ctx, prompt)
+	raw, err := callLLM(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("master_resume_build LLM: %w", err)
 	}
@@ -294,7 +355,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		engine.TruncateRunes(resumeText, 6000, ""),
 	)
 
-	enrichRaw, err := engine.CallLLM(ctx, enrichPrompt)
+	enrichRaw, err := callLLM(ctx, enrichPrompt)
 	if err != nil {
 		slog.Warn("enrichment LLM call failed, continuing without enrichment", slog.Any("error", err))
 	}
@@ -307,27 +368,100 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 	}
 
-	// 3. Clear existing data (single-user, rebuild from scratch)
-	if err := db.ClearAllPersons(ctx); err != nil {
-		slog.Error("clear persons failed before rebuild", slog.Any("error", err))
-		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
+	// 3. Respect the caller's deadline BEFORE the destructive consent guard.
+	// Both LLM calls above ran against ctx (the stub ignores ctx in tests); if
+	// the caller is already gone by the time we reach the write phase, abort
+	// WITHOUT touching the database — including the guard query — rather than
+	// beginning a clear that a retry could race. Checking ctx.Err() before the
+	// guard also keeps the guard's fail-closed error path from masking a
+	// deadline with a "guard query failed" message.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("master_resume_build: caller deadline exceeded before write phase: %w", err)
 	}
-	if err := db.ClearGraph(ctx); err != nil {
-		slog.Error("clear graph failed before rebuild", slog.Any("error", err))
-		return nil, fmt.Errorf("clear graph failed before rebuild: %w", err)
+
+	// 4. Explicit, non-replayable destructive consent (pre-tx early refuse).
+	// A profile already exists and the caller did not name its id in
+	// replacePersonID → refuse and name what would be destroyed. The guard is
+	// fail-closed: a guard-query error REFUSES the build rather than reading as
+	// "no profile" (the old GetLatestPersonID collapsed both into 0, so a
+	// transient pool error turned a guarded destroy into an unguarded one).
+	// The consent is re-checked inside the transaction under an advisory lock
+	// (step 5) to close the TOCTOU; this pre-tx check only avoids opening a
+	// transaction when consent is clearly missing.
+	exists, existingID, err := db.guardLatestPersonID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("master_resume_build: destructive-consent guard failed (refusing to touch the profile): %w", err)
+	}
+	if exists {
+		if existingID != replacePersonID {
+			return nil, fmt.Errorf("master_resume_build: a profile already exists (person_id=%d)%s — "+
+				"rebuilding destroys it and all of its skills/projects/experiences/achievements/educations/"+
+				"certifications/domains/methodologies plus upwork_profile data (ON DELETE CASCADE). "+
+				"To consent to the replacement, name that profile's id in replace_person_id",
+				existingID, describeExistingProfile(ctx, db, existingID))
+		}
+		slog.Warn("master_resume_build: replacing existing profile", slog.Int("person_id", existingID))
+	}
+
+	// 5. Atomic write phase. NO graph statement executes here: graph node/edge
+	// upserts are buffered and replayed only after tx.Commit (rebuild-then-swap,
+	// see the function doc). The relational clear + every insert + the vector
+	// clear/upsert share one transaction.
+	tx, err := db.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("master_resume_build: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, context.Canceled) && !errors.Is(rbErr, context.DeadlineExceeded) {
+				slog.Warn("master_resume_build: rollback failed", slog.Any("error", rbErr))
+			}
+		}
+	}()
+
+	// Transaction-scoped advisory lock as the FIRST statement in the tx. Two
+	// concurrent rebuilds serialize here; the lock auto-releases on commit/
+	// rollback. Taken before any clear so the in-tx re-read below sees a stable
+	// id, closing the TOCTOU where both builds read the same id pre-tx.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, masterResumeRebuildLockKey); err != nil {
+		return nil, fmt.Errorf("master_resume_build: acquire rebuild lock: %w", err)
+	}
+
+	// Rebind ctx to carry the transaction: every relational/vector write and
+	// read below runs through db.conn(ctx), which now returns the tx instead of
+	// the pool, so the whole write phase shares this transaction.
+	ctx = withTx(ctx, tx)
+
+	// Re-read the person id INSIDE the transaction under the lock and re-check
+	// consent. A concurrent build that committed between the pre-tx read and
+	// here changed the id; the caller's consent named the pre-tx id, which no
+	// longer matches → refuse (rollback releases the lock). This is the
+	// authoritative check; the pre-tx check was only an early refuse.
+	{
+		inTxExists, inTxID, err := db.guardLatestPersonID(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("master_resume_build: in-tx consent re-check failed (refusing): %w", err)
+		}
+		if inTxExists && inTxID != replacePersonID {
+			return nil, fmt.Errorf("master_resume_build: profile id changed under the rebuild lock (consented id=%d, present id=%d) — "+
+				"a concurrent rebuild committed first; refusing to destroy a profile the caller did not name",
+				replacePersonID, inTxID)
+		}
+	}
+
+	if err := db.ClearAllPersons(ctx); err != nil {
+		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
 	}
 
 	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
 	// re-derives (resume_experience/project/achievement). Scoped to source='profile' so
 	// manual source='agent' memories and enrich_project rows are preserved.
-	if rdb := GetResumeDB(); rdb != nil {
-		if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
-			slog.Error("clear resume vectors failed before rebuild", slog.Any("error", err))
-			return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
-		}
+	if err := db.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+		return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 	}
 
-	// 4. Insert person
+	// 6. Insert person
 	personID, err := db.InsertPerson(ctx, PersonRecord{
 		Name:     parsed.Person.Name,
 		Email:    parsed.Person.Email,
@@ -346,6 +480,12 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		result.TruncatedFromRunes = origLen
 	}
 	var vectorTexts []vectorEntry
+
+	// Graph buffer: collects every UpsertGraphNode/UpsertGraphEdge the build
+	// would issue, in call order. Nothing is written to AGE during the build;
+	// the buffer is replayed only after tx.Commit (rebuild-then-swap). On
+	// rollback the buffer is discarded and the old graph is untouched.
+	graphBuf := newGraphBuffer()
 
 	// Track skill name → skill ID for graph edges
 	skillIDs := make(map[string]int)
@@ -402,24 +542,18 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			}
 		}
 
-		// Graph: Exp node
-		if err := db.UpsertGraphNode(ctx, "Exp", expID, map[string]string{
+		// Graph: Exp node (buffered — replayed after commit)
+		graphBuf.addNode("Exp", expID, map[string]string{
 			"title":   exp.Title, //nolint:goconst
 			"company": exp.Company,
-		}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		})
 
 		// Graph: skill edges
 		for _, skillName := range exp.Skills {
 			sid := ensureSkill(ctx, db, personID, skillName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: skillName}); err != nil {
-					slog.Debug("graph node upsert failed", slog.Any("error", err))
-				}
-				if err := db.UpsertGraphEdge(ctx, "Exp", expID, "USED_SKILL", "Skill", sid); err != nil {
-					slog.Debug("graph edge upsert failed", slog.Any("error", err))
-				}
+				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: skillName})
+				graphBuf.addEdge("Exp", expID, "USED_SKILL", "Skill", sid)
 			}
 		}
 
@@ -429,12 +563,8 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			if err != nil {
 				slog.Warn("insert exp domain failed", slog.String("domain", exp.Domain), slog.Any("error", err))
 			} else {
-				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: exp.Domain}); err != nil {
-					slog.Debug("graph node upsert failed", slog.Any("error", err))
-				}
-				if err := db.UpsertGraphEdge(ctx, "Exp", expID, "IN_DOMAIN", "Domain", domID); err != nil {
-					slog.Debug("graph edge upsert failed", slog.Any("error", err))
-				}
+				graphBuf.addNode("Domain", domID, map[string]string{graphPropName: exp.Domain})
+				graphBuf.addEdge("Exp", expID, "IN_DOMAIN", "Domain", domID)
 			}
 		}
 
@@ -453,22 +583,14 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			result.Projects++
 			result.SubProjects++
 
-			if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{graphPropName: sp.Name}); err != nil {
-				slog.Debug("graph node upsert failed", slog.Any("error", err))
-			}
-			if err := db.UpsertGraphEdge(ctx, "Proj", spID, "PART_OF", "Exp", expID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			graphBuf.addNode("Proj", spID, map[string]string{graphPropName: sp.Name})
+			graphBuf.addEdge("Proj", spID, "PART_OF", "Exp", expID)
 
 			for _, techName := range sp.Tech {
 				sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 				if sid > 0 {
-					if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
-						slog.Debug("graph node upsert failed", slog.Any("error", err))
-					}
-					if err := db.UpsertGraphEdge(ctx, "Proj", spID, "USED_SKILL", "Skill", sid); err != nil {
-						slog.Debug("graph edge upsert failed", slog.Any("error", err))
-					}
+					graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
+					graphBuf.addEdge("Proj", spID, "USED_SKILL", "Skill", sid)
 				}
 			}
 
@@ -506,19 +628,13 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 		result.Projects++
 
-		if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{graphPropName: proj.Name}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		graphBuf.addNode("Proj", projID, map[string]string{graphPropName: proj.Name})
 
 		for _, techName := range proj.Tech {
 			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
-					slog.Debug("graph node upsert failed", slog.Any("error", err))
-				}
-				if err := db.UpsertGraphEdge(ctx, "Proj", projID, "USED_SKILL", "Skill", sid); err != nil {
-					slog.Debug("graph edge upsert failed", slog.Any("error", err))
-				}
+				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
+				graphBuf.addEdge("Proj", projID, "USED_SKILL", "Skill", sid)
 			}
 		}
 
@@ -547,13 +663,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 		result.Achievements++
 
-		if err := db.UpsertGraphNode(ctx, "Achv", achvID, map[string]string{"text": achv.Text}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		graphBuf.addNode("Achv", achvID, map[string]string{"text": achv.Text})
 
 		// Link to parent experience/project by context match
 		if achv.Context != "" {
-			linkAchievementToParent(ctx, db, achv.Context, achvID, personID)
+			linkAchievementToParent(ctx, db, graphBuf, achv.Context, achvID, personID)
 		}
 
 		achvIDi64 := int64(achvID)
@@ -610,9 +724,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			slog.Warn("insert domain failed", slog.String("name", d), slog.Any("error", err))
 			continue
 		}
-		if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: d}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		graphBuf.addNode("Domain", domID, map[string]string{graphPropName: d})
 		result.Domains++
 	}
 
@@ -632,9 +744,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 			slog.Warn("insert methodology failed", slog.String("name", name), slog.Any("error", err))
 			continue
 		}
-		if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{graphPropName: name}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		graphBuf.addNode("Method", methID, map[string]string{graphPropName: name})
 		result.Methodologies++
 	}
 
@@ -646,13 +756,11 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		sid := ensureSkill(ctx, db, personID, is.Name, is.Category, is.Level, true, "inferred", skillIDs, result)
 		if sid > 0 {
 			result.ImplicitSkills++
-			if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: is.Name}); err != nil {
-				slog.Debug("graph node upsert failed", slog.Any("error", err))
-			}
+			graphBuf.addNode("Skill", sid, map[string]string{graphPropName: is.Name})
 
 			// DERIVED_SKILL: link from achievement context if possible
 			if is.Source != "" {
-				linkImplicitSkillToSource(ctx, db, is.Source, sid, personID)
+				linkImplicitSkillToSource(ctx, db, graphBuf, is.Source, sid, personID)
 			}
 		}
 	}
@@ -677,24 +785,16 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		result.Projects++
 		result.SubProjects++
 
-		if err := db.UpsertGraphNode(ctx, "Proj", spID, map[string]string{graphPropName: sp.Name}); err != nil {
-			slog.Debug("graph node upsert failed", slog.Any("error", err))
-		}
+		graphBuf.addNode("Proj", spID, map[string]string{graphPropName: sp.Name})
 		if parentExpID > 0 {
-			if err := db.UpsertGraphEdge(ctx, "Proj", spID, "PART_OF", "Exp", parentExpID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			graphBuf.addEdge("Proj", spID, "PART_OF", "Exp", parentExpID)
 		}
 
 		for _, techName := range sp.Tech {
 			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: techName}); err != nil {
-					slog.Debug("graph node upsert failed", slog.Any("error", err))
-				}
-				if err := db.UpsertGraphEdge(ctx, "Proj", spID, "USED_SKILL", "Skill", sid); err != nil {
-					slog.Debug("graph edge upsert failed", slog.Any("error", err))
-				}
+				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
+				graphBuf.addEdge("Proj", spID, "USED_SKILL", "Skill", sid)
 			}
 		}
 
@@ -715,12 +815,8 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		}
 		toID := ensureSkill(ctx, db, personID, adj.To, "other", "intermediate", true, "inferred", skillIDs, result)
 		if toID > 0 {
-			if err := db.UpsertGraphNode(ctx, "Skill", toID, map[string]string{graphPropName: adj.To}); err != nil {
-				slog.Debug("graph node upsert failed", slog.Any("error", err))
-			}
-			if err := db.UpsertGraphEdge(ctx, "Skill", fromID, "IMPLIES_SKILL", "Skill", toID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			graphBuf.addNode("Skill", toID, map[string]string{graphPropName: adj.To})
+			graphBuf.addEdge("Skill", fromID, "IMPLIES_SKILL", "Skill", toID)
 		}
 	}
 
@@ -729,9 +825,7 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		fromExpID := findExperienceByHint(expByCompany, ct.From)
 		toExpID := findExperienceByHint(expByCompany, ct.To)
 		if fromExpID > 0 && toExpID > 0 {
-			if err := db.UpsertGraphEdge(ctx, "Exp", fromExpID, "EVOLVED_TO", "Exp", toExpID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			graphBuf.addEdge("Exp", fromExpID, "EVOLVED_TO", "Exp", toExpID)
 		}
 	}
 
@@ -742,20 +836,16 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		expText := strings.ToLower(exp.Description + " " + strings.Join(exp.Highlights, " "))
 		for _, m := range methods {
 			if strings.Contains(expText, strings.ToLower(m.Name)) {
-				if err := db.UpsertGraphEdge(ctx, "Exp", exp.ID, "USED_METHOD", "Method", m.ID); err != nil {
-					slog.Debug("graph edge upsert failed", slog.Any("error", err))
-				}
+				graphBuf.addEdge("Exp", exp.ID, "USED_METHOD", "Method", m.ID)
 			}
 		}
 	}
 
-	// 18. Graph counts
-	if nodes, err := db.CountGraphNodes(ctx); err == nil {
-		result.GraphNodes = nodes
-	}
-	if edges, err := db.CountGraphEdges(ctx); err == nil {
-		result.GraphEdges = edges
-	}
+	// 18. Graph counts — derived from the buffer (the number of node/edge ops
+	// the build would issue), not a live AGE count: no graph statement has run
+	// yet, and AGE may be absent. The replay after commit issues exactly these.
+	result.GraphNodes = graphBuf.nodeCount()
+	result.GraphEdges = graphBuf.edgeCount()
 
 	// 19. Sync to resume_vectors
 	if rdb := GetResumeDB(); rdb != nil {
@@ -799,7 +889,65 @@ func BuildMasterResume(ctx context.Context, resumeText string) (*MasterResumeBui
 		slog.Int("vectors", result.VectorsStored),
 	)
 
+	// Test seam (F1/F6): fire the write hook immediately BEFORE tx.Commit, so
+	// every relational/vector write in the phase (InsertPerson, InsertExperience,
+	// InsertProject, InsertSkillExtended, UpsertVectorWithSource,
+	// MarkPersonEnriched, …) has executed inside the transaction. A hook-induced
+	// failure rolls back all of them; a contributor who routes any one write to
+	// db.pool instead of conn(ctx) leaves a row that survives the rollback, which
+	// the total-row-count assertion in the atomic test catches. nil in production.
+	if hook := masterResumeWriteHook; hook != nil {
+		if err := hook(); err != nil {
+			return nil, fmt.Errorf("master_resume_build: write hook aborted rebuild: %w", err)
+		}
+	}
+
+	// Commit the atomic write phase. Until this point every relational and
+	// vector write above was uncommitted inside the transaction; a failure
+	// anywhere in the build returned early and the deferred rollback discarded
+	// it all, leaving the pre-call profile intact. Only on a fully successful
+	// build do the new rows become visible. The graph was never touched during
+	// the build (all node/edge ops are in graphBuf); it is swapped only now.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("master_resume_build: commit: %w", err)
+	}
+	committed = true
+
+	// Rebuild-then-swap: the graph is cleared and the buffer replayed ONLY after
+	// the profile committed. A rolled-back build never reaches here, so the old
+	// graph survives alongside the old profile. The clear distinguishes "AGE is
+	// absent" (tolerated — nothing to swap onto) from "a real cypher error"
+	// (surfaced, not silently tolerated, so resume_generate cannot mix live and
+	// dead ids). Replay failures leave the profile committed and correct with a
+	// stale graph: a WARN names that state; the call does not report success as
+	// though the graph were rebuilt.
+	replayGraphAfterCommit(ctx, db, graphBuf)
+
 	return result, nil
+}
+
+// describeExistingProfile returns a human-readable summary of the profile that
+// a rebuild without consent would destroy, for the refuse error. It reads
+// committed state (the guard runs before the transaction begins). A count whose
+// query errored renders as "?" rather than "0": "0 experiences, 0 skills, …"
+// reads as "nothing to lose" — the exact input that makes an agent consent to
+// the replacement — and a failing count is not the same as an empty profile.
+func describeExistingProfile(ctx context.Context, db *ResumeDB, personID int) string {
+	fmtCount := func(v any, err error) string {
+		if err != nil {
+			return "?"
+		}
+		return fmt.Sprintf("%d", v)
+	}
+	expsN, err := db.GetAllExperiences(ctx, personID)
+	exps := fmtCount(len(expsN), err)
+	skillsN, err := db.GetAllSkills(ctx, personID)
+	skills := fmtCount(len(skillsN), err)
+	projsN, err := db.GetAllProjects(ctx, personID)
+	projs := fmtCount(len(projsN), err)
+	achvsN, err := db.GetAllAchievements(ctx, personID)
+	achvs := fmtCount(len(achvsN), err)
+	return fmt.Sprintf(" with %s experiences, %s skills, %s projects, %s achievements", exps, skills, projs, achvs)
 }
 
 // ensureSkill inserts or retrieves a skill, updating the tracking map and result counter.
@@ -839,14 +987,12 @@ func findExperienceByHint(expByCompany map[string]int, hint string) int {
 }
 
 // linkImplicitSkillToSource creates a DERIVED_SKILL edge from the matching achievement to the skill.
-func linkImplicitSkillToSource(ctx context.Context, db *ResumeDB, sourceHint string, skillID int, personID int) {
+func linkImplicitSkillToSource(ctx context.Context, db *ResumeDB, buf *graphBuffer, sourceHint string, skillID int, personID int) {
 	hint := strings.ToLower(sourceHint)
 	achvs, _ := db.GetAllAchievements(ctx, personID)
 	for _, a := range achvs {
 		if strings.Contains(strings.ToLower(a.Text), hint) || strings.Contains(strings.ToLower(a.Context), hint) {
-			if err := db.UpsertGraphEdge(ctx, "Achv", a.ID, "DERIVED_SKILL", "Skill", skillID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			buf.addEdge("Achv", a.ID, "DERIVED_SKILL", "Skill", skillID)
 			return
 		}
 	}
@@ -889,16 +1035,14 @@ func formatProjectText(name, description string, tech []string, highlights []str
 }
 
 // linkAchievementToParent creates a PRODUCED edge from the matching experience/project to the achievement.
-func linkAchievementToParent(ctx context.Context, db *ResumeDB, contextHint string, achvID int, personID int) {
+func linkAchievementToParent(ctx context.Context, db *ResumeDB, buf *graphBuffer, contextHint string, achvID int, personID int) {
 	hint := strings.ToLower(contextHint)
 
 	// Try experiences
 	exps, _ := db.GetAllExperiences(ctx, personID)
 	for _, exp := range exps {
 		if strings.Contains(hint, strings.ToLower(exp.Company)) || strings.Contains(hint, strings.ToLower(exp.Title)) {
-			if err := db.UpsertGraphEdge(ctx, "Exp", exp.ID, "PRODUCED", "Achv", achvID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			buf.addEdge("Exp", exp.ID, "PRODUCED", "Achv", achvID)
 			return
 		}
 	}
@@ -907,9 +1051,7 @@ func linkAchievementToParent(ctx context.Context, db *ResumeDB, contextHint stri
 	projs, _ := db.GetAllProjects(ctx, personID)
 	for _, proj := range projs {
 		if strings.Contains(hint, strings.ToLower(proj.Name)) {
-			if err := db.UpsertGraphEdge(ctx, "Proj", proj.ID, "PRODUCED", "Achv", achvID); err != nil {
-				slog.Debug("graph edge upsert failed", slog.Any("error", err))
-			}
+			buf.addEdge("Proj", proj.ID, "PRODUCED", "Achv", achvID)
 			return
 		}
 	}

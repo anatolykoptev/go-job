@@ -117,7 +117,7 @@ func (db *ResumeDB) UpsertVectorWithSource(
 	var id int64
 	if useVec {
 		vec := vectorLiteral(embedding)
-		err := db.pool.QueryRow(ctx, `
+		err := db.conn(ctx).QueryRow(ctx, `
 			INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash, embedding)
 			VALUES ($1, $2, $3, $4, $5, $6, $7::vector)
 			ON CONFLICT (user_name, content_hash) DO UPDATE
@@ -130,7 +130,7 @@ func (db *ResumeDB) UpsertVectorWithSource(
 		return id, err
 	}
 
-	err := db.pool.QueryRow(ctx, `
+	err := db.conn(ctx).QueryRow(ctx, `
 		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_name, content_hash) DO UPDATE
@@ -236,7 +236,7 @@ func (db *ResumeDB) FetchVectorMeta(ctx context.Context, id int64) (memType stri
 // also untouched. The single caller is BuildMasterResume, which clears the
 // derived rows it is about to re-derive from the structured profile.
 func (db *ResumeDB) ClearVectors(ctx context.Context, memTypes ...string) error {
-	_, err := db.pool.Exec(ctx, `
+	_, err := db.conn(ctx).Exec(ctx, `
 		DELETE FROM resume_vectors
 		WHERE user_name = $1 AND source = $2 AND mem_type = ANY($3::text[])
 	`, resumeVectorUser, sourceProfile, memTypes)
