@@ -122,3 +122,57 @@ func TestJobSearchHandler_Success_SourcesReachOutput(t *testing.T) {
 	}
 	assertSourcesInJSON(t, out, "success path (offset-beyond-total)")
 }
+
+// TestJobSearchHandler_B1_GateEmptiedSummaryReachOutput is the B1 end-to-end
+// test: when the relevance gate rejects every candidate (minKeep=0, threshold
+// above all scores), the handler returns an HONEST summary that names the
+// gate — NOT the generic "No results found." (which misattributes the empty
+// set to the sources) and NOT "offset beyond total" (which misattributes it to
+// pagination). This path returns before the LLM (nil in tests), so it is
+// testable without mocking SummarizeJobResults.
+//
+// It also covers the "gate verdict reaches the output summary" contract: the
+// degraded/notice surfacing in tool_job_search.go. The fail-open degraded
+// prefix (lines 363-364 / 375-376) needs the LLM path which is nil in tests
+// (documented at line 96-99); this B1 path is the gate-to-summary wiring that
+// IS reachable without the LLM.
+//
+// Revert-red: restore the unconditional positional URL fallback OR remove the
+// B1 empty-gate early return → the summary no longer names the gate.
+func TestJobSearchHandler_B1_GateEmptiedSummaryReachOutput(t *testing.T) {
+	withTestRegistry(t, testResultSource{
+		results: []engine.SearxngResult{
+			{Title: "Web Developer", URL: "http://example.com/job1", Content: "frontend web development"},
+			{Title: "Frontend Engineer", URL: "http://example.com/job2", Content: "react frontend"},
+		},
+	})
+	// Fake embedder: query [1,0,0]; both candidates are off-topic ([0,1,0] →
+	// cosine 0). Threshold 0.95 > 0 → all rejected. minKeep left at shipped
+	// default 0 (B1 hard gate).
+	withRelevanceEmbedder(t, &relevanceFakeEmbedder{queryVec: []float32{1, 0, 0}})
+	origMin := jobSearchMinRelevance
+	jobSearchMinRelevance = 0.95
+	t.Cleanup(func() { jobSearchMinRelevance = origMin })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	input := engine.JobSearchInput{
+		Query:    "web scraping anti-bot",
+		Platform: "test-handler-platform",
+	}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("B1 handler returned error: %v", err)
+	}
+	if !strings.Contains(out.Summary, "relevance threshold") {
+		t.Fatalf("B1: summary must name the relevance gate, got %q", out.Summary)
+	}
+	if strings.Contains(out.Summary, "No results found.") {
+		t.Fatalf("B1: summary must NOT misattribute the empty gate result to the sources, got %q", out.Summary)
+	}
+	if strings.Contains(out.Summary, "offset beyond total") {
+		t.Fatalf("B1: summary must NOT misattribute the empty gate result to pagination, got %q", out.Summary)
+	}
+}
