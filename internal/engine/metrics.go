@@ -67,8 +67,9 @@ const (
 	// none — makes an invisible (and, per #347, potentially wrong-city)
 	// substitution observable. tier ∈ {"profile","config","config_after_profile_error","config_after_profile_unmapped"}:
 	//   - "profile" = the operator's resume_persons.location supplied the value;
-	//   - "config"  = engine.Cfg.CraigslistDefaultLocation supplied it (the
-	//     profile was empty, missing, or its read timed out / errored);
+	//   - "config"  = engine.Cfg.CraigslistDefaultLocation supplied it because
+	//     the profile was empty or absent (a failed READ and an unmapped value
+	//     each get their own tier below — do not fold them in here);
 	//   - "config_after_profile_error" = config supplied it because the profile
 	//     READ failed (saturated pool, ctx deadline);
 	//   - "config_after_profile_unmapped" = config supplied it because the

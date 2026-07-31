@@ -1248,6 +1248,15 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 			// discovery arm remains for EXPLICIT unmapped input, which still
 			// reaches the ladder.
 			if _, ok := resolveRegionStrict(resolved); !ok {
+				// Name the value and the tier that produced it. Without this the
+				// refusal is invisible: the caller gets an error string, and
+				// /metrics shows only platform_results_total{outcome=error},
+				// pooled with blocks and timeouts. Reachable on any deployment
+				// that leaves CRAIGSLIST_DEFAULT_LOCATION unset — boot
+				// validation only guarantees the CONFIG tier is exact.
+				slog.Warn("craigslist: substituted location refused by the strict resolver",
+					slog.String("location", resolved),
+					slog.String("tier", tier))
 				return nil, craigslistDefaultLocationError(resolved, tier)
 			}
 			location = resolved
