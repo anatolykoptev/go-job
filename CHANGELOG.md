@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.15.1](https://github.com/anatolykoptev/go-job/compare/v1.15.0...v1.15.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **craigslist:** default empty location to operator profile then config ([#375](https://github.com/anatolykoptev/go-job/issues/375)) ([6c7dac7](https://github.com/anatolykoptev/go-job/commit/6c7dac70910b74eafe099d8c39a267284886b3c6))
+
 ## [1.15.0](https://github.com/anatolykoptev/go-job/compare/v1.14.3...v1.15.0) (2026-07-31)
 
 
