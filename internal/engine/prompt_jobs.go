@@ -30,7 +30,6 @@ Respond with valid JSON only (no markdown wrapping):
 }
 
 Rules:
-- If the user query is non-empty, return ONLY jobs relevant to the query keywords (match against title, company, skills, description). If no jobs match, return an empty "jobs" array and a summary explaining that none of the listings are relevant to the query.
 - Extract ALL jobs found in sources (up to 15)
 - Determine source from URL or content: boards.greenhouse.io or job-boards.greenhouse.io→greenhouse, jobs.lever.co→lever, jobs.ashbyhq.com→ashby, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed, careers.un.org→inspira, estm.fa.em2.oraclecloud.com→undp
 - Extract salary from description or structured data. If not found, use "not specified" for salary string, omit salary_min/max/currency/interval

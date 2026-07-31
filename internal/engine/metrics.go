@@ -439,7 +439,35 @@ const (
 	// text. Pre-touched for all reasons so a rate()-floor alert sees 0 before
 	// the first degradation.
 	MetricJobSearchRelevanceDegraded = "job_search_relevance_degraded_total"
+
+	// MetricJobSearchExtraction is the labelled counter
+	// gojob_job_search_extraction_total{outcome}. Bumped once per
+	// SummarizeJobResults call, classifying the LLM JSON parse outcome.
+	// outcome ∈ {ok, truncated_salvaged, unparseable} — bounded enum.
+	//   - ok                  — full JSON parsed cleanly, all records kept
+	//   - truncated_salvaged  — full parse failed; complete records salvaged
+	//     from the truncated array via json.Decoder, truncated tail dropped
+	//   - unparseable         — no complete records could be salvaged
+	// Pre-touched for all outcomes so rate()-floor alerts see 0 before
+	// the first job_search call.
+	MetricJobSearchExtraction = "job_search_extraction_total"
 )
+
+// Extraction outcome label values (job_search_extraction_total{outcome}).
+const (
+	ExtractionOK               = "ok"
+	ExtractionTruncatedSalvaged = "truncated_salvaged"
+	ExtractionUnparseable      = "unparseable"
+)
+
+// validExtractionOutcomes bounds the outcome label for
+// job_search_extraction_total. Unrecognised values are dropped silently
+// (cardinality guard).
+var validExtractionOutcomes = map[string]bool{
+	ExtractionOK:                true,
+	ExtractionTruncatedSalvaged: true,
+	ExtractionUnparseable:       true,
+}
 
 // Relevance gate outcome label values (job_search_relevance_total{outcome}).
 // Exported so the jobserver package can use them.
@@ -754,6 +782,11 @@ func FormatMetrics() string {
 	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeout, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
 		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
 	}
+	// Extraction outcome counters pre-touched so rate()-floor alerts see 0
+	// before the first job_search call. 3 outcomes = 3 series (bounded enum).
+	for _, oc := range []string{ExtractionOK, ExtractionTruncatedSalvaged, ExtractionUnparseable} {
+		keys = append(keys, MetricJobSearchExtraction+"{outcome="+oc+"}")
+	}
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -867,6 +900,16 @@ func IncrJobSearchRelevanceDegraded(reason string) {
 		return
 	}
 	reg.Incr(MetricJobSearchRelevanceDegraded + "{reason=" + reason + "}")
+}
+
+// IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<o>}.
+// outcome ∈ {ok, truncated_salvaged, unparseable} — bounded enum. Called once
+// per SummarizeJobResults call.
+func IncrJobSearchExtraction(outcome string) {
+	if !validExtractionOutcomes[outcome] {
+		return
+	}
+	reg.Incr(MetricJobSearchExtraction + "{outcome=" + outcome + "}")
 }
 
 // validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
@@ -1033,6 +1076,13 @@ func warmAlertBoundedMetrics() {
 	}
 	for reason := range validRelevanceDegradedReasons {
 		reg.Add(MetricJobSearchRelevanceDegraded+"{reason="+reason+"}", 0)
+	}
+	// Pre-register job_search_extraction_total{outcome} so the FIRST
+	// truncation-salvage or unparseable event after a restart is visible to
+	// increase()-based alerts (same gap warmAlertBoundedMetrics fixes for
+	// the relevance counters).
+	for oc := range validExtractionOutcomes {
+		reg.Add(MetricJobSearchExtraction+"{outcome="+oc+"}", 0)
 	}
 }
 
