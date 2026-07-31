@@ -1,6 +1,10 @@
 package jobs
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"io"
+)
 
 // isBodyTruncated returns true when err is or wraps ErrBodyTruncated.
 // Used by ATS fetchers to distinguish DoS-ceiling hit from genuine parse failures.
@@ -28,10 +32,35 @@ var ErrNoAPIKey = errors.New("source: API key not configured")
 // Maps to outcome=parse_fail in the metric classifier.
 var ErrParse = errors.New("source: response parse failure")
 
-// ErrBodyTruncated is returned when the ATS board response body hit the
-// atsBoardMaxBytes DoS ceiling mid-decode: the countingReader in atsBoardDecode
-// consumed exactly the cap and json.Decoder returned an EOF/unexpected-EOF,
-// meaning the board exceeds the ceiling. Makes the failure visible as
-// reason=truncated in gojob_ats_fetch_errors_total rather than as a confusing
-// parse error.
-var ErrBodyTruncated = errors.New("source: ATS board body truncated at read cap")
+// ErrBodyTruncated is returned when a response body hit the read-cap DoS
+// ceiling mid-read: the reader consumed the cap and there were more bytes
+// available, meaning the source exceeds the ceiling. Makes the failure visible
+// as a truncation (e.g. reason=truncated in gojob_ats_fetch_errors_total, or
+// the security-source "body truncated" log) rather than as a confusing
+// downstream JSON parse error.
+//
+// Produced both by the ATS countingReader path (atsBoardDecodeWithCap) and by
+// readLimitedBody (used by the security bounty readers).
+var ErrBodyTruncated = errors.New("source: body truncated at read cap")
+
+// readLimitedBody reads at most limit+1 bytes from r. If more than limit bytes
+// are available (i.e. the (limit+1)th byte was read), the body exceeds the cap
+// and ErrBodyTruncated is returned — instead of silently returning a truncated
+// body that would later fail json.Unmarshal with a misleading "unexpected end
+// of JSON input". Bodies that fit within limit are returned in full.
+//
+// This is the read-side guard for sources whose dataset can grow past a
+// hardcoded cap (e.g. hackerone_data.json measured 17.8 MB on 2026-07-30,
+// past the old 10 MB securityBodyLimit). Without it, io.LimitReader stops at
+// the cap without error and io.ReadAll reports success, attributing the
+// failure to the parser instead of the reader.
+func readLimitedBody(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("source: body exceeds %d-byte read cap: %w", limit, ErrBodyTruncated)
+	}
+	return b, nil
+}

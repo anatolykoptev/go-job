@@ -1,0 +1,147 @@
+{
+  "comments": "13/03/2026: The API has been updated to include the companySlug field in the response.",
+  "updatedAt": 1785454147,
+  "offset": 0,
+  "limit": 3,
+  "totalCount": 98881,
+  "jobs": [
+    {
+      "title": "Remote Overnight General Radiologist 7 On/14 Off - Radiology Partners Indiana-No",
+      "excerpt": "General information Press space or enter keys to toggle section visibility Job Title Remote Overnight General Radiologist 7 On/14 Off - Radiology Partners Indiana-Northern Functional Area Clinical - General City Remote Work Location Type Remote State IN Employment Type Full-time (30+ hrs/week)/FULLTIME Description & Requirements Press space or enter keys to toggle section visibility Position Description & Requirements Position SummaryRadiology Partners, Indiana (NWIR) is seeking a board-certified or board-eligible Remote Overnight General/Emergency Radiologist to support several Northwest Indiana locations.",
+      "companyName": "Radiology Partners",
+      "companySlug": "radpartners-avature",
+      "companyLogo": "",
+      "employmentType": "Full Time",
+      "minSalary": 26.5,
+      "maxSalary": 26.5,
+      "salaryPeriod": "hourly",
+      "seniority": [
+        "Mid-level"
+      ],
+      "currency": "USD",
+      "locationRestrictions": [
+        "United States"
+      ],
+      "timezoneRestrictions": [
+        -10,
+        -9,
+        -8,
+        -7,
+        -6,
+        -5,
+        14
+      ],
+      "categories": [
+        "Radiology",
+        "Emergency-Radiology",
+        "Teleradiology",
+        "Medical-Imaging",
+        "Diagnostic-Radiology",
+        "Remote-Overnight-Radiologist",
+        "Remote-General-Radiologist",
+        "Remote-General-Diagnostic-Radiologist",
+        "Overnight-Radiologist",
+        "Night-Shift-Radiologist"
+      ],
+      "parentCategories": [],
+      "description": "<div><div><div><h3>General information</h3></div><p>Press space or enter keys</p></div></div>",
+      "pubDate": 1785454147,
+      "expiryDate": 1790638146,
+      "applicationLink": "https://himalayas.app/companies/radpartners-avature/jobs/remote-overnight-general-radiologist-7-on-14-off-radiology-partners-indiana-no",
+      "guid": "https://himalayas.app/companies/radpartners-avature/jobs/remote-overnight-general-radiologist-7-on-14-off-radiology-partners-indiana-no"
+    },
+    {
+      "title": "Senior Product Manager - Medical Inquiry",
+      "excerpt": "Job Title: Senior Product Manager - Medical Inquiry Job Location: Remote Job Location Type: Remote Job Contract Type: Full-time Job Seniority Level: Veeva Systems is a mission-driven organization and pioneer in industry cloud, helping life sciences companies bring therapies to patients faster.",
+      "companyName": "Lifelancer",
+      "companySlug": "lifelancer",
+      "companyLogo": "https://cdn-images.himalayas.app/ztdsyzatuliky237a5zq922sir0k",
+      "employmentType": "Full Time",
+      "minSalary": 120000,
+      "maxSalary": 200000,
+      "salaryPeriod": "annual",
+      "seniority": [
+        "Senior",
+        "Manager"
+      ],
+      "currency": "USD",
+      "locationRestrictions": [
+        "United States"
+      ],
+      "timezoneRestrictions": [
+        -10,
+        -9,
+        -8,
+        -7,
+        -6,
+        -5,
+        14
+      ],
+      "categories": [
+        "Product-Manager",
+        "Product-Management",
+        "Medical-Information-Product-Management",
+        "Life-Sciences-Product-Management",
+        "Product-Owner",
+        "Medical-Product-Manager",
+        "Healthcare-Product-Manager",
+        "Medical-Device-Product-Manager",
+        "Clinical-Product-Manager",
+        "Healthcare-Product-Director",
+        "HealthTech-Product-Manager"
+      ],
+      "parentCategories": [
+        "Product"
+      ],
+      "description": "<p><b>Job Title: </b>Senior Product Manager - Medical Inquiry</p><p><b>Job Location: </b>Remote</p>",
+      "pubDate": 1785454147,
+      "expiryDate": 1790638146,
+      "applicationLink": "https://himalayas.app/companies/lifelancer/jobs/senior-product-manager-medical-inquiry",
+      "guid": "https://himalayas.app/companies/lifelancer/jobs/senior-product-manager-medical-inquiry"
+    },
+    {
+      "title": "Customer Experience Manager",
+      "excerpt": "Are you passionate about transforming customer experiences through data, innovation, and AI?",
+      "companyName": "RELX",
+      "companySlug": "relx",
+      "companyLogo": "https://cdn-images.himalayas.app/iqx6hcw5jkeopwsr5qib6gtx475i",
+      "employmentType": "Full Time",
+      "minSalary": null,
+      "maxSalary": null,
+      "salaryPeriod": "annual",
+      "seniority": [
+        "Manager"
+      ],
+      "currency": null,
+      "locationRestrictions": [
+        "United States"
+      ],
+      "timezoneRestrictions": [
+        -10,
+        -9,
+        -8,
+        -7,
+        -6,
+        -5,
+        14
+      ],
+      "categories": [
+        "Customer-Experience-Manager",
+        "CX-Manager",
+        "Customer-Experience-Lead",
+        "AI-Customer-Experience",
+        "Customer-Success-Manager",
+        "Senior-Customer-Experience-Manager",
+        "Customer-Excellence-Manager"
+      ],
+      "parentCategories": [
+        "Customer Service"
+      ],
+      "description": "<p><b>Are you passionate about transforming customer experiences through data, innovation, and AI?</b></p>",
+      "pubDate": 1785454132,
+      "expiryDate": 1790638131,
+      "applicationLink": "https://himalayas.app/companies/relx/jobs/customer-experience-manager",
+      "guid": "https://himalayas.app/companies/relx/jobs/customer-experience-manager"
+    }
+  ]
+}

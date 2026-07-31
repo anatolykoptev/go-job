@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -74,9 +73,9 @@ func fetchImmunefi(ctx context.Context) ([]engine.SecurityProgram, error) {
 		return nil, fmt.Errorf("immunefi returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
+	body, err := readLimitedBody(resp.Body, securityBodyLimit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("immunefi: read body: %w", err)
 	}
 
 	return parseImmunefiResponse(body)

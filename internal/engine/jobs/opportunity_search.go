@@ -134,13 +134,16 @@ func fetchAllBounties(ctx context.Context) []engine.BountyListing {
 func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engine.BountyListing {
 	var all []engine.BountyListing
 
-	if bvecs, err := SearchAlgoraEnriched(ctx, limit); err == nil {
-		for _, bv := range bvecs {
-			all = append(all, bv.Bounty)
-		}
-	} else {
-		slog.Warn("opportunity_search: algora error", slog.Any("error", err))
-	}
+	// Algora bounties removed from the fan-out on 2026-07-30: the public bounty
+	// product is gone. The tRPC endpoint (console.algora.io/api/trpc/bounty.list)
+	// still answers HTTP 200 but returns items:[] (zero bounties), and the HTML
+	// scrape URL (algora.io/bounties) returns 404. Both paths failed silently
+	// every cycle — the scrape logged "algora.io returned status 404" while the
+	// tRPC API returned an empty slice that fell through to the dead scrape.
+	// Rather than keep a dead source in the rotation, algora is removed from
+	// both the scheduled ingest and the on-demand bounty search. The algora
+	// fetch code (algora.go/algora_api.go/algora_enrich.go) is retained because
+	// AnalyzeBounty (on-demand single-issue analysis) still references it.
 
 	sources := []struct {
 		name string

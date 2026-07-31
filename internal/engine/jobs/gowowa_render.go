@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
@@ -62,7 +61,7 @@ func fetchRenderedHTML(ctx context.Context, targetURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
+	raw, err := readLimitedBody(resp.Body, securityBodyLimit)
 	if err != nil {
 		return "", fmt.Errorf("gowowa render: read: %w", err)
 	}

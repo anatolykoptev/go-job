@@ -210,6 +210,17 @@ const (
 	// board-fetch failed" visible on the flat metrics endpoint and in Prometheus.
 	MetricATSFetchErrors = "ats_fetch_errors_total"
 
+	// MetricSecurityFetchErrors is the labelled counter
+	// gojob_security_fetch_errors_total{platform,reason}.
+	// Bumped when a security bounty source fetch hits the read-cap DoS ceiling
+	// (hackerone/bugcrowd/intigriti/yeswehack/federacy via security_bounty.go).
+	// platform ∈ {hackerone,bugcrowd,intigriti,yeswehack,federacy},
+	// reason ∈ {truncated}. Same shape as MetricATSFetchErrors — the truncation
+	// signal that was previously only slog.Warn'd and swallowed when a sibling
+	// source succeeded (fetchAllSecurityPrograms returns nil if any source
+	// produced data), making the failure invisible for a month.
+	MetricSecurityFetchErrors = "security_fetch_errors_total"
+
 	// MetricHuntDiscoveryVariants is the labelled counter
 	// gojob_hunt_discovery_variants_total{platform,result}.
 	// Bumped once per variant query in unionDiscoverSlugs.
@@ -917,6 +928,35 @@ func IncrATSFetchErrors(platform, reason string) {
 		return
 	}
 	reg.Incr(MetricATSFetchErrors + "{platform=" + platform + ",reason=" + reason + "}")
+}
+
+// validSecurityPlatforms bounds the platform label for security_fetch_errors_total.
+// platform ∈ {hackerone,bugcrowd,intigriti,yeswehack,federacy}.
+var validSecurityPlatforms = map[string]bool{
+	"hackerone": true,
+	"bugcrowd":  true,
+	"intigriti": true,
+	"yeswehack": true,
+	"federacy":  true,
+}
+
+// validSecurityFetchErrorReasons bounds the reason label for
+// security_fetch_errors_total. reason ∈ {truncated}.
+var validSecurityFetchErrorReasons = map[string]bool{
+	"truncated": true,
+}
+
+// IncrSecurityFetchErrors bumps gojob_security_fetch_errors_total{platform=<p>,reason=<r>}.
+// platform ∈ {hackerone,bugcrowd,intigriti,yeswehack,federacy}, reason ∈ {truncated}.
+// Unrecognised label values are silently dropped (cardinality guard).
+// Same shape as IncrATSFetchErrors — makes a truncation that was previously
+// only slog.Warn'd (and swallowed when a sibling source succeeded) visible in
+// Prometheus.
+func IncrSecurityFetchErrors(platform, reason string) {
+	if !validSecurityPlatforms[platform] || !validSecurityFetchErrorReasons[reason] {
+		return
+	}
+	reg.Incr(MetricSecurityFetchErrors + "{platform=" + platform + ",reason=" + reason + "}")
 }
 
 // IncrHuntPostedAt bumps gojob_hunt_posted_at_total{platform=<p>,present=<b>}.

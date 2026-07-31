@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,19 +21,26 @@ const (
 
 type himalayasResponse struct {
 	Jobs  []himalayasJob `json:"jobs"`
-	Total int            `json:"total"`
+	Total int            `json:"totalCount"`
 }
 
 type himalayasJob struct {
-	Title          string          `json:"title"`
-	CompanyName    string          `json:"companyName"`
-	ApplicationURL string          `json:"applicationUrl"`
-	Categories     []string        `json:"categories"`
-	Seniority      []string        `json:"seniority"`
-	MinSalary      int             `json:"minSalary"`
-	MaxSalary      int             `json:"maxSalary"`
-	PubDate        json.RawMessage `json:"pubDate"`
-	Excerpt        string          `json:"excerpt"`
+	Title          string   `json:"title"`
+	CompanyName    string   `json:"companyName"`
+	ApplicationURL string   `json:"applicationLink"`
+	Categories     []string `json:"categories"`
+	Seniority      []string `json:"seniority"`
+	// MinSalary/MaxSalary are nullable and may be fractional (himalayas returns
+	// null for undisclosed salaries and a fractional number for hourly rates,
+	// e.g. 26.5). Declaring int made encoding/json abort the WHOLE Unmarshal on
+	// the first fractional value, losing every himalayas job on every cycle.
+	// *float64 accepts null (→ nil) and any number; annualizeHimalayasSalary
+	// converts to the annual int engine.FreelanceJob.SalaryMin/Max expects.
+	MinSalary    *float64        `json:"minSalary"`
+	MaxSalary    *float64        `json:"maxSalary"`
+	SalaryPeriod string          `json:"salaryPeriod"`
+	PubDate      json.RawMessage `json:"pubDate"`
+	Excerpt      string          `json:"excerpt"`
 }
 
 // SearchHimalayas fetches jobs from Himalayas. Results are cached.
@@ -116,14 +124,58 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 			Company:   hj.CompanyName,
 			URL:       hj.ApplicationURL,
 			Tags:      tags,
-			SalaryMin: hj.MinSalary,
-			SalaryMax: hj.MaxSalary,
+			SalaryMin: annualizeHimalayasSalary(hj.MinSalary, hj.SalaryPeriod),
+			SalaryMax: annualizeHimalayasSalary(hj.MaxSalary, hj.SalaryPeriod),
 			Source:    "himalayas",
 			Posted:    parsePubDate(hj.PubDate),
 		})
 	}
 
 	return jobs, nil
+}
+
+// annualizeHimalayasSalary converts a nullable fractional himalayas salary to
+// the int annual figure engine.FreelanceJob.SalaryMin/Max expects. Returns 0
+// for nil (undisclosed).
+//
+// salaryPeriod is honoured (case-insensitively): "hourly" rates are normalised
+// to annual using the conventional 2080-hour US full-time equivalent (40 h/wk ×
+// 52 wk) so hourly and annual listings are comparable in the same field.
+// "annual" and "yearly" (a plausible API synonym) plus the empty string (for
+// back-compat with sources that omit the field) pass through as-is. Any other
+// period (daily, weekly, monthly, …) returns 0 — we do not invent a conversion
+// factor for unknown periods, and a slog.Warn names the period so a silent
+// salary-NULL at scale is observable.
+//
+// 0 means "undisclosed" on the freelance path, and it is not free: nullInt at
+// hunt/store.go:664 writes NULL for BudgetMin/BudgetMax, the row is stored and
+// upserted — but isUrgentFreelance (opportunity_ingest.go:55) returns false
+// when BudgetMax == 0, so applyFreelanceNotifyPolicy counts it as suppressed
+// and it gets NO individual Telegram card. Failing closed therefore costs the
+// notification, not merely the "Budget: $N" line; telegram.go:419's zero
+// branch is unreachable for these rows because the gate sits one layer above
+// it. That trade is still the right one — before this fix the rows were lost
+// wholesale at decode — but it is a real cost, not a cosmetic one.
+//
+// himalayas rows are engine.FreelanceJob → hunt.Freelance and never enter the
+// hunt.Job path, so none of that pipeline's salary handling applies here.
+func annualizeHimalayasSalary(v *float64, period string) int {
+	if v == nil {
+		return 0
+	}
+	switch strings.ToLower(period) {
+	case "hourly":
+		return int(math.Round(*v * 2080))
+	case "annual", "yearly", "":
+		return int(math.Round(*v))
+	default:
+		// daily, weekly, monthly, … — fail closed (0 = undisclosed) rather
+		// than pass an unknown period through as annual. Log the period so a
+		// silent salary-NULL at scale is observable, not swallowed.
+		slog.Warn("himalayas: unrecognised salaryPeriod, failing closed to 0",
+			slog.String("period", period))
+		return 0
+	}
 }
 
 // parsePubDate handles pubDate as either a JSON string or a Unix timestamp number.

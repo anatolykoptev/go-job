@@ -3,17 +3,25 @@ package jobs
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-const (
-	securityCacheKey  = "security_programs"
-	securityBodyLimit = 10 * 1024 * 1024 // 10 MB
-)
+const securityCacheKey = "security_programs"
+
+// securityBodyLimit is the DoS ceiling for security-source response bodies
+// (hackerone/bugcrowd/intigriti/yeswehack/federacy via security_bounty.go, and
+// the immunefi/sherlock/gowowa_render readers that share this cap).
+//
+// hackerone_data.json measured 17,777,018 bytes (17.8 MB) on 2026-07-30 and
+// grows over time; the old 10 MB cap silently truncated it (io.LimitReader
+// stops without error), producing a misleading "parse failed" log. 64 MiB
+// gives ~3.6x headroom over the measured size and matches the ATS board
+// ceiling (atsBoardMaxBytes). A var (not const) so truncation tests can
+// override it with a small cap, mirroring atsBoardMaxBytes.
+var securityBodyLimit int64 = 64 * 1024 * 1024 // 64 MiB
 
 var securitySources = []struct {
 	url      string
@@ -129,10 +137,36 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("security source returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
+	body, err := readLimitedBody(resp.Body, securityBodyLimit)
 	if err != nil {
-		return nil, err
+		// Hitting the read cap is a loud, correctly-attributed failure (not a
+		// confusing downstream JSON parse error), but fetchAllSecurityPrograms
+		// swallows it when a sibling source succeeds. Bump the per-platform
+		// truncation counter so the failure is visible in Prometheus regardless.
+		//
+		// NOTE: this covers ONLY the truncation exit. The ATS fetchers
+		// (ats.go:555/567/574/577 and the lever/ashby siblings) additionally
+		// increment at the transport, status, and parse exits — four exits per
+		// platform. Full parity for the security fetcher (status + transport +
+		// parse exits, plus widening validSecurityFetchErrorReasons) is a
+		// follow-up, not this round.
+		if isBodyTruncated(err) {
+			engine.IncrSecurityFetchErrors(securityPlatformForURL(url), "truncated")
+		}
+		return nil, fmt.Errorf("security: read body: %w", err)
 	}
 
 	return body, nil
+}
+
+// securityPlatformForURL maps a security source URL to its platform label by
+// looking up securitySources. Returns "unknown" if the URL is not in the list
+// (the metric cardinality guard in IncrSecurityFetchErrors drops it).
+func securityPlatformForURL(url string) string {
+	for _, src := range securitySources {
+		if src.url == url {
+			return src.platform
+		}
+	}
+	return "unknown"
 }
