@@ -96,7 +96,15 @@ func (db *ResumeDB) UpdateResumePerson(ctx context.Context, personID int, p Pers
 	}
 	_, err = db.pool.Exec(ctx, updateResumePersonSQL,
 		personID, p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary)
-	return err
+	if err != nil {
+		return err
+	}
+	// resume_persons.location changed in-process (the admin UI POST
+	// /admin/resume/edit path) — drop the craigslist profile-location cache so
+	// the connector re-reads instead of searching the pre-edit city until a
+	// restart.
+	invalidateProfileLocationCache()
+	return nil
 }
 
 // Package-level SQL constants for projects, educations, and certifications.

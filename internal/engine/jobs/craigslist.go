@@ -124,17 +124,22 @@ var craigslistRegionSlugs = func() map[string]bool {
 // (region, true) on a match, ("", false) when the location is not in the
 // craigslistRegions map and no token-boundary key matches.
 //
-// Matching rule (closes #347):
+// Matching rule (closes #347; round-3 fix — city beats state):
 //  1. exact full-string hit on the lowercased, trimmed location → that region;
-//  2. otherwise the location is tokenised on non-letters and each map key is
-//     tokenised the same way; a key matches when its tokens appear as a
-//     CONSECUTIVE run inside the location's token list — so "la" only matches
-//     the standalone token "la", never inside "salt" or "dallas", and
-//     "san francisco" matches inside "san francisco bay area";
-//  3. when several keys match, the LONGEST key (by character length) wins — a
-//     deterministic rule that does not depend on Go's randomised map iteration
-//     order. Ties (same length, different keys) break on the key string itself
-//     so the choice is fully stable.
+//  2. otherwise the FIRST comma-separated segment is tokenised on non-letters
+//     and each map key is tokenised the same way; a key matches when its
+//     tokens appear as a CONSECUTIVE run inside that segment's token list — so
+//     "la" only matches the standalone token "la", never inside "salt" or
+//     "dallas", and "san francisco" matches inside "san francisco bay area".
+//     Scoping to the first segment makes "City, State" resolve on the city:
+//     "Seattle, Washington" matches "seattle" in the city segment and never
+//     falls through to "washington" in the state segment (which would silently
+//     search Washington DC for an operator in Washington state). When there is
+//     no comma the whole string is the one segment.
+//  3. when several keys match within the segment, the EARLIEST run position
+//     wins (city before state), length breaks a tie at the same position, and
+//     the key string breaks a remaining tie — a deterministic rule that does
+//     not depend on Go's randomised map iteration order.
 //
 // The previous implementation returned the literal sentinel "www" for any
 // unmatched location. That was harmless when the region was a SUBDOMAIN
@@ -160,24 +165,41 @@ func resolveRegion(location string) (string, bool) {
 	if craigslistRegionSlugs[loc] {
 		return loc, true
 	}
-	// Token-boundary substring pass. A key matches when its tokens appear as a
-	// consecutive run in the location's token list; among all matching keys the
-	// longest (then lexicographically smallest) wins, so the result is
-	// deterministic regardless of map iteration order.
-	locTokens := craigslistRegionTokenRe.FindAllString(loc, -1)
+	// Token-boundary substring pass, scoped to the FIRST comma-separated
+	// segment. A free-text location is conventionally "City, State" — the
+	// city is the segment that should win, and a state keyword in a later
+	// segment must NOT override it (round-3 fix: "Seattle, Washington" was
+	// resolving to washingtondc because "washington" (10 chars) beat
+	// "seattle" (7 chars) under longest-wins, silently searching Washington
+	// DC for an operator in Washington state). When there is no comma the
+	// whole string is one segment.
+	//
+	// Within the segment a key matches when its tokens appear as a
+	// consecutive run; among matching keys the EARLIEST run position wins,
+	// length breaks a tie at the same position, and the key string breaks a
+	// remaining tie — deterministic regardless of map iteration order.
+	segment := loc
+	if i := strings.IndexByte(loc, ','); i >= 0 {
+		segment = strings.TrimSpace(loc[:i])
+	}
+	locTokens := craigslistRegionTokenRe.FindAllString(segment, -1)
 	var bestKey, bestRegion string
+	bestPos := -1
 	for key, region := range craigslistRegions {
 		keyTokens := craigslistRegionTokenRe.FindAllString(key, -1)
-		if !tokensContainRun(locTokens, keyTokens) {
+		pos := tokensFindRun(locTokens, keyTokens)
+		if pos < 0 {
 			continue
 		}
 		switch {
 		case bestKey == "":
-			bestKey, bestRegion = key, region
-		case len(key) > len(bestKey):
-			bestKey, bestRegion = key, region
-		case len(key) == len(bestKey) && key < bestKey:
-			bestKey, bestRegion = key, region
+			bestKey, bestRegion, bestPos = key, region, pos
+		case pos < bestPos:
+			bestKey, bestRegion, bestPos = key, region, pos
+		case pos == bestPos && len(key) > len(bestKey):
+			bestKey, bestRegion, bestPos = key, region, pos
+		case pos == bestPos && len(key) == len(bestKey) && key < bestKey:
+			bestKey, bestRegion, bestPos = key, region, pos
 		}
 	}
 	if bestKey == "" {
@@ -186,12 +208,12 @@ func resolveRegion(location string) (string, bool) {
 	return bestRegion, true
 }
 
-// tokensContainRun reports whether needle appears as a consecutive sub-slice
-// of haystack. Both slices are lowercased letter-runs from
-// craigslistRegionTokenRe.
-func tokensContainRun(haystack, needle []string) bool {
+// tokensFindRun returns the starting index of the first occurrence of needle as
+// a consecutive sub-slice of haystack, or -1 if not present. Both slices are
+// lowercased letter-runs from craigslistRegionTokenRe.
+func tokensFindRun(haystack, needle []string) int {
 	if len(needle) == 0 || len(needle) > len(haystack) {
-		return false
+		return -1
 	}
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		match := true
@@ -202,10 +224,10 @@ func tokensContainRun(haystack, needle []string) bool {
 			}
 		}
 		if match {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 // ValidateCraigslistDefaultLocation returns an error if loc is non-empty and
@@ -948,12 +970,21 @@ var craigslistProfileTimeout = 2 * time.Second
 // runs on every craigslist search with no location, uncached, inside a
 // concurrent source fan-out, so the cost was both per-call and per-source.
 //
-// The result is memoised for the process lifetime: the operator's location
-// changes approximately never, and a profile rebuild restarts the process. The
-// cache stores the first NON-EMPTY success and never re-reads after that; a
-// failure or empty result is NOT cached, so a later retry (e.g. the DB coming up
-// after startup) can still succeed. This is a permanent process-lifetime cache
-// by design — stated here, not inferred.
+// The result is memoised across reads, but the cache is INVALIDATED whenever
+// resume_persons is written in-process: UpdateResumePerson (the admin UI POST
+// /admin/resume/edit path) and InsertPerson both change what
+// GetLatestPersonID/GetPerson return WITHOUT restarting the process, so without
+// invalidation the connector would keep searching the pre-edit city until the
+// next restart. The cache stores the first NON-EMPTY success and never re-reads
+// after that until invalidated; a failure or empty result is NOT cached, so a
+// later retry (e.g. the DB coming up after startup) can still succeed.
+//
+// A read that errors (GetPerson failure, ctx deadline) returns ("", err) so the
+// caller can distinguish a saturated/unreachable pool from a deployment with no
+// profile location — the former reports a distinct tier
+// (config_after_profile_error) on the config fallback, the latter reports
+// "config". An empty profile location (row exists, location blank) and no-DB /
+// no-person are NOT errors: they are legitimate "no profile" states.
 //
 // Overridable in tests via the same function-variable pattern as
 // craigslistStealthFetch / craigslistOxFetchFetch: tests inject a fixed value
@@ -961,41 +992,59 @@ var craigslistProfileTimeout = 2 * time.Second
 // which lives inside this default implementation only).
 var craigslistProfileLocation = loadCachedProfileLocation
 
-// profileLocationCache memoises the operator's resume location for the process
-// lifetime. See craigslistProfileLocation for the invalidation story.
+// profileLocationCache memoises the operator's resume location across reads.
+// See craigslistProfileLocation for the invalidation story.
 var (
 	profileLocationCacheMu  sync.Mutex
 	profileLocationCached   string
 	profileLocationCacheHit bool
 )
 
+// invalidateProfileLocationCache clears the memoised profile location so the
+// next read re-queries resume_persons. Called from UpdateResumePerson and
+// InsertPerson — both write resume_persons.location in-process (the admin UI
+// POST /admin/resume/edit and a fresh person insert) with no restart, so the
+// cache must not keep serving the pre-write value.
+func invalidateProfileLocationCache() {
+	profileLocationCacheMu.Lock()
+	profileLocationCached = ""
+	profileLocationCacheHit = false
+	profileLocationCacheMu.Unlock()
+}
+
 // loadCachedProfileLocation returns the cached location if one was stored, else
 // reads resume_persons.location via two indexed queries and caches it on the
-// first non-empty success.
-func loadCachedProfileLocation(ctx context.Context) string {
+// first non-empty success. The error is non-nil only when the read genuinely
+// failed (GetPerson error or nil person — a ctx deadline surfaces here too);
+// "no DB configured", "no person row" and "empty location" return ("", nil)
+// because they are legitimate no-profile states, not read failures.
+func loadCachedProfileLocation(ctx context.Context) (string, error) {
 	profileLocationCacheMu.Lock()
 	if profileLocationCacheHit {
 		cached := profileLocationCached
 		profileLocationCacheMu.Unlock()
-		return cached
+		return cached, nil
 	}
 	profileLocationCacheMu.Unlock()
 
 	db := GetResumeDB()
 	if db == nil {
-		return ""
+		return "", nil
 	}
 	personID := db.GetLatestPersonID(ctx)
 	if personID == 0 {
-		return ""
+		return "", nil
 	}
 	person, err := db.GetPerson(ctx, personID)
-	if err != nil || person == nil {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("craigslist: profile read failed: %w", err)
+	}
+	if person == nil {
+		return "", errors.New("craigslist: profile read returned nil person")
 	}
 	loc := strings.TrimSpace(person.Location)
 	if loc == "" {
-		return ""
+		return "", nil
 	}
 	// Cache only on a non-empty success; a failure/empty leaves the cache cold
 	// so a later retry when the DB is reachable can still populate it.
@@ -1003,7 +1052,7 @@ func loadCachedProfileLocation(ctx context.Context) string {
 	profileLocationCached = loc
 	profileLocationCacheHit = true
 	profileLocationCacheMu.Unlock()
-	return loc
+	return loc, nil
 }
 
 // resolveCraigslistDefaultLocation picks a location to use when the caller
@@ -1021,10 +1070,15 @@ func loadCachedProfileLocation(ctx context.Context) string {
 // config tier supplies the value, which is the documented degradation.
 //
 // Returns the resolved location AND the tier that supplied it ("profile" /
-// "config" / "") so the caller can log the substitution and bump the
-// craigslist_default_location_total{tier} counter — without that, a successful
-// substitution is invisible (the failure path already logs at WARN), which per
-// #347 is exactly what makes a wrong-city default undiagnosable.
+// "config" / "config_after_profile_error" / "") so the caller can log the
+// substitution and bump the craigslist_default_location_total{tier} counter —
+// without that, a successful substitution is invisible (the failure path
+// already logs at WARN), which per #347 is exactly what makes a wrong-city
+// default undiagnosable. The "config_after_profile_error" tier distinguishes a
+// config fallback that fired because the profile READ failed (saturated pool,
+// ctx deadline) from one that fired because no profile location exists — a
+// chronically saturated pool otherwise looks exactly like a no-profile
+// deployment.
 //
 // The resolved value is still subject to resolveRegion downstream: a profile
 // location that does not map to a Craigslist area (e.g. "Remote") surfaces
@@ -1033,11 +1087,15 @@ func loadCachedProfileLocation(ctx context.Context) string {
 func resolveCraigslistDefaultLocation(ctx context.Context) (string, string) {
 	profileCtx, cancel := context.WithTimeout(ctx, craigslistProfileTimeout)
 	defer cancel()
-	if loc := strings.TrimSpace(craigslistProfileLocation(profileCtx)); loc != "" {
+	profileLoc, perr := craigslistProfileLocation(profileCtx)
+	if loc := strings.TrimSpace(profileLoc); loc != "" {
 		return loc, "profile"
 	}
-	if loc := strings.TrimSpace(engine.Cfg.CraigslistDefaultLocation); loc != "" {
-		return loc, "config"
+	if cfgLoc := strings.TrimSpace(engine.Cfg.CraigslistDefaultLocation); cfgLoc != "" {
+		if perr != nil {
+			return cfgLoc, "config_after_profile_error"
+		}
+		return cfgLoc, "config"
 	}
 	return "", ""
 }

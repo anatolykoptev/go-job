@@ -13,6 +13,7 @@ import (
 	"time"
 
 	stealth "github.com/anatolykoptev/go-stealth"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
@@ -955,8 +956,8 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
 	engine.Cfg.CraigslistDefaultLocation = ""
 
 	// Profile holds the real stored value: "San Francisco Bay Area".
-	craigslistProfileLocation = func(_ context.Context) string {
-		return "San Francisco Bay Area"
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
 	}
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
@@ -998,8 +999,8 @@ func TestSearchCraigslistJobs_ExplicitLocation_WinsOverProfile(t *testing.T) {
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// Profile says SF; caller says New York. Caller must win.
-	craigslistProfileLocation = func(_ context.Context) string {
-		return "San Francisco Bay Area"
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
 	}
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
@@ -1041,8 +1042,8 @@ func TestSearchCraigslistJobs_UnmappableExplicitLocation_StillErrors(t *testing.
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// Profile is set, but the caller's explicit "Berlin" must NOT fall back to it.
-	craigslistProfileLocation = func(_ context.Context) string {
-		return "San Francisco Bay Area"
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
 	}
 
 	craigslistStealthFetch = transportCalledStub(t, "stealth")
@@ -1069,7 +1070,7 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesConfigDefault(t *testing.T) {
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// No profile location; config default is set.
-	craigslistProfileLocation = func(_ context.Context) string { return "" }
+	craigslistProfileLocation = func(_ context.Context) (string, error) { return "", nil }
 	engine.Cfg.CraigslistDefaultLocation = "new york"
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
@@ -1101,7 +1102,7 @@ func TestSearchCraigslistJobs_EmptyLocation_BothEmpty_StillErrors(t *testing.T) 
 	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
-	craigslistProfileLocation = func(_ context.Context) string { return "" }
+	craigslistProfileLocation = func(_ context.Context) (string, error) { return "", nil }
 	engine.Cfg.CraigslistDefaultLocation = ""
 
 	craigslistStealthFetch = transportCalledStub(t, "stealth")
@@ -1268,9 +1269,9 @@ func TestResolveCraigslistDefaultLocation_ProfileReadBounded_ReachesConfigTier(t
 
 	// Simulate a saturated pgxpool: park until the context is cancelled, then
 	// return "" (the DB query failed on the cancelled context).
-	craigslistProfileLocation = func(ctx context.Context) string {
+	craigslistProfileLocation = func(ctx context.Context) (string, error) {
 		<-ctx.Done()
-		return ""
+		return "", nil
 	}
 
 	// Caller context simulates perSourceTimeout — generous (500ms) so the ONLY
@@ -1311,7 +1312,7 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 	engine.Cfg.CraigslistDefaultLocation = ""
 
-	craigslistProfileLocation = func(_ context.Context) string { return "San Francisco Bay Area" }
+	craigslistProfileLocation = func(_ context.Context) (string, error) { return "San Francisco Bay Area", nil }
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
@@ -1331,5 +1332,176 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 	after := engine.GetMetrics()[key]
 	if after <= before {
 		t.Errorf("craigslist_default_location_total{tier=profile} did not increment (before=%d after=%d) — IncrCraigslistDefaultLocation call was deleted", before, after)
+	}
+}
+
+// --- F8: city beats state (BLOCKING, round 3) ---
+//
+// The round-2 longest-wins tie-break made "Seattle, Washington" resolve to
+// washingtondc 100% of the time: the tokenizer drops commas, so "washington"
+// (10 chars) beat "seattle" (7 chars) — silently searching Washington DC for an
+// operator in Washington state. The fix scopes the token pass to the FIRST
+// comma-separated segment (the city in "City, State") and ranks by earliest
+// match position, so the city wins and a state-only match in a later segment
+// never fires. An unmapped city ("Spokane, Washington") is honestly unmapped
+// (false), NOT the state — searching washingtondc for someone in Spokane is
+// the same wrong-city outcome #347 exists to prevent.
+//
+// MUTATION-CHECK: restore longest-wins-regardless-of-position (revert to the
+// round-2 token pass over the whole string with len(key) as the primary rank)
+// → "Seattle, Washington" matches "washington" (longest) → washingtondc → the
+// not-washingtondc assertion fails → RED.
+func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
+	cases := []struct {
+		loc    string
+		want   string
+		wantOK bool
+	}{
+		{"Seattle, Washington", craigslistRegions["seattle"], true},
+		{"Tacoma, Washington", craigslistRegions["tacoma"], true},
+		{"Spokane, Washington", "", false},
+		{"Vancouver, Washington", "", false},
+		{"Bellevue, Washington", "", false},
+		{"Redmond, Washington", "", false},
+		// Positive control: "WA" is not a key, so the state abbreviation does
+		// not interfere and the city resolves on its own.
+		{"Seattle, WA", craigslistRegions["seattle"], true},
+		// Multi-token path: no comma, whole string is one segment; "san
+		// francisco" matches at position 0 → sfbay.
+		{"San Francisco Bay Area", craigslistCitySFBay, true},
+	}
+	for _, c := range cases {
+		got, ok := resolveRegion(c.loc)
+		if ok && got == "washingtondc" {
+			t.Errorf("resolveRegion(%q) = %q — state beat the city (round-2 regression): the city segment must win and an unmapped city must be unmapped, not the state", c.loc, got)
+			continue
+		}
+		if ok != c.wantOK {
+			t.Errorf("resolveRegion(%q): ok=%v, want %v (region=%q)", c.loc, ok, c.wantOK, got)
+			continue
+		}
+		if ok && got != c.want {
+			t.Errorf("resolveRegion(%q) = %q, want %q", c.loc, got, c.want)
+		}
+	}
+}
+
+// --- F9: cache invalidation (MAJOR, round 3) ---
+//
+// The profile-location cache is process-lifetime, but UpdateResumePerson (the
+// admin UI POST /admin/resume/edit path) writes resume_persons.location
+// IN-PROCESS with no restart. Without invalidation the connector keeps
+// searching the old city until restart. The fix calls
+// invalidateProfileLocationCache from UpdateResumePerson (and InsertPerson) so
+// the next read re-queries.
+//
+// This test writes a new location through the SAME path the admin UI uses
+// (db.UpdateResumePerson) and asserts the resolver returns the NEW value.
+//
+// MUTATION-CHECK: remove the invalidateProfileLocationCache() call from
+// UpdateResumePerson → the cache keeps serving the pre-write value → the
+// assertion "New York" fails (got "Seattle, WA") → RED.
+//
+// Requires DATABASE_URL pointing at a *_test Postgres; skips otherwise.
+func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	dbtest.RequireTestDB(t, dsn)
+
+	ctx := context.Background()
+	db, err := ConnectResumeDB(ctx, dsn)
+	if err != nil {
+		t.Fatalf("ConnectResumeDB: %v", err)
+	}
+	t.Cleanup(db.Close)
+
+	// Drive the REAL loadCachedProfileLocation path: it reads
+	// GetResumeDB().GetLatestPersonID, so register the test DB on the
+	// package-global seam and restore it after.
+	origDB := GetResumeDB()
+	SetResumeDB(db)
+	t.Cleanup(func() { SetResumeDB(origDB) })
+
+	// Isolate the cache from other tests and reset it cold.
+	saveDefaultLocationDeps(t)
+
+	// Insert a person whose location is the pre-edit value. InsertPerson itself
+	// invalidates the cache (the sibling hook), so the cache starts cold
+	// regardless of prior state.
+	personID, err := db.InsertPerson(ctx, PersonRecord{
+		Name:     "Craigslist Cache Invalidation Test",
+		Email:    "craigslist-cache-invalidation-test@example.com",
+		Location: "Seattle, WA",
+	})
+	if err != nil {
+		t.Fatalf("InsertPerson: %v", err)
+	}
+	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+
+	// First read populates the cache with the pre-edit location.
+	first, err := loadCachedProfileLocation(ctx)
+	if err != nil {
+		t.Fatalf("first loadCachedProfileLocation: %v", err)
+	}
+	if first != "Seattle, WA" {
+		t.Fatalf("first read = %q, want %q (setup: cache must seed with the pre-edit value)", first, "Seattle, WA")
+	}
+
+	// Update the location through the SAME path the admin UI uses.
+	if err := db.UpdateResumePerson(ctx, personID, PersonRecord{
+		ID:       personID,
+		Name:     "Craigslist Cache Invalidation Test",
+		Email:    "craigslist-cache-invalidation-test@example.com",
+		Location: "New York",
+	}); err != nil {
+		t.Fatalf("UpdateResumePerson: %v", err)
+	}
+
+	// Second read must reflect the NEW value — the cache was invalidated.
+	second, err := loadCachedProfileLocation(ctx)
+	if err != nil {
+		t.Fatalf("second loadCachedProfileLocation: %v", err)
+	}
+	if second != "New York" {
+		t.Errorf("cache not invalidated after UpdateResumePerson: got %q, want %q — the connector would keep searching the old city until restart", second, "New York")
+	}
+}
+
+// --- F10: profile read failure is distinguishable from no profile (MINOR 3) ---
+//
+// A profile read that errors or times out must NOT collapse into the same
+// "config" tier as a deployment with no profile location — a chronically
+// saturated pool would otherwise look exactly like a no-profile deployment and
+// the 2s-timeout degradation would have no distinct signal. The fix returns a
+// distinct tier "config_after_profile_error" so the
+// craigslist_default_location_total{tier} counter separates the two.
+//
+// MUTATION-CHECK: collapse the error branch back to "config" (or revert
+// loadCachedProfileLocation to return "" with no error) → tier=="config" → the
+// assertion tier=="config_after_profile_error" fails → RED.
+func TestResolveCraigslistDefaultLocation_ProfileError_DistinctTier(t *testing.T) {
+	saveDefaultLocationDeps(t)
+	wantConfig := craigslistRegions["chicago"]
+	engine.Cfg.CraigslistDefaultLocation = wantConfig
+
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "", errors.New("pgxpool: connection pool exhausted")
+	}
+
+	loc, tier := resolveCraigslistDefaultLocation(context.Background())
+	if loc != wantConfig {
+		t.Fatalf("loc = %q, want %q", loc, wantConfig)
+	}
+	if tier != "config_after_profile_error" {
+		t.Errorf("tier = %q, want %q — a profile read failure must be distinguishable from no profile", tier, "config_after_profile_error")
+	}
+
+	// The tier label must be accepted by the counter (not silently dropped by
+	// the cardinality guard) — assert it increments.
+	key := engine.MetricCraigslistDefaultLocation + "{tier=config_after_profile_error}"
+	before := engine.GetMetrics()[key]
+	engine.IncrCraigslistDefaultLocation(tier)
+	after := engine.GetMetrics()[key]
+	if after <= before {
+		t.Errorf("craigslist_default_location_total{tier=config_after_profile_error} did not increment (before=%d after=%d) — tier label rejected by the cardinality guard", before, after)
 	}
 }

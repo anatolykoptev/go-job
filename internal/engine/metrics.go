@@ -726,14 +726,17 @@ func IncrCraigslistDiscoveryFallback(reason string) {
 // validCraigslistDefaultLocationTiers bounds the tier label for
 // craigslist_default_location_total. "profile" = resume_persons.location
 // supplied the value; "config" = engine.Cfg.CraigslistDefaultLocation supplied
-// it (profile empty/missing/errored). Unrecognised values are dropped silently
-// (cardinality guard).
+// it (profile empty/missing); "config_after_profile_error" = the config value
+// supplied it because the profile READ failed (saturated pool, ctx deadline) —
+// distinct from "config" so a chronically saturated pool is not hidden behind
+// the same label as a no-profile deployment. Unrecognised values are dropped
+// silently (cardinality guard).
 var validCraigslistDefaultLocationTiers = map[string]bool{
-	"profile": true, "config": true,
+	"profile": true, "config": true, "config_after_profile_error": true,
 }
 
 // IncrCraigslistDefaultLocation bumps
-// gojob_craigslist_default_location_total{tier=<t>}. tier ∈ {"profile","config"}.
+// gojob_craigslist_default_location_total{tier=<t>}. tier ∈ {"profile","config","config_after_profile_error"}.
 // Called once per craigslist search that substituted a location because the
 // caller supplied none — makes the substitution (and which tier supplied it)
 // observable, so a wrong-city default (#347) is diagnosable instead of silent.

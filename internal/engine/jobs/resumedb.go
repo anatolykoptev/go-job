@@ -232,7 +232,13 @@ func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, erro
 		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	// A new person changes what GetLatestPersonID returns — drop the craigslist
+	// profile-location cache so the connector picks up the new latest person.
+	invalidateProfileLocationCache()
+	return id, nil
 }
 
 func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
