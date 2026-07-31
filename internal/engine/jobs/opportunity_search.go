@@ -125,14 +125,17 @@ func SearchOpportunities(ctx context.Context, input engine.OpportunitySearchInpu
 }
 
 func fetchAllBounties(ctx context.Context) []engine.BountyListing {
-	return fetchAllBountiesImpl(ctx, 50, true)
+	items, _ := fetchAllBountiesImpl(ctx, 50, true)
+	return items
 }
 
 // fetchAllBountiesImpl is the shared aggregator for both the on-demand search path
 // (limit=50, applyCap=true) and the scheduled ingest path (limit=10000, applyCap=false).
 // When applyCap is true the combined result is capped to limit items.
-func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engine.BountyListing {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) ([]engine.BountyListing, SourceSummary) {
 	var all []engine.BountyListing
+	summary := make(SourceSummary)
 
 	// Algora bounties removed from the fan-out on 2026-07-30: the public bounty
 	// product is gone. The tRPC endpoint (console.algora.io/api/trpc/bounty.list)
@@ -145,24 +148,18 @@ func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engin
 	// fetch code (algora.go/algora_api.go/algora_enrich.go) is retained because
 	// AnalyzeBounty (on-demand single-issue analysis) still references it.
 
-	sources := []struct {
-		name string
-		fn   func(context.Context, int) ([]engine.BountyListing, error)
-	}{
-		{"opire", SearchOpire},
-		{"bountyhub", SearchBountyHub},
-		{"boss", SearchBoss},
-		{"lightning", SearchLightning},
-		{"collaborators", SearchCollaborators},
-	}
-
-	for _, s := range sources {
+	for _, s := range bountyFetchSources {
 		bounties, err := s.fn(ctx, limit)
+		outcome := classifySourceOutcome(len(bounties), err)
+		engine.IncrHuntSourceOutcome("bounty", s.name, outcome)
+		summary[s.name] = len(bounties)
 		if err != nil {
 			slog.Warn("opportunity_search: "+s.name+" error", slog.Any("error", err))
 			continue
 		}
-
+		if len(bounties) > 0 {
+			engine.SetHuntSourceLastSuccess("bounty", s.name)
+		}
 		all = append(all, bounties...)
 	}
 
@@ -174,11 +171,12 @@ func fetchAllBountiesImpl(ctx context.Context, limit int, applyCap bool) []engin
 		all = all[:maxIngestTotal]
 	}
 
-	return all
+	return all, summary
 }
 
 func fetchAllSecurity(ctx context.Context) []engine.SecurityProgram {
-	return fetchAllSecurityImpl(ctx, 50, true)
+	items, _ := fetchAllSecurityImpl(ctx, 50, true)
+	return items
 }
 
 // fetchAllSecurityImpl is the shared aggregator for both paths.
@@ -186,53 +184,52 @@ func fetchAllSecurity(ctx context.Context) []engine.SecurityProgram {
 // BTD fetch goes direct (bypassing the result cache) so the ingest cycle
 // always pulls the full live dataset. When applyCap is true the combined
 // result is capped to limit items using the cached SearchSecurityPrograms path.
-func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engine.SecurityProgram {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+// Per-BTD-source outcomes are emitted inside fetchAllSecurityPrograms (the BTD
+// aggregator); non-BTD source outcomes are emitted here.
+func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) ([]engine.SecurityProgram, SourceSummary) {
 	var all []engine.SecurityProgram
+	summary := make(SourceSummary)
 
 	if applyCap {
 		// On-demand path: use cached helper with limit applied.
 		btd, err := SearchSecurityPrograms(ctx, limit)
+		// Per-BTD-source outcomes are emitted inside fetchAllSecurityPrograms
+		// (called by SearchSecurityPrograms on cache miss). Here we only
+		// track the aggregate BTD row count for the summary.
 		if err != nil {
 			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
 		} else {
 			all = append(all, btd...)
 		}
+		summary["btd"] = len(btd)
 	} else {
 		// Scheduled path: bypass cache to get the full live dataset.
+		// fetchAllSecurityPrograms emits per-BTD-source outcomes + freshness
+		// for each of the 5 BTD sources (hackerone, bugcrowd, intigriti,
+		// yeswehack, federacy). We track the aggregate for the summary.
 		btd, err := fetchAllSecurityPrograms(ctx)
 		if err != nil {
 			slog.Warn("opportunity_search: security btd error", slog.Any("error", err))
 		} else {
 			all = append(all, btd...)
 		}
+		summary["btd"] = len(btd)
 	}
 
-	imm, err := SearchImmunefi(ctx, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: immunefi error", slog.Any("error", err))
-	} else {
-		all = append(all, imm...)
-	}
-
-	shr, err := SearchSherlock(ctx, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: sherlock error", slog.Any("error", err))
-	} else {
-		all = append(all, shr...)
-	}
-
-	cantina, err := SearchCantina(ctx, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: cantina error", slog.Any("error", err))
-	} else {
-		all = append(all, cantina...)
-	}
-
-	c4r, err := SearchCode4rena(ctx, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: code4rena error", slog.Any("error", err))
-	} else {
-		all = append(all, c4r...)
+	for _, s := range securityFetchSources {
+		programs, err := s.fn(ctx, limit)
+		outcome := classifySourceOutcome(len(programs), err)
+		engine.IncrHuntSourceOutcome("security", s.name, outcome)
+		summary[s.name] = len(programs)
+		if err != nil {
+			slog.Warn("opportunity_search: "+s.name+" error", slog.Any("error", err))
+			continue
+		}
+		if len(programs) > 0 {
+			engine.SetHuntSourceLastSuccess("security", s.name)
+		}
+		all = append(all, programs...)
 	}
 
 	if applyCap && len(all) > limit {
@@ -243,31 +240,35 @@ func fetchAllSecurityImpl(ctx context.Context, limit int, applyCap bool) []engin
 		all = all[:maxIngestTotal]
 	}
 
-	return all
+	return all, summary
 }
 
 func fetchAllFreelance(ctx context.Context) []engine.FreelanceJob {
-	return fetchAllFreelanceImpl(ctx, 30, true)
+	items, _ := fetchAllFreelanceImpl(ctx, 30, true)
+	return items
 }
 
 // fetchAllFreelanceImpl is the shared aggregator for both paths.
 // When applyCap is true the combined result is capped to 50 items (on-demand);
 // when false no cap is applied (scheduled ingest).
-func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engine.FreelanceJob {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) ([]engine.FreelanceJob, SourceSummary) {
 	var all []engine.FreelanceJob
+	summary := make(SourceSummary)
 
-	rok, err := SearchRemoteOKFreelance(ctx, langAliasGolang, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: remoteok error", slog.Any("error", err))
-	} else {
-		all = append(all, rok...)
-	}
-
-	him, err := SearchHimalayas(ctx, langAliasGolang, limit)
-	if err != nil {
-		slog.Warn("opportunity_search: himalayas error", slog.Any("error", err))
-	} else {
-		all = append(all, him...)
+	for _, s := range freelanceFetchSources {
+		jobs, err := s.fn(ctx, limit)
+		outcome := classifySourceOutcome(len(jobs), err)
+		engine.IncrHuntSourceOutcome("freelance", s.name, outcome)
+		summary[s.name] = len(jobs)
+		if err != nil {
+			slog.Warn("opportunity_search: "+s.name+" error", slog.Any("error", err))
+			continue
+		}
+		if len(jobs) > 0 {
+			engine.SetHuntSourceLastSuccess("freelance", s.name)
+		}
+		all = append(all, jobs...)
 	}
 
 	const capFreelance = 50
@@ -279,7 +280,7 @@ func fetchAllFreelanceImpl(ctx context.Context, limit int, applyCap bool) []engi
 		all = all[:maxIngestTotal]
 	}
 
-	return all
+	return all, summary
 }
 
 // PersistBounties writes BountyListings into the hunt store and applies the

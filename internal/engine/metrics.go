@@ -367,7 +367,80 @@ const (
 
 	// BH-12: slug cache L2 active gauge — 1=Redis connected, 0=degraded.
 	MetricSlugCacheL2Active = "slug_cache_l2_active"
+
+	// MetricHuntSourceLastSuccess is the labelled gauge
+	// gojob_hunt_source_last_success_timestamp{kind,source}. Set to the current
+	// unix timestamp whenever a scheduled ingest source yields at least one row
+	// in a cycle. A source that has never succeeded is pre-touched at 0 so it is
+	// distinguishable from a source with no series at all.
+	//
+	// This is the PRIMARY signal for detecting silently-dead sources: freshness
+	// catches every failure mode (HTTP 200 empty, source dropped from fan-out,
+	// parser yields zero) including modes nobody predicted. An error counter
+	// can only count anticipated failure modes. All three month-long failures
+	// (hackerone truncated read, himalayas field type, algora 404) would have
+	// tripped a freshness alert on day one.
+	//
+	// kind ∈ validHuntSourceKinds, source ∈ registeredHuntSources[kind].
+	// Pre-touched at 0 for every known source in warmAlertBoundedMetrics.
+	MetricHuntSourceLastSuccess = "hunt_source_last_success_timestamp"
+
+	// MetricHuntSourceOutcome is the labelled counter
+	// gojob_hunt_source_outcome_total{kind,source,outcome}.
+	// Emitted once per source per cycle from the scheduled fan-outs.
+	// outcome ∈ {ok, empty, fetch_error, parse_error} — bounded enum.
+	//
+	// Complements freshness: separates "fetched fine, genuinely empty" from
+	// "fetch failed" from "fetch succeeded, decode failed" — the distinction
+	// that would have pointed at the right layer for all three real failures
+	// instead of at the parser. fetch_error and parse_error are distinguishable
+	// because two of the three real failures were mis-attributed (hackerone's
+	// was a truncated read reported as a parse failure).
+	//
+	// kind ∈ validHuntSourceKinds, source ∈ registeredHuntSources[kind].
+	// Pre-touched at 0 for every known source×outcome in warmAlertBoundedMetrics.
+	MetricHuntSourceOutcome = "hunt_source_outcome_total"
 )
+
+// Source outcome label values for gojob_hunt_source_outcome_total.
+const (
+	sourceOutcomeOk         = "ok"
+	sourceOutcomeEmpty      = "empty"
+	sourceOutcomeFetchError = "fetch_error"
+	sourceOutcomeParseError = "parse_error"
+)
+
+// validHuntSourceOutcomes bounds the outcome label for
+// hunt_source_outcome_total. Unrecognised values are rejected.
+var validHuntSourceOutcomes = map[string]bool{
+	sourceOutcomeOk: true, sourceOutcomeEmpty: true,
+	sourceOutcomeFetchError: true, sourceOutcomeParseError: true,
+}
+
+// validHuntSourceKinds bounds the kind label for the hunt source metrics.
+// Distinct from validHuntKinds (which is for hunt_ingest_total and includes
+// "job" and "audit_contest"). The source metrics cover only the three
+// opportunity fan-out kinds.
+var validHuntSourceKinds = map[string]bool{
+	"bounty": true, "security": true, "freelance": true,
+}
+
+// registeredHuntSources maps kind → slice of source names, populated via
+// RegisterHuntSources from the jobs package at init time. This is the
+// SINGLE source of truth for the source label set — derived from the real
+// fan-out tables in jobs, NOT a hand-maintained list. A new source added to
+// a fan-out table is automatically included here and picked up by
+// warmAlertBoundedMetrics pre-touch + FormatMetrics pre-touch.
+var registeredHuntSources = map[string][]string{}
+
+// RegisterHuntSources wires the per-kind source name lists from the jobs
+// package into the engine package without creating an import cycle
+// (engine → jobs would cycle since jobs → engine). Called once from
+// jobs.init() — before main() — so the lists are available when
+// engine.Init() → warmAlertBoundedMetrics() runs.
+func RegisterHuntSources(sources map[string][]string) {
+	registeredHuntSources = sources
+}
 
 // OversizeBytesBuckets are log-scale bucket boundaries for spill payload sizes.
 // Range 1KB–4MB covers typical MCP response overflow; each step is ~4×.
@@ -576,6 +649,19 @@ func FormatMetrics() string {
 	keys = append(keys, MetricEnrichSemSkipped)
 	// OBS-6: admin UI HTTP counters pre-touched at 0.
 	keys = append(keys, MetricAdminRequests, MetricAdminErrors)
+	// Hunt source freshness gauges + outcome counters pre-touched at 0 for
+	// every known source, so a source that has never succeeded is visible as
+	// a 0-value series (not missing) and rate()-floor alerts see 0 before the
+	// first cycle. Source list derived from registeredHuntSources (populated
+	// by jobs.init() from the real fan-out tables).
+	for kind, sources := range registeredHuntSources {
+		for _, src := range sources {
+			keys = append(keys, MetricHuntSourceLastSuccess+"{kind="+kind+",source="+src+"}")
+			for _, oc := range []string{sourceOutcomeOk, sourceOutcomeEmpty, sourceOutcomeFetchError, sourceOutcomeParseError} {
+				keys = append(keys, MetricHuntSourceOutcome+"{kind="+kind+",source="+src+",outcome="+oc+"}")
+			}
+		}
+	}
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -759,6 +845,21 @@ func warmAlertBoundedMetrics() {
 	// parse_fail/no_key).
 	for reason := range validCraigslistDiscoveryReasons {
 		reg.Add(MetricCraigslistDiscoveryFallback+"{reason="+reason+"}", 0)
+	}
+	// Pre-register hunt_source_outcome_total{kind,source,outcome} and
+	// hunt_source_last_success_timestamp{kind,source} at 0 for every known
+	// source, so a source that has never succeeded is distinguishable from
+	// a source with no series at all, and increase()-based alerts see a real
+	// 0→N transition on the first outcome. The source list is derived from
+	// the real fan-out tables via registeredHuntSources (populated by
+	// jobs.init() before main() runs).
+	for kind, sources := range registeredHuntSources {
+		for _, src := range sources {
+			reg.Gauge(MetricHuntSourceLastSuccess + "{kind=" + kind + ",source=" + src + "}").Set(0)
+			for _, oc := range []string{sourceOutcomeOk, sourceOutcomeEmpty, sourceOutcomeFetchError, sourceOutcomeParseError} {
+				reg.Add(MetricHuntSourceOutcome+"{kind="+kind+",source="+src+",outcome="+oc+"}", 0)
+			}
+		}
 	}
 }
 
@@ -1312,4 +1413,42 @@ func SetSlugCacheL2Active(active bool) {
 		v = 1
 	}
 	reg.Gauge(MetricSlugCacheL2Active).Set(v)
+}
+
+// IncrHuntSourceOutcome bumps gojob_hunt_source_outcome_total{kind,source,outcome}.
+// kind ∈ validHuntSourceKinds, outcome ∈ validHuntSourceOutcomes — both bounded.
+// source is validated against the registered source list for the given kind;
+// unrecognised kind/source/outcome values are silently dropped (cardinality guard).
+// Called once per source per cycle from the scheduled ingest fan-outs.
+func IncrHuntSourceOutcome(kind, source, outcome string) {
+	if reg == nil || !validHuntSourceKinds[kind] || !validHuntSourceOutcomes[outcome] {
+		return
+	}
+	if !isRegisteredHuntSource(kind, source) {
+		return
+	}
+	reg.Incr(MetricHuntSourceOutcome + "{kind=" + kind + ",source=" + source + ",outcome=" + outcome + "}")
+}
+
+// SetHuntSourceLastSuccess sets gojob_hunt_source_last_success_timestamp{kind,source}
+// to the current unix time. Called when a source yields at least one row in a
+// scheduled cycle. No-op before engine.Init() (reg is nil; Gauge is nil-safe).
+func SetHuntSourceLastSuccess(kind, source string) {
+	if reg == nil || !validHuntSourceKinds[kind] {
+		return
+	}
+	if !isRegisteredHuntSource(kind, source) {
+		return
+	}
+	reg.Gauge(MetricHuntSourceLastSuccess + "{kind=" + kind + ",source=" + source + "}").Set(float64(time.Now().Unix()))
+}
+
+// isRegisteredHuntSource returns true if source is in the registered list for kind.
+func isRegisteredHuntSource(kind, source string) bool {
+	for _, s := range registeredHuntSources[kind] {
+		if s == source {
+			return true
+		}
+	}
+	return false
 }
