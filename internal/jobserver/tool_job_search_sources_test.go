@@ -601,3 +601,50 @@ func TestRunJobSearch_StructuredPrecedence_SalaryWinsOverLLMNil(t *testing.T) {
 		t.Errorf("out.Jobs[0].SalaryCurrency = %q, want USD", out.Jobs[0].SalaryCurrency)
 	}
 }
+
+// testStructuredSourceWithError is a connectors.Source + StructuredFetcher that
+// returns BOTH partial results AND an error from FetchStructured — the
+// partially-successful source case (tool_job_search.go:532-541).
+type testStructuredSourceWithError struct {
+	results  []engine.SearxngResult
+	listings []engine.JobListing
+	err      error
+}
+
+func (testStructuredSourceWithError) Name() string                        { return "test-structured-err" }
+func (testStructuredSourceWithError) Capabilities() connectors.Capability { return 0 }
+func (testStructuredSourceWithError) Groups() []string                    { return []string{"all"} }
+func (testStructuredSourceWithError) SiteScope() string                   { return "" }
+func (s testStructuredSourceWithError) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	return s.results, s.err
+}
+func (s testStructuredSourceWithError) FetchStructured(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	return s.results, s.listings, s.err
+}
+
+// TestRunSource_StructuredFetcher_ErrorForwardsResults verifies that when a
+// StructuredFetcher returns BOTH partial results AND an error, runSource
+// forwards BOTH the results and the error on the channel. A future `return`
+// on error would silently drop a partially-successful source's results.
+//
+// Mutation: add `if err != nil { ch <- sourceResult{name: src.Name(), err: err}; return }`
+// before the results are forwarded → r.results becomes nil → RED.
+func TestRunSource_StructuredFetcher_ErrorForwardsResults(t *testing.T) {
+	src := testStructuredSourceWithError{
+		results:  []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Partial"}},
+		listings: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Partial", Source: "lever"}},
+		err:      errors.New("partial failure: upstream timeout"),
+	}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.err == nil {
+		t.Fatalf("err = nil, want the partial-failure error (runSource must forward errors)")
+	}
+	if len(r.results) != 1 {
+		t.Errorf("results = %d, want 1 (partial results must be forwarded alongside the error)", len(r.results))
+	}
+	if len(r.structured) != 1 {
+		t.Errorf("structured = %d, want 1 (partial structured listings must be forwarded alongside the error)", len(r.structured))
+	}
+}

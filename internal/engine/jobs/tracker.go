@@ -98,6 +98,14 @@ func trackerDedup(url, company, title string) string {
 }
 
 // formatSalary renders salary_min/max/currency/interval into the Salary string field.
+//
+// Format: "160000–220000 USD/year" (en dash, no "$" prefix, currency + interval
+// suffix). This replaced the older "$160000-$220000 USD" shape when lever/ashby
+// mappers started reusing this helper for the LLM-facing content string and
+// FetchATSBoard compensation field. Nothing downstream splits the Salary string
+// on "-" or "$": the scorer (hunt/score/scorer.go) renders SalaryMin/Max
+// pointers directly into its prompt, qualityScoreFromListing reads the numeric
+// pointers, and the Salary string is human-readable/LLM-facing only.
 func formatSalary(min, max *int, currency, interval string) string {
 	if min == nil && max == nil {
 		return ""
@@ -126,7 +134,7 @@ func formatSalary(min, max *int, currency, interval string) string {
 // trackerRate routes a status + note write to the correct axis of hunt_ratings
 // (migration 012 split) using RateExact to guarantee single-observable-status
 // coherence. RateExact unconditionally overwrites BOTH axes — the active axis
-// gets the status value, the inactive axis is explicitly cleared to ''.
+// gets the status value, the inactive axis is explicitly cleared to ”.
 //
 // Without this explicit clear a prior triage='saved' row would survive a
 // pipeline transition (applied/interview/offer/rejected) because Rate's CASE
