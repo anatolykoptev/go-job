@@ -133,7 +133,11 @@ func isAgeMissing(err error) bool {
 	switch pgErr.Code {
 	case "42883", // undefined_function
 		"42704", // undefined_object
-		"3F001", // no such schema
+		// 3F000 invalid_schema_name — this is what Postgres returns for a missing
+		// ag_catalog, i.e. "AGE is not installed". Class 3F has no other member;
+		// the 3F001 that stood here was invented and never matched, so an
+		// AGE-less cluster was misclassified as a real cypher failure.
+		"3F000",
 		"42P01": // undefined_table
 		return true
 	}
