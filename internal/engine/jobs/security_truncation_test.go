@@ -35,6 +35,7 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/stretchr/testify/require"
 )
 
 // TestReadLimitedBody_TruncationDetected verifies the helper surfaces an
@@ -196,6 +197,12 @@ func TestFetchSecuritySource_Non200NoCounterIncrement(t *testing.T) {
 
 	// Point securitySources[0] (hackerone) at the test server so
 	// securityPlatformForURL returns "hackerone" for this URL.
+	// Assert the premise: if securitySources is ever reordered so [0] is not
+	// hackerone, the asserted key below never matches and delta == 0 passes
+	// vacuously — including under the F9-A mutant (increment moved to the
+	// non-200 branch), which would bump a different platform label.
+	require.Equal(t, sourceHackerOne, securitySources[0].platform,
+		"test premise: securitySources[0] must be hackerone")
 	origURL := securitySources[0].url
 	securitySources[0].url = srv.URL
 	t.Cleanup(func() { securitySources[0].url = origURL })

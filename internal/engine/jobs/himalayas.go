@@ -141,13 +141,20 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 // salaryPeriod is honoured (case-insensitively): "hourly" rates are normalised
 // to annual using the conventional 2080-hour US full-time equivalent (40 h/wk ×
 // 52 wk) so hourly and annual listings are comparable in the same field.
-// "annual" (and the empty string, for back-compat with sources that omit the
-// field) pass through as-is. Any other period (daily, weekly, monthly, …)
-// returns 0 — we do not invent a conversion factor for unknown periods. 0
-// already means "undisclosed" end to end (nullInt at hunt/store.go:424, skipped
-// by hunt/score/scorer.go:370 and hunt/notify/telegram.go:352), so failing
-// closed drops the row from ranking with nothing logged rather than passing an
-// unknown period through as annual and silently understating it.
+// "annual" and "yearly" (a plausible API synonym) plus the empty string (for
+// back-compat with sources that omit the field) pass through as-is. Any other
+// period (daily, weekly, monthly, …) returns 0 — we do not invent a conversion
+// factor for unknown periods, and a slog.Warn names the period so a silent
+// salary-NULL at scale is observable.
+//
+// 0 means "undisclosed" end to end on the freelance path: nullInt at
+// hunt/store.go:664 writes NULL for BudgetMin/BudgetMax, and the freelance
+// Telegram card at hunt/notify/telegram.go:419 omits the "Budget: $N" line
+// when BudgetMax == 0 (gating on BudgetMax alone — a min-only row also
+// renders no budget line, a pre-existing asymmetry out of scope here). The
+// row is still stored, upserted and notified; only the budget figure is
+// absent. This is NOT the hunt.Job path (nullInt at hunt/store.go:424,
+// scorer.go:370, telegram.go:352) — himalayas rows never enter it.
 func annualizeHimalayasSalary(v *float64, period string) int {
 	if v == nil {
 		return 0
@@ -155,11 +162,14 @@ func annualizeHimalayasSalary(v *float64, period string) int {
 	switch strings.ToLower(period) {
 	case "hourly":
 		return int(math.Round(*v * 2080))
-	case "annual", "":
+	case "annual", "yearly", "":
 		return int(math.Round(*v))
 	default:
 		// daily, weekly, monthly, … — fail closed (0 = undisclosed) rather
-		// than pass an unknown period through as annual.
+		// than pass an unknown period through as annual. Log the period so a
+		// silent salary-NULL at scale is observable, not swallowed.
+		slog.Warn("himalayas: unrecognised salaryPeriod, failing closed to 0",
+			slog.String("period", period))
 		return 0
 	}
 }

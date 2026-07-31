@@ -1,9 +1,12 @@
 package jobs
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -178,4 +181,51 @@ func TestAnnualizeHimalayasSalary_CaseInsensitivePeriod(t *testing.T) {
 		got := annualizeHimalayasSalary(&hourly, period)
 		assert.Equalf(t, want, got, "period %q must annualise to %d (×2080), got %d", period, want, got)
 	}
+}
+
+// TestAnnualizeHimalayasSalary_YearlyAliasesAnnual (F11) asserts that "yearly"
+// — the one string the live API would plausibly use as a synonym for "annual" —
+// passes through as annual, not fail-closed to 0. If Himalayas ever renames
+// annual→yearly, the fail-closed branch would silently swallow every salary
+// with nothing logged. "yearly" is semantically identical to "annual"; the
+// fail-closed branch is for genuinely unknown periods where we cannot
+// confidently assert a conversion factor.
+//
+// Revert-red: drop "yearly" from the annual case → it falls into the default
+// branch → returns 0 (not 120000) → test fails.
+func TestAnnualizeHimalayasSalary_YearlyAliasesAnnual(t *testing.T) {
+	t.Parallel()
+	v := 120000.0
+	for _, period := range []string{"yearly", "Yearly", "YEARLY"} {
+		got := annualizeHimalayasSalary(&v, period)
+		assert.Equalf(t, 120000, got, "period %q must alias to annual (120000), got %d", period, got)
+	}
+}
+
+// TestAnnualizeHimalayasSalary_UnknownPeriodLogsWarn (F10) asserts that an
+// unrecognised salaryPeriod emits a slog.Warn naming the period. Without this
+// signal, an unrecognised period at scale silently NULLs every affected row's
+// budget and nothing anywhere reveals it — the exact failure mode this PR
+// exists to fix.
+//
+// Revert-red: remove the slog.Warn from the default branch → buf is empty →
+// test fails with "expected WARN mentioning period".
+func TestAnnualizeHimalayasSalary_UnknownPeriodLogsWarn(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	v := 8000.0
+	got := annualizeHimalayasSalary(&v, "fortnightly")
+	assert.Equal(t, 0, got, "unknown period must still fail closed to 0")
+
+	out := buf.String()
+	assert.True(t, strings.Contains(out, "level=WARN"),
+		"expected WARN log for unrecognised period, got: %s", out)
+	assert.True(t, strings.Contains(out, "fortnightly"),
+		"expected log to name the unrecognised period %q, got: %s", "fortnightly", out)
 }
