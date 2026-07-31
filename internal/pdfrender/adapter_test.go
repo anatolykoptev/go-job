@@ -360,6 +360,66 @@ func TestReadySetsFontGauge(t *testing.T) {
 	}
 }
 
+// TestReadySetsRendererGauge pins the VALUE of gojob_pdf_renderer_available,
+// which nothing did until now. Review found the polarity inverted, the &&
+// widened to ||, and the whole gauge block deleted — all three GREEN. That is
+// the identical gap TestReadySetsFontGauge exists to close, one field over: the
+// font gauge got a guard because deleting its probe stayed green, and the
+// renderer gauge beside it never got the same treatment.
+//
+// It matters now because GojobPdfRendererMissing pages on this gauge, and this
+// package's stated invariant is that the two gauges cannot disagree. An
+// unpinned polarity makes that claim unverifiable.
+//
+// The lookPath seam is what makes this testable at all — before it, asserting
+// on binary absence meant depending on what the box running the test has
+// installed.
+//
+// Not parallel: the gauge is package-level.
+func TestReadySetsRendererGauge(t *testing.T) {
+	const fonts = "IBM Plex Sans\nIBM Plex Mono\n"
+
+	for _, tc := range []struct {
+		name              string
+		typstOK, pandocOK bool
+		want              float64
+		wantReady         bool
+	}{
+		{"both binaries present", true, true, 1, true},
+		{"typst absent", false, true, 0, false},
+		{"pandoc absent", true, false, 0, false},
+		{"neither present", false, false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pdfRendererAvailableGauge.Set(-1) // poison, so a missing Set is visible
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) { return []byte(fonts), nil }
+			a.lookPath = func(name string) (string, error) {
+				ok := true
+				switch {
+				case strings.Contains(name, "typst"):
+					ok = tc.typstOK
+				case strings.Contains(name, "pandoc"):
+					ok = tc.pandocOK
+				}
+				if !ok {
+					return "", exec.ErrNotFound
+				}
+				return name, nil
+			}
+
+			ready := a.Ready()
+
+			if got := gaugeValue(t, pdfRendererAvailableGauge); got != tc.want {
+				t.Errorf("gojob_pdf_renderer_available = %v, want %v", got, tc.want)
+			}
+			if ready != tc.wantReady {
+				t.Errorf("Ready() = %v, want %v", ready, tc.wantReady)
+			}
+		})
+	}
+}
+
 // TestCheckFontsDiagnostic pins what the OPERATOR is told, which the gauge
 // cannot express. "typst would not run" and "typst ran, the faces are absent"
 // are both correctly 0, but they send someone to different places — and with
