@@ -628,65 +628,83 @@ func TestApplyStructuredPrecedence_DescriptionNotOverwritten(t *testing.T) {
 	}
 }
 
-// TestApplyStructuredPrecedence_SalaryZeroedOnMatchWithoutSalary verifies that
-// when a structured listing matches but carries NO salary, the LLM's salary
-// fields are ZEROED — but ONLY for providers that expose a comp field (Lever,
-// Ashby). Here Source="lever" → lever exposes salaryRange → empty comp is
-// meaningful silence → LLM hallucination cleared. Greenhouse does NOT expose
-// comp (see TestApplyStructuredPrecedence_GreenhouseSalaryPreserved).
+// TestApplyStructuredPrecedence_AshbyNumericsPreserved verifies that an Ashby
+// listing with Salary set (from compensationTierSummary, free-text) but nil
+// SalaryMin/Max/Currency/Interval leaves the LLM's numeric salary fields
+// INTACT. ashbyJobToListing sets only the free-text Salary from
+// compensationTierSummary and NEVER the numeric fields — so every Ashby job
+// with a published comp tier has nil numerics. The old salary-zeroing branch
+// (sourceExposesCompensation) overwrote SalaryMin/Max/Currency/Interval with
+// nil/"", dropping the job out of hunt_list salary filters and stopping the
+// scorer's compensation prompt line. Precedence is now field-by-field: a
+// nil/empty structured field NEVER overwrites a populated LLM one.
 //
-// Mutation: revert to "only copy when structured non-empty" (the old per-field
-// guard) → LLM salary stays "999999 USD" → RED.
-func TestApplyStructuredPrecedence_SalaryZeroedOnMatchWithoutSalary(t *testing.T) {
+// Mutation: restore the group-copy (`hasStructuredSalary` → copy all 5 fields)
+// → llm[0].SalaryMin becomes nil → RED.
+// Mutation: restore sourceExposesCompensation zeroing → llm[0].SalaryMin
+// becomes nil → RED.
+func TestApplyStructuredPrecedence_AshbyNumericsPreserved(t *testing.T) {
 	structured := map[string]engine.JobListing{
-		"https://jobs.lever.co/testco/abc": {
-			URL:    "https://jobs.lever.co/testco/abc",
+		"https://jobs.ashbyhq.com/testco/abc": {
+			URL:    "https://jobs.ashbyhq.com/testco/abc",
 			Title:  "Eng",
-			Source: "lever",
-			// Salary intentionally absent — structured source has no comp data.
+			Source: "ashby",
+			Salary: "$180k–$220k USD", // compensationTierSummary, free-text
+			// SalaryMin/Max/Currency/Interval intentionally nil/"" — ashbyJobToListing
+			// never sets the numeric fields.
 		},
 	}
-	hallucinatedMin := 999999
-	hallucinatedMax := 999999
+	llmMin := 180000
+	llmMax := 220000
 	llm := []engine.JobListing{
 		{
-			URL:            "https://jobs.lever.co/testco/abc",
-			Salary:         "999999 USD",
-			SalaryMin:      &hallucinatedMin,
-			SalaryMax:      &hallucinatedMax,
+			URL:            "https://jobs.ashbyhq.com/testco/abc",
+			Title:          "Old Title",
+			Salary:         "180000-220000 USD",
+			SalaryMin:      &llmMin,
+			SalaryMax:      &llmMax,
 			SalaryCurrency: "USD",
+			SalaryInterval: "year",
 		},
 	}
 
 	ApplyStructuredPrecedence(llm, structured)
 
-	if llm[0].Salary != "" {
-		t.Errorf("Salary = %q, want empty (structured has no salary → LLM hallucination cleared)", llm[0].Salary)
+	// Free-text Salary from structured wins (it's non-empty).
+	if llm[0].Salary != "$180k–$220k USD" {
+		t.Errorf("Salary = %q, want structured free-text value (non-empty → wins)", llm[0].Salary)
 	}
-	if llm[0].SalaryMin != nil {
-		t.Errorf("SalaryMin = %v, want nil (cleared)", llm[0].SalaryMin)
+	// Numeric fields from LLM preserved — structured has nil/"" for these.
+	if llm[0].SalaryMin == nil || *llm[0].SalaryMin != 180000 {
+		t.Errorf("SalaryMin = %v, want 180000 (LLM value preserved — structured has nil)", llm[0].SalaryMin)
 	}
-	if llm[0].SalaryMax != nil {
-		t.Errorf("SalaryMax = %v, want nil (cleared)", llm[0].SalaryMax)
+	if llm[0].SalaryMax == nil || *llm[0].SalaryMax != 220000 {
+		t.Errorf("SalaryMax = %v, want 220000 (LLM value preserved — structured has nil)", llm[0].SalaryMax)
 	}
-	if llm[0].SalaryCurrency != "" {
-		t.Errorf("SalaryCurrency = %q, want empty (cleared)", llm[0].SalaryCurrency)
+	if llm[0].SalaryCurrency != "USD" {
+		t.Errorf("SalaryCurrency = %q, want USD (LLM value preserved — structured has empty)", llm[0].SalaryCurrency)
 	}
-	// Non-salary fields still applied.
+	if llm[0].SalaryInterval != "year" {
+		t.Errorf("SalaryInterval = %q, want year (LLM value preserved — structured has empty)", llm[0].SalaryInterval)
+	}
+	// Non-salary fields still applied from structured.
 	if llm[0].Title != "Eng" {
 		t.Errorf("Title = %q, want Eng (non-salary fields still applied)", llm[0].Title)
 	}
 }
 
 // TestApplyStructuredPrecedence_GreenhouseSalaryPreserved verifies that a
-// Greenhouse structured match does NOT zero the LLM's salary. Greenhouse has
+// Greenhouse structured match does NOT delete the LLM's salary. Greenhouse has
 // no compensation field in its API (greenhouseJobToListing can never set any
 // salary), so its silence is structural, not meaningful — the LLM's salary
 // (extracted from job.Content, the ONLY place Greenhouse publishes comp) is
 // PRESERVED. Non-salary fields (Title, Company) still win from structured.
+// This is the guard that nothing deletes salary: the field-by-field rule
+// (structured wins only where non-empty) keeps the LLM salary because the
+// structured listing has nil/"" for every salary field.
 //
-// Mutation: revert the per-source capability guard (zero unconditionally on
-// empty structured salary) → llm[0].SalaryMin becomes nil, Salary becomes "" → RED.
+// Mutation: restore salary zeroing (sourceExposesCompensation or group-copy
+// on hasStructuredSalary) → llm[0].SalaryMin becomes nil, Salary becomes "" → RED.
 func TestApplyStructuredPrecedence_GreenhouseSalaryPreserved(t *testing.T) {
 	structured := map[string]engine.JobListing{
 		"https://boards.greenhouse.io/testco/jobs/4001234": {
@@ -787,6 +805,138 @@ func TestApplyStructuredPrecedence_CrossProviderCollisionRejected(t *testing.T) 
 	}
 }
 
+// TestApplyStructuredPrecedence_EmptySourceJobIDFallbackResolvedFromURL
+// verifies that when the LLM record omits Source (json:"source,omitempty",
+// nothing enforces it, and precedence runs BEFORE the extractSourceForQuality
+// backfill in tool_job_search.go), the JobID fallback resolves the Source from
+// the URL via extractSourceFromURL and requires equality with the candidate's
+// Source. A LinkedIn record (id 4001234, no Source, LinkedIn URL) must NOT
+// match a Greenhouse candidate with the same int64 id — extractSourceFromURL
+// returns "" for a non-ATS URL, so llmSrc stays "" and the fallback is refused.
+//
+// This is the empty-Source escape that the bare `llm[i].Source == ""` guard
+// left open: the LLM omits one field and a cross-provider collision rewrites
+// the record, relabelling Source so nothing downstream can detect it.
+//
+// Mutation: restore the bare `llm[i].Source == "" || cand.Source == llm[i].Source`
+// escape → the LinkedIn record matches the Greenhouse candidate → llm[0].Title
+// becomes "Greenhouse Eng", Source becomes "greenhouse" → RED.
+func TestApplyStructuredPrecedence_EmptySourceJobIDFallbackResolvedFromURL(t *testing.T) {
+	structured := map[string]engine.JobListing{
+		"https://boards.greenhouse.io/testco/jobs/4001234": {
+			URL:     "https://boards.greenhouse.io/testco/jobs/4001234",
+			JobID:   "4001234",
+			Title:   "Greenhouse Eng",
+			Company: "testco",
+			Source:  "greenhouse",
+		},
+	}
+	llm := []engine.JobListing{
+		{
+			// LinkedIn record — URL does NOT normalize-match the Greenhouse URL,
+			// so the JobID fallback is the only path. Source is EMPTY (the LLM
+			// omitted it). extractSourceFromURL returns "" for a non-ATS URL
+			// (LinkedIn is not greenhouse/lever/ashby) → llmSrc stays "" →
+			// fallback refused.
+			URL:     "https://www.linkedin.com/jobs/view/4001234",
+			JobID:   "4001234",
+			Source:  "",
+			Title:   "LinkedIn Eng",
+			Company: "LinkedInCorp",
+		},
+	}
+
+	ApplyStructuredPrecedence(llm, structured)
+
+	if llm[0].Title != "LinkedIn Eng" {
+		t.Errorf("Title = %q, want LinkedIn Eng (empty-Source JobID fallback must resolve from URL and refuse cross-provider match)", llm[0].Title)
+	}
+	if llm[0].Source != "" {
+		t.Errorf("Source = %q, want empty (must NOT be overwritten by greenhouse)", llm[0].Source)
+	}
+	if llm[0].Company != "LinkedInCorp" {
+		t.Errorf("Company = %q, want LinkedInCorp (cross-provider collision must NOT rewrite)", llm[0].Company)
+	}
+}
+
+// TestApplyStructuredPrecedence_EmptySourceJobIDFallbackMatchesSameProvider
+// verifies that the empty-Source resolution does NOT break the legitimate
+// same-provider JobID fallback: an LLM record with no Source but a Lever URL
+// and a Lever JobID still matches a Lever structured candidate. The URL
+// resolves to "lever" which == the candidate's "lever".
+//
+// Mutation: refuse the JobID fallback whenever llm[i].Source == "" (instead of
+// resolving from URL) → no match → SalaryMin stays nil → RED.
+func TestApplyStructuredPrecedence_EmptySourceJobIDFallbackMatchesSameProvider(t *testing.T) {
+	min := 160000
+	structured := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:       "https://jobs.lever.co/testco/abc",
+			JobID:     "abc",
+			SalaryMin: &min,
+			Source:    "lever",
+		},
+	}
+	llm := []engine.JobListing{
+		{
+			// LLM emitted a different URL for the same job, no Source.
+			// The URL resolves to "lever" via extractSourceFromURL.
+			URL:       "https://jobs.lever.co/testco/abc/apply",
+			JobID:     "abc",
+			Source:    "",
+			Title:     "Eng",
+			SalaryMin: nil,
+		},
+	}
+
+	ApplyStructuredPrecedence(llm, structured)
+
+	if llm[0].SalaryMin == nil || *llm[0].SalaryMin != 160000 {
+		t.Errorf("SalaryMin = %v, want 160000 (empty-Source same-provider JobID fallback must still match)", llm[0].SalaryMin)
+	}
+}
+
+// TestApplyStructuredPrecedence_NoMatchAttributedToNone verifies that an LLM
+// record whose URL is unresolvable (non-ATS, or a hallucinated URL for an ATS
+// job) attributes the no_match to source="none" instead of dropping it. Both
+// Lever and Ashby support custom board domains, so dropping unresolvable misses
+// would make a join regression indistinguishable from "no ATS jobs in this
+// search". The "none" label is in validStructuredPrecedenceSources (metrics.go)
+// and was previously a dead allowlist entry with zero writers.
+//
+// This test uses the metrics registry to verify the counter bump — it requires
+// engine.InitTestRegistry() so reg is non-nil.
+//
+// Mutation: restore `extractSourceFromURL` returning "" for unresolvable URLs
+// with no "none" fallback → IncrStructuredPrecedence drops it ("" not in
+// validStructuredPrecedenceSources) → counter delta = 0 → RED.
+func TestApplyStructuredPrecedence_NoMatchAttributedToNone(t *testing.T) {
+	engine.InitTestRegistry()
+	before := engine.GetMetrics()
+
+	structured := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:    "https://jobs.lever.co/testco/abc",
+			Source: "lever",
+		},
+	}
+	llm := []engine.JobListing{
+		{
+			// Non-ATS URL — extractSourceFromURL returns "", which must become
+			// "none" so the no_match counter is bumped.
+			URL: "https://example.com/some-job",
+		},
+	}
+
+	ApplyStructuredPrecedence(llm, structured)
+
+	after := engine.GetMetrics()
+	key := engine.MetricStructuredPrecedence + "{source=none,outcome=no_match}"
+	if after[key]-before[key] != 1 {
+		t.Errorf("structured_precedence_total{source=none,outcome=no_match} delta = %d, want 1 (unresolvable no_match must be attributed to none, not dropped)", after[key]-before[key])
+	}
+}
+
 // TestLeverPostingToListing_PerMonthSalary verifies that Lever's
 // "per-month-salary" interval maps to "month" (previously unmapped → "" →
 // early return with nil salary pointers → LLM salary zeroed by precedence).
@@ -819,40 +969,41 @@ func TestLeverPostingToListing_PerMonthSalary(t *testing.T) {
 	}
 }
 
-// TestLeverSalaryString_UnmappedIntervalReturnsEmpty verifies that
-// leverSalaryString returns "" for unmapped intervals (per-week-salary,
-// per-day-wage, one-time) so the salary is NOT rendered into the LLM-facing
-// content string. Without this guard, the model would be SHOWN a number the
-// mapper judged unsafe to assert, extract it, and then have it zeroed by
-// ApplyStructuredPrecedence — a fully populated salaryRange ending with no
-// salary anywhere.
+// TestLeverSalaryString_UnmappedIntervalRenderedVerbatim verifies that
+// leverSalaryString renders the salary with the raw interval token VERBATIM
+// for unmapped intervals (per-week-salary, per-day-wage, one-time) — e.g.
+// "4000–6000 USD/per-week-salary". The number reaches both call sites
+// (SearchLeverJobsStructured content string + FetchATSBoard compensation field)
+// carrying its own disambiguation. leverPostingToListing still leaves
+// SalaryInterval empty (it will not assert a contract bucket it cannot map),
+// so the scorer never renders $X/year for a per-week posting; a model can
+// reason about "per-week", it cannot reason about absence.
 //
-// Mutation: remove the `if interval == "" { return "" }` guard in
-// leverSalaryString → salStr becomes "4000-6000 USD" → RED.
-func TestLeverSalaryString_UnmappedIntervalReturnsEmpty(t *testing.T) {
+// Mutation: restore the `if interval == "" { return "" }` suppression in
+// leverSalaryString → per-week-salary returns "" instead of
+// "4000–6000 USD/per-week-salary" → RED.
+func TestLeverSalaryString_UnmappedIntervalRenderedVerbatim(t *testing.T) {
 	tests := []struct {
 		name     string
 		interval string
+		min      int
+		max      int
 		want     string
 	}{
-		{"per-week-salary", "per-week-salary", ""},
-		{"per-day-wage", "per-day-wage", ""},
-		{"one-time", "one-time", ""},
-		{"empty", "", ""},
-		{"per-year-salary (mapped)", "per-year-salary", "160000–220000 USD/year"},
-		{"per-month-salary (mapped)", "per-month-salary", "10000–15000 USD/month"},
+		{"per-week-salary", "per-week-salary", 4000, 6000, "4000–6000 USD/per-week-salary"},
+		{"per-day-wage", "per-day-wage", 200, 300, "200–300 USD/per-day-wage"},
+		{"one-time", "one-time", 5000, 5000, "5000–5000 USD/one-time"},
+		{"empty interval (no info)", "", 160000, 220000, ""},
+		{"per-year-salary (mapped)", "per-year-salary", 160000, 220000, "160000–220000 USD/year"},
+		{"per-month-salary (mapped)", "per-month-salary", 10000, 15000, "10000–15000 USD/month"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := leverPosting{}
-			p.SalaryRange.Min = 160000
-			p.SalaryRange.Max = 220000
+			p.SalaryRange.Min = tt.min
+			p.SalaryRange.Max = tt.max
 			p.SalaryRange.Currency = "USD"
 			p.SalaryRange.Interval = tt.interval
-			if tt.interval == "per-month-salary" {
-				p.SalaryRange.Min = 10000
-				p.SalaryRange.Max = 15000
-			}
 			got := leverSalaryString(p)
 			if got != tt.want {
 				t.Errorf("leverSalaryString(interval=%q) = %q, want %q", tt.interval, got, tt.want)

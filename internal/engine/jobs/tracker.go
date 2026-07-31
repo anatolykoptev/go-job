@@ -134,7 +134,7 @@ func formatSalary(min, max *int, currency, interval string) string {
 // trackerRate routes a status + note write to the correct axis of hunt_ratings
 // (migration 012 split) using RateExact to guarantee single-observable-status
 // coherence. RateExact unconditionally overwrites BOTH axes — the active axis
-// gets the status value, the inactive axis is explicitly cleared to ”.
+// gets the status value, the inactive axis is explicitly cleared to "".
 //
 // Without this explicit clear a prior triage='saved' row would survive a
 // pipeline transition (applied/interview/offer/rejected) because Rate's CASE

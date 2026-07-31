@@ -712,10 +712,10 @@ func normalizeRemote(s string) string {
 //
 // Unmapped intervals (per-week-salary, per-day-wage, one-time) return "" —
 // the contract has no week/day/one-time bucket, and asserting annual would
-// mis-score them. leverSalaryString also returns "" for these so the salary
-// is NOT rendered into the LLM-facing content string (the model would extract
-// a number the mapper judged unsafe to assert, then have it zeroed by
-// ApplyStructuredPrecedence).
+// mis-score them. leverPostingToListing still leaves SalaryInterval empty for
+// these (it will not assert a contract bucket it cannot map), but
+// leverSalaryString now renders the RAW interval token verbatim so the number
+// reaches both consumers carrying its own disambiguation — see leverSalaryString.
 func normalizeSalaryInterval(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "per-year-salary", "year", "annual": //nolint:goconst // semantic: SalaryInterval vocabulary
@@ -732,14 +732,35 @@ func normalizeSalaryInterval(s string) string {
 // leverSalaryString renders a leverPosting's salaryRange as a human-readable
 // string via formatSalary (reused from tracker.go — the fourth copy of salary
 // formatting in this file was the REUSE finding). Returns "" when neither min
-// nor max is positive, OR when the interval is unmapped (per-week-salary,
-// per-day-wage, one-time) — the contract has no week/day/one-time bucket, so
-// rendering a number without an interval would let the LLM extract it and then
-// have it zeroed by ApplyStructuredPrecedence. Used by the SearxngResult
-// content string and the FetchATSBoard compensation field.
+// nor max is positive, or when there is no interval information at all.
+//
+// Two call sites: SearchLeverJobsStructured (the LLM-facing SearxngResult
+// content string) and FetchATSBoard (the operator-facing ATSJob.Compensation
+// field). The second never reaches precedence or the scorer, so the old
+// "suppress so the LLM cannot extract an unsafe number" rationale applied to
+// only one of two consumers and left the operator tool reporting
+// Compensation: "" for a posting Lever published a real range on.
+//
+// For an UNMAPPED interval (per-week-salary, per-day-wage, one-time) the
+// number is now rendered with the interval token VERBATIM — e.g.
+// "4000–6000 USD/per-week-salary" — so it reaches both consumers carrying its
+// own disambiguation. The disease was an incomplete enum; hiding the data was
+// not the cure. leverPostingToListing still refuses to assert a contract
+// bucket in SalaryInterval (it stays empty in the structured listing), so the
+// scorer never renders $X/year for a per-week posting; a model can reason
+// about "per-week", it cannot reason about absence.
 func leverSalaryString(p leverPosting) string {
 	interval := normalizeSalaryInterval(p.SalaryRange.Interval)
-	if interval == "" {
+	renderInterval := interval
+	if renderInterval == "" {
+		// Unmapped interval: render the raw token verbatim so the number is
+		// not withheld from either consumer. Trimmed so a whitespace-only raw
+		// interval falls through to the "" return below.
+		renderInterval = strings.TrimSpace(p.SalaryRange.Interval)
+	}
+	if renderInterval == "" {
+		// No interval information at all (empty raw + unmapped) — nothing
+		// disambiguating to render alongside the number.
 		return ""
 	}
 	if p.SalaryRange.Min <= 0 && p.SalaryRange.Max <= 0 {
@@ -754,7 +775,7 @@ func leverSalaryString(p leverPosting) string {
 		max := p.SalaryRange.Max
 		maxPtr = &max
 	}
-	return formatSalary(minPtr, maxPtr, p.SalaryRange.Currency, interval)
+	return formatSalary(minPtr, maxPtr, p.SalaryRange.Currency, renderInterval)
 }
 
 // leverPostingToListing builds a structured engine.JobListing from a parsed
@@ -1278,12 +1299,19 @@ func NormalizeURL(u string) string {
 }
 
 // ApplyStructuredPrecedence overrides LLM-extracted JobListing fields with
-// source-structured values where the structured listing carries a non-empty
-// value. The LLM value is preserved ONLY where the structured one is empty
-// (nil pointer for salary, "" for strings, nil/empty for slices). This is the
-// job_search contract: structured ATS fields win over the LLM's guess, so a
-// Lever posting whose API gave salaryRange{160000,220000,USD} surfaces those
-// exact numbers instead of the LLM's "not specified".
+// source-structured values, FIELD BY FIELD: a structured value wins ONLY where
+// that individual field is non-empty (non-nil pointer for salary, non-"" for
+// strings, non-empty for slices). A nil/empty structured field NEVER overwrites
+// a populated LLM one. This is strictly additive — the LLM value is preserved
+// wherever the structured source is silent, so a Greenhouse match (no comp
+// field in its API) keeps the LLM's salary, and an Ashby match that published
+// only compensationTierSummary (free-text Salary) keeps the LLM's
+// SalaryMin/Max/Currency/Interval. Salary zeroing was removed: it deleted
+// correct LLM-extracted comp for 100% of Greenhouse matches, then for Lever/
+// Ashby postings whose employer left the structured comp field unfilled (an
+// absent value means "the employer did not fill the field", not "there is no
+// comp") — three measured regressions in three rounds for a speculative
+// anti-hallucination benefit.
 //
 // Join key (HIGH fix): structuredByURL is keyed by normalizeURL(listing.URL)
 // here, and the lookup uses normalizeURL(llm[i].URL). The producer side
@@ -1294,24 +1322,19 @@ func NormalizeURL(u string) string {
 // structured listing's JobID). This catches the case where the LLM emits a
 // different URL for the same job (e.g. the apply URL vs the hosted URL on
 // Lever) but extracted the JobID from the posting body. The fallback requires
-// s.Source == llm[i].Source when the LLM record carries a Source — a
-// cross-provider JobID collision (e.g. a Greenhouse int64 id colliding with a
-// LinkedIn 7-digit id) must NOT rewrite the wrong provider's record.
+// the LLM record's Source to equal the candidate's Source. When the LLM record
+// omits Source (json:"source,omitempty", nothing enforces it, and precedence
+// runs BEFORE the extractSourceForQuality backfill in tool_job_search.go), the
+// Source is resolved from the URL via extractSourceFromURL and THAT must equal
+// the candidate's Source; if the URL is also unresolvable the JobID fallback is
+// refused — otherwise a LinkedIn record (id 4001234, no Source) would match a
+// Greenhouse candidate with the same int64 id, be silently relabelled
+// greenhouse, and leave nothing downstream able to detect it.
 //
 // Description exclusion (MINOR): s.Description is NOT copied — the structured
 // Description is a 600-rune truncation of descriptionPlain, while the LLM
 // Description is the model's own summary. Overwriting the LLM summary with a
 // truncated raw dump loses the summary. The LLM value is kept.
-//
-// Salary zeroing (per-source capability): when a structured listing matches
-// but carries NO salary, the LLM's salary fields are ZEROED — but ONLY for
-// providers that actually expose a compensation field in their API (Lever
-// salaryRange, Ashby compensationTierSummary). For those providers, an empty
-// comp field is meaningful silence ("the source spoke and said no comp").
-// Greenhouse has NO compensation field in its API (greenhouseJobToListing can
-// never set any salary), so zeroing would delete a correct LLM-extracted
-// salary for 100% of Greenhouse matches — the LLM's salary (extracted from
-// job.Content, the ONLY place Greenhouse publishes comp) is PRESERVED.
 //
 // Observability: bumps gojob_structured_precedence_total{source,outcome} for
 // every LLM record — outcome=applied on match, outcome=no_match on miss — so
@@ -1321,7 +1344,11 @@ func NormalizeURL(u string) string {
 // LinkedIn, hn, yc, indeed) would otherwise dominate no_match on platform=all
 // and mask a per-provider join regression. no_match is attributed via
 // extractSourceFromURL so a Greenhouse-only break is visible as
-// source=greenhouse, not swallowed into source=none.
+// source=greenhouse; an unresolvable URL (non-ATS, or a hallucinated URL for an
+// ATS job) is attributed to source=none so it is NOT dropped — both Lever and
+// Ashby support custom board domains, so a no_match with no attributable source
+// must still increment the counter or a join regression becomes
+// indistinguishable from "no ATS jobs in this search".
 func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[string]engine.JobListing) {
 	// No structured data → nothing to join against. Skip the counter entirely
 	// so non-ATS LLM records don't pollute no_match on platform=all.
@@ -1347,23 +1374,48 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		s, ok := byNormURL[NormalizeURL(llm[i].URL)]
 		if !ok {
 			// Fallback: match by llm[i].JobID (the LLM may have extracted it
-			// from the posting body even when the URL is wrong). Requires
-			// s.Source == llm[i].Source when the LLM record carries a Source —
-			// a cross-provider JobID collision must not rewrite the wrong
+			// from the posting body even when the URL is wrong). Requires the
+			// LLM record's Source to equal the candidate's Source — a
+			// cross-provider JobID collision must not rewrite the wrong
 			// record. ExtractJobID is NOT used here: it matches only LinkedIn
 			// URLs (/jobs/view/…), so it can never produce a Lever/Greenhouse/
 			// Ashby id, and the one case it does return (a LinkedIn id) can
 			// collide with a Greenhouse int64 id in byJobID.
+			//
+			// When the LLM record omits Source (json:"source,omitempty",
+			// nothing enforces it, and precedence runs BEFORE the
+			// extractSourceForQuality backfill in tool_job_search.go), resolve
+			// it from the URL via extractSourceFromURL and require equality
+			// with the candidate's Source. If the URL is also unresolvable,
+			// refuse the JobID fallback — otherwise a LinkedIn record (id
+			// 4001234, no Source) would match a Greenhouse candidate with the
+			// same int64 id and be silently relabelled.
 			id := llm[i].JobID
 			if id != "" {
 				cand, candOk := byJobID[id]
-				if candOk && (llm[i].Source == "" || cand.Source == llm[i].Source) {
-					s, ok = cand, true
+				if candOk {
+					llmSrc := llm[i].Source
+					if llmSrc == "" {
+						llmSrc = extractSourceFromURL(llm[i].URL)
+					}
+					if llmSrc != "" && cand.Source == llmSrc {
+						s, ok = cand, true
+					}
 				}
 			}
 		}
 		if !ok {
-			engine.IncrStructuredPrecedence(extractSourceFromURL(llm[i].URL), "no_match")
+			// Attribute the miss. A resolvable ATS URL → its source label; an
+			// unresolvable URL (non-ATS, or a hallucinated URL for an ATS job)
+			// → "none" so the miss is still counted — both Lever and Ashby
+			// support custom board domains, so dropping unresolvable misses
+			// would make a join regression indistinguishable from "no ATS jobs
+			// in this search".
+			src := extractSourceFromURL(llm[i].URL)
+			if src == "" {
+				src = "none"
+			}
+			engine.IncrStructuredPrecedence(src, "no_match")
 			continue
 		}
 		engine.IncrStructuredPrecedence(s.Source, "applied")
@@ -1385,25 +1437,28 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		if s.Location != "" {
 			llm[i].Location = s.Location
 		}
-		// Salary group: structured is authoritative. When structured HAS a
-		// salary, it wins. When structured has NONE, the LLM's salary is
-		// ZEROED — but ONLY for providers that expose a comp field (Lever,
-		// Ashby). For those, empty comp = meaningful silence. Greenhouse has
-		// no comp field, so its silence is structural, not meaningful — the
-		// LLM's salary (extracted from job.Content) is PRESERVED.
-		hasStructuredSalary := s.Salary != "" || s.SalaryMin != nil || s.SalaryMax != nil || s.SalaryCurrency != "" || s.SalaryInterval != ""
-		if hasStructuredSalary {
+		// Salary group, field by field (strictly additive): a structured value
+		// wins ONLY where that individual field is non-empty. A nil/empty
+		// structured field NEVER overwrites a populated LLM one. This keeps the
+		// LLM's salary where the structured source is silent (Greenhouse has no
+		// comp field; Ashby publishes only the free-text compensationTierSummary
+		// and never the numeric fields) and lets a structured numeric range
+		// override the LLM's guess where the source did publish one. Salary
+		// zeroing was removed — see the doc comment above.
+		if s.Salary != "" {
 			llm[i].Salary = s.Salary
+		}
+		if s.SalaryMin != nil {
 			llm[i].SalaryMin = s.SalaryMin
+		}
+		if s.SalaryMax != nil {
 			llm[i].SalaryMax = s.SalaryMax
+		}
+		if s.SalaryCurrency != "" {
 			llm[i].SalaryCurrency = s.SalaryCurrency
+		}
+		if s.SalaryInterval != "" {
 			llm[i].SalaryInterval = s.SalaryInterval
-		} else if sourceExposesCompensation(s.Source) {
-			llm[i].Salary = ""
-			llm[i].SalaryMin = nil
-			llm[i].SalaryMax = nil
-			llm[i].SalaryCurrency = ""
-			llm[i].SalaryInterval = ""
 		}
 		if s.JobType != "" {
 			llm[i].JobType = s.JobType
@@ -1424,38 +1479,19 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 	}
 }
 
-// sourceExposesCompensation reports whether a structured ATS provider
-// actually carries a compensation field in its API response. Only providers
-// that DO expose comp qualify for salary zeroing in ApplyStructuredPrecedence:
-// for them, an empty comp field is meaningful silence ("the source spoke and
-// said no comp"). Greenhouse has NO comp field in its API
-// (greenhouseJobToListing can never set any salary), so its silence is
-// structural — zeroing would delete a correct LLM-extracted salary for 100% of
-// Greenhouse matches.
-func sourceExposesCompensation(source string) bool {
-	switch source {
-	case string(PlatformLever), string(PlatformAshby):
-		return true
-	default:
-		return false
-	}
-}
-
 // extractSourceFromURL infers the ATS provider from a URL for metric
-// attribution. Returns "" for non-ATS URLs so IncrStructuredPrecedence drops
-// them (non-ATS no_match records would otherwise pollute the counter on
-// platform=all and mask a per-provider join regression). Mirrors the
-// URL→source logic in jobserver.extractSourceForQuality but only returns the
-// ATS sources that are valid labels for structured_precedence_total.
+// attribution and the JobID-fallback Source resolution in
+// ApplyStructuredPrecedence. Returns "" for non-ATS URLs; the caller attributes
+// such misses to "none" so a join regression on a custom-board-domain Lever/
+// Ashby job is still counted. Delegates to SourceFromURL (the single shared
+// URL→source implementation in hunt_map.go) and keeps only the ATS arms — the
+// structured_precedence_total source label is bounded to {greenhouse,lever,
+// ashby,none} by validStructuredPrecedenceSources in metrics.go.
 func extractSourceFromURL(jobURL string) string {
-	u := strings.ToLower(jobURL)
-	switch {
-	case strings.Contains(u, "greenhouse"):
-		return string(PlatformGreenhouse)
-	case strings.Contains(u, "lever.co"):
-		return string(PlatformLever)
-	case strings.Contains(u, "ashbyhq"):
-		return string(PlatformAshby)
+	s := SourceFromURL(jobURL)
+	switch s {
+	case string(PlatformGreenhouse), string(PlatformLever), string(PlatformAshby):
+		return s
 	default:
 		return ""
 	}

@@ -17,9 +17,12 @@ func TestSourceFromURL(t *testing.T) {
 		{"https://jobs.undp.org/cj_view_jobs.cfm", "undp"},
 		{"https://www.linkedin.com/jobs/view/12345", "linkedin"},
 		{"https://boards.greenhouse.io/airbnb/jobs/12345", "greenhouse"},
+		{"https://job-boards.greenhouse.io/airbnb/jobs/12345", "greenhouse"}, // broad match — previously missed
+		{"https://boards-api.greenhouse.io/airbnb/jobs/12345", "greenhouse"}, // broad match
 		{"https://jobs.lever.co/stripe/abc", "lever"},
 		{"https://jobs.ashbyhq.com/openai/role", "ashby"},
 		{"https://www.workatastartup.com/jobs/12345", "yc"},
+		{"https://www.ycombinator.com/jobs/12345", "yc"}, // broad ycombinator match (not news.ycombinator.com)
 		{"https://news.ycombinator.com/item?id=12345", "hn"},
 		{"https://www.indeed.com/viewjob?jk=abc", "indeed"},
 		{"https://career.habr.com/vacancies/12345", "habr"},
@@ -39,9 +42,9 @@ func TestSourceFromURL(t *testing.T) {
 func TestJobListingToHunt_SourceOverride(t *testing.T) {
 	// LLM-emitted source is empty or "other" — URL-based override should kick in.
 	cases := []struct {
-		name     string
-		input    engine.JobListing
-		wantSrc  string
+		name    string
+		input   engine.JobListing
+		wantSrc string
 	}{
 		{
 			name:    "empty source falls back to URL classifier",

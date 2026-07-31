@@ -1224,7 +1224,12 @@ func IncrATSFetchErrors(platform, reason string) {
 }
 
 // validStructuredPrecedenceSources bounds the source label for
-// structured_precedence_total. "none" is the no_match case.
+// structured_precedence_total. "none" is the no_match case where no ATS source
+// can be attributed to the LLM record's URL (non-ATS URL, or a hallucinated
+// URL for an ATS job — both Lever and Ashby support custom board domains).
+// ApplyStructuredPrecedence attributes such misses to "none" rather than
+// dropping them, so a join regression stays distinguishable from "no ATS jobs
+// in this search".
 var validStructuredPrecedenceSources = map[string]bool{
 	DiscoveryPlatformGreenhouse: true,
 	DiscoveryPlatformLever:      true,

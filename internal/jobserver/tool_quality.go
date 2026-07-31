@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/quality"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -100,26 +100,13 @@ func qualityScoreFromListing(j engine.JobListing) quality.Result {
 	return quality.Score(in)
 }
 
-// extractSourceFromURL guesses the job board name from a URL hostname,
-// reusing the same logic as extractSource but returning a quality-source
-// string suitable for sourceQualityScore. Kept here to avoid importing
-// extractSource (which returns a different label set).
+// extractSourceForQuality guesses the job board name from a URL for
+// sourceQualityScore. Delegates to jobs.SourceFromURL — the single shared
+// URL→source implementation — so a host migration (e.g. a greenhouse
+// board-domain change) needs one edit in one package, not two. The previous
+// hand-rolled duplicate of the ATS arms lived here and in
+// jobs.extractSourceFromURL; this repo has already eaten one greenhouse host
+// change. Returns one of {greenhouse,lever,ashby,yc,linkedin,indeed} or "".
 func extractSourceForQuality(jobURL string) string {
-	u := strings.ToLower(jobURL)
-	switch {
-	case strings.Contains(u, "greenhouse"):
-		return "greenhouse"
-	case strings.Contains(u, "lever.co"):
-		return "lever"
-	case strings.Contains(u, "ashbyhq"):
-		return "ashby"
-	case strings.Contains(u, "workatastartup") || strings.Contains(u, "ycombinator"):
-		return "yc"
-	case strings.Contains(u, "linkedin"):
-		return "linkedin"
-	case strings.Contains(u, "indeed"):
-		return "indeed"
-	default:
-		return ""
-	}
+	return jobs.SourceFromURL(jobURL)
 }
