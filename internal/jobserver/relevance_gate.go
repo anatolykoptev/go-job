@@ -294,13 +294,24 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		notice = appendNotice(notice, floorNotice)
 	}
 
+	// Score distribution — the threshold ships at 0.0 because none could be
+	// honestly measured; these three numbers let real traffic supply it.
+	var scoreMin, scoreMed, scoreMax float64
+	if n := len(sorted); n > 0 {
+		scoreMax = sorted[0].Score
+		scoreMin = sorted[n-1].Score
+		scoreMed = sorted[n/2].Score
+	}
 	slog.Info("job_search: relevance gate applied",
 		slog.Int("candidates", len(sorted)),
 		slog.Int("kept", passingCount),
 		slog.Int("floor_kept", floorKeptCount),
 		slog.Int("rejected", rejectedCount),
 		slog.Float64("min_relevance", jobSearchMinRelevance),
-		slog.Int("min_keep", jobSearchMinKeep))
+		slog.Int("min_keep", jobSearchMinKeep),
+		slog.Float64("score_min", scoreMin),
+		slog.Float64("score_median", scoreMed),
+		slog.Float64("score_max", scoreMax))
 
 	return filtered, "", notice
 }
