@@ -32,7 +32,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -272,7 +271,7 @@ func (c *Client) callRawWebSearch(ctx context.Context, query string) (*rawSearch
 		return nil, fmt.Errorf("discovery: go-search returned %d", resp.StatusCode)
 	}
 
-	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	rawBody, err := readLimitedBody(resp.Body, 512*1024)
 	if err != nil {
 		return nil, fmt.Errorf("discovery: read body: %w", err)
 	}

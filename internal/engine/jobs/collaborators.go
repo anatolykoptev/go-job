@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -79,7 +78,7 @@ func fetchCollaborators(ctx context.Context) ([]engine.BountyListing, error) {
 		return nil, fmt.Errorf("collaborators returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	body, err := readLimitedBody(resp.Body, 2*1024*1024)
 	if err != nil {
 		return nil, err
 	}
