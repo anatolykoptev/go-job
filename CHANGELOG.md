@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.17.1](https://github.com/anatolykoptev/go-job/compare/v1.17.0...v1.17.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **resume_generate:** emit the approved resume document shape ([#420](https://github.com/anatolykoptev/go-job/issues/420)) ([c6b88e2](https://github.com/anatolykoptev/go-job/commit/c6b88e220fd680117087356a25838c6d869a0369))
+
 ## [1.17.0](https://github.com/anatolykoptev/go-job/compare/v1.16.0...v1.17.0) (2026-07-31)
 
 
