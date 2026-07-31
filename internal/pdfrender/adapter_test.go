@@ -1,15 +1,19 @@
 package pdfrender
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/anatolykoptev/go-kit/render/typst"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TestNormalizeTitleBlock covers the pure normalizeTitleBlock helper.
@@ -299,6 +303,76 @@ func TestMissingFontFamilies(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Errorf("missing[%d] = %q, want %q", i, got[i], tc.want[i])
 				}
+			}
+		})
+	}
+}
+
+// gaugeValue reads a gauge's current value without prometheus/testutil, which
+// is not vendored.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		t.Fatalf("gauge Write: %v", err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// TestReadySetsFontGauge guards the DECISION, not the parse. Review deleted the
+// whole probe block out of Ready() and the package stayed green: every earlier
+// mutation targeted missingFontFamilies and requiredFontFamilies, so the parse
+// was pinned while the branch that turns a parse into a gauge value was not.
+// An inverted Set, a dropped case or a removed call all shipped silently — the
+// detector for a silent failure was itself silently deletable.
+//
+// Drives Ready() through an injected lister, so it reaches the decision with or
+// without a typst binary on the box and never skips.
+//
+// Not parallel: the gauges are package-level.
+func TestReadySetsFontGauge(t *testing.T) {
+	const complete = "IBM Plex Sans\nIBM Plex Mono\nDejaVu Sans Mono\n"
+	const containerBeforeFix = "DejaVu Sans Mono\nLibertinus Serif\n"
+
+	for _, tc := range []struct {
+		name string
+		list string
+		err  error
+		want float64
+		// wantLog is the substring the operator-facing Error must carry. The
+		// gauge alone cannot separate "typst would not run" from "typst ran and
+		// the faces are absent" — both are correctly 0 — but they send an
+		// operator to different places, so the message is the thing under test.
+		wantLog string
+	}{
+		{"every required face present", complete, nil, 1, ""},
+		{"the pre-fix container", containerBeforeFix, nil, 0, "are absent from this image"},
+		{"typst could not be run", "", errors.New("exec: typst: not found"), 0, "cannot enumerate typst fonts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelError})))
+			defer slog.SetDefault(prev)
+
+			pdfFontAvailableGauge.Set(-1) // poison, so a missing Set is visible
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) {
+				return []byte(tc.list), tc.err
+			}
+
+			a.Ready()
+
+			if got := gaugeValue(t, pdfFontAvailableGauge); got != tc.want {
+				t.Errorf("gojob_pdf_font_available = %v, want %v", got, tc.want)
+			}
+			switch {
+			case tc.wantLog == "":
+				if logged.Len() > 0 {
+					t.Errorf("every face present, but an Error was logged: %s", logged.String())
+				}
+			case !strings.Contains(logged.String(), tc.wantLog):
+				t.Errorf("Error log does not mention %q — the operator is pointed at the wrong problem.\ngot: %s", tc.wantLog, logged.String())
 			}
 		})
 	}

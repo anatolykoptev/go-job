@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -76,9 +77,16 @@ var pdfFontAvailableGauge = promauto.NewGauge(prometheus.GaugeOpts{
 })
 
 // requiredFontFamilies are the families resume.typ names in its #set text and
-// #show raw rules. Derived from the preamble, not from a hand-kept list — when
-// the preamble changes its font, this must change with it.
+// #show raw rules. It IS a hand-kept list — what is derived is the agreement
+// between it and the preamble, which TestRequiredFontFamiliesMatchPreamble
+// checks in both directions. A face the preamble starts naming and this list
+// does not know about would go missing silently, which is the whole point.
 var requiredFontFamilies = []string{"IBM Plex Sans", "IBM Plex Mono"}
+
+// fontProbeTimeout bounds the startup font probe. `typst fonts` is a local
+// filesystem scan measured at ~40ms in the deployed image; the ceiling exists
+// for a pathological mount, not for the normal case.
+const fontProbeTimeout = 15 * time.Second
 
 // ligaPreamble is a pandoc raw-typst block that disables OpenType ligature
 // substitution for the entire document body. Prepended to every markdown
@@ -101,23 +109,32 @@ const ligaPreamble = "```{=typst}\n#set text(features: (liga: 0))\n```\n\n"
 // Zero chromedp/cdproto — pandoc + typst static binaries only.
 type TypstAdapter struct {
 	r *typst.TypstRenderer
+
+	// fontLister enumerates the families typst can see. Injectable because the
+	// DECISION built on it — which gauge value, which log — is the part that
+	// breaks silently, and a test that can only reach the parsing leaves it
+	// unguarded. Review proved that: with the whole probe block deleted from
+	// Ready, the package stayed green.
+	fontLister func(context.Context) ([]byte, error)
 }
 
 // New creates a TypstAdapter. No state is held by TypstRenderer; safe for
 // concurrent use.
 func New() *TypstAdapter {
-	return &TypstAdapter{r: typst.NewTypstRenderer()}
+	return &TypstAdapter{r: typst.NewTypstRenderer(), fontLister: typstFontList}
 }
 
 // Ready probes typst and pandoc availability, sets both PDF gauges, and returns
 // true when both binaries are on PATH. Call once at startup after constructing
 // the adapter.
 //
-// Font absence deliberately does NOT make this return false. A resume in the
-// wrong face is worse than one in the right face, but it is better than no PDF
-// at all, and returning false here degrades every application to md-only. The
-// font finding is reported through gojob_pdf_font_available and an Error log
-// instead, so it is visible without being destructive.
+// Font absence deliberately does NOT make this return false, because a PDF in
+// the wrong face is still a usable PDF and the operator needs it reported, not
+// withheld. gojob_pdf_font_available plus an Error log is that report.
+//
+// (This return value is a weak lever anyway: its one production consumer,
+// main.go, only emits a Warn. The per-render md-only degrade is decided
+// elsewhere, by isNoBinary on ErrNoBinary.)
 func (a *TypstAdapter) Ready() bool {
 	_, typstErr := exec.LookPath("typst")
 	_, pandocErr := exec.LookPath("pandoc")
@@ -127,37 +144,51 @@ func (a *TypstAdapter) Ready() bool {
 	} else {
 		pdfRendererAvailableGauge.Set(0)
 	}
-
-	if !available {
-		// No typst means no font list to read; leave the face gauge at 0
-		// rather than reporting an absence we did not measure.
-		pdfFontAvailableGauge.Set(0)
-		return available
-	}
-
-	out, err := typstFontList(context.Background())
-	switch {
-	case err != nil:
-		pdfFontAvailableGauge.Set(0)
-		slog.Error("pdfrender: cannot enumerate typst fonts — unable to confirm the resume theme's faces are present", "err", err)
-	default:
-		if missing := missingFontFamilies(out, requiredFontFamilies); len(missing) > 0 {
-			pdfFontAvailableGauge.Set(0)
-			slog.Error("pdfrender: font families named by the resume theme are absent from this image — typst substitutes silently, so every resume renders in the wrong face",
-				"missing", missing)
-		} else {
-			pdfFontAvailableGauge.Set(1)
-		}
-	}
+	a.checkFonts(context.Background())
 	return available
 }
 
+// checkFonts sets pdfFontAvailableGauge from a live enumeration and logs what
+// is missing. Called unconditionally — a typst that cannot be run reports the
+// same "faces unconfirmed" as one whose font set is short, and both are 0.
+func (a *TypstAdapter) checkFonts(ctx context.Context) {
+	out, err := a.fontLister(ctx)
+	if err != nil {
+		pdfFontAvailableGauge.Set(0)
+		slog.Error("pdfrender: cannot enumerate typst fonts — unable to confirm the resume theme's faces are present", "err", err)
+		return
+	}
+	if missing := missingFontFamilies(out, requiredFontFamilies); len(missing) > 0 {
+		pdfFontAvailableGauge.Set(0)
+		slog.Error("pdfrender: font families named by the resume theme are absent from this image — typst substitutes silently, so every resume renders in the wrong face",
+			"missing", missing)
+		return
+	}
+	pdfFontAvailableGauge.Set(1)
+}
+
 // typstFontList shells out to `typst fonts`, which prints one family name per
-// line. Split from the parsing so the parse is testable without a typst binary.
+// line. Split from the parsing so the parse is testable without a binary.
+//
+// Binary resolution mirrors go-kit's resolveEnvOrPath precedence
+// (RENDER_TYPST_PATH, then the legacy VAELOR_TYPST_PATH, then PATH). Probing a
+// different installation than the renderer uses would measure the wrong font
+// set and report it as fact.
 func typstFontList(ctx context.Context) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, fontProbeTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "typst", "fonts").Output()
+	//nolint:gosec // bin resolved from the same env keys go-kit honours, or PATH
+	return exec.CommandContext(ctx, typstBinary(), "fonts").Output()
+}
+
+// typstBinary resolves the typst executable the renderer would use.
+func typstBinary() string {
+	for _, key := range []string{"RENDER_TYPST_PATH", "VAELOR_TYPST_PATH"} {
+		if p := os.Getenv(key); p != "" {
+			return p
+		}
+	}
+	return "typst"
 }
 
 // missingFontFamilies returns the required families absent from `typst fonts`
