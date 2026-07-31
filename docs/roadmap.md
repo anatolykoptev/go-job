@@ -1,7 +1,7 @@
 # go_job — Career Assistant Roadmap
 
 > AIHawk-level career assistant through a Claude Code / MCP agent + go_job MCP server.
-> Last updated: 2026-06-26
+> Last updated: 2026-07-30
 
 ---
 
@@ -120,6 +120,41 @@ No browser automation. No credentials. Pure API + LLM.
 
 ## Roadmap — Next Steps
 
+### Phase 11 — Multi-User (HIGH PRIORITY)
+
+> **Why now:** go_job was built for one operator. Prospective users outside that
+> scope now want to run it, and every one of them would share the same profile,
+> the same tracker and the same generated documents.
+>
+> **Status:** architecture settled (ADRs A–J, reviewed 2026-06-27). Implementation
+> not started as of 2026-07-30.
+
+Single-user is not a missing feature — it is an assumption that is load-bearing in
+several places. Each row below is a place where "the user" is currently implicit.
+
+| Area | Today's single-user assumption | Target |
+|------|-------------------------------|--------|
+| Resume profile | `GetLatestPersonID` returns the highest `resume_persons.id`, with no ownership condition | account-scoped lookup; a person belongs to exactly one account |
+| Job scoring | per-user fit columns live on the shared `hunt_jobs` corpus rows | per-account `account_job_scores`; no shared-corpus table carries a per-account column |
+| Application artifacts | `applications/<job_id>/` is keyed by job alone, so two users applying to one job collide | per-account namespacing plus an ownership check on read |
+| MCP surface | one shared authority, no identity on the tool transport | account resolved once at the transport choke point, inherited by every tool |
+| Accounts | single operator, HMAC admin | bcrypt accounts and public self-service registration |
+| Destructive ops | `ClearAllPersons` issues an unqualified `DELETE` | scoped by construction; an unscoped statement unreachable through the store API |
+
+**Isolation model.** An `account_id` FK on per-user tables. The crawl corpus
+(`hunt_jobs` and its siblings) stays shared and deduped — that is the economics of
+crawling — so the per-user judgment written onto those rows moves off into
+account-keyed child tables. A shared row is the leak surface; keeping it shared
+obligates the partition.
+
+**Enforcement is fail-closed.** A session that resolves to no account gets no data,
+never a default workspace. The failure mode to design against is not an error, it
+is a silent read of someone else's rows.
+
+**Migration** is expand / backfill / constrain, with the restore rehearsed before
+the `NOT NULL` flip. That flip is the one-way door; everything before it is
+reversible.
+
 ### Phase 9 — Advanced Interview (LOW PRIORITY, HIGH IMPACT)
 
 > Beyond Q&A generation — interactive practice and live coaching.
@@ -207,3 +242,4 @@ internal/hunt/notify/telegram.go
 4. **Resume as text** — user pastes resume text directly; no PDF parsing needed for agent workflow.
 5. **SQLite for tracker** — simple, portable, no external dependencies.
 6. **Interview prep over auto-apply** — auto-apply is risky (ToS) and low-signal. Interview preparation has higher ROI for candidates with non-traditional backgrounds.
+7. **Single-user by construction** — one profile, one tracker, one document store; identity is implicit everywhere rather than passed. This was the right call for a personal tool and is the assumption Phase 11 removes. Read it as a scope boundary, not as an architecture that happens to have one user in it.
