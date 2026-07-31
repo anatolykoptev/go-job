@@ -147,14 +147,18 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 // factor for unknown periods, and a slog.Warn names the period so a silent
 // salary-NULL at scale is observable.
 //
-// 0 means "undisclosed" end to end on the freelance path: nullInt at
-// hunt/store.go:664 writes NULL for BudgetMin/BudgetMax, and the freelance
-// Telegram card at hunt/notify/telegram.go:419 omits the "Budget: $N" line
-// when BudgetMax == 0 (gating on BudgetMax alone — a min-only row also
-// renders no budget line, a pre-existing asymmetry out of scope here). The
-// row is still stored, upserted and notified; only the budget figure is
-// absent. This is NOT the hunt.Job path (nullInt at hunt/store.go:424,
-// scorer.go:370, telegram.go:352) — himalayas rows never enter it.
+// 0 means "undisclosed" on the freelance path, and it is not free: nullInt at
+// hunt/store.go:664 writes NULL for BudgetMin/BudgetMax, the row is stored and
+// upserted — but isUrgentFreelance (opportunity_ingest.go:55) returns false
+// when BudgetMax == 0, so applyFreelanceNotifyPolicy counts it as suppressed
+// and it gets NO individual Telegram card. Failing closed therefore costs the
+// notification, not merely the "Budget: $N" line; telegram.go:419's zero
+// branch is unreachable for these rows because the gate sits one layer above
+// it. That trade is still the right one — before this fix the rows were lost
+// wholesale at decode — but it is a real cost, not a cosmetic one.
+//
+// himalayas rows are engine.FreelanceJob → hunt.Freelance and never enter the
+// hunt.Job path, so none of that pipeline's salary handling applies here.
 func annualizeHimalayasSalary(v *float64, period string) int {
 	if v == nil {
 		return 0

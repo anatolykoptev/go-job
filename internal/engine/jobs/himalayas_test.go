@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -223,9 +222,12 @@ func TestAnnualizeHimalayasSalary_UnknownPeriodLogsWarn(t *testing.T) {
 	got := annualizeHimalayasSalary(&v, "fortnightly")
 	assert.Equal(t, 0, got, "unknown period must still fail closed to 0")
 
+	// One anchored match over a SINGLE line, not two independent Contains:
+	// the buffer is a process-global slog sink, so a foreign test's WARN could
+	// satisfy a bare Contains("level=WARN") while this call satisfies
+	// Contains("fortnightly") — and the test would still pass with this log
+	// downgraded to INFO.
 	out := buf.String()
-	assert.True(t, strings.Contains(out, "level=WARN"),
-		"expected WARN log for unrecognised period, got: %s", out)
-	assert.True(t, strings.Contains(out, "fortnightly"),
-		"expected log to name the unrecognised period %q, got: %s", "fortnightly", out)
+	assert.Regexp(t, `level=WARN[^\n]*fortnightly`, out,
+		"expected a single WARN line naming the unrecognised period, got: %s", out)
 }
