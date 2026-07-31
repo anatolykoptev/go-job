@@ -1,10 +1,12 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1347,28 +1349,52 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 // (false), NOT the state — searching washingtondc for someone in Spokane is
 // the same wrong-city outcome #347 exists to prevent.
 //
-// MUTATION-CHECK: restore longest-wins-regardless-of-position (revert to the
-// round-2 token pass over the whole string with len(key) as the primary rank)
-// → "Seattle, Washington" matches "washington" (longest) → washingtondc → the
-// not-washingtondc assertion fails → RED.
+// MUTATION-CHECK (F11): revert the state-tier rule → the six "City Washington"
+// no-comma cases resolve to washingtondc → the not-washingtondc / wantOK=false
+// assertions fail → RED.
+// MUTATION-CHECK (F12): restore first-segment-only segmentation →
+// "Remote, San Francisco, CA" → unmapped (city in segment 1 discarded) → RED.
+// MUTATION-CHECK (F13): neuter the position comparison (posInSegment) →
+// "Seattle Washington" → "washington" (longest, 10 > 7) wins → state-tier guard
+// rejects (pos > 0) → false, but want seattle,true → RED. Without the guard too,
+// → washingtondc → RED.
 func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
 	cases := []struct {
 		loc    string
 		want   string
 		wantOK bool
 	}{
+		// City that IS a key — BOTH punctuation shapes must resolve to the
+		// city, never to washingtondc.
 		{"Seattle, Washington", craigslistRegions["seattle"], true},
+		{"Seattle Washington", craigslistRegions["seattle"], true},
 		{"Tacoma, Washington", craigslistRegions["tacoma"], true},
+		{"Tacoma Washington", craigslistRegions["tacoma"], true},
+		// City that is NOT a key — BOTH punctuation shapes must be unmapped,
+		// NOT fall through to "washington" → washingtondc. The no-comma form
+		// is the #347 regression this round closes: "Spokane Washington"
+		// silently searched Washington DC.
 		{"Spokane, Washington", "", false},
+		{"Spokane Washington", "", false},
 		{"Vancouver, Washington", "", false},
+		{"Vancouver Washington", "", false},
 		{"Bellevue, Washington", "", false},
+		{"Bellevue Washington", "", false},
 		{"Redmond, Washington", "", false},
+		{"Redmond Washington", "", false},
 		// Positive control: "WA" is not a key, so the state abbreviation does
 		// not interfere and the city resolves on its own.
 		{"Seattle, WA", craigslistRegions["seattle"], true},
 		// Multi-token path: no comma, whole string is one segment; "san
 		// francisco" matches at position 0 → sfbay.
 		{"San Francisco Bay Area", craigslistCitySFBay, true},
+		// Leading qualifier (LinkedIn-style "Remote, City, ST"): the city in
+		// segment 1 must still resolve. Round 2 handled this; round 3's
+		// first-segment-only segmentation regressed it — ranking across ALL
+		// segments with a segment-index penalty restores it.
+		{"Remote, San Francisco, CA", craigslistCitySFBay, true},
+		{"Remote, Seattle, WA", craigslistRegions["seattle"], true},
+		{"123 Main St, Seattle, WA", craigslistRegions["seattle"], true},
 	}
 	for _, c := range cases {
 		got, ok := resolveRegion(c.loc)
@@ -1503,5 +1529,130 @@ func TestResolveCraigslistDefaultLocation_ProfileError_DistinctTier(t *testing.T
 	after := engine.GetMetrics()[key]
 	if after <= before {
 		t.Errorf("craigslist_default_location_total{tier=config_after_profile_error} did not increment (before=%d after=%d) — tier label rejected by the cardinality guard", before, after)
+	}
+}
+
+// --- F14: all three tiers render on the flat /metrics endpoint (MAJOR) ---
+//
+// FormatMetrics pre-touches craigslist_default_location_total{tier} so a
+// rate()-floor alert sees 0 before the first substituted-location search.
+// warmAlertBoundedMetrics ranges over validCraigslistDefaultLocationTiers and
+// picks up "config_after_profile_error"; FormatMetrics had a hardcoded
+// []string{"profile","config"} and rendered only its own allowlist, so the
+// tier that exists specifically to make a saturated pool visible was ABSENT
+// on /metrics. The fix makes FormatMetrics range over the same map.
+//
+// MUTATION-CHECK: revert FormatMetrics to the hardcoded pair → the
+// config_after_profile_error assertion fails → RED.
+func TestFormatMetrics_CraigslistDefaultLocationAllTiers(t *testing.T) {
+	out := engine.FormatMetrics()
+	for _, tier := range []string{"profile", "config", "config_after_profile_error"} {
+		label := engine.MetricCraigslistDefaultLocation + "{tier=" + tier + "}"
+		if !strings.Contains(out, label) {
+			t.Errorf("FormatMetrics output must contain %q; got:\n%s", label, out)
+		}
+	}
+}
+
+// --- Item 5b: profile error + no config is not silent (MAJOR) ---
+//
+// When the profile read errors AND CraigslistDefaultLocation is empty,
+// resolveCraigslistDefaultLocation returns ("", "") — the caller skips the
+// counter and the INFO log, and perr is discarded. A saturated pool on a
+// no-config deployment is silent: the same blind spot the
+// config_after_profile_error tier was added to remove, one branch over. The
+// fix logs the profile error at WARN when there is no config fallback to
+// substitute, so the degradation is observable.
+//
+// MUTATION-CHECK: remove the WARN log in the no-config-error path → the
+// "level=WARN" / "profile read failed" assertions fail → RED.
+func TestResolveCraigslistDefaultLocation_ProfileErrorNoConfig_Logs(t *testing.T) {
+	saveDefaultLocationDeps(t)
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "", errors.New("pgxpool: connection pool exhausted")
+	}
+
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	loc, tier := resolveCraigslistDefaultLocation(context.Background())
+	if loc != "" || tier != "" {
+		t.Fatalf("resolveCraigslistDefaultLocation = (%q, %q), want (\"\", \"\") — no config fallback must not substitute", loc, tier)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("profile read error with no config fallback must log at WARN; got:\n%s", out)
+	}
+	if !strings.Contains(out, "profile read failed") {
+		t.Errorf("WARN log must carry the profile read error; got:\n%s", out)
+	}
+}
+
+// --- Item 5a: ClearPerson / ClearAllPersons invalidate the profile cache ---
+//
+// ClearPerson and ClearAllPersons change what GetLatestPersonID returns but
+// neither invalidated the memo. Covered today only because master_resume.go
+// follows ClearAllPersons with InsertPerson (which does invalidate) — so if
+// that insert errors, the cache serves a deleted person's location until the
+// next successful rebuild. The fix calls invalidateProfileLocationCache from
+// both clear paths.
+//
+// MUTATION-CHECK: remove the invalidateProfileLocationCache() call from
+// ClearPerson → the second read returns the stale cached value → RED.
+//
+// Requires DATABASE_URL pointing at a *_test Postgres; skips otherwise.
+func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	dbtest.RequireTestDB(t, dsn)
+
+	ctx := context.Background()
+	db, err := ConnectResumeDB(ctx, dsn)
+	if err != nil {
+		t.Fatalf("ConnectResumeDB: %v", err)
+	}
+	t.Cleanup(db.Close)
+
+	origDB := GetResumeDB()
+	SetResumeDB(db)
+	t.Cleanup(func() { SetResumeDB(origDB) })
+
+	saveDefaultLocationDeps(t)
+
+	personID, err := db.InsertPerson(ctx, PersonRecord{
+		Name:     "Craigslist Clear Cache Test",
+		Email:    "craigslist-clear-cache-test@example.com",
+		Location: "Seattle, WA",
+	})
+	if err != nil {
+		t.Fatalf("InsertPerson: %v", err)
+	}
+
+	// First read populates the cache.
+	first, err := loadCachedProfileLocation(ctx)
+	if err != nil {
+		t.Fatalf("first loadCachedProfileLocation: %v", err)
+	}
+	if first != "Seattle, WA" {
+		t.Fatalf("first read = %q, want %q", first, "Seattle, WA")
+	}
+
+	// Clear the person — this changes what GetLatestPersonID returns.
+	if err := db.ClearPerson(ctx, personID); err != nil {
+		t.Fatalf("ClearPerson: %v", err)
+	}
+
+	// Second read must NOT serve the stale cached value — the cache was
+	// invalidated, so it re-queries and finds no person (GetLatestPersonID=0).
+	second, err := loadCachedProfileLocation(ctx)
+	if err != nil {
+		t.Fatalf("second loadCachedProfileLocation: %v", err)
+	}
+	if second != "" {
+		t.Errorf("cache not invalidated after ClearPerson: got %q, want \"\" — the connector would keep searching a deleted person's city", second)
 	}
 }

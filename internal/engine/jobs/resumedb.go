@@ -243,13 +243,24 @@ func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, erro
 
 func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
 	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, personID)
-	return err
+	if err != nil {
+		return err
+	}
+	// Clearing a person changes what GetLatestPersonID returns — drop the
+	// craigslist profile-location cache so the connector does not keep serving
+	// a deleted person's location until the next successful rebuild.
+	invalidateProfileLocationCache()
+	return nil
 }
 
 // ClearAllPersons deletes all resume data (single-user system, rebuild from scratch).
 func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
 	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons`)
-	return err
+	if err != nil {
+		return err
+	}
+	invalidateProfileLocationCache()
+	return nil
 }
 
 // GetLatestPersonID returns the ID of the most recently created person, or 0 if none.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -576,8 +577,10 @@ func FormatMetrics() string {
 	}
 	// craigslist_default_location_total{tier} pre-touched so a rate()-floor
 	// alert sees 0 before the first substituted-location search, and so the
-	// profile vs config split is visible from the first run. 2 tiers = 2 series.
-	for _, tier := range []string{"profile", "config"} {
+	// profile vs config split is visible from the first run. Ranges over
+	// validCraigslistDefaultLocationTiers (the same map warmAlertBoundedMetrics
+	// uses) so a future tier cannot be added to one site only.
+	for _, tier := range sortedCraigslistDefaultLocationTiers() {
 		keys = append(keys, MetricCraigslistDefaultLocation+"{tier="+tier+"}")
 	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
@@ -733,6 +736,19 @@ func IncrCraigslistDiscoveryFallback(reason string) {
 // silently (cardinality guard).
 var validCraigslistDefaultLocationTiers = map[string]bool{
 	"profile": true, "config": true, "config_after_profile_error": true,
+}
+
+// sortedCraigslistDefaultLocationTiers returns the keys of
+// validCraigslistDefaultLocationTiers in sorted order, so FormatMetrics
+// renders a deterministic series list regardless of Go's randomised map
+// iteration. Mirrors the map-range warmAlertBoundedMetrics already does.
+func sortedCraigslistDefaultLocationTiers() []string {
+	tiers := make([]string, 0, len(validCraigslistDefaultLocationTiers))
+	for tier := range validCraigslistDefaultLocationTiers {
+		tiers = append(tiers, tier)
+	}
+	sort.Strings(tiers)
+	return tiers
 }
 
 // IncrCraigslistDefaultLocation bumps

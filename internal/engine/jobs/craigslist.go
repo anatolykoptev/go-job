@@ -120,26 +120,44 @@ var craigslistRegionSlugs = func() map[string]bool {
 	return m
 }()
 
+// craigslistStateTierKeys are map keys that name a US STATE but map to a
+// Craigslist area that is NOT that state — "washington" maps to washingtondc
+// (DC), not Washington state. When such a key is the only match and it is NOT
+// at position 0 of segment 0, it is a false match: "Spokane Washington" means
+// Washington state, not DC. City keys at any position and state-tier keys at
+// (segment 0, position 0) — "Washington, DC" → washingtondc — remain valid.
+// Identified explicitly (a set), not by guessing from the string.
+var craigslistStateTierKeys = map[string]bool{
+	"washington": true,
+}
+
 // resolveRegion maps a free-text location to a Craigslist area slug. Returns
 // (region, true) on a match, ("", false) when the location is not in the
 // craigslistRegions map and no token-boundary key matches.
 //
-// Matching rule (closes #347; round-3 fix — city beats state):
+// Matching rule (closes #347; round-4 fix — multi-segment ranking + state-tier guard):
 //  1. exact full-string hit on the lowercased, trimmed location → that region;
-//  2. otherwise the FIRST comma-separated segment is tokenised on non-letters
-//     and each map key is tokenised the same way; a key matches when its
-//     tokens appear as a CONSECUTIVE run inside that segment's token list — so
-//     "la" only matches the standalone token "la", never inside "salt" or
-//     "dallas", and "san francisco" matches inside "san francisco bay area".
-//     Scoping to the first segment makes "City, State" resolve on the city:
-//     "Seattle, Washington" matches "seattle" in the city segment and never
-//     falls through to "washington" in the state segment (which would silently
-//     search Washington DC for an operator in Washington state). When there is
-//     no comma the whole string is the one segment.
-//  3. when several keys match within the segment, the EARLIEST run position
-//     wins (city before state), length breaks a tie at the same position, and
-//     the key string breaks a remaining tie — a deterministic rule that does
-//     not depend on Go's randomised map iteration order.
+//  2. otherwise ALL comma-separated segments are tokenised on non-letters and
+//     each map key is tokenised the same way; a key matches when its tokens
+//     appear as a CONSECUTIVE run inside a segment's token list — so "la" only
+//     matches the standalone token "la", never inside "salt" or "dallas", and
+//     "san francisco" matches inside "san francisco bay area". Ranking across
+//     ALL segments (with a segment-index penalty) instead of discarding
+//     segments ≥ 1 keeps the leading-qualifier form working: "Remote, San
+//     Francisco, CA" resolves on the city in segment 1, not the qualifier in
+//     segment 0. When there is no comma the whole string is one segment.
+//  3. when several keys match, the ranking is (segment index, position within
+//     segment, key length, key string) — earliest segment wins, then earliest
+//     position within that segment (city before state), then longest key, then
+//     lexicographic — a deterministic rule that does not depend on Go's
+//     randomised map iteration order.
+//  4. state-tier guard: a key in craigslistStateTierKeys (a state name that
+//     maps to a different area, e.g. "washington" → washingtondc) is valid
+//     ONLY at position 0 of segment 0. "Spokane Washington" (no comma) and
+//     "Spokane, Washington" (comma) both have "washington" trailing the city
+//     — the guard rejects them so an unmapped WA city is honestly unmapped,
+//     not silently searched as Washington DC. "Washington, DC" (state leading)
+//     remains valid.
 //
 // The previous implementation returned the literal sentinel "www" for any
 // unmatched location. That was harmless when the region was a SUBDOMAIN
@@ -165,44 +183,66 @@ func resolveRegion(location string) (string, bool) {
 	if craigslistRegionSlugs[loc] {
 		return loc, true
 	}
-	// Token-boundary substring pass, scoped to the FIRST comma-separated
-	// segment. A free-text location is conventionally "City, State" — the
-	// city is the segment that should win, and a state keyword in a later
-	// segment must NOT override it (round-3 fix: "Seattle, Washington" was
-	// resolving to washingtondc because "washington" (10 chars) beat
-	// "seattle" (7 chars) under longest-wins, silently searching Washington
-	// DC for an operator in Washington state). When there is no comma the
+	// Token-boundary substring pass across ALL comma-separated segments.
+	// A free-text location is conventionally "City, State" but may also be
+	// "Remote, City, ST" (LinkedIn-style) — ranking across all segments with
+	// a segment-index penalty keeps the leading-qualifier form working while
+	// still preferring the city in segment 0. When there is no comma the
 	// whole string is one segment.
 	//
-	// Within the segment a key matches when its tokens appear as a
-	// consecutive run; among matching keys the EARLIEST run position wins,
-	// length breaks a tie at the same position, and the key string breaks a
-	// remaining tie — deterministic regardless of map iteration order.
-	segment := loc
-	if i := strings.IndexByte(loc, ','); i >= 0 {
-		segment = strings.TrimSpace(loc[:i])
+	// Within a segment a key matches when its tokens appear as a consecutive
+	// run; among matching keys the ranking is (segment index, position within
+	// segment, key length, key string) — deterministic regardless of map
+	// iteration order.
+	//
+	// State-tier guard (round-4): a state-tier key (e.g. "washington") is
+	// valid only at position 0 of segment 0 — "Spokane Washington" and
+	// "Spokane, Washington" both have "washington" trailing the city and are
+	// rejected, so an unmapped WA city is unmapped, not washingtondc.
+	segments := strings.Split(loc, ",")
+	segmentTokens := make([][]string, len(segments))
+	for i, seg := range segments {
+		segmentTokens[i] = craigslistRegionTokenRe.FindAllString(strings.TrimSpace(seg), -1)
 	}
-	locTokens := craigslistRegionTokenRe.FindAllString(segment, -1)
 	var bestKey, bestRegion string
-	bestPos := -1
+	bestSeg, bestPos := -1, -1
 	for key, region := range craigslistRegions {
 		keyTokens := craigslistRegionTokenRe.FindAllString(key, -1)
-		pos := tokensFindRun(locTokens, keyTokens)
-		if pos < 0 {
+		// Find the best (earliest segment, then earliest position) match for
+		// this key across all segments.
+		bestKeySeg, bestKeyPos := -1, -1
+		for segIdx, segTokens := range segmentTokens {
+			pos := tokensFindRun(segTokens, keyTokens)
+			if pos < 0 {
+				continue
+			}
+			if bestKeySeg < 0 || segIdx < bestKeySeg || (segIdx == bestKeySeg && pos < bestKeyPos) {
+				bestKeySeg, bestKeyPos = segIdx, pos
+			}
+		}
+		if bestKeySeg < 0 {
 			continue
 		}
 		switch {
 		case bestKey == "":
-			bestKey, bestRegion, bestPos = key, region, pos
-		case pos < bestPos:
-			bestKey, bestRegion, bestPos = key, region, pos
-		case pos == bestPos && len(key) > len(bestKey):
-			bestKey, bestRegion, bestPos = key, region, pos
-		case pos == bestPos && len(key) == len(bestKey) && key < bestKey:
-			bestKey, bestRegion, bestPos = key, region, pos
+			bestKey, bestRegion, bestSeg, bestPos = key, region, bestKeySeg, bestKeyPos
+		case bestKeySeg < bestSeg:
+			bestKey, bestRegion, bestSeg, bestPos = key, region, bestKeySeg, bestKeyPos
+		case bestKeySeg == bestSeg && bestKeyPos < bestPos:
+			bestKey, bestRegion, bestSeg, bestPos = key, region, bestKeySeg, bestKeyPos
+		case bestKeySeg == bestSeg && bestKeyPos == bestPos && len(key) > len(bestKey):
+			bestKey, bestRegion, bestSeg, bestPos = key, region, bestKeySeg, bestKeyPos
+		case bestKeySeg == bestSeg && bestKeyPos == bestPos && len(key) == len(bestKey) && key < bestKey:
+			bestKey, bestRegion, bestSeg, bestPos = key, region, bestKeySeg, bestKeyPos
 		}
 	}
 	if bestKey == "" {
+		return "", false
+	}
+	// State-tier guard: a state-tier key is valid only at position 0 of
+	// segment 0. If it trails a city (later position or later segment) it is
+	// a false match — "Spokane Washington" means Washington state, not DC.
+	if craigslistStateTierKeys[bestKey] && (bestSeg > 0 || bestPos > 0) {
 		return "", false
 	}
 	return bestRegion, true
@@ -1096,6 +1136,16 @@ func resolveCraigslistDefaultLocation(ctx context.Context) (string, string) {
 			return cfgLoc, "config_after_profile_error"
 		}
 		return cfgLoc, "config"
+	}
+	// No profile location and no config default. If the profile READ also
+	// errored (saturated pool, ctx deadline), log it at WARN so a chronically
+	// saturated pool on a no-config deployment is not silent — the same blind
+	// spot the config_after_profile_error tier was added to remove, one
+	// branch over. Without this log the error is discarded and the caller
+	// skips both the counter and the INFO substitution log.
+	if perr != nil {
+		slog.Warn("craigslist: profile read failed and no config fallback",
+			slog.Any("error", perr))
 	}
 	return "", ""
 }
