@@ -95,7 +95,7 @@ jobs:
           # They agree today — measured, alpine:latest currently carries typst
           # 0.14.2. When alpine bumps it, prod's renderer moves while this gate
           # keeps measuring 0.14.2, and the geometry assertion goes green over a
-          # PDF nobody has measured. Pinning the image is tracked in #410.
+          # PDF nobody has measured. Pinning the image is tracked separately.
           # Until then the mitigation is that the assertion is a RATIO against a
           # control run set in the same face, which cancels uniform metric
           # changes (see internal/pdfrender/reference_test.go).
@@ -118,6 +118,12 @@ jobs:
           # Assert, do not merely print. A silent font bump on noble-updates
           # would otherwise surface later as a geometry failure blaming the
           # theme, which is the wrong place to look.
+          #
+          # poppler-utils is deliberately NOT asserted, though pdftotext produces
+          # both numbers in that ratio. It measures numerator and denominator
+          # with the same code, so a poppler change shifts both and cancels. The
+          # font package is different in kind: it can change one glyph's advance
+          # relative to another's, and that does not cancel.
           FONTS_VERSION=$(dpkg-query -W -f='${Version}' fonts-ibm-plex)
           echo "fonts-ibm-plex ${FONTS_VERSION}"
           [ "${FONTS_VERSION}" = "6.1.1-1" ] || {

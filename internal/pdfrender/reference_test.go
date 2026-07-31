@@ -39,6 +39,11 @@ import (
 // Closing that half needs a check on the real payload rather than on a fixture;
 // tracked in #409. Do not read a green run here as "the resumes we send are
 // the approved shape".
+//
+// The fixture stays an invented person permanently — it is a gauge for the
+// theme, not a copy of anyone's resume, and this repository is public. It is
+// expected to track the theme's rules rather than converge on production
+// content; #409 owns the production side.
 
 // referenceMarkdown is the canonical resume shape. Kept deliberately generic:
 // go-job is a public repository, so the fixture carries an invented person
@@ -69,11 +74,19 @@ func referenceMarkdown(t *testing.T) string {
 // selector split across lines, and the show-everything form (`#show: doc => …`).
 //
 // showLineRe therefore counts candidate lines independently, and the test
-// requires the two counts to agree. Every form above still starts at column 0,
-// so an unparsed rule shows up as a count mismatch rather than as silence.
+// requires the two counts to agree, so an unparsed rule shows up as a count
+// mismatch rather than as silence.
+//
+// showLineRe tolerates leading whitespace on purpose. Anchoring it at column 0
+// left a hole exactly one keystroke wide: an INDENTED `#show` matched neither
+// pattern, so `  #show heading.where(level: 4): it => text(weight: "bold", …)`
+// — a rule that genuinely restyles the page — entered the theme with the count
+// check green. Top-level rules in this theme are column-0 by convention, so an
+// indented one is a hard error rather than a form to support: it will red the
+// count check, and the fix is to unindent it, not to extend showRuleRe.
 var (
 	showRuleRe = regexp.MustCompile(`(?m)^#show (.+?): (?:it =>|set )`)
-	showLineRe = regexp.MustCompile(`(?m)^#show[ :]`)
+	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show[ :]`)
 )
 
 // exercisedBy maps a theme selector to a substring that must appear in the
@@ -117,11 +130,24 @@ func TestThemeRulesAreExercisedByReference(t *testing.T) {
 	// not recognise is simply absent from `matches`, and every assertion below
 	// passes over a rule nobody chose to cover.
 	if lines := len(showLineRe.FindAllString(resumeTypstPreamble, -1)); lines != len(matches) {
-		t.Fatalf("resume.typ has %d lines starting with `#show` but showRuleRe parsed %d.\n"+
+		t.Fatalf("resume.typ has %d `#show` lines but showRuleRe parsed %d.\n"+
 			"A rule is written in a form the selector pattern does not recognise, so it would\n"+
-			"enter the theme uncovered while this test stayed green. Either rewrite it as\n"+
+			"enter the theme uncovered while this test stayed green. If it is indented, unindent\n"+
+			"it — top-level rules are column-0 here. Otherwise rewrite it as\n"+
 			"`#show <selector>: it => …` / `#show <selector>: set …`, or extend showRuleRe and\n"+
 			"add the mutation that proves the extension works.", lines, len(matches))
+	}
+
+	// resumeTypstPreamble is not the only typst the renderer assembles:
+	// adapter.go prepends ligaPreamble to every document. A `#show` added there
+	// would reach every PDF with no coverage and no count mismatch, because
+	// everything above reads the theme alone. Nothing needs it today, so assert
+	// that stays true rather than teaching the coverage maps a second source.
+	if n := len(showLineRe.FindAllString(ligaPreamble, -1)); n != 0 {
+		t.Errorf("ligaPreamble now carries %d `#show` rule(s). It is injected into every rendered\n"+
+			"document but is not scanned by the coverage maps above, so those rules would style\n"+
+			"real output with nothing gating them. Move them into resume.typ, or extend this test\n"+
+			"to cover both sources.", n)
 	}
 
 	found := make(map[string]bool, len(matches))
@@ -184,17 +210,29 @@ func TestThemeRulesAreExercisedByReference(t *testing.T) {
 // Measured on the deployed image (typst 0.14.2, fonts-ibm-plex 6.1.1-1):
 //
 //	                          subtitle   control    ratio
-//	rule as written            159.870    56.780   2.8156
-//	weight flipped to bold     167.180    56.780   2.9443
-//	size raised to 11pt        175.857    56.780   3.0972
+//	rule as written            159.870   107.770   1.4834
+//	weight flipped to bold     167.180   107.770   1.5513
+//	size raised to 11pt        175.857   107.770   1.6317
 //
-// The control held at 56.780 under both mutations. Tolerance is a fifth of the
-// nearest separation (0.1287), so no mutation above can pass. Regenerate by
+// The control held at 107.770 under both mutations. Tolerance is a fifth of the
+// nearest separation (0.0678), so no mutation above can pass. Regenerate by
 // rendering testdata/resume-reference.md through the theme and measuring both
 // runs with `pdftotext -bbox`.
+//
+// The control is asserted too, with a deliberately loose band. It is what makes
+// the failure message able to tell the two causes apart: without it the test
+// knows only that the ratio moved, and the error text would blame the level-4
+// rule for a theme-wide font change. Measured: swapping the theme's body font
+// to IBM Plex Mono moves the ratio to 3.0000 with the level-4 rule untouched.
 const (
-	entrySubtitleRatio    = 2.8156
-	entrySubtitleRatioTol = 0.025
+	entrySubtitleRatio    = 1.4834
+	entrySubtitleRatioTol = 0.013
+
+	// Loose on purpose — this is a cause-attribution signal, not a second
+	// geometry gate. It should survive ordinary rounding and red only on a real
+	// change of face or size.
+	controlWidthPt  = 107.770
+	controlWidthTol = 5.4 // ±5%
 
 	// Height is the size guard the ratio alone does not isolate: it reds on the
 	// 11pt mutation above (11.00 measured) and is unmoved by the weight flip.
@@ -202,16 +240,24 @@ const (
 	entrySubtitleHeightTol = 0.5
 )
 
-// entrySubtitleRun is the first `#### ` line in the reference, and controlRun a
-// fragment of the header contact line, as pdftotext splits them into words.
+// entrySubtitleRun is the first `#### ` line in the reference; controlRun is the
+// address on the header contact line, as pdftotext splits them into words.
 //
 // The control is deliberately taken from the fixture's own raw-typst header
-// rather than from theme-set body text: it is 10pt regular there by a literal
-// in the fixture, so it moves only when the fixture is edited on purpose, not
-// when the theme's body size is retuned.
+// rather than from theme-set body text: it is 10pt regular there by a literal in
+// the fixture, so it moves only when the fixture is edited on purpose, not when
+// the theme's body size or leading is retuned.
+//
+// It is also unique in the whole document, and measureRun asserts that rather
+// than taking the first hit. An earlier control, "Portland, OR", appeared three
+// times in the fixture; it read as unambiguous only because the duplicates fell
+// on page 2 while the scan was restricted to page 1, so a fixture that later
+// shrank to one page would have measured an 11pt bold heading as the
+// denominator and produced a plausible, wrong ratio. The scan now covers every
+// page, which removes the dependency on where the fixture happens to break.
 var (
 	entrySubtitleRun = []string{"A", "tiered", "block", "cache", "for", "Go", "services"}
-	controlRun       = []string{"Portland,", "OR"}
+	controlRun       = []string{"jordan@example.invalid"}
 )
 
 func TestEntrySubtitleRuleIsLive(t *testing.T) {
@@ -230,30 +276,34 @@ func TestEntrySubtitleRuleIsLive(t *testing.T) {
 
 	words := pdfWords(t, pdfBytes)
 
-	subX0, subX1, height, ok := findRun(words, entrySubtitleRun)
-	if !ok {
-		t.Fatalf("entry subtitle %q not found in the rendered page — the reference lost its `#### ` line, "+
-			"or pandoc stopped emitting a level-4 heading for it", strings.Join(entrySubtitleRun, " "))
-	}
-	ctlX0, ctlX1, _, ok := findRun(words, controlRun)
-	if !ok {
-		t.Fatalf("control run %q not found in the rendered page — the fixture's header changed, so the "+
-			"ratio below has no denominator", strings.Join(controlRun, " "))
-	}
+	subWidth, height := measureRun(t, words, entrySubtitleRun, "entry subtitle",
+		"the reference lost its `#### ` line, or pandoc stopped emitting a level-4 heading for it")
+	ctlWidth, _ := measureRun(t, words, controlRun, "control run",
+		"the fixture's header contact line changed, so the ratio has no denominator")
 
-	subWidth, ctlWidth := subX1-subX0, ctlX1-ctlX0
-	if ctlWidth <= 0 {
-		t.Fatalf("control run measured %.3f pt wide; cannot form a ratio", ctlWidth)
+	// Attribute the cause before reporting it. A control inside its band means
+	// the face the page is set in did not move, so a ratio change is the
+	// subtitle's own styling; a control outside it means the toolchain or the
+	// fixture header moved and the ratio constant is what needs re-measuring.
+	controlHeld := within(ctlWidth, controlWidthPt, controlWidthTol)
+	if !controlHeld {
+		t.Errorf("control run measured %.3f pt, want %.3f ±%.1f.\n"+
+			"The page is not set in the face this test was calibrated against, so the ratio below "+
+			"cannot be read as a statement about the level-4 rule. Check typst and fonts-ibm-plex "+
+			"versions and whether the fixture's header was edited, then re-measure both constants.",
+			ctlWidth, controlWidthPt, controlWidthTol)
 	}
 
 	if got := subWidth / ctlWidth; !within(got, entrySubtitleRatio, entrySubtitleRatioTol) {
+		cause := "the level-4 rule is gone or asks for a heavier weight, and typst is setting the " +
+			"line in heading weight rather than the theme's regular"
+		if !controlHeld {
+			cause = "the control moved too, so this is a toolchain or fixture change rather than a " +
+				"theme change — do not go looking at the level-4 rule first"
+		}
 		t.Errorf("entry subtitle is %.4f× the control run, want %.4f ±%.4f "+
-			"(subtitle %.3f pt, control %.3f pt).\n"+
-			"A ratio near 2.944 means the level-4 rule is gone or asks for bold, and typst is "+
-			"setting the line in heading weight rather than the theme's regular. A ratio that "+
-			"moved while the control also moved is a toolchain change, not a theme change — "+
-			"check typst and fonts-ibm-plex versions before editing the constant.",
-			got, entrySubtitleRatio, entrySubtitleRatioTol, subWidth, ctlWidth)
+			"(subtitle %.3f pt, control %.3f pt).\n%s.",
+			got, entrySubtitleRatio, entrySubtitleRatioTol, subWidth, ctlWidth, cause)
 	}
 	if !within(height, entrySubtitleHeightPt, entrySubtitleHeightTol) {
 		t.Errorf("entry subtitle rendered %.2f pt tall, want %.1f ±%.1f — the rule's size changed",
@@ -293,7 +343,14 @@ type pdfWord struct {
 	text                   string
 }
 
-// pdfWords renders page 1 to pdftotext's bbox XML and parses the word boxes.
+// pdfWords parses pdftotext's bbox XML for the WHOLE document.
+//
+// Every page, not just the first, so that measureRun's uniqueness check means
+// what it says. Restricting the scan to page 1 made uniqueness depend on where
+// the fixture happens to break: a duplicate run sitting on page 2 was invisible,
+// and a fixture that later shrank to one page would have brought it into range
+// and silently supplied the wrong denominator. Both runs measured here live on
+// page 1, and box coordinates are page-local, so widths are unaffected.
 func pdfWords(t *testing.T, pdfBytes []byte) []pdfWord {
 	t.Helper()
 
@@ -303,7 +360,7 @@ func pdfWords(t *testing.T, pdfBytes []byte) []pdfWord {
 		t.Fatalf("write pdf: %v", err)
 	}
 
-	out, err := exec.Command("pdftotext", "-bbox", "-f", "1", "-l", "1", path, "-").Output()
+	out, err := exec.Command("pdftotext", "-bbox", path, "-").Output()
 	if err != nil {
 		t.Fatalf("pdftotext -bbox: %v", err)
 	}
@@ -322,17 +379,47 @@ func pdfWords(t *testing.T, pdfBytes []byte) []pdfWord {
 		words = append(words, w)
 	}
 	if len(words) == 0 {
-		t.Fatal("pdftotext -bbox returned no words for page 1")
+		t.Fatal("pdftotext -bbox returned no words")
 	}
 	return words
 }
 
-// findRun locates a contiguous sequence of words and returns the run's left
-// edge, right edge and the height of its first box.
-func findRun(words []pdfWord, run []string) (x0, x1, height float64, ok bool) {
-	if len(run) == 0 || len(words) < len(run) {
-		return 0, 0, 0, false
+// measureRun returns the width and first-box height of the single occurrence of
+// run, and fails when there is not exactly one.
+//
+// Uniqueness is asserted rather than assumed: taking the first match silently
+// measures whichever copy happens to come first, and a run that appears twice in
+// two different faces would yield a plausible number from the wrong one.
+//
+// name labels the run; absentHint explains what an absence means and is used
+// only on the not-found branch. The two failures have different causes and must
+// not share prose — a duplicated run is not a missing one, and telling the
+// reader to go look at the same place for both is how a diagnosis gets wasted.
+func measureRun(t *testing.T, words []pdfWord, run []string, name, absentHint string) (width, height float64) {
+	t.Helper()
+
+	at := findRuns(words, run)
+	switch len(at) {
+	case 1:
+		// expected
+	case 0:
+		t.Fatalf("%s %q not found in the rendered document — %s", name, strings.Join(run, " "), absentHint)
+	default:
+		t.Fatalf("%s %q occurs %d times in the rendered document; a measurement anchored on it "+
+			"could silently take the wrong copy. Restore its uniqueness in the fixture, or "+
+			"anchor on a run that appears once.", name, strings.Join(run, " "), len(at))
 	}
+
+	first, last := words[at[0]], words[at[0]+len(run)-1]
+	return last.xMax - first.xMin, first.yMax - first.yMin
+}
+
+// findRuns returns the start index of every contiguous occurrence of run.
+func findRuns(words []pdfWord, run []string) []int {
+	if len(run) == 0 || len(words) < len(run) {
+		return nil
+	}
+	var at []int
 	for i := 0; i+len(run) <= len(words); i++ {
 		match := true
 		for j, want := range run {
@@ -341,11 +428,9 @@ func findRun(words []pdfWord, run []string) (x0, x1, height float64, ok bool) {
 				break
 			}
 		}
-		if !match {
-			continue
+		if match {
+			at = append(at, i)
 		}
-		first, last := words[i], words[i+len(run)-1]
-		return first.xMin, last.xMax, first.yMax - first.yMin, true
 	}
-	return 0, 0, 0, false
+	return at
 }
