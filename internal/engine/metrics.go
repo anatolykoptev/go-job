@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -60,12 +61,30 @@ const (
 	// An alert on reason="blocked" contradicts the healthy outcome=ok and makes
 	// the laundering observable.
 	MetricCraigslistDiscoveryFallback = "craigslist_discovery_fallback_total"
-	MetricAlgoraRequests              = "algora_requests_total"
-	MetricAlgoraJobsRequests          = "algora_jobs_requests_total"
-	MetricSherlockRequests            = "sherlock_requests_total"
-	MetricCantinaRequests             = "cantina_requests_total"
-	MetricCode4renaRequests           = "code4rena_requests_total"
-	MetricToolCalls                   = "tool_calls_total"
+	// MetricCraigslistDefaultLocation is the labelled counter
+	// gojob_craigslist_default_location_total{tier}. Bumped ONCE per
+	// craigslist search that substituted a location because the caller supplied
+	// none — makes an invisible (and, per #347, potentially wrong-city)
+	// substitution observable. tier ∈ {"profile","config","config_after_profile_error","config_after_profile_unmapped"}:
+	//   - "profile" = the operator's resume_persons.location supplied the value;
+	//   - "config"  = engine.Cfg.CraigslistDefaultLocation supplied it because
+	//     the profile was empty or absent (a failed READ and an unmapped value
+	//     each get their own tier below — do not fold them in here);
+	//   - "config_after_profile_error" = config supplied it because the profile
+	//     READ failed (saturated pool, ctx deadline);
+	//   - "config_after_profile_unmapped" = config supplied it because the
+	//     profile was non-empty but not an exact key/slug (round 6).
+	// A rising profile rate with no results is the signal that the operator's
+	// stored location does not map to a Craigslist area (resolveRegion returns
+	// false → errCraigslistUnmapped) — visible now instead of as a silent
+	// wrong-city or unexplained empty.
+	MetricCraigslistDefaultLocation = "craigslist_default_location_total"
+	MetricAlgoraRequests            = "algora_requests_total"
+	MetricAlgoraJobsRequests        = "algora_jobs_requests_total"
+	MetricSherlockRequests          = "sherlock_requests_total"
+	MetricCantinaRequests           = "cantina_requests_total"
+	MetricCode4renaRequests         = "code4rena_requests_total"
+	MetricToolCalls                 = "tool_calls_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
@@ -561,6 +580,14 @@ func FormatMetrics() string {
 	for _, r := range []string{"blocked", "failed", "unmapped"} {
 		keys = append(keys, MetricCraigslistDiscoveryFallback+"{reason="+r+"}")
 	}
+	// craigslist_default_location_total{tier} pre-touched so a rate()-floor
+	// alert sees 0 before the first substituted-location search, and so the
+	// profile vs config split is visible from the first run. Ranges over
+	// validCraigslistDefaultLocationTiers (the same map warmAlertBoundedMetrics
+	// uses) so a future tier cannot be added to one site only.
+	for _, tier := range sortedCraigslistDefaultLocationTiers() {
+		keys = append(keys, MetricCraigslistDefaultLocation+"{tier="+tier+"}")
+	}
 	for _, p := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
 		keys = append(keys, MetricHuntDiscoveryURLs+"{platform="+p+"}")
 	}
@@ -702,6 +729,46 @@ func IncrCraigslistDiscoveryFallback(reason string) {
 		return
 	}
 	reg.Incr(MetricCraigslistDiscoveryFallback + "{reason=" + reason + "}")
+}
+
+// validCraigslistDefaultLocationTiers bounds the tier label for
+// craigslist_default_location_total. "profile" = resume_persons.location
+// supplied the value; "config" = engine.Cfg.CraigslistDefaultLocation supplied
+// it (profile empty/missing); "config_after_profile_error" = the config value
+// supplied it because the profile READ failed (saturated pool, ctx deadline) —
+// distinct from "config" so a chronically saturated pool is not hidden behind
+// the same label as a no-profile deployment; "config_after_profile_unmapped" =
+// the profile was non-empty but not an exact key/slug, so the config tier
+// rescued it (round 6). Unrecognised values are dropped silently (cardinality
+// guard).
+var validCraigslistDefaultLocationTiers = map[string]bool{
+	"profile": true, "config": true, "config_after_profile_error": true,
+	"config_after_profile_unmapped": true,
+}
+
+// sortedCraigslistDefaultLocationTiers returns the keys of
+// validCraigslistDefaultLocationTiers in sorted order, so FormatMetrics
+// renders a deterministic series list regardless of Go's randomised map
+// iteration. Mirrors the map-range warmAlertBoundedMetrics already does.
+func sortedCraigslistDefaultLocationTiers() []string {
+	tiers := make([]string, 0, len(validCraigslistDefaultLocationTiers))
+	for tier := range validCraigslistDefaultLocationTiers {
+		tiers = append(tiers, tier)
+	}
+	sort.Strings(tiers)
+	return tiers
+}
+
+// IncrCraigslistDefaultLocation bumps
+// gojob_craigslist_default_location_total{tier=<t>}. tier ∈ {"profile","config","config_after_profile_error","config_after_profile_unmapped"}.
+// Called once per craigslist search that substituted a location because the
+// caller supplied none — makes the substitution (and which tier supplied it)
+// observable, so a wrong-city default (#347) is diagnosable instead of silent.
+func IncrCraigslistDefaultLocation(tier string) {
+	if !validCraigslistDefaultLocationTiers[tier] {
+		return
+	}
+	reg.Incr(MetricCraigslistDefaultLocation + "{tier=" + tier + "}")
 }
 func IncrFreelancerAPIRequests() { reg.Incr(MetricFreelancerAPIRequests) }
 func IncrAlgoraRequests()        { reg.Incr(MetricAlgoraRequests) }
@@ -860,6 +927,13 @@ func warmAlertBoundedMetrics() {
 				reg.Add(MetricHuntSourceOutcome+"{kind="+kind+",source="+src+",outcome="+oc+"}", 0)
 			}
 		}
+	}
+	// Pre-register craigslist_default_location_total{tier} so the FIRST
+	// substituted-location search after a restart is visible to increase()-
+	// based alerts (same gap warmAlertBoundedMetrics fixes for the discovery
+	// fallback counter).
+	for tier := range validCraigslistDefaultLocationTiers {
+		reg.Add(MetricCraigslistDefaultLocation+"{tier="+tier+"}", 0)
 	}
 }
 
