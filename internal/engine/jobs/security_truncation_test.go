@@ -127,3 +127,52 @@ func TestSecurityBodyLimit_HeadroomOverMeasuredHackerOne(t *testing.T) {
 		t.Errorf("securityBodyLimit (%d) too low", securityBodyLimit)
 	}
 }
+
+// TestFetchSecuritySource_TruncationCounter asserts that a cap-hit security
+// fetch increments gojob_security_fetch_errors_total{platform=hackerone,reason=truncated}.
+//
+// Without this counter, a truncation is only slog.Warn'd and swallowed by
+// fetchAllSecurityPrograms when a sibling source succeeds — the exact mechanism
+// that kept the original hackerone truncation invisible for a month.
+//
+// Revert-red: remove the isBodyTruncated/IncrSecurityFetchErrors call in
+// fetchSecuritySource → counter delta = 0 → test fails.
+func TestFetchSecuritySource_TruncationCounter(t *testing.T) {
+	engine.InitTestRegistry()
+
+	const smallCap int64 = 512
+	origCap := securityBodyLimit
+	securityBodyLimit = smallCap
+	t.Cleanup(func() { securityBodyLimit = origCap })
+
+	// Body larger than smallCap.
+	body := []byte(`{"programs":[` + strings.Repeat("x", 800) + `]}`)
+	if int64(len(body)) <= smallCap {
+		t.Fatalf("fixture (%d B) must exceed cap (%d B)", len(body), smallCap)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Point securitySources[0] (hackerone) at the test server so
+	// securityPlatformForURL returns "hackerone" for this URL.
+	origURL := securitySources[0].url
+	securitySources[0].url = srv.URL
+	t.Cleanup(func() { securitySources[0].url = origURL })
+
+	origClient := engine.Cfg.HTTPClient
+	engine.Cfg.HTTPClient = &http.Client{}
+	t.Cleanup(func() { engine.Cfg.HTTPClient = origClient })
+
+	before := engine.GetMetrics()
+	_, _ = fetchSecuritySource(context.Background(), srv.URL)
+	after := engine.GetMetrics()
+
+	key := engine.MetricSecurityFetchErrors + "{platform=hackerone,reason=truncated}"
+	delta := after[key] - before[key]
+	if delta <= 0 {
+		t.Errorf("want gojob_security_fetch_errors_total{platform=hackerone,reason=truncated} > 0, got delta %d", delta)
+	}
+}

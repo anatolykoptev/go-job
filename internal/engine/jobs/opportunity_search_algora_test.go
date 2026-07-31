@@ -47,7 +47,14 @@ func (errTransport) RoundTrip(*http.Request) (*http.Response, error) {
 func TestFetchAllBountiesImpl_AlgoraRemovedFromFanOut(t *testing.T) {
 	// In-memory L1 cache (L2 disabled via empty redisURL) so the algora
 	// enriched cache can be pre-seeded without engine.Init / Redis.
+	// Save/restore the process-global cache so later tests in the package
+	// don't inherit a fresh cache (ordering-dependent coupling).
+	origCacheTTL := engine.CacheTTL
 	engine.InitCache("", 5*time.Minute, 100, 0)
+	t.Cleanup(func() {
+		engine.CacheTTL = origCacheTTL
+		engine.InitCache("", origCacheTTL, 100, 0)
+	})
 
 	// Pre-seed the algora enriched cache with a known algora bounty.
 	algoraBounty := BountyWithVector{Bounty: engine.BountyListing{

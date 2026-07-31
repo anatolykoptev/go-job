@@ -139,8 +139,28 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 
 	body, err := readLimitedBody(resp.Body, securityBodyLimit)
 	if err != nil {
+		// Hitting the read cap is a loud, correctly-attributed failure (not a
+		// confusing downstream JSON parse error), but fetchAllSecurityPrograms
+		// swallows it when a sibling source succeeds. Bump the per-platform
+		// truncation counter so the failure is visible in Prometheus regardless
+		// — same pattern as the ATS fetchers (ats.go:573/771/964).
+		if isBodyTruncated(err) {
+			engine.IncrSecurityFetchErrors(securityPlatformForURL(url), "truncated")
+		}
 		return nil, fmt.Errorf("security: read body: %w", err)
 	}
 
 	return body, nil
+}
+
+// securityPlatformForURL maps a security source URL to its platform label by
+// looking up securitySources. Returns "unknown" if the URL is not in the list
+// (the metric cardinality guard in IncrSecurityFetchErrors drops it).
+func securityPlatformForURL(url string) string {
+	for _, src := range securitySources {
+		if src.url == url {
+			return src.platform
+		}
+	}
+	return "unknown"
 }

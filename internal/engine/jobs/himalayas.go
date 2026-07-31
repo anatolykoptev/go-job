@@ -25,20 +25,22 @@ type himalayasResponse struct {
 }
 
 type himalayasJob struct {
-	Title          string          `json:"title"`
-	CompanyName    string          `json:"companyName"`
-	ApplicationURL string          `json:"applicationLink"`
-	Categories     []string        `json:"categories"`
-	Seniority      []string        `json:"seniority"`
+	Title          string   `json:"title"`
+	CompanyName    string   `json:"companyName"`
+	ApplicationURL string   `json:"applicationLink"`
+	Categories     []string `json:"categories"`
+	Seniority      []string `json:"seniority"`
 	// MinSalary/MaxSalary are nullable and may be fractional (himalayas returns
 	// null for undisclosed salaries and a fractional number for hourly rates,
 	// e.g. 26.5). Declaring int made encoding/json abort the WHOLE Unmarshal on
 	// the first fractional value, losing every himalayas job on every cycle.
-	// *float64 accepts null (→ nil) and any number; salaryFloatToInt converts.
-	MinSalary *float64 `json:"minSalary"`
-	MaxSalary *float64 `json:"maxSalary"`
-	PubDate   json.RawMessage `json:"pubDate"`
-	Excerpt   string          `json:"excerpt"`
+	// *float64 accepts null (→ nil) and any number; annualizeHimalayasSalary
+	// converts to the annual int engine.FreelanceJob.SalaryMin/Max expects.
+	MinSalary    *float64        `json:"minSalary"`
+	MaxSalary    *float64        `json:"maxSalary"`
+	SalaryPeriod string          `json:"salaryPeriod"`
+	PubDate      json.RawMessage `json:"pubDate"`
+	Excerpt      string          `json:"excerpt"`
 }
 
 // SearchHimalayas fetches jobs from Himalayas. Results are cached.
@@ -122,8 +124,8 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 			Company:   hj.CompanyName,
 			URL:       hj.ApplicationURL,
 			Tags:      tags,
-			SalaryMin: salaryFloatToInt(hj.MinSalary),
-			SalaryMax: salaryFloatToInt(hj.MaxSalary),
+			SalaryMin: annualizeHimalayasSalary(hj.MinSalary, hj.SalaryPeriod),
+			SalaryMax: annualizeHimalayasSalary(hj.MaxSalary, hj.SalaryPeriod),
 			Source:    "himalayas",
 			Posted:    parsePubDate(hj.PubDate),
 		})
@@ -132,14 +134,27 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 	return jobs, nil
 }
 
-// salaryFloatToInt converts a nullable fractional himalayas salary to the int
-// engine.FreelanceJob.SalaryMin/Max contract. Returns 0 for nil (undisclosed).
-// Rounds to the nearest int so an hourly 26.5 → 27 rather than truncating to 26.
-func salaryFloatToInt(v *float64) int {
+// annualizeHimalayasSalary converts a nullable fractional himalayas salary to
+// the int annual figure engine.FreelanceJob.SalaryMin/Max expects. Returns 0
+// for nil (undisclosed).
+//
+// salaryPeriod is honoured: "hourly" rates are normalised to annual using the
+// conventional 2080-hour US full-time equivalent (40 h/wk × 52 wk) so hourly
+// and annual listings are comparable in the same field. "annual" (and the
+// empty string, for back-compat with sources that omit the field) pass through
+// as-is. Any other period (daily, weekly, monthly, …) returns 0 — we do not
+// invent a conversion factor for unknown periods.
+func annualizeHimalayasSalary(v *float64, period string) int {
 	if v == nil {
 		return 0
 	}
-	return int(math.Round(*v))
+	switch period {
+	case "hourly":
+		return int(math.Round(*v * 2080))
+	default:
+		// "annual", "", or unrecognised non-hourly → pass through as annual.
+		return int(math.Round(*v))
+	}
 }
 
 // parsePubDate handles pubDate as either a JSON string or a Unix timestamp number.

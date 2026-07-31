@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,6 +20,7 @@ const sampleHimalayasResponse = `{
       "seniority": ["Senior"],
       "minSalary": 90000,
       "maxSalary": 140000,
+      "salaryPeriod": "annual",
       "pubDate": "2026-03-05",
       "excerpt": "Build scalable Go microservices."
     },
@@ -30,11 +32,12 @@ const sampleHimalayasResponse = `{
       "seniority": [],
       "minSalary": 0,
       "maxSalary": 0,
+      "salaryPeriod": "annual",
       "pubDate": "2026-03-04",
       "excerpt": "Manage Kubernetes clusters."
     }
   ],
-  "total": 2
+  "totalCount": 2
 }`
 
 func TestParseHimalayasResponse(t *testing.T) {
@@ -61,21 +64,21 @@ func TestParseHimalayasResponse(t *testing.T) {
 
 func TestParseHimalayasResponse_empty(t *testing.T) {
 	t.Parallel()
-	jobs, err := parseHimalayasResponse([]byte(`{"jobs": [], "total": 0}`))
+	jobs, err := parseHimalayasResponse([]byte(`{"jobs": [], "totalCount": 0}`))
 	require.NoError(t, err)
 	assert.Empty(t, jobs)
 }
 
 func TestParseHimalayasResponse_nullJobs(t *testing.T) {
 	t.Parallel()
-	jobs, err := parseHimalayasResponse([]byte(`{"jobs": null, "total": 0}`))
+	jobs, err := parseHimalayasResponse([]byte(`{"jobs": null, "totalCount": 0}`))
 	require.NoError(t, err)
 	assert.Empty(t, jobs)
 }
 
 func TestParseHimalayasResponse_numericPubDate(t *testing.T) {
 	t.Parallel()
-	resp := `{"jobs": [{"title": "Engineer", "companyName": "Co", "applicationLink": "https://example.com/job", "categories": [], "seniority": [], "minSalary": 0, "maxSalary": 0, "pubDate": 1741305600000, "excerpt": ""}], "total": 1}`
+	resp := `{"jobs": [{"title": "Engineer", "companyName": "Co", "applicationLink": "https://example.com/job", "categories": [], "seniority": [], "minSalary": 0, "maxSalary": 0, "pubDate": 1741305600000, "excerpt": ""}], "totalCount": 1}`
 	jobs, err := parseHimalayasResponse([]byte(resp))
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
@@ -96,12 +99,17 @@ func TestParseHimalayasResponse_numericPubDate(t *testing.T) {
 // API field is `applicationLink` → ApplicationURL always "" → the parser's
 // `if hj.ApplicationURL == "" { continue }` skipped EVERY job even after a
 // salary fix.
+// Bug 3 (salary period): salaryPeriod "hourly" was dropped, writing an hourly
+// rate (26.5 → 27) into the annual-salary field. Now hourly is normalised to
+// annual (×2080) so both hourly and annual listings are comparable.
 //
 // Revert-red:
 //   - Restore MinSalary/MaxSalary to `int` → json.Unmarshal fails on 26.5 →
 //     test fails with a parse error (or 0 jobs).
 //   - Restore the tag to `applicationUrl` → all 3 jobs skipped (len 0) → test
 //     fails with "expected 3 jobs, got 0".
+//   - Drop the salaryPeriod handling (annualizeHimalayasSalary → plain round) →
+//     job[0].SalaryMin = 27 instead of 55120 → test fails.
 func TestParseHimalayasResponse_RealFixture(t *testing.T) {
 	t.Parallel()
 
@@ -112,13 +120,14 @@ func TestParseHimalayasResponse_RealFixture(t *testing.T) {
 	require.NoError(t, err, "fractional salary 26.5 must not abort the unmarshal")
 	require.Len(t, jobs, 3, "all 3 jobs must parse; applicationLink (not applicationUrl) must map")
 
-	// job[0]: fractional hourly salary 26.5 → rounded to 27; URL from applicationLink.
+	// job[0]: fractional hourly salary 26.5 → annualised: 26.5 × 2080 = 55120.
+	// URL from applicationLink.
 	assert.Equal(t, "https://himalayas.app/companies/radpartners-avature/jobs/remote-overnight-general-radiologist-7-on-14-off-radiology-partners-indiana-no", jobs[0].URL)
-	assert.Equal(t, 27, jobs[0].SalaryMin, "26.5 hourly → rounded to 27")
-	assert.Equal(t, 27, jobs[0].SalaryMax)
+	assert.Equal(t, 55120, jobs[0].SalaryMin, "26.5 hourly × 2080 = 55120 annual")
+	assert.Equal(t, 55120, jobs[0].SalaryMax)
 	assert.Equal(t, "Radiology Partners", jobs[0].Company)
 
-	// job[1]: integer annual salary 120000-200000.
+	// job[1]: integer annual salary 120000-200000 (salaryPeriod "annual").
 	assert.Equal(t, "https://himalayas.app/companies/lifelancer/jobs/senior-product-manager-medical-inquiry", jobs[1].URL)
 	assert.Equal(t, 120000, jobs[1].SalaryMin)
 	assert.Equal(t, 200000, jobs[1].SalaryMax)
@@ -127,4 +136,9 @@ func TestParseHimalayasResponse_RealFixture(t *testing.T) {
 	assert.Equal(t, "https://himalayas.app/companies/relx/jobs/customer-experience-manager", jobs[2].URL)
 	assert.Equal(t, 0, jobs[2].SalaryMin)
 	assert.Equal(t, 0, jobs[2].SalaryMax)
+
+	// Total decodes from the real "totalCount" key (not "total").
+	var resp himalayasResponse
+	require.NoError(t, json.Unmarshal(data, &resp))
+	assert.Equal(t, 98881, resp.Total, "totalCount must decode into himalayasResponse.Total")
 }
