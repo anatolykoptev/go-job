@@ -9,6 +9,7 @@ package pdfrender
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -247,14 +248,9 @@ func normalizeTitleBlock(md string) string {
 }
 
 // isNoBinaryErr reports whether err from render/typst indicates a missing
-// binary. render/typst produces exactly:
-//
-//	"pandoc binary not found (set RENDER_PANDOC_PATH or ensure pandoc is on PATH)"
-//	"typst binary not found (set RENDER_TYPST_PATH or ensure typst is on PATH)"
-//
-// The substring "binary not found" is specific to these two cases — it does NOT
-// appear in typst compile errors (e.g. "typst compile: ...\nstderr: file not
-// found" for a missing image uses "file not found", not "binary not found").
+// binary (typst or pandoc). go-kit wraps typst.ErrBinaryNotFound at both
+// LookPath-miss sites, so errors.Is matches regardless of how the error text
+// is worded — the sentinel survives rewording, the substring does not.
 func isNoBinaryErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "binary not found")
+	return errors.Is(err, typst.ErrBinaryNotFound)
 }

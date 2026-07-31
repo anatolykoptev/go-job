@@ -2,6 +2,8 @@ package pdfrender
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -252,5 +254,48 @@ func TestThemeRegistration(t *testing.T) {
 	// Theirs absent: 16mm margins (go-kit built-in has these, ours does not).
 	if strings.Contains(preamble, "16mm") {
 		t.Errorf("resume theme preamble contains 16mm — go-kit built-in is registered instead of go-job template.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	}
+}
+
+// TestIsNoBinaryErr verifies that isNoBinaryErr classifies errors via the
+// typst.ErrBinaryNotFound sentinel, NOT by substring matching. This is the
+// silent-failure surface in the direction that matters: a false positive
+// reports a real render failure as "binary absent" and degrades the whole
+// request to md-only with a Warn, not an Error.
+//
+// Two directions:
+//   - An error wrapping typst.ErrBinaryNotFound → true (binary absent).
+//   - A plain typst compile failure whose text happens to contain "binary
+//     not found" → false (real failure, NOT binary-absent). This is the
+//     case the substring check misclassifies.
+//
+// Falsification: put the substring check back (strings.Contains(err.Error(),
+// "binary not found")) → the compile-failure case goes RED (substring matches
+// even though the error is not a binary-absent sentinel).
+func TestIsNoBinaryErr(t *testing.T) {
+	t.Parallel()
+
+	// Direction 1: error wrapping the sentinel → true.
+	sentinelErr := fmt.Errorf("typst: %w (set RENDER_TYPST_PATH or ensure typst is on PATH)", typst.ErrBinaryNotFound)
+	if !isNoBinaryErr(sentinelErr) {
+		t.Error("isNoBinaryErr returned false for an error wrapping typst.ErrBinaryNotFound — should be true")
+	}
+
+	// Direction 2: plain compile failure whose text contains "binary not found"
+	// but does NOT wrap the sentinel → false. This is the false-positive case
+	// the substring check misclassifies.
+	compileErr := errors.New("typst compile: exit status 1\nstderr: error: binary not found in source")
+	if isNoBinaryErr(compileErr) {
+		t.Error("isNoBinaryErr returned true for a plain compile failure whose text contains 'binary not found' — should be false (not a binary-absent sentinel)")
+	}
+
+	// Direction 3: nil error → false.
+	if isNoBinaryErr(nil) {
+		t.Error("isNoBinaryErr returned true for nil — should be false")
+	}
+
+	// Direction 4: unrelated error → false.
+	if isNoBinaryErr(errors.New("some other error")) {
+		t.Error("isNoBinaryErr returned true for an unrelated error — should be false")
 	}
 }
