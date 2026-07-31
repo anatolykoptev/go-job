@@ -822,6 +822,45 @@ func synthesizeLadderError(outcomes []tierOutcome) ([]engine.SearxngResult, erro
 	return nil, errors.Join(errs...)
 }
 
+// --- Default location resolution ---
+
+// craigslistProfileLocation reads the operator's resume profile location.
+// It is the first fallback when a caller supplies no explicit location:
+// Craigslist is region-scoped, so an empty location has nowhere to go, and the
+// operator's own region (resume_persons.location) is the honest default.
+//
+// Overridable in tests via the same function-variable pattern as
+// craigslistStealthFetch / craigslistOxFetchFetch — production reads the real
+// profile through GetResumeProfile (the canonical accessor), tests inject a
+// fixed value so the fallback path is exercised without a database.
+var craigslistProfileLocation = func(ctx context.Context) string {
+	prof, err := GetResumeProfile(ctx, "")
+	if err != nil || prof == nil {
+		return ""
+	}
+	return prof.Location
+}
+
+// resolveCraigslistDefaultLocation picks a location to use when the caller
+// supplied none, in this order:
+//  1. the operator's resume profile location (resume_persons.location);
+//  2. engine.Cfg.CraigslistDefaultLocation (a deployment default for
+//     installations with no profile);
+//  3. "" — when both are empty, the caller keeps the current
+//     errCraigslistUnmapped behaviour (fail rather than silently search the
+//     wrong city).
+//
+// The resolved value is still subject to resolveRegion downstream: a profile
+// location that does not map to a Craigslist area (e.g. "Remote") surfaces
+// errCraigslistUnmapped, which is the honest outcome — the fallback substitutes
+// a location, it does not guarantee the location maps.
+func resolveCraigslistDefaultLocation(ctx context.Context) string {
+	if loc := strings.TrimSpace(craigslistProfileLocation(ctx)); loc != "" {
+		return loc
+	}
+	return strings.TrimSpace(engine.Cfg.CraigslistDefaultLocation)
+}
+
 // --- Main search function ---
 
 // SearchCraigslistJobs searches Craigslist job listings via an HTML-first
@@ -840,6 +879,19 @@ func synthesizeLadderError(outcomes []tierOutcome) ([]engine.SearxngResult, erro
 // blocked paths — which is the fix for the shipped defect.
 func SearchCraigslistJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
 	engine.IncrCraigslistRequests()
+
+	// Craigslist is region-scoped: an empty location has nowhere to go. When
+	// the caller supplied none, resolve one from the operator's profile then
+	// the config default before entering the ladder. An explicit location is
+	// never overridden — silently searching the wrong city is worse than
+	// failing, so the fallback fires ONLY on empty input. If both fallback
+	// sources are empty, location stays "" and the ladder's resolveRegion
+	// guard returns errCraigslistUnmapped (the current behaviour).
+	if strings.TrimSpace(location) == "" {
+		if resolved := resolveCraigslistDefaultLocation(ctx); resolved != "" {
+			location = resolved
+		}
+	}
 
 	// HTML-first ladder (static → rendered → RSS).
 	results, err := fetchCraigslistListings(ctx, query, location, limit)

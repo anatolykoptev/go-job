@@ -896,3 +896,209 @@ func TestSearchCraigslistJobs_DiscoveryFallback_IncrsCounter(t *testing.T) {
 // Ensure engine.Config is initialized for tests that reference engine.Cfg fields.
 var _ = engine.Config{}
 var _ stealth.BrowserClient
+
+// --- Default-location fallback (F1/F2/F3) ---
+//
+// Craigslist is region-scoped: an empty location has nowhere to go. When the
+// caller supplies none, the connector resolves one from (1) the operator's
+// resume profile, then (2) engine.Cfg.CraigslistDefaultLocation, and only if
+// both are empty keeps the errCraigslistUnmapped error. An explicit location
+// always wins and an unmappable explicit location always errors — silently
+// searching the wrong city is worse than failing.
+
+// saveProfileSeam saves/restores the craigslistProfileLocation seam and the
+// CraigslistDefaultLocation config field so the F1-F3 tests are isolated.
+func saveProfileSeam(t *testing.T) {
+	t.Helper()
+	origProfile := craigslistProfileLocation
+	origDefault := engine.Cfg.CraigslistDefaultLocation
+	t.Cleanup(func() {
+		craigslistProfileLocation = origProfile
+		engine.Cfg.CraigslistDefaultLocation = origDefault
+	})
+}
+
+// urlCapturingStealth returns a stealth seam that records the URL it was called
+// with and returns the given body as a successful 200 response.
+func urlCapturingStealth(captured *string, body []byte) func(context.Context, string, map[string]string) (int, []byte, error) {
+	return func(_ context.Context, feedURL string, _ map[string]string) (int, []byte, error) {
+		*captured = feedURL
+		return http.StatusOK, body, nil
+	}
+}
+
+// F1 — profile fallback: a search with NO explicit location, against a profile
+// whose location is set, must resolve the profile's region and return results
+// instead of errCraigslistUnmapped.
+//
+// MUTATION-CHECK: remove the fallback call in SearchCraigslistJobs (leave
+// location="" ) → resolveRegion("") returns false → errCraigslistUnmapped →
+// the test expects results and gets an error → RED.
+func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
+	saveFetchVars(t)
+	saveProfileSeam(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	// Profile holds the real stored value: "San Francisco Bay Area".
+	craigslistProfileLocation = func(_ context.Context) string {
+		return "San Francisco Bay Area"
+	}
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var capturedURL string
+	craigslistStealthFetch = urlCapturingStealth(&capturedURL, fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err != nil {
+		t.Fatalf("expected results via profile fallback, got error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results via profile fallback, got 0")
+	}
+	// The profile value "San Francisco Bay Area" resolves to the sfbay area
+	// slug via resolveRegion's substring pass — prove the profile location
+	// flowed through to the URL, not a hardcoded constant.
+	if !strings.Contains(capturedURL, "/area/"+craigslistCitySFBay) {
+		t.Errorf("profile fallback did not reach the URL: got %s, want /area/%s", capturedURL, craigslistCitySFBay)
+	}
+}
+
+// F2 — explicit location still wins: a caller passing an explicit location
+// different from the profile's must get THAT location, not the profile's.
+// This is the guard against silently searching the wrong city.
+//
+// MUTATION-CHECK: make the fallback override the caller's value (apply
+// resolveCraigslistDefaultLocation unconditionally instead of only when
+// location=="") → the URL uses the profile's sfbay region instead of
+// newyork → RED.
+func TestSearchCraigslistJobs_ExplicitLocation_WinsOverProfile(t *testing.T) {
+	saveFetchVars(t)
+	saveProfileSeam(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Profile says SF; caller says New York. Caller must win.
+	craigslistProfileLocation = func(_ context.Context) string {
+		return "San Francisco Bay Area"
+	}
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var capturedURL string
+	craigslistStealthFetch = urlCapturingStealth(&capturedURL, fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "golang", "new york", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for explicit location, got 0")
+	}
+	if !strings.Contains(capturedURL, "/area/"+craigslistCityNewYork) {
+		t.Errorf("explicit location did not win: got %s, want /area/%s (profile must NOT override the caller)", capturedURL, craigslistCityNewYork)
+	}
+	if strings.Contains(capturedURL, "/area/"+craigslistCitySFBay) {
+		t.Errorf("profile fallback overrode the explicit location: URL used sfbay (%s) — silently searching the wrong city", capturedURL)
+	}
+}
+
+// F3 — an unmappable explicit location still errors: a caller passing a
+// location that maps to nothing must get errCraigslistUnmapped, NOT the
+// operator's region via the fallback. The fallback only fires on EMPTY input.
+//
+// MUTATION-CHECK: make the fallback catch an unmappable explicit location
+// (fall through to resolveCraigslistDefaultLocation when resolveRegion fails)
+// → the profile's sfbay region is used → transport is called and the error is
+// no longer errCraigslistUnmapped → RED.
+func TestSearchCraigslistJobs_UnmappableExplicitLocation_StillErrors(t *testing.T) {
+	saveFetchVars(t)
+	saveProfileSeam(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Profile is set, but the caller's explicit "Berlin" must NOT fall back to it.
+	craigslistProfileLocation = func(_ context.Context) string {
+		return "San Francisco Bay Area"
+	}
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxFetchFetch = transportCalledStub(t, "ox-fetch")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	_, err := SearchCraigslistJobs(context.Background(), "golang", "Berlin", 5)
+	if err == nil {
+		t.Fatal("expected errCraigslistUnmapped for unmappable explicit location, got nil — the fallback caught it")
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Errorf("expected errCraigslistUnmapped, got: %v", err)
+	}
+}
+
+// F1-config — config default fallback: when the profile location is empty but
+// engine.Cfg.CraigslistDefaultLocation is set, the config value is used.
+//
+// MUTATION-CHECK: remove the config-default branch from
+// resolveCraigslistDefaultLocation → returns "" → errCraigslistUnmapped → RED.
+func TestSearchCraigslistJobs_EmptyLocation_UsesConfigDefault(t *testing.T) {
+	saveFetchVars(t)
+	saveProfileSeam(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// No profile location; config default is set.
+	craigslistProfileLocation = func(_ context.Context) string { return "" }
+	engine.Cfg.CraigslistDefaultLocation = "new york"
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var capturedURL string
+	craigslistStealthFetch = urlCapturingStealth(&capturedURL, fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err != nil {
+		t.Fatalf("expected results via config default, got error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results via config default, got 0")
+	}
+	if !strings.Contains(capturedURL, "/area/"+craigslistCityNewYork) {
+		t.Errorf("config default did not reach the URL: got %s, want /area/%s", capturedURL, craigslistCityNewYork)
+	}
+}
+
+// F1-both-empty — when both the profile and the config default are empty, the
+// connector keeps the current errCraigslistUnmapped behaviour.
+func TestSearchCraigslistJobs_EmptyLocation_BothEmpty_StillErrors(t *testing.T) {
+	saveFetchVars(t)
+	saveProfileSeam(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	craigslistProfileLocation = func(_ context.Context) string { return "" }
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxFetchFetch = transportCalledStub(t, "ox-fetch")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	_, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err == nil {
+		t.Fatal("expected errCraigslistUnmapped when both fallbacks are empty, got nil")
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Errorf("expected errCraigslistUnmapped, got: %v", err)
+	}
+}
