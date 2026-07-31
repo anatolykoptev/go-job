@@ -14,8 +14,9 @@ import (
 // ATS job is mapped to its platform label, so each ATS platform MUST appear in
 // both the enum and the URL rule.
 func TestJobSearchInstruction_ATSSourcesEnumerated(t *testing.T) {
+	instr := JobSearchInstructionFor(JobSearchMaxLimit)
 	for _, want := range []string{`"greenhouse"`, `"lever"`, `"ashby"`} {
-		if !strings.Contains(JobSearchInstruction, want) {
+		if !strings.Contains(instr, want) {
 			t.Errorf("JobSearchInstruction missing source enum value %s", want)
 		}
 	}
@@ -27,7 +28,7 @@ func TestJobSearchInstruction_ATSSourcesEnumerated(t *testing.T) {
 		"jobs.lever.co",
 		"jobs.ashbyhq.com",
 	} {
-		if !strings.Contains(JobSearchInstruction, host) {
+		if !strings.Contains(instr, host) {
 			t.Errorf("JobSearchInstruction missing URL→source mapping for %s", host)
 		}
 	}

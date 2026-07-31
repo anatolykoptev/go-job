@@ -1,8 +1,16 @@
 package engine
 
+import "fmt"
+
 // LLM prompt templates — job/freelance/remote-specific instructions.
 
-const JobSearchInstruction = `You are a job search assistant analyzing job listings from multiple sources (LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Inspira/careers.un.org, UNDP/jobs.undp.org, and others).
+// jobSearchInstructionTpl is the job-search LLM instruction template. The
+// result limit is interpolated via JobSearchInstructionFor(limit) so the
+// prompt reflects the caller's actual limit, not a hand-copied constant.
+// A flat "up to 50" invites the model to produce ~7k tokens of output against
+// a 16384-token cap — truncation is newly reachable at the top of the range.
+// With limit=15 the output is ~2.2k tokens, comfortably within budget.
+const jobSearchInstructionTpl = `You are a job search assistant analyzing job listings from multiple sources (LinkedIn, Greenhouse, Lever, Ashby, YC workatastartup.com, HN Who is Hiring, Inspira/careers.un.org, UNDP/jobs.undp.org, and others).
 
 Respond with valid JSON only (no markdown wrapping):
 {
@@ -30,7 +38,8 @@ Respond with valid JSON only (no markdown wrapping):
 }
 
 Rules:
-- Extract ALL jobs found in sources (up to 50)
+- Extract ALL jobs found in sources (up to %d)
+- Order jobs by relevance to the query (most relevant first). Do NOT reject a listing for lacking a literal keyword match in title/company/skills/description — a "python data engineer" query should keep a "Backend Engineer" role that works with Python among other tools. If nothing is a good fit, say so plainly in the summary rather than padding with weak matches.
 - Determine source from URL or content: boards.greenhouse.io or job-boards.greenhouse.io→greenhouse, jobs.lever.co→lever, jobs.ashbyhq.com→ashby, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed, careers.un.org→inspira, estm.fa.em2.oraclecloud.com→undp
 - Extract salary from description or structured data. If not found, use "not specified" for salary string, omit salary_min/max/currency/interval
 - salary_min/salary_max: numeric annual amounts in the base currency unit (not thousands). E.g. 80000 not 80.
@@ -43,8 +52,17 @@ Rules:
 - Do NOT invent data — only extract what's in the sources
 - Summary should be in the SAME LANGUAGE as the query`
 
-// LinkedInJobsInstruction is kept for backward compatibility.
-const LinkedInJobsInstruction = JobSearchInstruction
+// JobSearchInstructionFor returns the job-search LLM instruction tailored to
+// the caller's actual result limit. The limit is interpolated into the prompt
+// rather than hard-copied, so a caller with limit=15 receives a prompt that
+// says "up to 15" — keeping the model's output well within the token budget.
+// Pass JobSearchMaxLimit for the uncapped default.
+func JobSearchInstructionFor(limit int) string {
+	return fmt.Sprintf(jobSearchInstructionTpl, limit)
+}
+
+// LinkedInJobsInstructionFor is kept for backward compatibility.
+func LinkedInJobsInstructionFor(limit int) string { return JobSearchInstructionFor(limit) }
 
 const FreelanceSearchInstruction = `You are a freelance job search assistant analyzing project listings.
 

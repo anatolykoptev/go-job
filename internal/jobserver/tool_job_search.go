@@ -142,8 +142,8 @@ func runJobSearch(ctx context.Context, req *mcp.CallToolRequest, input engine.Jo
 	if limit <= 0 {
 		limit = 15
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > engine.JobSearchMaxLimit {
+		limit = engine.JobSearchMaxLimit
 	}
 
 	srcs := jobRegistry.Select(platform)
@@ -348,7 +348,7 @@ spawn:
 	}
 	wg.Wait()
 
-	jobOut, err := engine.SummarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
+	jobOut, err := engine.SummarizeJobResults(ctx, input.Query, engine.JobSearchInstructionFor(limit), 5000, top, contents)
 	if err != nil {
 		// BLOCKER 5 fix: the MCP SDK discards the typed output entirely when
 		// err != nil (go-sdk/mcp/server.go:345-352), so returning an error here

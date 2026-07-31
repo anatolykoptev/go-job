@@ -50,7 +50,7 @@ func FetchVacancy(ctx context.Context, targetURL, sourceHint, companyHint string
 	}
 	contents := map[string]string{targetURL: cleanText}
 
-	out, err := engine.SummarizeJobResults(ctx, "single vacancy", engine.JobSearchInstruction, contentLimitFetchVacancy, []engine.SearxngResult{stub}, contents)
+	out, err := engine.SummarizeJobResults(ctx, "single vacancy", engine.JobSearchInstructionFor(1), contentLimitFetchVacancy, []engine.SearxngResult{stub}, contents)
 	if err != nil {
 		return engine.JobListing{}, "", fmt.Errorf("fetchone: LLM extract %s: %w", targetURL, err)
 	}

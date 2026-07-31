@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 
@@ -35,17 +36,24 @@ var jobSearchComplete = func(ctx context.Context, prompt string, temperature flo
 // the outcome. The raw JSON is never stuffed into Summary with Jobs left nil.
 //
 // Reasoning tokens are disabled (WithReasoningEffort("none")) because the
-// default model (gemini-3.x) bounds max_tokens on the COMPLETION including
-// thinking tokens — reasoning can consume the entire output budget and cut
-// the JSON mid-record even when the record count is well within the token
-// ceiling. Every other go-engine LLM path (query.go, summarize.go) already
-// does this; this path was the lone exception.
+// routed model bounds max_tokens on the COMPLETION including thinking tokens —
+// reasoning can consume the entire output budget and cut the JSON mid-record
+// even when the record count is well within the token ceiling. Every other
+// go-engine LLM path (query.go, summarize.go) already does this; this path
+// was the lone exception.
 //
 // finish_reason is NOT surfaced by the go-engine LLM client (Complete returns
 // only (string, error) — see vendor/.../llm/client.go:369), so truncation is
 // detected by the JSON parse failure itself: if json.Unmarshal of the full
 // response fails, the response is malformed/truncated and the salvage path
 // runs.
+//
+// URL backfill is NOT done here. The caller (runJobSearch) owns the
+// SearxngResult→JobListing correspondence and applies it via
+// assignFallbackURLs, which guards on equal lengths. A salvage path that
+// drops records breaks the positional correspondence by construction, so
+// guessing URLs here would mis-assign another listing's URL to a salvaged
+// record. FetchVacancy has its own URL backfill at the call site.
 func SummarizeJobResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*JobSearchOutput, error) {
 	sources := BuildSourcesText(results, contents, contentLimit)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
@@ -58,18 +66,21 @@ func SummarizeJobResults(ctx context.Context, query, instruction string, content
 	jobs, summary, outcome, salvaged, dropped := parseJobSearchResponse(raw)
 	IncrJobSearchExtraction(outcome)
 
-	if outcome == ExtractionTruncatedSalvaged {
-		slog.Warn("job_search: LLM response truncated, salvaged complete records",
+	if outcome != ExtractionOK && outcome != ExtractionTrailingGarbage {
+		// The warn line carries raw_len + the configured model candidate set
+		// (LLM_MODEL_WEIGHTS, bounded at 9 values) + the primary model. If
+		// raw_len/4 ≈ LLMMaxTokens the cut is the token cap; if raw_len sits
+		// far below the ceiling, the cut is upstream (proxy, stream abort, or
+		// a weight-routed model) and no amount of WithReasoningEffort will
+		// touch it. That one field separates the two hypotheses on the first
+		// production occurrence, with no new instrumentation.
+		slog.Warn("job_search: LLM response parse issue, salvaged complete records",
+			slog.String("outcome", outcome),
 			slog.Int("salvaged", salvaged),
 			slog.Int("dropped", dropped),
-			slog.Int("raw_len", len(raw)))
-	}
-
-	// Backfill URLs from positional results (same logic as before).
-	for i := range jobs {
-		if jobs[i].URL == "" && i < len(results) {
-			jobs[i].URL = results[i].URL
-		}
+			slog.Int("raw_len", len(raw)),
+			slog.String("llm_model", cfg.LLMModel),
+			slog.String("llm_model_weights", os.Getenv("LLM_MODEL_WEIGHTS")))
 	}
 
 	return &JobSearchOutput{Query: query, Jobs: jobs, Summary: summary}, nil
@@ -81,15 +92,21 @@ func SummarizeJobResults(ctx context.Context, query, instruction string, content
 //
 //   - ok                 — full JSON parsed cleanly; salvaged = len(jobs), dropped = 0
 //   - trailing_garbage   — full parse failed (e.g. trailing prose after the
-//     JSON object) but the "jobs" array closed cleanly via the streaming
-//     decoder; all decoded records are kept, dropped = 0. A chat-tuned model
-//     that appends "Hope this helps!" lands here, NOT in truncated_salvaged.
+//     JSON object) but the "jobs" array AND enclosing object closed cleanly;
+//     all decoded records are kept, dropped = 0. A chat-tuned model that
+//     appends "Hope this helps!" lands here, NOT in truncated_salvaged.
+//   - schema_mismatch    — the array closed cleanly but one or more elements
+//     failed to unmarshal into JobListing (e.g. "salary_min":"160000" — a
+//     string where *int is declared). The bad elements were skipped and the
+//     rest kept; dropped = exact count of skipped elements. This is NOT
+//     truncation — the array was complete, the model just sent a wrong type.
 //   - truncated_salvaged — the "jobs" array did NOT close cleanly (cut
-//     mid-record by the output token budget); complete elements decoded
-//     before the cut are kept; dropped = 1 (a floor — the true loss may be
-//     greater but is unknowable from a truncated stream)
-//   - unparseable        — no "jobs" array found, or the array was truncated
-//     before any complete record decoded
+//     mid-record by the output token budget) OR the enclosing object was
+//     truncated (e.g. the summary field was cut mid-value); complete elements
+//     decoded before the cut are kept; dropped = schema skips + at least 1
+//     for the truncated tail (the true loss may be greater but is unknowable
+//     from a truncated stream)
+//   - unparseable        — no "jobs" array found, or no complete record decoded
 //
 // This is a pure function (no LLM, no metrics) so it is directly testable with
 // canned strings — the falsification tests feed cut-mid-record JSON here.
@@ -101,96 +118,278 @@ func parseJobSearchResponse(raw string) (jobs []JobListing, summary string, outc
 
 	// Full parse failed — the response is malformed or truncated. Salvage
 	// complete records from the "jobs" array using a streaming decoder.
-	salvagedJobs, salSummary, n, arrayClosed := salvageJobs(raw)
+	salvagedJobs, salSummary, n, arrayClosed, objectClosed, schemaDropped := salvageJobs(raw)
 
-	if arrayClosed {
-		// The jobs array was found and closed cleanly (io.EOF from the
-		// decoder). The full-parse failure was caused by something else —
-		// trailing prose, a missing closing brace, etc. — NOT truncation.
-		// Preserve the model's summary (even for an empty array: a
-		// legitimate "none match" explanation must not be replaced by a
-		// parse-error message).
-		return salvagedJobs, salSummary, ExtractionTrailingGarbage, n, 0
-	}
-
-	// Array did not close cleanly — genuine truncation.
-	if n > 0 {
-		summary = salSummary
-		if summary == "" {
-			summary = fmt.Sprintf("LLM response truncated; %d complete job records salvaged, at least 1 lost.", n)
+	if !arrayClosed {
+		// Array did not close cleanly — genuine mid-record truncation.
+		if n > 0 {
+			summary = salSummary
+			if summary == "" {
+				summary = fmt.Sprintf("LLM response truncated; %d complete job records salvaged, at least 1 lost.", n)
+			}
+			return salvagedJobs, summary, ExtractionTruncatedSalvaged, n, schemaDropped + 1
 		}
-		return salvagedJobs, summary, ExtractionTruncatedSalvaged, n, 1
+		return nil, "LLM response could not be parsed; no job records extracted.", ExtractionUnparseable, 0, 0
 	}
 
-	// Truncated before any complete record could be decoded, or no array found.
-	return nil, "LLM response could not be parsed; no job records extracted.", ExtractionUnparseable, 0, 0
+	// Array closed cleanly. Now distinguish:
+	// (a) enclosing object also closed → healthy (trailing_garbage or schema_mismatch)
+	// (b) enclosing object truncated → truncated_salvaged (the response WAS
+	//     cut, just outside the array — e.g. the summary field was cut
+	//     mid-value; an empty summary must never reach the user unmarked)
+	if !objectClosed {
+		if n > 0 {
+			summary = salSummary
+			if summary == "" {
+				summary = fmt.Sprintf("LLM response truncated; %d complete job records salvaged, summary was cut.", n)
+			}
+			return salvagedJobs, summary, ExtractionTruncatedSalvaged, n, schemaDropped
+		}
+		return nil, "LLM response could not be parsed; no job records extracted.", ExtractionUnparseable, 0, 0
+	}
+
+	// Array closed, object closed — healthy salvage. Distinguish schema
+	// mismatch (some elements skipped) from clean trailing garbage.
+	if schemaDropped > 0 {
+		return salvagedJobs, salSummary, ExtractionSchemaMismatch, n, schemaDropped
+	}
+	// Preserve the model's summary (even for an empty array: a legitimate
+	// "none match" explanation must not be replaced by a parse-error message).
+	return salvagedJobs, salSummary, ExtractionTrailingGarbage, n, 0
+}
+
+// schemaPlaceholderSummary is the exact summary text from the prompt's example
+// JSON object. A model that restates the format before answering puts this
+// string where the real summary should be; extractSummaryField skips it.
+const schemaPlaceholderSummary = "1-2 sentence recommendation: which jobs look most promising and why, or an honest statement that none match the query"
+
+// isSchemaPlaceholderJob reports whether a decoded JobListing matches the
+// prompt's example object — a model that restates the format before answering
+// produces a record whose Title and Company are the literal placeholder values
+// ("job title", "company name"). A real listing never carries both.
+func isSchemaPlaceholderJob(job JobListing) bool {
+	return job.Title == "job title" && job.Company == "company name"
+}
+
+// salvageResult holds the output of decoding a single "jobs" array candidate.
+type salvageResult struct {
+	jobs          []JobListing
+	arrayClosed   bool
+	objectClosed  bool
+	schemaDropped int
+}
+
+// betterThan returns true if r yields more real records than other, or equal
+// real records with fewer schema drops. Used to pick the winning candidate
+// when a model restates the format (placeholder "jobs" array) before the real
+// answer.
+func (r salvageResult) betterThan(other salvageResult) bool {
+	if len(r.jobs) != len(other.jobs) {
+		return len(r.jobs) > len(other.jobs)
+	}
+	return r.schemaDropped < other.schemaDropped
 }
 
 // salvageJobs extracts complete JobListing records from a (possibly
 // truncated) JSON response by streaming the "jobs" array with a json.Decoder.
 // Each array element that decodes fully is kept. Returns (jobs, summary,
-// count, arrayClosed).
+// count, arrayClosed, objectClosed, schemaDropped).
 //
-// arrayClosed is true when the decoder reached io.EOF after the last element —
-// the array's closing ']' was present in the stream. This distinguishes a
-// complete array with trailing garbage (arrayClosed=true, NOT truncated) from
-// a mid-record cut (arrayClosed=false, truncated). The distinction is code,
-// not a comment: the io.EOF vs other-error branch drives the outcome label.
+// BLOCKER 1 fix — candidate scanning: a chat-tuned model may restate the
+// format (with a placeholder "jobs" array whose records have Title="job
+// title", Company="company name") before the real answer. Anchoring on the
+// FIRST "jobs" occurrence returns the placeholder as a real job listing. We
+// scan ALL candidate "jobs" array starts and pick the one yielding the most
+// non-placeholder records. Placeholder records (matching the prompt's example
+// values) are skipped as a belt.
 //
-// Does NOT fabricate closing brackets — a truncated array's first N elements
-// parse clean, and we explicitly stop at the first failure rather than
-// guessing how many more were intended. This avoids the documented trap where
-// "finished with 8" and "truncated at 8 of 15" become indistinguishable: the
-// outcome counter (truncated_salvaged vs trailing_garbage) makes the
-// distinction visible.
-func salvageJobs(raw string) (jobs []JobListing, summary string, count int, arrayClosed bool) {
-	// Find the "jobs" array start.
-	jobsIdx := strings.Index(raw, `"jobs"`)
-	if jobsIdx < 0 {
-		return nil, "", 0, false
-	}
-	rest := raw[jobsIdx:]
-	bracketIdx := strings.Index(rest, "[")
-	if bracketIdx < 0 {
-		return nil, "", 0, false
+// BLOCKER 2 fix — RawMessage decode: array elements are decoded as
+// json.RawMessage first (which never fails on a type mismatch), then
+// unmarshaled into JobListing independently. A mid-array element with a wrong
+// type (e.g. "salary_min":"160000" — string where *int is declared) is SKIPPED
+// and scanning continues to ']'; the old code broke out of the loop on the
+// first Decode failure, losing every complete record after it and reporting
+// dropped=1 (a constant that misattributed the loss to the token budget).
+// schemaDropped is the exact count of skipped elements.
+//
+// MAJOR 3 fix — objectClosed: after the array closes, we check whether the
+// enclosing object also closed. A response where the array is complete but
+// the summary field is cut mid-value has arrayClosed=true but
+// objectClosed=false; the outcome is truncated_salvaged (NOT trailing_garbage)
+// and the empty summary is replaced by a synthetic fallback so an empty
+// summary never reaches the user unmarked.
+func salvageJobs(raw string) (jobs []JobListing, summary string, count int, arrayClosed bool, objectClosed bool, schemaDropped int) {
+	candidates := findJobsArrayStarts(raw)
+	if len(candidates) == 0 {
+		return nil, "", 0, false, false, 0
 	}
 
-	dec := json.NewDecoder(strings.NewReader(rest[bracketIdx:]))
+	var best salvageResult
+	first := true
+	for _, bracketIdx := range candidates {
+		r := decodeJobsCandidate(raw, bracketIdx)
+		if first || r.betterThan(best) {
+			best = r
+			first = false
+		}
+	}
+
+	// Extract the summary from the whole raw string. extractSummaryField
+	// scans all "summary" occurrences and skips the schema placeholder, so
+	// a format-restatement's placeholder summary does not shadow the real one.
+	summary, _ = extractSummaryField(raw)
+
+	return best.jobs, summary, len(best.jobs), best.arrayClosed, best.objectClosed, best.schemaDropped
+}
+
+// findJobsArrayStarts returns byte offsets in raw of each "[" that opens a
+// "jobs" array — i.e. each occurrence of `"jobs"` followed (after optional
+// whitespace and a colon) by "[".
+func findJobsArrayStarts(raw string) []int {
+	var starts []int
+	searchFrom := 0
+	for {
+		idx := strings.Index(raw[searchFrom:], `"jobs"`)
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+		pos := idx + len(`"jobs"`)
+		for pos < len(raw) && isJSONSpace(raw[pos]) {
+			pos++
+		}
+		if pos < len(raw) && raw[pos] == ':' {
+			pos++
+			for pos < len(raw) && isJSONSpace(raw[pos]) {
+				pos++
+			}
+			if pos < len(raw) && raw[pos] == '[' {
+				starts = append(starts, pos)
+			}
+		}
+		searchFrom = idx + len(`"jobs"`)
+	}
+	return starts
+}
+
+func isJSONSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// decodeJobsCandidate streams one "jobs" array candidate starting at
+// bracketIdx (the "[" offset in raw) and returns the decoded records plus
+// closure signals.
+func decodeJobsCandidate(raw string, bracketIdx int) salvageResult {
+	rest := raw[bracketIdx:]
+	dec := json.NewDecoder(strings.NewReader(rest))
 
 	// Consume the opening '['.
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('[') {
-		return nil, "", 0, false
+		return salvageResult{}
 	}
+
+	r := salvageResult{}
 
 	for {
 		if !dec.More() {
-			// No more elements. Distinguish a clean array close from a
-			// truncated stream: consume the next token — if it is the
-			// closing ']', the array closed cleanly (io.EOF here would mean
-			// the stream was cut before the bracket). This is the signal
-			// MAJOR 1 and MAJOR 2 need, written as code not a comment.
 			closer, cerr := dec.Token()
 			if cerr == nil && closer == json.Delim(']') {
-				arrayClosed = true
+				r.arrayClosed = true
 			}
 			break
 		}
-		var job JobListing
-		if err := dec.Decode(&job); err != nil {
-			// Mid-record decode failure = truncation (the stream was cut
-			// inside an element). arrayClosed stays false.
+		// Decode as RawMessage first — never fails on a type mismatch.
+		var rawMsg json.RawMessage
+		if err := dec.Decode(&rawMsg); err != nil {
+			// Mid-element decode failure = truncation (stream cut inside
+			// an element). arrayClosed stays false.
 			break
 		}
-		jobs = append(jobs, job)
+		var job JobListing
+		if err := json.Unmarshal(rawMsg, &job); err != nil {
+			// Schema mismatch (e.g. string where *int expected). Skip this
+			// element but KEEP SCANNING — the rest of the array may be fine.
+			r.schemaDropped++
+			continue
+		}
+		if isSchemaPlaceholderJob(job) {
+			// Schema echo — the model restated the format example as if it
+			// were a real record. Skip it.
+			r.schemaDropped++
+			continue
+		}
+		r.jobs = append(r.jobs, job)
 	}
 
-	// Try to salvage the summary field — it may appear before or after the
-	// jobs array. Search for it in the raw string. An unterminated summary
-	// (cut mid-string by truncation) is dropped, not returned verbatim.
-	summary, _ = extractSummaryField(raw)
+	// Check whether the enclosing object closed after the array.
+	if r.arrayClosed {
+		// dec.InputOffset() gives the byte offset within the stream (which
+		// starts at bracketIdx) just past the last token consumed (the ']').
+		afterArray := bracketIdx + int(dec.InputOffset())
+		r.objectClosed = checkObjectClosedRaw(raw, afterArray)
+	}
 
-	return jobs, summary, len(jobs), arrayClosed
+	return r
+}
+
+// checkObjectClosedRaw determines whether the enclosing JSON object closed
+// after the "jobs" array by scanning the raw string from afterArrayIdx. If
+// there is no unclosed '{' before the array (a bare array not wrapped in an
+// object), the object is trivially closed. Otherwise, we scan for the
+// enclosing '}', skipping JSON string values (a '}' inside a string is not
+// the object close). A truncated summary value (cut mid-string) means the
+// scan reaches end-of-string without finding '}' → objectClosed=false.
+func checkObjectClosedRaw(raw string, afterArrayIdx int) bool {
+	if !hasUnclosedBraceBefore(raw, afterArrayIdx) {
+		return true // bare array, no enclosing object to close
+	}
+	i := afterArrayIdx
+	for i < len(raw) {
+		switch raw[i] {
+		case '"':
+			// Skip a JSON string value (a '}' inside a string is not the
+			// object close).
+			i++
+			for i < len(raw) {
+				if raw[i] == '\\' && i+1 < len(raw) {
+					i += 2
+					continue
+				}
+				if raw[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+		case '}':
+			return true
+		default:
+			i++
+		}
+	}
+	return false
+}
+
+// hasUnclosedBraceBefore reports whether there is an unclosed '{' in raw
+// before pos — i.e. the array at pos is inside an enclosing object. Uses a
+// simple brace-depth counter (does not account for braces inside JSON string
+// values; adequate for the practical inputs — model responses rarely contain
+// literal braces in string fields, and the consequence of a false positive is
+// a redundant decoder scan that still returns the correct answer).
+func hasUnclosedBraceBefore(raw string, pos int) bool {
+	depth := 0
+	for i := 0; i < pos; i++ {
+		switch raw[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth > 0
 }
 
 // extractSummaryField attempts to extract the "summary" string field from a
@@ -199,11 +398,51 @@ func salvageJobs(raw string) (jobs []JobListing, summary string, count int, arra
 // before end-of-string — the value is a truncation fragment and is returned
 // as "" so the caller falls back to the synthetic truncated-summary message
 // instead of delivering a partial sentence mid-word.
+//
+// BLOCKER 1 fix — multi-occurrence scan: a model that restates the format
+// before answering puts a placeholder "summary" (the prompt's example text)
+// where the real summary should be. Anchoring on the FIRST "summary"
+// occurrence returns the placeholder. We scan ALL occurrences, skip the
+// schema placeholder, and return the first non-placeholder terminated
+// summary. If only the placeholder is found, we return it as a last resort
+// (terminated=true) — better than nothing. If nothing terminated, we return
+// ("", false) so the caller uses the synthetic fallback.
+//
+// This is a fork of vendored llm.ExtractJSONAnswer (go-kit/llm), diverged to
+// handle truncation (unterminated strings) and schema-placeholder skipping.
+// Upstreaming the truncation-aware logic is the right long-term home; until
+// then, this copy carries the two behaviours the vendored version lacks.
 func extractSummaryField(raw string) (string, bool) {
-	idx := strings.Index(raw, `"summary"`)
-	if idx < 0 {
-		return "", false
+	searchFrom := 0
+	var firstTerminated string
+	var foundTerminated bool
+	for {
+		idx := strings.Index(raw[searchFrom:], `"summary"`)
+		if idx < 0 {
+			break
+		}
+		idx += searchFrom
+		val, terminated := extractSummaryAt(raw, idx)
+		if terminated {
+			if val != schemaPlaceholderSummary {
+				return val, true
+			}
+			if !foundTerminated {
+				firstTerminated = val
+				foundTerminated = true
+			}
+		}
+		searchFrom = idx + len(`"summary"`)
 	}
+	if foundTerminated {
+		return firstTerminated, true
+	}
+	return "", false
+}
+
+// extractSummaryAt extracts the "summary" string value starting at idx (the
+// position of `"summary"` in raw). Returns (value, terminated).
+func extractSummaryAt(raw string, idx int) (string, bool) {
 	rest := raw[idx+len(`"summary"`):]
 	rest = strings.TrimSpace(rest)
 	if len(rest) == 0 || rest[0] != ':' {
@@ -213,7 +452,6 @@ func extractSummaryField(raw string) (string, bool) {
 	if len(rest) == 0 || rest[0] != '"' {
 		return "", false
 	}
-	// Find the closing quote, respecting escaped characters.
 	rest = rest[1:]
 	var sb strings.Builder
 	for i := 0; i < len(rest); i++ {
@@ -258,7 +496,6 @@ func extractSummaryField(raw string) (string, bool) {
 		}
 		sb.WriteByte(rest[i])
 	}
-	// Reached end-of-string without a closing quote — unterminated.
 	return "", false
 }
 

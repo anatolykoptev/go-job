@@ -2,6 +2,14 @@ package engine
 
 // --- Job search types ---
 
+// JobSearchMaxLimit is the maximum number of results a single job_search call
+// can return. It is the single source of truth for the limit cap — used by the
+// clamp in tool_job_search.go, the jsonschema annotation on JobSearchInput.Limit,
+// and the LLM extraction prompt (via JobSearchInstructionFor). Changing this
+// constant updates every consumer; a hand-copied "50" in a third place would
+// silently drift.
+const JobSearchMaxLimit = 50
+
 type JobSearchInput struct {
 	Query      string `json:"query" jsonschema:"Job search keywords (e.g. golang developer, data engineer)"`
 	Location   string `json:"location,omitempty" jsonschema:"City, country, or Remote (e.g. Berlin, United States, Remote)"`

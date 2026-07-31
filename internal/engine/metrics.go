@@ -443,12 +443,18 @@ const (
 	// MetricJobSearchExtraction is the labelled counter
 	// gojob_job_search_extraction_total{outcome}. Bumped once per
 	// SummarizeJobResults call, classifying the LLM JSON parse outcome.
-	// outcome ∈ {ok, trailing_garbage, truncated_salvaged, unparseable} — bounded enum.
+	// outcome ∈ {ok, trailing_garbage, schema_mismatch, truncated_salvaged,
+	// unparseable} — bounded enum.
 	//   - ok                  — full JSON parsed cleanly, all records kept
 	//   - trailing_garbage    — full parse failed (trailing prose, missing brace)
 	//     but the "jobs" array closed cleanly; NOT truncation, dropped = 0
-	//   - truncated_salvaged  — full parse failed; the array was cut mid-record;
-	//     complete records salvaged, truncated tail dropped
+	//   - schema_mismatch     — the array closed cleanly but one or more
+	//     elements failed to unmarshal into JobListing (e.g. string where
+	//     *int expected); the bad elements were skipped and the rest kept;
+	//     dropped = exact count of skipped elements
+	//   - truncated_salvaged  — full parse failed; the array (or enclosing
+	//     object) was cut mid-record; complete records salvaged, truncated
+	//     tail dropped
 	//   - unparseable         — no complete records could be salvaged
 	// Pre-touched for all outcomes so rate()-floor alerts see 0 before
 	// the first job_search call.
@@ -459,6 +465,7 @@ const (
 const (
 	ExtractionOK                = "ok"
 	ExtractionTrailingGarbage   = "trailing_garbage"
+	ExtractionSchemaMismatch    = "schema_mismatch"
 	ExtractionTruncatedSalvaged = "truncated_salvaged"
 	ExtractionUnparseable       = "unparseable"
 )
@@ -469,6 +476,7 @@ const (
 var validExtractionOutcomes = map[string]bool{
 	ExtractionOK:                true,
 	ExtractionTrailingGarbage:   true,
+	ExtractionSchemaMismatch:    true,
 	ExtractionTruncatedSalvaged: true,
 	ExtractionUnparseable:       true,
 }
@@ -907,8 +915,8 @@ func IncrJobSearchRelevanceDegraded(reason string) {
 }
 
 // IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<o>}.
-// outcome ∈ {ok, truncated_salvaged, unparseable} — bounded enum. Called once
-// per SummarizeJobResults call.
+// outcome ∈ {ok, trailing_garbage, schema_mismatch, truncated_salvaged,
+// unparseable} — bounded enum. Called once per SummarizeJobResults call.
 func IncrJobSearchExtraction(outcome string) {
 	if !validExtractionOutcomes[outcome] {
 		return
