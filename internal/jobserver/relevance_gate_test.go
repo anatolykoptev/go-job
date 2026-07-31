@@ -446,6 +446,112 @@ func TestRelevanceGate_B2_FloorEngagedIsObservable(t *testing.T) {
 	}
 }
 
+// === The counter invariant: scored == kept + floor_kept + rejected ===
+
+// relevanceOutcomeDeltas returns how much each outcome counter moved across fn.
+func relevanceOutcomeDeltas(fn func()) map[string]int64 {
+	key := func(outcome string) string {
+		return engine.MetricJobSearchRelevance + "{outcome=" + outcome + "}"
+	}
+	before := engine.GetMetrics()
+	fn()
+	after := engine.GetMetrics()
+
+	out := map[string]int64{}
+	for _, oc := range []string{
+		engine.RelevanceScored, engine.RelevanceKept,
+		engine.RelevanceFloorKept, engine.RelevanceRejected,
+	} {
+		out[oc] = after[key(oc)] - before[key(oc)]
+	}
+	return out
+}
+
+// Every candidate the gate scores must be accounted for by exactly one outcome.
+// Under the N1 bug this did not hold — scored=2 with kept, floor_kept and
+// rejected all 0 — so this assertion alone would have caught it without anyone
+// writing the fewer-candidates-than-floor case. That is the point: a test per
+// bug does not end the pattern of blockers hiding in unreached branches.
+func TestRelevanceGate_CounterInvariantHoldsOnEveryPath(t *testing.T) {
+	engine.InitTestRegistry()
+
+	onTopicA := engine.SearxngResult{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"}
+	onTopicB := engine.SearxngResult{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}
+	offTopicA := engine.SearxngResult{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"}
+	offTopicB := engine.SearxngResult{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"}
+
+	cases := []struct {
+		name         string
+		minRelevance float64
+		minKeep      int
+		results      []engine.SearxngResult
+	}{
+		{"shipped defaults — nothing rejected", 0.0, 0, []engine.SearxngResult{onTopicA, offTopicA, onTopicB, offTopicB}},
+		{"hard gate — everything rejected", 0.95, 0, []engine.SearxngResult{onTopicA, offTopicA, onTopicB, offTopicB}},
+		{"floor branch A — some pass", 0.845, 3, []engine.SearxngResult{onTopicA, offTopicA, onTopicB, offTopicB}},
+		{"floor branch B — none pass", 0.95, 3, []engine.SearxngResult{offTopicA, offTopicB}},
+		{"floor branch B — all pass, floor must not fire", 0.5, 5, []engine.SearxngResult{onTopicA, offTopicA, onTopicB}},
+		{"no floor configured, partial pass", 0.845, 0, []engine.SearxngResult{onTopicA, offTopicA}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+			withRelevanceConfig(t, tc.minRelevance, tc.minKeep)
+
+			var degraded string
+			d := relevanceOutcomeDeltas(func() {
+				_, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", tc.results)
+			})
+			if degraded != "" {
+				t.Fatalf("gate degraded (%q) — counters would not be emitted, case is vacuous", degraded)
+			}
+
+			scored := d[engine.RelevanceScored]
+			sum := d[engine.RelevanceKept] + d[engine.RelevanceFloorKept] + d[engine.RelevanceRejected]
+			if scored == 0 {
+				t.Fatalf("scored delta is 0 — the registry is not recording, so this assertion proves nothing")
+			}
+			if scored != sum {
+				t.Fatalf("counter invariant violated: scored=%d != kept=%d + floor_kept=%d + rejected=%d (sum %d) — some candidate is attributed to no outcome",
+					scored, d[engine.RelevanceKept], d[engine.RelevanceFloorKept], d[engine.RelevanceRejected], sum)
+			}
+		})
+	}
+}
+
+// The floor must stay silent when it did not floor anything. FilterByScore
+// returns the whole slice whenever there are fewer candidates than the floor —
+// including when every one of them passed. Telling the caller those results
+// "did not meet the threshold" would be a lie about genuine matches, and no
+// existing test would catch it.
+//
+// Dropping `passingCount < jobSearchMinKeep` from floorEngaged must turn this RED.
+func TestRelevanceGate_FloorSilentWhenEverythingPasses(t *testing.T) {
+	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+	// Floor of 5 over 3 candidates takes FilterByScore's second branch, but the
+	// threshold is low enough that all three pass on merit.
+	withRelevanceConfig(t, 0.5, 5)
+
+	results := []engine.SearxngResult{
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
+		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
+	}
+
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+
+	if degraded != "" {
+		t.Fatalf("gate ran successfully, expected degraded=\"\", got %q", degraded)
+	}
+	if len(got) != 3 {
+		t.Fatalf("all three pass the threshold, expected 3, got %d", len(got))
+	}
+	if notice != "" {
+		t.Fatalf("floor did not floor anything, but the caller was told it did: %q", notice)
+	}
+}
+
 // === N1: the OTHER floor branch — fewer candidates than the floor ===
 
 // FilterByScore floors in two different ways, and the second one was invisible.
