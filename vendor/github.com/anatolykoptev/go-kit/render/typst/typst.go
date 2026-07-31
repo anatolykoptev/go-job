@@ -80,49 +80,79 @@ func pageSizeOverride(widthPx, heightPx, ppi int, marginPt float64) string {
 // Render converts content (markdown or HTML) to a PDF using the Typst toolchain.
 //
 // inputFmt must be "markdown" or "html" — passed directly to pandoc -f.
-// opts.Theme controls the visual style (report/minimal/corporate).
+// opts.Theme names a registered theme; unknown names fall back to "report".
 // opts.Title sets the document title shown in headers.
 func (r *TypstRenderer) Render(ctx context.Context, content, inputFmt string, opts render.Options) ([]byte, error) {
 	if content == "" {
 		return nil, errors.New("typst: content is empty")
 	}
 
-	doc, err := r.buildTypstSource(ctx, content, inputFmt, opts, "", false)
+	doc, err := r.pdfSource(ctx, content, inputFmt, opts)
 	if err != nil {
 		return nil, err
 	}
 	return compileTypst(ctx, doc, typstOutput{Format: typstFormatPDF})
 }
 
+// pdfSource assembles the .typ source Render compiles. Split out so the path's
+// decisions are reachable by a test WITHOUT re-typing them at the call site — a
+// test that restates the arguments mirrors the code instead of guarding it, and
+// stays green when the caller changes.
+//
+// omitTitle is false unconditionally here. No built-in preamble emits a title of
+// its own — card and dark only STYLE a level-1 heading the body is expected to
+// supply — so honoring OmitsTitleBlockOnImage would drop the title from a PDF
+// with nothing replacing it and no error.
+func (r *TypstRenderer) pdfSource(ctx context.Context, content, inputFmt string, opts render.Options) (string, error) {
+	// Resolve once: the registry is writable at runtime, and reading it per
+	// decision would let a registration land between the preamble and the
+	// title-block choice.
+	th := resolveTypstTheme(opts.Theme)
+	return r.buildTypstSource(ctx, content, inputFmt, opts, th, "", false)
+}
+
 // RenderImage converts content to a PNG using the same Typst pipeline as
 // Render. Unlike Render it honors opts.Width/opts.Height/opts.PPI so the
 // output is a fixed-pixel raster suitable for OG cards, social posts and
-// stories. Themes "card" and "dark" suppress the auto-injected H1 title
-// block — they style the heading themselves.
+// stories. Themes declaring OmitsTitleBlockOnImage suppress the auto-injected
+// H1 here — a social card carries its heading in the body, so injecting one
+// would duplicate it.
 func (r *TypstRenderer) RenderImage(ctx context.Context, content, inputFmt string, opts render.Options) ([]byte, error) {
 	if content == "" {
 		return nil, errors.New("typst: content is empty")
 	}
 
-	override := pageSizeOverride(opts.Width, opts.Height, opts.PPI, themePageMarginPt(opts.Theme))
-	// TOC is forced off for image output — a table of contents inside a single-page raster is meaningless.
-	imgOpts := opts
-	imgOpts.TOC = false
-	doc, err := r.buildTypstSource(ctx, content, inputFmt, imgOpts, override, themeOmitsTitleBlock(opts.Theme))
+	doc, err := r.imageSource(ctx, content, inputFmt, opts)
 	if err != nil {
 		return nil, err
 	}
 	return compileTypst(ctx, doc, typstOutput{Format: typstFormatPNG, PPI: opts.PPI})
 }
 
+// imageSource assembles the .typ source RenderImage compiles. Split out for the
+// same reason as pdfSource: the path's decisions must be testable where they are
+// made, not restated in a test.
+func (r *TypstRenderer) imageSource(ctx context.Context, content, inputFmt string, opts render.Options) (string, error) {
+	th := resolveTypstTheme(opts.Theme)
+	override := pageSizeOverride(opts.Width, opts.Height, opts.PPI, th.PageMarginPt)
+	// TOC is forced off for image output — a table of contents inside a single-page raster is meaningless.
+	imgOpts := opts
+	imgOpts.TOC = false
+	return r.buildTypstSource(ctx, content, inputFmt, imgOpts, th, override, th.OmitsTitleBlockOnImage)
+}
+
 // buildTypstSource produces the .typ source string consumed by compileTypst.
-// override is the caller-supplied geometry block (empty string when none);
-// omitTitle suppresses the auto-generated title block (themes that own
-// their own title presentation use this).
+// th is the already-resolved theme — callers resolve once so every decision in
+// one render comes from the same registry snapshot. override is the
+// caller-supplied geometry block (empty string when none); omitTitle suppresses
+// the auto-generated title block and is the caller's PATH decision, not the
+// theme's — Render always passes false, RenderImage passes the theme's
+// OmitsTitleBlockOnImage.
 func (r *TypstRenderer) buildTypstSource(
 	ctx context.Context,
 	content, inputFmt string,
 	opts render.Options,
+	th Theme,
 	override string,
 	omitTitle bool,
 ) (string, error) {
@@ -131,8 +161,7 @@ func (r *TypstRenderer) buildTypstSource(
 		return "", fmt.Errorf("typst: pandoc %s→typst: %w", inputFmt, err)
 	}
 
-	theme := resolveTypstTheme(opts.Theme)
-	preambleTmpl, err := template.New("preamble").Parse(theme.preamble)
+	preambleTmpl, err := template.New("preamble").Parse(th.Preamble)
 	if err != nil {
 		return "", fmt.Errorf("typst: parse preamble template: %w", err)
 	}
@@ -172,7 +201,7 @@ func pandocConvert(ctx context.Context, content, inputFmt string, toc bool) (str
 
 	bin := resolveEnvOrPath(resolveBinaryEnvPandoc, legacyEnvPandoc, "pandoc")
 	if bin == "" {
-		return "", fmt.Errorf("pandoc binary not found (set %s or ensure pandoc is on PATH)", resolveBinaryEnvPandoc)
+		return "", fmt.Errorf("typst: %w (set %s or ensure pandoc is on PATH)", ErrBinaryNotFound, resolveBinaryEnvPandoc)
 	}
 
 	pCtx, cancel := context.WithTimeout(ctx, pandocTimeout)
@@ -292,7 +321,7 @@ func sanitizeTypstFromPandoc(in string) string {
 func compileTypst(ctx context.Context, source string, out typstOutput) ([]byte, error) {
 	bin := resolveEnvOrPath(resolveBinaryEnvTypst, legacyEnvTypst, "typst")
 	if bin == "" {
-		return nil, fmt.Errorf("typst binary not found (set %s or ensure typst is on PATH)", resolveBinaryEnvTypst)
+		return nil, fmt.Errorf("typst: %w (set %s or ensure typst is on PATH)", ErrBinaryNotFound, resolveBinaryEnvTypst)
 	}
 
 	format := out.Format
@@ -316,7 +345,7 @@ func compileTypst(ctx context.Context, source string, out typstOutput) ([]byte, 
 		return nil, fmt.Errorf("typst: write source: %w", err)
 	}
 
-	args := []string{"compile", "-f", format, src, dst}
+	args := []string{"compile", "-f", format, "--diagnostic-format", "human", src, dst}
 	if format == typstFormatPNG {
 		ppi := out.PPI
 		if ppi <= 0 {
@@ -333,11 +362,18 @@ func compileTypst(ctx context.Context, source string, out typstOutput) ([]byte, 
 	cmd := exec.CommandContext(tCtx, bin, args...)
 	stderr, err := cmd.CombinedOutput()
 	if err != nil {
+		s := string(stderr)
 		// PNG output cannot represent multi-page documents — surface a
 		// caller-actionable hint instead of typst's internal wording.
-		s := string(stderr)
 		if format == typstFormatPNG && strings.Contains(s, "multiple images without a page number template") {
 			return nil, fmt.Errorf("typst rendered multiple pages but image output supports 1 — reduce content or render as PDF (typst stderr: %s)", strings.TrimSpace(s))
+		}
+		// Structured path: parse typst diagnostics into CompileError so
+		// callers can access Line/Column/Path via errors.As. Falls back to
+		// the raw stderr wrap when parsing yields nothing (e.g. timeout,
+		// signal, non-diagnostic panic output).
+		if ce := ParseStderr(s, err); ce != nil {
+			return nil, ce
 		}
 		return nil, fmt.Errorf("typst compile: %w\nstderr: %s", err, stderr)
 	}
