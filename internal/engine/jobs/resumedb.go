@@ -232,18 +232,35 @@ func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, erro
 		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	// A new person changes what GetLatestPersonID returns — drop the craigslist
+	// profile-location cache so the connector picks up the new latest person.
+	invalidateProfileLocationCache()
+	return id, nil
 }
 
 func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
 	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, personID)
-	return err
+	if err != nil {
+		return err
+	}
+	// Clearing a person changes what GetLatestPersonID returns — drop the
+	// craigslist profile-location cache so the connector does not keep serving
+	// a deleted person's location until the next successful rebuild.
+	invalidateProfileLocationCache()
+	return nil
 }
 
 // ClearAllPersons deletes all resume data (single-user system, rebuild from scratch).
 func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
 	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons`)
-	return err
+	if err != nil {
+		return err
+	}
+	invalidateProfileLocationCache()
+	return nil
 }
 
 // GetLatestPersonID returns the ID of the most recently created person, or 0 if none.
