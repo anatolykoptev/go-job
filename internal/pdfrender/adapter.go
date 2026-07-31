@@ -136,7 +136,11 @@ func New() *TypstAdapter {
 // main.go, only emits a Warn. The per-render md-only degrade is decided
 // elsewhere, by isNoBinary on ErrNoBinary.)
 func (a *TypstAdapter) Ready() bool {
-	_, typstErr := exec.LookPath("typst")
+	// LookPath on the SAME binary the font probe and the renderer use, so the
+	// two gauges cannot disagree: with RENDER_TYPST_PATH set to an out-of-PATH
+	// install, a bare LookPath("typst") would report the renderer absent while
+	// the font probe read that install's fonts and reported them present.
+	_, typstErr := exec.LookPath(typstBinary())
 	_, pandocErr := exec.LookPath("pandoc")
 	available := typstErr == nil && pandocErr == nil
 	if available {
@@ -144,18 +148,28 @@ func (a *TypstAdapter) Ready() bool {
 	} else {
 		pdfRendererAvailableGauge.Set(0)
 	}
-	a.checkFonts(context.Background())
+	a.checkFonts(context.Background(), typstErr == nil)
 	return available
 }
 
-// checkFonts sets pdfFontAvailableGauge from a live enumeration and logs what
-// is missing. Called unconditionally — a typst that cannot be run reports the
-// same "faces unconfirmed" as one whose font set is short, and both are 0.
-func (a *TypstAdapter) checkFonts(ctx context.Context) {
+// checkFonts sets pdfFontAvailableGauge from a live enumeration and reports what
+// is missing. Called unconditionally: an unconfirmed font set is unconfirmed
+// whether typst is absent or merely unreadable, and both are 0.
+//
+// typstPresent splits only the LOG LEVEL, not the gauge. WITH_PDF=0 is the
+// Dockerfile default and a supported build; an Error on every boot of an
+// intended configuration devalues the Error that means something, which is the
+// alert this gauge exists to feed. gojob_pdf_renderer_available already carries
+// which of the two cases it is.
+func (a *TypstAdapter) checkFonts(ctx context.Context, typstPresent bool) {
 	out, err := a.fontLister(ctx)
 	if err != nil {
 		pdfFontAvailableGauge.Set(0)
-		slog.Error("pdfrender: cannot enumerate typst fonts — unable to confirm the resume theme's faces are present", "err", err)
+		if typstPresent {
+			slog.Error("pdfrender: typst is present but its font list could not be read — the resume theme's faces are unconfirmed", "err", err)
+		} else {
+			slog.Warn("pdfrender: typst absent, resume font set unconfirmed — expected on a WITH_PDF=0 build", "err", err)
+		}
 		return
 	}
 	if missing := missingFontFamilies(out, requiredFontFamilies); len(missing) > 0 {

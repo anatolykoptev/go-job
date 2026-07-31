@@ -339,22 +339,12 @@ func TestReadySetsFontGauge(t *testing.T) {
 		list string
 		err  error
 		want float64
-		// wantLog is the substring the operator-facing Error must carry. The
-		// gauge alone cannot separate "typst would not run" from "typst ran and
-		// the faces are absent" — both are correctly 0 — but they send an
-		// operator to different places, so the message is the thing under test.
-		wantLog string
 	}{
-		{"every required face present", complete, nil, 1, ""},
-		{"the pre-fix container", containerBeforeFix, nil, 0, "are absent from this image"},
-		{"typst could not be run", "", errors.New("exec: typst: not found"), 0, "cannot enumerate typst fonts"},
+		{"every required face present", complete, nil, 1},
+		{"the pre-fix container", containerBeforeFix, nil, 0},
+		{"typst could not be run", "", errors.New("exec: typst: not found"), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var logged bytes.Buffer
-			prev := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelError})))
-			defer slog.SetDefault(prev)
-
 			pdfFontAvailableGauge.Set(-1) // poison, so a missing Set is visible
 			a := New()
 			a.fontLister = func(context.Context) ([]byte, error) {
@@ -366,13 +356,87 @@ func TestReadySetsFontGauge(t *testing.T) {
 			if got := gaugeValue(t, pdfFontAvailableGauge); got != tc.want {
 				t.Errorf("gojob_pdf_font_available = %v, want %v", got, tc.want)
 			}
-			switch {
-			case tc.wantLog == "":
-				if logged.Len() > 0 {
-					t.Errorf("every face present, but an Error was logged: %s", logged.String())
+		})
+	}
+}
+
+// TestCheckFontsDiagnostic pins what the OPERATOR is told, which the gauge
+// cannot express. "typst would not run" and "typst ran, the faces are absent"
+// are both correctly 0, but they send someone to different places — and with
+// the error branch swallowed the second message is emitted for the first
+// condition, which is 0 by the wrong road.
+//
+// It also pins the LEVEL. WITH_PDF=0 is the Dockerfile default, so an Error
+// there fires on every boot of a supported build and devalues the Error that
+// means something.
+//
+// Drives checkFonts directly rather than Ready: Ready derives typstPresent from
+// the real PATH, which would make the level assertion depend on whether the box
+// running the test happens to have typst.
+//
+// Not parallel: gauges and slog.Default are package/global.
+func TestCheckFontsDiagnostic(t *testing.T) {
+	const complete = "IBM Plex Sans\nIBM Plex Mono\n"
+	listerErr := errors.New("exec: typst: not found")
+
+	for _, tc := range []struct {
+		name         string
+		list         string
+		err          error
+		typstPresent bool
+		wantLevel    string // "" = nothing logged at Warn or above
+		wantMsg      string
+	}{
+		{"all faces present", complete, nil, true, "", ""},
+		{"faces absent from the image", "DejaVu Sans Mono\n", nil, true, "ERROR", "are absent from this image"},
+		{"typst present but unreadable", "", listerErr, true, "ERROR", "could not be read"},
+		{"typst absent, a WITH_PDF=0 build", "", listerErr, false, "WARN", "expected on a WITH_PDF=0 build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			defer slog.SetDefault(prev)
+
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) { return []byte(tc.list), tc.err }
+			a.checkFonts(context.Background(), tc.typstPresent)
+
+			out := logged.String()
+			if tc.wantLevel == "" {
+				if out != "" {
+					t.Errorf("nothing should be reported, got: %s", out)
 				}
-			case !strings.Contains(logged.String(), tc.wantLog):
-				t.Errorf("Error log does not mention %q — the operator is pointed at the wrong problem.\ngot: %s", tc.wantLog, logged.String())
+				return
+			}
+			if !strings.Contains(out, "level="+tc.wantLevel) {
+				t.Errorf("want level=%s, got: %s", tc.wantLevel, out)
+			}
+			if !strings.Contains(out, tc.wantMsg) {
+				t.Errorf("message does not mention %q — the operator is pointed at the wrong problem.\ngot: %s", tc.wantMsg, out)
+			}
+		})
+	}
+}
+
+// TestTypstBinary pins the precedence go-kit's resolveEnvOrPath uses. Probing a
+// different installation than the renderer runs would measure the wrong font
+// set and report it as fact.
+func TestTypstBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		render, vaelor string
+		want           string
+	}{
+		{"neither set falls back to PATH", "", "", "typst"},
+		{"RENDER wins", "/opt/a/typst", "/opt/b/typst", "/opt/a/typst"},
+		{"legacy VAELOR is honoured alone", "", "/opt/b/typst", "/opt/b/typst"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RENDER_TYPST_PATH", tc.render)
+			t.Setenv("VAELOR_TYPST_PATH", tc.vaelor)
+			if got := typstBinary(); got != tc.want {
+				t.Errorf("typstBinary() = %q, want %q", got, tc.want)
 			}
 		})
 	}
