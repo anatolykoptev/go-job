@@ -87,24 +87,23 @@ func referenceMarkdown(t *testing.T) string {
 // see indentation, on the stated grounds that top-level rules are column-0 by
 // convention and an indented one is therefore a mistake to unindent.
 //
-// That second half was wrong, and the first scoped rule this theme needed
-// proved it: `#show link:` nested inside the level-4 block, so a repository URL
-// in an entry subtitle stays in the metadata register instead of being repainted
-// by the global link rule. There the indentation IS the scope, and unindenting
-// would make the rule global — the opposite of what it is for.
+// That second half was wrong. Indentation can BE the scope — typst takes a
+// `#show` inside a block body as scoped to it — and such a rule styles real
+// output exactly as a top-level one does. So showRuleRe parses indented rules
+// too, and the selector they name has to appear in one of the maps below
+// wherever in the file it was written. There is no scoped rule in the theme
+// today; the parser accepts one because it must, not because one exists.
 //
-// So showRuleRe parses indented rules too. A scoped rule styles real output
-// exactly as a top-level one does, so it earns a coverage decision rather than
-// an exemption; the selector it names simply has to appear in one of the maps
-// below, wherever in the file it was written.
-//
-// Both patterns also accept a TAB as the separator. Requiring a literal space
-// left the same hole one more keystroke along: `#show\tstrong: …` matched
-// neither pattern, and typst renders it identically to the space form —
-// verified byte-identical output. Whitespace after `#show` is whitespace.
+// showLineRe deliberately carries NO separator class. Requiring a space, then
+// `[ \t]`, leaked twice more: `#show\u00A0emph:` and `#show/*c*/emph:` both
+// compile and both restyle the page, and both were invisible to a class-based
+// pattern. An allowlist against typst's whitespace and comment grammar is the
+// wrong shape. Counting every line that begins `#show` and letting the strict
+// parser disagree makes an unrecognised separator a COUNT MISMATCH instead of a
+// silence — fail-closed for the fourth variant nobody has thought of yet.
 var (
 	showRuleRe = regexp.MustCompile(`(?m)^[ \t]*#show[ \t]+(.+?): (?:it =>|set )`)
-	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show[ \t:]`)
+	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show`)
 )
 
 // exercisedBy maps a theme selector to a substring that must appear in the
@@ -125,7 +124,7 @@ var exercisedBy = map[string]string{
 	// NOTE: coverage is keyed by SELECTOR, not by rule. Two rules naming the
 	// same selector collapse into one slot and the count guard still balances,
 	// so deleting either would red nothing. The theme has one link rule today;
-	// see the tracking issue before adding a second.
+	// see #416 before adding a second.
 	"link": "](https://",
 }
 

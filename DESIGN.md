@@ -54,7 +54,7 @@ The name is set by a raw typst block in the **content**, not by the theme. The t
 
 Contrast on white, computed: `#0f172a` 17.85:1 · `#1e293b` 14.63:1 · `#334155` 10.35:1 · `#64748b` 4.76:1 (AA pass, AAA fail) · `#26428b` 9.40:1 · `#cbd5e1` 1.48:1 · `#e2e8f0` 1.23:1.
 
-Links render `#26428b` wherever they appear, including inside an entry subtitle. Holding that colour to the header alone needs a rule scoped inside the level-4 block, and such a rule cannot reach a URL pandoc has wrapped onto its own line (**Known gaps**). One colour everywhere is the simpler and reliable choice.
+Links render `#26428b`. The fixture exercises that in a bullet only, so the subtitle case is unmeasured here. Holding the colour to the header alone needs a rule scoped inside the level-4 block, and such a rule cannot reach a URL pandoc has wrapped onto its own line (**Known gaps**). One colour everywhere is the simpler and reliable choice.
 
 ### Page
 
@@ -74,7 +74,7 @@ Measured ink-to-ink on the fixture:
 | Between bullets | 4.74–4.80pt |
 | Subtitle → its first bullet | 6.09pt |
 | Entry heading → its subtitle | 6.67pt |
-| Entry → entry | 7.4pt |
+| Entry → entry | 7.36–7.42pt |
 | Section → section | 9.62pt |
 
 Directive values and ink-to-ink measurements differ, because a text box starts at cap height and ends below the baseline. Verify with `pdftotext -bbox`, never by eye.
@@ -134,7 +134,7 @@ CI pins typst 0.14.2 and fonts-ibm-plex 6.1.1-1; the runtime image pins neither.
 
 - **A long `####` subtitle is amputated.** The adapter passes no `--wrap`, so pandoc breaks its typst output at 72 columns, and a typst heading ends at end of line — the tail becomes a body paragraph in body colour. Affects every document this service renders. Tracked in #415.
 - **Coverage is keyed by selector, not by rule.** Two rules naming the same selector collapse into one slot and the count guard still balances, so deleting either would red nothing. Tracked in #416.
-- **Wrap tails.** Nine short lines on the fixture, caused by content overshooting a line boundary by a few words rather than by any value here.
+- **Wrap tails.** Eight short lines on the fixture, caused by content overshooting a line boundary by a few words rather than by any value here.
 - **The theme's level-1 rule describes nothing that renders.** The header is content, at a size the theme does not control. Closing this means moving the header into the theme, which changes the content contract for every future document.
 
 ## Changing this document
