@@ -142,3 +142,40 @@ func TestParseHimalayasResponse_RealFixture(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &resp))
 	assert.Equal(t, 98881, resp.Total, "totalCount must decode into himalayasResponse.Total")
 }
+
+// TestAnnualizeHimalayasSalary_UnknownPeriodFailsClosed (F7) asserts that an
+// unrecognised salaryPeriod (daily/weekly/monthly/…) returns 0 instead of
+// passing the raw value through as annual. A monthly 8000 passed through would
+// become a plausible annual $8k that silently sinks the row in ranking with
+// nothing logged — understatement, so nobody reports it. 0 already means
+// "undisclosed" end to end.
+//
+// Revert-red: restore the pass-through default (`return int(math.Round(*v))`)
+// → the monthly case returns 8000, not 0 → test fails.
+func TestAnnualizeHimalayasSalary_UnknownPeriodFailsClosed(t *testing.T) {
+	t.Parallel()
+	v := 8000.0
+	for _, period := range []string{"monthly", "daily", "weekly", "quarterly", "fortnightly"} {
+		got := annualizeHimalayasSalary(&v, period)
+		assert.Equalf(t, 0, got, "period %q must fail closed to 0 (undisclosed), got %d", period, got)
+	}
+}
+
+// TestAnnualizeHimalayasSalary_CaseInsensitivePeriod (F8) asserts that the
+// period is matched case-insensitively — "Hourly"/"HOURLY" must annualise via
+// ×2080, not fall into the fail-closed default. The live API could emit any
+// casing; a case-sensitive switch would handle "Hourly" wrong-but-silently.
+//
+// Revert-red: drop the strings.ToLower wrapping → "Hourly" hits the default
+// branch → under the fail-closed default it returns 0 (not 55120); under a
+// restored pass-through default it returns 27 (not 55120). Either way the test
+// fails.
+func TestAnnualizeHimalayasSalary_CaseInsensitivePeriod(t *testing.T) {
+	t.Parallel()
+	hourly := 26.5 // matches the real-fixture job[0] fractional hourly rate
+	want := 55120  // 26.5 × 2080 = 55120
+	for _, period := range []string{"hourly", "Hourly", "HOURLY", "HoUrLy"} {
+		got := annualizeHimalayasSalary(&hourly, period)
+		assert.Equalf(t, want, got, "period %q must annualise to %d (×2080), got %d", period, want, got)
+	}
+}

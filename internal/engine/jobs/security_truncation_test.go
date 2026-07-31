@@ -176,3 +176,41 @@ func TestFetchSecuritySource_TruncationCounter(t *testing.T) {
 		t.Errorf("want gojob_security_fetch_errors_total{platform=hackerone,reason=truncated} > 0, got delta %d", delta)
 	}
 }
+
+// TestFetchSecuritySource_Non200NoCounterIncrement (F9) asserts that a
+// non-truncation failure (a non-200 status) leaves the truncation counter at 0.
+// The counter is exit-specific by design — a future increment sprayed at the
+// wrong exit (e.g. the status branch at security_bounty.go:136) must not stay
+// green. This test pins the counter to the truncation exit ONLY.
+//
+// Revert-red (mutation): move the IncrSecurityFetchErrors call up into the
+// non-200 branch (security_bounty.go:136-138) → this test's delta becomes > 0
+// → test fails. Also red if the increment is made unconditional on any error.
+func TestFetchSecuritySource_Non200NoCounterIncrement(t *testing.T) {
+	engine.InitTestRegistry()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Point securitySources[0] (hackerone) at the test server so
+	// securityPlatformForURL returns "hackerone" for this URL.
+	origURL := securitySources[0].url
+	securitySources[0].url = srv.URL
+	t.Cleanup(func() { securitySources[0].url = origURL })
+
+	origClient := engine.Cfg.HTTPClient
+	engine.Cfg.HTTPClient = &http.Client{}
+	t.Cleanup(func() { engine.Cfg.HTTPClient = origClient })
+
+	before := engine.GetMetrics()
+	_, _ = fetchSecuritySource(context.Background(), srv.URL)
+	after := engine.GetMetrics()
+
+	key := engine.MetricSecurityFetchErrors + "{platform=hackerone,reason=truncated}"
+	delta := after[key] - before[key]
+	if delta != 0 {
+		t.Errorf("non-200 (non-truncation) failure must NOT bump the truncation counter, got delta %d (counter must be exit-specific)", delta)
+	}
+}

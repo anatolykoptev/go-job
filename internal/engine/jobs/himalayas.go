@@ -138,22 +138,29 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 // the int annual figure engine.FreelanceJob.SalaryMin/Max expects. Returns 0
 // for nil (undisclosed).
 //
-// salaryPeriod is honoured: "hourly" rates are normalised to annual using the
-// conventional 2080-hour US full-time equivalent (40 h/wk × 52 wk) so hourly
-// and annual listings are comparable in the same field. "annual" (and the
-// empty string, for back-compat with sources that omit the field) pass through
-// as-is. Any other period (daily, weekly, monthly, …) returns 0 — we do not
-// invent a conversion factor for unknown periods.
+// salaryPeriod is honoured (case-insensitively): "hourly" rates are normalised
+// to annual using the conventional 2080-hour US full-time equivalent (40 h/wk ×
+// 52 wk) so hourly and annual listings are comparable in the same field.
+// "annual" (and the empty string, for back-compat with sources that omit the
+// field) pass through as-is. Any other period (daily, weekly, monthly, …)
+// returns 0 — we do not invent a conversion factor for unknown periods. 0
+// already means "undisclosed" end to end (nullInt at hunt/store.go:424, skipped
+// by hunt/score/scorer.go:370 and hunt/notify/telegram.go:352), so failing
+// closed drops the row from ranking with nothing logged rather than passing an
+// unknown period through as annual and silently understating it.
 func annualizeHimalayasSalary(v *float64, period string) int {
 	if v == nil {
 		return 0
 	}
-	switch period {
+	switch strings.ToLower(period) {
 	case "hourly":
 		return int(math.Round(*v * 2080))
-	default:
-		// "annual", "", or unrecognised non-hourly → pass through as annual.
+	case "annual", "":
 		return int(math.Round(*v))
+	default:
+		// daily, weekly, monthly, … — fail closed (0 = undisclosed) rather
+		// than pass an unknown period through as annual.
+		return 0
 	}
 }
 

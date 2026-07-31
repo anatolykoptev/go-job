@@ -142,8 +142,14 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 		// Hitting the read cap is a loud, correctly-attributed failure (not a
 		// confusing downstream JSON parse error), but fetchAllSecurityPrograms
 		// swallows it when a sibling source succeeds. Bump the per-platform
-		// truncation counter so the failure is visible in Prometheus regardless
-		// — same pattern as the ATS fetchers (ats.go:573/771/964).
+		// truncation counter so the failure is visible in Prometheus regardless.
+		//
+		// NOTE: this covers ONLY the truncation exit. The ATS fetchers
+		// (ats.go:555/567/574/577 and the lever/ashby siblings) additionally
+		// increment at the transport, status, and parse exits — four exits per
+		// platform. Full parity for the security fetcher (status + transport +
+		// parse exits, plus widening validSecurityFetchErrorReasons) is a
+		// follow-up, not this round.
 		if isBodyTruncated(err) {
 			engine.IncrSecurityFetchErrors(securityPlatformForURL(url), "truncated")
 		}
