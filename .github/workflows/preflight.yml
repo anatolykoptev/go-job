@@ -95,7 +95,7 @@ jobs:
           # They agree today — measured, alpine:latest currently carries typst
           # 0.14.2. When alpine bumps it, prod's renderer moves while this gate
           # keeps measuring 0.14.2, and the geometry assertion goes green over a
-          # PDF nobody has measured. Pinning the image is tracked separately.
+          # PDF nobody has measured. Pinning the image is tracked in #410.
           # Until then the mitigation is that the assertion is a RATIO against a
           # control run set in the same face, which cancels uniform metric
           # changes (see internal/pdfrender/reference_test.go).

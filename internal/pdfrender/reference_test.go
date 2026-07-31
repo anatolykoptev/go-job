@@ -146,8 +146,11 @@ func TestThemeRulesAreExercisedByReference(t *testing.T) {
 	if n := len(showLineRe.FindAllString(ligaPreamble, -1)); n != 0 {
 		t.Errorf("ligaPreamble now carries %d `#show` rule(s). It is injected into every rendered\n"+
 			"document but is not scanned by the coverage maps above, so those rules would style\n"+
-			"real output with nothing gating them. Move them into resume.typ, or extend this test\n"+
-			"to cover both sources.", n)
+			"real output with nothing gating them.\n"+
+			"Do not move them into resume.typ reflexively: ligaPreamble is injected AFTER the theme\n"+
+			"preamble precisely so it wins the cascade, and a rule that needs that position would\n"+
+			"change precedence on the way. If it must stay, extend this test to scan both sources\n"+
+			"and give the new rule its entry in exercisedBy or knownUnexercised.", n)
 	}
 
 	found := make(map[string]bool, len(matches))
@@ -339,6 +342,7 @@ var bboxWordRe = regexp.MustCompile(
 	`<word xMin="([0-9.]+)" yMin="([0-9.]+)" xMax="([0-9.]+)" yMax="([0-9.]+)">([^<]*)</word>`)
 
 type pdfWord struct {
+	page                   int // 1-based; a run must not span two of these
 	xMin, yMin, xMax, yMax float64
 	text                   string
 }
@@ -349,8 +353,17 @@ type pdfWord struct {
 // what it says. Restricting the scan to page 1 made uniqueness depend on where
 // the fixture happens to break: a duplicate run sitting on page 2 was invisible,
 // and a fixture that later shrank to one page would have brought it into range
-// and silently supplied the wrong denominator. Both runs measured here live on
-// page 1, and box coordinates are page-local, so widths are unaffected.
+// and silently supplied the wrong denominator.
+//
+// Each word carries its page, and findRuns requires a run to sit on one. Without
+// that the flat slice joins the last word of a page to the first of the next,
+// and a two-word run spanning the seam matches a phrase that appears on no page
+// at all. Measured on this fixture: `min` (page 1, y=720.8) followed by
+// `Admission` (page 2, y=55.6) matched as a run and measured -123.835 pt wide,
+// because box coordinates are page-local and the second word's x sits left of
+// the first's. A left-to-right seam would have produced a plausible width
+// instead of a negative one, reported through the ratio as a verdict on the
+// level-4 rule.
 func pdfWords(t *testing.T, pdfBytes []byte) []pdfWord {
 	t.Helper()
 
@@ -365,18 +378,27 @@ func pdfWords(t *testing.T, pdfBytes []byte) []pdfWord {
 		t.Fatalf("pdftotext -bbox: %v", err)
 	}
 
+	// Split on the page element so each word can be tagged with the page it was
+	// laid out on. Segment 0 is the XML header, before any page.
+	segments := strings.Split(string(out), "<page")
+	if len(segments) < 2 {
+		t.Fatalf("pdftotext -bbox emitted no <page> element; got %d bytes", len(out))
+	}
+
 	var words []pdfWord
-	for _, m := range bboxWordRe.FindAllStringSubmatch(string(out), -1) {
-		var w pdfWord
-		for i, dst := range []*float64{&w.xMin, &w.yMin, &w.xMax, &w.yMax} {
-			v, err := strconv.ParseFloat(m[i+1], 64)
-			if err != nil {
-				t.Fatalf("parse bbox coordinate %q: %v", m[i+1], err)
+	for page, segment := range segments[1:] {
+		for _, m := range bboxWordRe.FindAllStringSubmatch(segment, -1) {
+			w := pdfWord{page: page + 1}
+			for i, dst := range []*float64{&w.xMin, &w.yMin, &w.xMax, &w.yMax} {
+				v, err := strconv.ParseFloat(m[i+1], 64)
+				if err != nil {
+					t.Fatalf("parse bbox coordinate %q: %v", m[i+1], err)
+				}
+				*dst = v
 			}
-			*dst = v
+			w.text = m[5]
+			words = append(words, w)
 		}
-		w.text = m[5]
-		words = append(words, w)
 	}
 	if len(words) == 0 {
 		t.Fatal("pdftotext -bbox returned no words")
@@ -411,10 +433,55 @@ func measureRun(t *testing.T, words []pdfWord, run []string, name, absentHint st
 	}
 
 	first, last := words[at[0]], words[at[0]+len(run)-1]
-	return last.xMax - first.xMin, first.yMax - first.yMin
+	width, height = last.xMax-first.xMin, first.yMax-first.yMin
+
+	// Belt for anything findRuns' page check does not already exclude: a width
+	// that is not positive means the run was measured across two coordinate
+	// systems, and every number derived from it is meaningless rather than
+	// merely wrong.
+	if width <= 0 {
+		t.Fatalf("%s %q measured %.3f pt wide — the run does not read left to right, so it was not "+
+			"laid out as one line", name, strings.Join(run, " "), width)
+	}
+
+	// height is the FIRST box's, which is the size of the face the run starts
+	// in. Both runs measured here are single-line by construction; a run that
+	// wrapped would report only its first line's height.
+	return width, height
 }
 
-// findRuns returns the start index of every contiguous occurrence of run.
+// TestFindRunsRejectsPageStraddle is the falsification for the page field, and
+// it needs no render: the seam is trivial to construct and impossible to
+// construct reliably by editing the fixture.
+//
+// Drop the `page` comparison in findRuns and this goes red. That is the whole
+// point — the words below are adjacent in the slice and on no page together, so
+// a matcher that ignores pages reports a phrase the document does not contain
+// and hands measureRun two coordinate systems to subtract.
+func TestFindRunsRejectsPageStraddle(t *testing.T) {
+	t.Parallel()
+
+	words := []pdfWord{
+		{page: 1, xMin: 100, xMax: 130, yMin: 700, yMax: 710, text: "per"},
+		{page: 1, xMin: 379.9, xMax: 396.8, yMin: 720.8, yMax: 730.8, text: "min"},
+		{page: 2, xMin: 209.1, xMax: 256.0, yMin: 55.6, yMax: 65.6, text: "Admission"},
+		{page: 2, xMin: 260, xMax: 300, yMin: 55.6, yMax: 65.6, text: "decisions"},
+	}
+
+	if at := findRuns(words, []string{"min", "Admission"}); len(at) != 0 {
+		t.Errorf("findRuns matched %q across a page break at %v; the run exists on no page, and "+
+			"measuring it subtracts page-2 coordinates from page-1 ones", "min Admission", at)
+	}
+	// Same-page runs still match, so the guard is not simply refusing everything.
+	if at := findRuns(words, []string{"Admission", "decisions"}); len(at) != 1 {
+		t.Errorf("findRuns found %d occurrences of a genuine same-page run, want 1", len(at))
+	}
+}
+
+// findRuns returns the start index of every contiguous occurrence of run that
+// lies entirely on one page. A match straddling a page break is discarded: the
+// words are adjacent only in this flat slice, never on any page, and measuring
+// it mixes two coordinate systems.
 func findRuns(words []pdfWord, run []string) []int {
 	if len(run) == 0 || len(words) < len(run) {
 		return nil
@@ -423,7 +490,7 @@ func findRuns(words []pdfWord, run []string) []int {
 	for i := 0; i+len(run) <= len(words); i++ {
 		match := true
 		for j, want := range run {
-			if words[i+j].text != want {
+			if words[i+j].text != want || words[i+j].page != words[i].page {
 				match = false
 				break
 			}
