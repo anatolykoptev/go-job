@@ -27,9 +27,12 @@ import (
 // yield at least one row. A source returning zero rows must NOT advance.
 //
 // Revert-red (mutation 1): remove the `if len(bounties) > 0` guard before
-//   SetHuntSourceLastSuccess → opire's gauge also advances → assert opire==0 RED.
-// Revert-red (mutation 2): remove SetHuntSourceLastSuccess entirely → algora's
-//   gauge stays at 0 → assert algora>0 RED.
+//
+//	SetHuntSourceLastSuccess → opire's gauge also advances → assert opire==0 RED.
+//
+// Revert-red (mutation 2): remove SetHuntSourceLastSuccess entirely → bountyhub's
+//
+//	gauge stays at 0 → assert bountyhub>0 RED.
 func TestF1_FreshnessGauge_PerSource(t *testing.T) {
 	engine.InitTestRegistry()
 
@@ -40,7 +43,7 @@ func TestF1_FreshnessGauge_PerSource(t *testing.T) {
 		name string
 		fn   func(ctx context.Context, limit int) ([]engine.BountyListing, error)
 	}{
-		{"algora", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
+		{"bountyhub", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
 			return []engine.BountyListing{{Title: "test-bounty"}}, nil // yields rows
 		}},
 		{"opire", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
@@ -50,17 +53,17 @@ func TestF1_FreshnessGauge_PerSource(t *testing.T) {
 
 	items, summary := fetchAllBountiesImpl(context.Background(), 10, false)
 
-	algoraGauge := engine.GetGaugeValue("hunt_source_last_success_timestamp{kind=bounty,source=algora}")
+	bountyhubGauge := engine.GetGaugeValue("hunt_source_last_success_timestamp{kind=bounty,source=bountyhub}")
 	opireGauge := engine.GetGaugeValue("hunt_source_last_success_timestamp{kind=bounty,source=opire}")
 
-	if algoraGauge <= 0 {
-		t.Errorf("F1 FAIL: algora yielded %d rows → freshness gauge must advance (>0), got %v", len(items), algoraGauge)
+	if bountyhubGauge <= 0 {
+		t.Errorf("F1 FAIL: bountyhub yielded %d rows → freshness gauge must advance (>0), got %v", len(items), bountyhubGauge)
 	}
 	if opireGauge != 0 {
 		t.Errorf("F1 FAIL: opire yielded 0 rows → freshness gauge must NOT advance (==0), got %v", opireGauge)
 	}
-	if summary["algora"] != 1 {
-		t.Errorf("F1 FAIL: summary[algora] = %d, want 1", summary["algora"])
+	if summary["bountyhub"] != 1 {
+		t.Errorf("F1 FAIL: summary[bountyhub] = %d, want 1", summary["bountyhub"])
 	}
 	if summary["opire"] != 0 {
 		t.Errorf("F1 FAIL: summary[opire] = %d, want 0", summary["opire"])
@@ -76,9 +79,12 @@ func TestF1_FreshnessGauge_PerSource(t *testing.T) {
 // a fetch-level truncation).
 //
 // Revert-red (mutation): make classifySourceOutcome return "fetch_error" for all
-//   errors → parse_error assertion RED.
+//
+//	errors → parse_error assertion RED.
+//
 // Revert-red (mutation 2): make classifySourceOutcome return "parse_error" for all
-//   errors → fetch_error assertion RED.
+//
+//	errors → fetch_error assertion RED.
 func TestF2_OutcomeDiscrimination_FetchVsParse(t *testing.T) {
 	engine.InitTestRegistry()
 
@@ -92,7 +98,7 @@ func TestF2_OutcomeDiscrimination_FetchVsParse(t *testing.T) {
 		name string
 		fn   func(ctx context.Context, limit int) ([]engine.BountyListing, error)
 	}{
-		{"algora", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
+		{"bountyhub", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
 			return nil, fetchErr
 		}},
 		{"opire", func(_ context.Context, _ int) ([]engine.BountyListing, error) {
@@ -104,18 +110,18 @@ func TestF2_OutcomeDiscrimination_FetchVsParse(t *testing.T) {
 
 	snap := engine.GetMetrics()
 
-	fetchKey := "hunt_source_outcome_total{kind=bounty,source=algora,outcome=fetch_error}"
+	fetchKey := "hunt_source_outcome_total{kind=bounty,source=bountyhub,outcome=fetch_error}"
 	parseKey := "hunt_source_outcome_total{kind=bounty,source=opire,outcome=parse_error}"
 
 	if snap[fetchKey] != 1 {
-		t.Errorf("F2 FAIL: algora returned a non-ErrParse error → outcome must be fetch_error (count=1), got %d", snap[fetchKey])
+		t.Errorf("F2 FAIL: bountyhub returned a non-ErrParse error → outcome must be fetch_error (count=1), got %d", snap[fetchKey])
 	}
 	if snap[parseKey] != 1 {
 		t.Errorf("F2 FAIL: opire returned an ErrParse-wrapped error → outcome must be parse_error (count=1), got %d", snap[parseKey])
 	}
 	// Cross-check: the wrong outcomes must NOT have fired.
-	if snap["hunt_source_outcome_total{kind=bounty,source=algora,outcome=parse_error}"] != 0 {
-		t.Errorf("F2 FAIL: algora must NOT land on parse_error")
+	if snap["hunt_source_outcome_total{kind=bounty,source=bountyhub,outcome=parse_error}"] != 0 {
+		t.Errorf("F2 FAIL: bountyhub must NOT land on parse_error")
 	}
 	if snap["hunt_source_outcome_total{kind=bounty,source=opire,outcome=fetch_error}"] != 0 {
 		t.Errorf("F2 FAIL: opire must NOT land on fetch_error")
@@ -139,8 +145,9 @@ func TestF2_OutcomeDiscrimination_FetchVsParse(t *testing.T) {
 //  5. Assert the new source's series exist in the registry snapshot.
 //
 // Revert-red (mutation): if BountySourceNames() read from a hand-maintained list
-//   instead of ranging bountyFetchSources → the new source is missing from the
-//   derived list → not registered → not pre-touched → assertion RED.
+//
+//	instead of ranging bountyFetchSources → the new source is missing from the
+//	derived list → not registered → not pre-touched → assertion RED.
 func TestF3_DerivedSourceList_AutoPicksUpNewSource(t *testing.T) {
 	// Save original state for cleanup.
 	origBounty := bountyFetchSources
@@ -215,7 +222,7 @@ func TestF3_DerivedSourceList_AutoPicksUpNewSource(t *testing.T) {
 // TestF3_SourceNames_Complete verifies that the derived source name lists match
 // the real fan-out tables exactly — no hand-maintained list can drift.
 func TestF3_SourceNames_Complete(t *testing.T) {
-	// Bounty: 6 sources (algora + opire + bountyhub + boss + lightning + collaborators)
+	// Bounty: 6 sources (bountyhub + opire + bountyhub + boss + lightning + collaborators)
 	bn := BountySourceNames()
 	if len(bn) != len(bountyFetchSources) {
 		t.Errorf("BountySourceNames len=%d != bountyFetchSources len=%d — list is not derived from the table", len(bn), len(bountyFetchSources))
