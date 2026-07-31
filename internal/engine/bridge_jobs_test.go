@@ -584,6 +584,68 @@ func TestExtractSummaryField_SkipsPlaceholderSummary(t *testing.T) {
 	}
 }
 
+// --- BLOCKER 1 summary: a paraphrased echo summary must not leak from a different object ---
+
+// TestParseJobSearchResponse_AbbreviatedEchoSummaryBounded feeds the
+// reviewer's BLOCKER-1 measured input with an ABBREVIATED echo summary: the
+// model restates the format with a shortened placeholder summary
+// ("1-2 sentence recommendation" — not the full schemaPlaceholderSummary
+// string), then gives the real answer with two jobs. The old whole-string
+// summary scan finds the abbreviated echo first (it's not the exact
+// placeholder, so the placeholder check doesn't catch it) and returns it as
+// the summary, while the jobs come from the real object — jobs and summary
+// disagree.
+//
+// The fix binds the summary to the SAME object that produced the chosen jobs
+// array. The abbreviated echo is in a DIFFERENT object, so it is never
+// reached. The summary is the real object's summary, or the synthetic
+// fallback — never the echo.
+//
+// Mutation: restore the whole-string summary scan (extractSummaryField(raw)
+// instead of extractSummaryFromBounds) → RED: summary == "1-2 sentence
+// recommendation" (the abbreviated echo).
+func TestParseJobSearchResponse_AbbreviatedEchoSummaryBounded(t *testing.T) {
+	raw := "Here is the format I used:\n" +
+		`{"jobs":[{"title":"job title","company":"company name","location":"city, country or Remote","source":"linkedin","url":"direct job listing URL","salary":"not specified","job_type":"full-time","remote":"remote","experience":"senior","skills":["skill1","skill2"],"description":"1-2 sentence summary of key responsibilities and requirements","posted":"2 days ago"}],"summary":"1-2 sentence recommendation"}` + "\n\n" +
+		"And here is the result:\n" +
+		`{"jobs":[{"title":"Senior Go Backend Engineer","company":"Acme Corp","location":"Berlin","source":"greenhouse","url":"https://boards.greenhouse.io/acme/123","salary":"$120k-150k","job_type":"full-time","remote":"remote","experience":"senior","skills":["Go","Kubernetes"],"description":"Build and operate distributed systems.","posted":"2 days ago"},{"title":"Platform Engineer","company":"Beta Inc","location":"Remote","source":"lever","url":"https://boards.lever.co/beta/456","salary":"$130k-160k","job_type":"full-time","remote":"remote","experience":"senior","skills":["Go","Terraform"],"description":"Build platform tooling.","posted":"3 days ago"}],"summary":"Two strong Go roles: Acme Corp Senior Go Backend Engineer in Berlin and Beta Inc Platform Engineer (remote)."}`
+
+	jobs, summary, outcome, _, dropped := parseJobSearchResponse(raw)
+
+	// Jobs: the real answer (2 records), not the placeholder.
+	if len(jobs) != 2 {
+		t.Fatalf("got %d jobs, want 2 (the real answer)", len(jobs))
+	}
+	if jobs[0].Title == "job title" {
+		t.Fatal("jobs[0].Title == \"job title\" — the schema placeholder was returned as a real job")
+	}
+	if jobs[0].Title != "Senior Go Backend Engineer" {
+		t.Errorf("jobs[0].Title = %q, want \"Senior Go Backend Engineer\"", jobs[0].Title)
+	}
+	if jobs[1].Title != "Platform Engineer" {
+		t.Errorf("jobs[1].Title = %q, want \"Platform Engineer\"", jobs[1].Title)
+	}
+
+	// Summary: the real object's summary, or the synthetic fallback — NEVER
+	// the abbreviated echo from the format restatement.
+	if summary == "1-2 sentence recommendation" {
+		t.Fatal("summary is the abbreviated echo — the whole-string scan leaked a paraphrased placeholder from a different object (BLOCKER 1 summary half is present)")
+	}
+	if strings.Contains(summary, "1-2 sentence recommendation") {
+		t.Errorf("summary = %q — contains the abbreviated echo text", summary)
+	}
+	// The summary must be the real one (mentioning Acme Corp) or a synthetic
+	// fallback message — both are acceptable, the echo is not.
+	if !strings.Contains(summary, "Acme Corp") && !strings.Contains(summary, "salvaged") {
+		t.Errorf("summary = %q — neither the real summary nor a synthetic fallback", summary)
+	}
+
+	// The outcome must not label a fabrication as healthy with dropped != 0.
+	if outcome == ExtractionTrailingGarbage && dropped != 0 {
+		t.Errorf("trailing_garbage with dropped=%d, want 0", dropped)
+	}
+}
+
 // --- BLOCKER 2: a mid-array decode error must not discard subsequent records ---
 
 // TestParseJobSearchResponse_SchemaMismatchKeepsSubsequentRecords feeds the

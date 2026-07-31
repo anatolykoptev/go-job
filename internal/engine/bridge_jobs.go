@@ -177,6 +177,17 @@ type salvageResult struct {
 	arrayClosed   bool
 	objectClosed  bool
 	schemaDropped int
+	objStart      int // enclosing object '{' offset, -1 if bare array
+	objEnd        int // enclosing object '}' offset + 1 (exclusive), -1 if not closed
+	keyIdx        int // "jobs" key offset
+	bracketIdx    int // "[" offset
+}
+
+// jobsArrayCandidate identifies one "jobs" array occurrence: the "jobs" key
+// offset and the "[" offset that opens the array.
+type jobsArrayCandidate struct {
+	keyIdx     int
+	bracketIdx int
 }
 
 // betterThan returns true if r yields more real records than other, or equal
@@ -203,6 +214,15 @@ func (r salvageResult) betterThan(other salvageResult) bool {
 // non-placeholder records. Placeholder records (matching the prompt's example
 // values) are skipped as a belt.
 //
+// BLOCKER 1 summary fix — bounded extraction: the summary is extracted from
+// the SAME object that produced the chosen jobs array, not from the whole raw
+// string. A model that paraphrases the echo summary (abbreviating or reflowing
+// the placeholder text) defeats the exact-match placeholder check; the
+// whole-string scan then returns the paraphrased echo from a different object
+// while the jobs come from the real one — jobs and summary disagree. Binding
+// the scan to the chosen object's byte bounds makes the defence structural:
+// the echo is in a different object and is never reached.
+//
 // BLOCKER 2 fix — RawMessage decode: array elements are decoded as
 // json.RawMessage first (which never fails on a type mismatch), then
 // unmarshaled into JobListing independently. A mid-array element with a wrong
@@ -224,29 +244,42 @@ func salvageJobs(raw string) (jobs []JobListing, summary string, count int, arra
 		return nil, "", 0, false, false, 0
 	}
 
+	results := make([]salvageResult, len(candidates))
 	var best salvageResult
-	first := true
-	for _, bracketIdx := range candidates {
-		r := decodeJobsCandidate(raw, bracketIdx)
-		if first || r.betterThan(best) {
-			best = r
-			first = false
+	bestIdx := 0
+	for i, c := range candidates {
+		results[i] = decodeJobsCandidate(raw, c.keyIdx, c.bracketIdx)
+		if i == 0 || results[i].betterThan(best) {
+			best = results[i]
+			bestIdx = i
 		}
 	}
 
-	// Extract the summary from the whole raw string. extractSummaryField
-	// scans all "summary" occurrences and skips the schema placeholder, so
-	// a format-restatement's placeholder summary does not shadow the real one.
-	summary, _ = extractSummaryField(raw)
+	// Extract the summary from the SAME object that produced the chosen jobs
+	// array — never from elsewhere in the response. This binds jobs and
+	// summary to one candidate so a paraphrased echo summary from a different
+	// object (e.g. a format restatement) cannot leak in. The schema
+	// placeholder check remains as a belt.
+	endBound := best.objEnd
+	if endBound < 0 {
+		// Object not closed (truncated). Bound to the next candidate's
+		// enclosing object start to prevent scanning into a different object.
+		endBound = len(raw)
+		if bestIdx+1 < len(results) && results[bestIdx+1].objStart >= 0 {
+			endBound = results[bestIdx+1].objStart
+		}
+	}
+	summary, _ = extractSummaryFromBounds(raw, best.objStart, endBound)
 
 	return best.jobs, summary, len(best.jobs), best.arrayClosed, best.objectClosed, best.schemaDropped
 }
 
 // findJobsArrayStarts returns byte offsets in raw of each "[" that opens a
 // "jobs" array — i.e. each occurrence of `"jobs"` followed (after optional
-// whitespace and a colon) by "[".
-func findJobsArrayStarts(raw string) []int {
-	var starts []int
+// whitespace and a colon) by "[". Each result carries both the "jobs" key
+// offset (for enclosing-object bounds) and the "[" offset (for decoder start).
+func findJobsArrayStarts(raw string) []jobsArrayCandidate {
+	var starts []jobsArrayCandidate
 	searchFrom := 0
 	for {
 		idx := strings.Index(raw[searchFrom:], `"jobs"`)
@@ -264,7 +297,7 @@ func findJobsArrayStarts(raw string) []int {
 				pos++
 			}
 			if pos < len(raw) && raw[pos] == '[' {
-				starts = append(starts, pos)
+				starts = append(starts, jobsArrayCandidate{keyIdx: idx, bracketIdx: pos})
 			}
 		}
 		searchFrom = idx + len(`"jobs"`)
@@ -278,18 +311,19 @@ func isJSONSpace(b byte) bool {
 
 // decodeJobsCandidate streams one "jobs" array candidate starting at
 // bracketIdx (the "[" offset in raw) and returns the decoded records plus
-// closure signals.
-func decodeJobsCandidate(raw string, bracketIdx int) salvageResult {
+// closure signals. keyIdx is the "jobs" key offset, used to compute the
+// enclosing object's byte bounds for bounded summary extraction.
+func decodeJobsCandidate(raw string, keyIdx, bracketIdx int) salvageResult {
 	rest := raw[bracketIdx:]
 	dec := json.NewDecoder(strings.NewReader(rest))
 
 	// Consume the opening '['.
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('[') {
-		return salvageResult{}
+		return salvageResult{keyIdx: keyIdx, bracketIdx: bracketIdx, objStart: -1, objEnd: -1}
 	}
 
-	r := salvageResult{}
+	r := salvageResult{keyIdx: keyIdx, bracketIdx: bracketIdx, objStart: -1, objEnd: -1}
 
 	for {
 		if !dec.More() {
@@ -322,13 +356,21 @@ func decodeJobsCandidate(raw string, bracketIdx int) salvageResult {
 		r.jobs = append(r.jobs, job)
 	}
 
-	// Check whether the enclosing object closed after the array.
+	// Check whether the enclosing object closed after the array, and capture
+	// the '}' offset for bounded summary extraction.
 	if r.arrayClosed {
 		// dec.InputOffset() gives the byte offset within the stream (which
 		// starts at bracketIdx) just past the last token consumed (the ']').
 		afterArray := bracketIdx + int(dec.InputOffset())
-		r.objectClosed = checkObjectClosedRaw(raw, afterArray)
+		closed, closeIdx := checkObjectClosedRaw(raw, afterArray)
+		r.objectClosed = closed
+		if closed {
+			r.objEnd = closeIdx + 1
+		}
 	}
+
+	// Compute the enclosing object's '{' offset for bounded summary extraction.
+	r.objStart = findEnclosingObjectStart(raw, keyIdx)
 
 	return r
 }
@@ -340,9 +382,11 @@ func decodeJobsCandidate(raw string, bracketIdx int) salvageResult {
 // enclosing '}', skipping JSON string values (a '}' inside a string is not
 // the object close). A truncated summary value (cut mid-string) means the
 // scan reaches end-of-string without finding '}' → objectClosed=false.
-func checkObjectClosedRaw(raw string, afterArrayIdx int) bool {
+// Returns (closed, closeIdx) where closeIdx is the '}' offset, or -1 if not
+// found or the array is bare.
+func checkObjectClosedRaw(raw string, afterArrayIdx int) (bool, int) {
 	if !hasUnclosedBraceBefore(raw, afterArrayIdx) {
-		return true // bare array, no enclosing object to close
+		return true, -1 // bare array, no enclosing object to close
 	}
 	i := afterArrayIdx
 	for i < len(raw) {
@@ -363,12 +407,12 @@ func checkObjectClosedRaw(raw string, afterArrayIdx int) bool {
 				i++
 			}
 		case '}':
-			return true
+			return true, i
 		default:
 			i++
 		}
 	}
-	return false
+	return false, -1
 }
 
 // hasUnclosedBraceBefore reports whether there is an unclosed '{' in raw
@@ -390,6 +434,102 @@ func hasUnclosedBraceBefore(raw string, pos int) bool {
 		}
 	}
 	return depth > 0
+}
+
+// findEnclosingObjectStart scans forward from 0 to keyIdx (with brace-depth
+// tracking and JSON string skipping) to find the '{' that opens the JSON
+// object enclosing the "jobs" key. Returns the '{' offset, or -1 if the
+// "jobs" key is not inside an enclosing object (a bare array).
+func findEnclosingObjectStart(raw string, keyIdx int) int {
+	// First pass: compute the brace depth at keyIdx.
+	depth := 0
+	inString := false
+	for i := 0; i < keyIdx; i++ {
+		if inString {
+			if raw[i] == '\\' && i+1 < len(raw) {
+				i++
+				continue
+			}
+			if raw[i] == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch raw[i] {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	if depth == 0 {
+		return -1 // no enclosing object
+	}
+	// Second pass: find the last '{' at the target depth that is still open
+	// at keyIdx. A '{' at the target depth is the enclosing object's opening
+	// brace; a '}' that drops depth below the target closes it, so we forget
+	// it and keep scanning for the next one.
+	targetDepth := depth
+	depth = 0
+	inString = false
+	enclosingStart := -1
+	for i := 0; i < keyIdx; i++ {
+		if inString {
+			if raw[i] == '\\' && i+1 < len(raw) {
+				i++
+				continue
+			}
+			if raw[i] == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch raw[i] {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+			if depth == targetDepth {
+				enclosingStart = i
+			}
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth < targetDepth {
+					enclosingStart = -1
+				}
+			}
+		}
+	}
+	return enclosingStart
+}
+
+// extractSummaryFromBounds extracts the "summary" string field from within a
+// bounded byte range [start, end) of the raw response — the enclosing object
+// of the chosen jobs array. This binds the summary to the SAME object that
+// produced the jobs, preventing a paraphrased echo summary from a different
+// object (e.g. a format restatement whose abbreviated placeholder text does
+// not match schemaPlaceholderSummary) from leaking in. The schema placeholder
+// check remains as a belt: if the only summary in the bounded range is the
+// placeholder, it is skipped and ("", false) is returned so the caller uses
+// the synthetic fallback. Returns (value, terminated).
+func extractSummaryFromBounds(raw string, start, end int) (string, bool) {
+	if start < 0 || start >= end {
+		return "", false
+	}
+	if end > len(raw) {
+		end = len(raw)
+	}
+	segment := raw[start:end]
+	val, terminated := extractSummaryField(segment)
+	if terminated && val != schemaPlaceholderSummary {
+		return val, true
+	}
+	return "", false
 }
 
 // extractSummaryField attempts to extract the "summary" string field from a
