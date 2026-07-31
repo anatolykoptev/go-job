@@ -411,6 +411,30 @@ type greenhouseResponse struct {
 	Jobs []greenhouseJob `json:"jobs"`
 }
 
+// greenhouseJobToListing builds a structured engine.JobListing from a parsed
+// Greenhouse job, the board slug (company), and the resolved job URL. Populates
+// every field the Greenhouse API carries (title, location.name, absolute_url,
+// updated_at, content, departments[].name, company←board slug). Skills and
+// Experience stay empty — Greenhouse carries neither. Description mirrors the
+// 600-rune truncation the SearxngResult content string uses, so the structured
+// field and the LLM-facing snippet stay consistent.
+func greenhouseJobToListing(job greenhouseJob, slug, jobURL string) engine.JobListing {
+	desc := ""
+	if job.Content != "" {
+		desc = engine.TruncateRunes(engine.CleanHTML(job.Content), 600, "...")
+	}
+	return engine.JobListing{
+		Title:       job.Title,
+		Company:     slug,
+		URL:         jobURL,
+		JobID:       strconv.FormatInt(job.ID, 10),
+		Source:      string(PlatformGreenhouse),
+		Location:    job.Location.Name,
+		Description: desc,
+		Posted:      job.UpdatedAt,
+	}
+}
+
 // metaKeyPostedAt is the SearxngResult.Metadata key carrying the structured ATS
 // posting date (RFC3339). SearxngResultToHuntJob reads this back into
 // hunt.Job.PostedAt without depending on the lossy LLM "posted"-field round-trip
@@ -447,14 +471,29 @@ func setPostedAtMeta(r *engine.SearxngResult, posted string) {
 
 // SearchGreenhouseJobs discovers company slugs via multi-query union (P1) +
 // runtime slug cache (P2), then hits the public JSON API for each slug.
+// Returns only the SearxngResult slice (web-search-result shape) for consumers
+// that do not need the structured fields (hunt worker, Source.Fetch). The
+// structured JobListing collection is discarded here; use
+// SearchGreenhouseJobsStructured to obtain it.
 func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
+	results, _, err := SearchGreenhouseJobsStructured(ctx, query, location, limit)
+	return results, err
+}
+
+// SearchGreenhouseJobsStructured is the canonical implementation: it returns
+// both the SearxngResult slice (unchanged shape, consumed by the ranking /
+// dedup / blacklist helpers) AND a parallel []engine.JobListing keyed by the
+// same URL, carrying every structured field the Greenhouse API exposed. The two
+// slices are appended in lockstep so index i in results shares its URL with
+// index i in listings.
+func SearchGreenhouseJobsStructured(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, []engine.JobListing, error) {
 	engine.IncrGreenhouseRequests()
 
 	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformGreenhouse, query, location, extractGreenhouseSlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformGreenhouse, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("greenhouse: no slugs found in discovery results")
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Fetch jobs from each company's public API in parallel.
@@ -477,6 +516,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 
 	keywords := strings.Fields(strings.ToLower(query))
 	var allResults []engine.SearxngResult
+	var allListings []engine.JobListing
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
@@ -510,6 +550,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 			}
 			setPostedAtMeta(&sr, job.UpdatedAt) // greenhouse updated_at is RFC3339 ISO
 			allResults = append(allResults, sr)
+			allListings = append(allListings, greenhouseJobToListing(job, r.slug, jobURL))
 			if len(allResults) >= limit {
 				break
 			}
@@ -520,7 +561,7 @@ func SearchGreenhouseJobs(ctx context.Context, query, location string, limit int
 	}
 
 	slog.Debug("greenhouse: search complete", slog.Int("results", len(allResults)))
-	return allResults, nil
+	return allResults, allListings, nil
 }
 
 // fetchGreenhouseJobs fetches all jobs for a given company slug.
@@ -630,18 +671,72 @@ type leverPosting struct {
 	Country          string `json:"country"`
 }
 
+// leverPostingToListing builds a structured engine.JobListing from a parsed
+// Lever posting, the board slug (company), the resolved job URL, and the
+// resolved location string (categories.location, or allLocations joined — the
+// caller already resolves this for the SearxngResult content). Populates every
+// field the Lever API carries: text→Title, hostedUrl/applyUrl→URL,
+// categories.commitment→JobType, workplaceType→Remote,
+// salaryRange.{min,max,currency}→SalaryMin/SalaryMax/SalaryCurrency (and the
+// human-readable Salary string, kept populated for consumers), createdAt→Posted
+// (ISO via leverCreatedAtToISO), descriptionPlain→Description. Skills and
+// Experience stay empty — Lever carries neither. SalaryMin/SalaryMax pointers
+// are set only when the source min/max is positive, so an absent range leaves
+// them nil (no fabricated zeros).
+func leverPostingToListing(p leverPosting, slug, jobURL, loc string) engine.JobListing {
+	desc := ""
+	if p.DescriptionPlain != "" {
+		desc = engine.TruncateRunes(p.DescriptionPlain, 600, "...")
+	}
+	l := engine.JobListing{
+		Title:       p.Text,
+		Company:     slug,
+		URL:         jobURL,
+		JobID:       p.ID,
+		Source:      string(PlatformLever),
+		Location:    loc,
+		JobType:     p.Categories.Commitment,
+		Remote:      p.WorkplaceType,
+		Description: desc,
+		Posted:      leverCreatedAtToISO(p.CreatedAt),
+	}
+	if p.SalaryRange.Min > 0 {
+		min := p.SalaryRange.Min
+		l.SalaryMin = &min
+		l.SalaryCurrency = p.SalaryRange.Currency
+		if p.SalaryRange.Max > p.SalaryRange.Min {
+			max := p.SalaryRange.Max
+			l.SalaryMax = &max
+			l.Salary = fmt.Sprintf("$%d-$%d %s", p.SalaryRange.Min, p.SalaryRange.Max, p.SalaryRange.Currency)
+		} else {
+			l.Salary = fmt.Sprintf("$%d %s", p.SalaryRange.Min, p.SalaryRange.Currency)
+		}
+	}
+	return l
+}
+
 // SearchLeverJobs discovers company slugs via multi-query union (P1) +
 // runtime slug cache (P2), then hits the public JSON API for each slug.
 // The former lever-only N=2 secondary block is replaced by the uniform
 // unionDiscoverSlugs fan-out that covers the same query orderings.
+// Returns only the SearxngResult slice; the structured JobListing collection is
+// discarded here. Use SearchLeverJobsStructured to obtain it.
 func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
+	results, _, err := SearchLeverJobsStructured(ctx, query, location, limit)
+	return results, err
+}
+
+// SearchLeverJobsStructured is the canonical implementation returning both the
+// SearxngResult slice and a parallel []engine.JobListing keyed by the same URL.
+// See SearchGreenhouseJobsStructured for the lockstep-append invariant.
+func SearchLeverJobsStructured(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, []engine.JobListing, error) {
 	engine.IncrLeverRequests()
 
 	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformLever, query, location, extractLeverSlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformLever, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("lever: no slugs found in discovery results")
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	type fetchResult struct {
@@ -663,6 +758,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 
 	keywords := strings.Fields(strings.ToLower(query))
 	var allResults []engine.SearxngResult
+	var allListings []engine.JobListing
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
@@ -711,6 +807,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 			}
 			setPostedAtMeta(&sr, leverCreatedAtToISO(p.CreatedAt)) // lever createdAt is epoch ms
 			allResults = append(allResults, sr)
+			allListings = append(allListings, leverPostingToListing(p, r.slug, jobURL, loc))
 			if len(allResults) >= limit {
 				break
 			}
@@ -721,7 +818,7 @@ func SearchLeverJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slog.Debug("lever: search complete", slog.Int("results", len(allResults)))
-	return allResults, nil
+	return allResults, allListings, nil
 }
 
 // fetchLeverPostings fetches all job postings for a given company slug.
@@ -829,16 +926,57 @@ type ashbyResponse struct {
 	Jobs []ashbyJob `json:"jobs"`
 }
 
+// ashbyJobToListing builds a structured engine.JobListing from a parsed Ashby
+// job, the board slug (company), and the resolved job URL. Location is built
+// via the existing buildAshbyLocation helper (reused — it folds isRemote and
+// secondaryLocations into the location string). Remote is derived from
+// isRemote (→"remote") falling back to workplaceType when isRemote is false.
+// Salary carries compensationTierSummary verbatim (Ashby's structured comp
+// string). Skills and Experience stay empty — Ashby carries neither here.
+func ashbyJobToListing(j ashbyJob, slug, jobURL string) engine.JobListing {
+	desc := ""
+	if j.DescriptionPlain != "" {
+		desc = engine.TruncateRunes(j.DescriptionPlain, 600, "...")
+	}
+	l := engine.JobListing{
+		Title:       j.Title,
+		Company:     slug,
+		URL:         jobURL,
+		JobID:       j.ID,
+		Source:      string(PlatformAshby),
+		Location:    buildAshbyLocation(j),
+		Salary:      j.Compensation.CompensationTierSummary,
+		Description: desc,
+		Posted:      j.PublishedAt,
+	}
+	if j.IsRemote {
+		l.Remote = "remote" //nolint:goconst // semantic: JobListing.Remote field value, distinct from algoraRemoteRow (algora Tier-2 row-walk key)
+	} else if j.WorkplaceType != "" {
+		l.Remote = j.WorkplaceType
+	}
+	return l
+}
+
 // SearchAshbyJobs discovers company slugs via multi-query union (P1) +
 // runtime slug cache (P2), then hits the public JSON API for each slug.
+// Returns only the SearxngResult slice; the structured JobListing collection is
+// discarded here. Use SearchAshbyJobsStructured to obtain it.
 func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error) {
+	results, _, err := SearchAshbyJobsStructured(ctx, query, location, limit)
+	return results, err
+}
+
+// SearchAshbyJobsStructured is the canonical implementation returning both the
+// SearxngResult slice and a parallel []engine.JobListing keyed by the same URL.
+// See SearchGreenhouseJobsStructured for the lockstep-append invariant.
+func SearchAshbyJobsStructured(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, []engine.JobListing, error) {
 	engine.IncrAshbyRequests()
 
 	slugs := unionDiscoverSlugs(ctx, engine.DiscoveryPlatformAshby, query, location, extractAshbySlugs)
 	engine.IncrHuntDiscoveryURLs(engine.DiscoveryPlatformAshby, len(slugs))
 	if len(slugs) == 0 {
 		slog.Debug("ashby: no slugs found in discovery results")
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	type fetchResult struct {
@@ -860,6 +998,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 
 	keywords := strings.Fields(strings.ToLower(query))
 	var allResults []engine.SearxngResult
+	var allListings []engine.JobListing
 	for i := 0; i < len(slugs); i++ {
 		r := <-ch
 		if r.err != nil {
@@ -900,6 +1039,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 			}
 			setPostedAtMeta(&sr, j.PublishedAt) // ashby publishedAt is RFC3339 ISO
 			allResults = append(allResults, sr)
+			allListings = append(allListings, ashbyJobToListing(j, r.slug, jobURL))
 			if len(allResults) >= limit {
 				break
 			}
@@ -910,7 +1050,7 @@ func SearchAshbyJobs(ctx context.Context, query, location string, limit int) ([]
 	}
 
 	slog.Debug("ashby: search complete", slog.Int("results", len(allResults)))
-	return allResults, nil
+	return allResults, allListings, nil
 }
 
 // fetchAshbyJobs fetches all jobs for a given company slug.
@@ -1010,6 +1150,80 @@ func buildAshbyLocation(j ashbyJob) string {
 		}
 	}
 	return loc
+}
+
+// ApplyStructuredPrecedence overrides LLM-extracted JobListing fields with
+// source-structured values where the structured listing carries a non-empty
+// value. The LLM value is preserved ONLY where the structured one is empty
+// (nil pointer for salary, "" for strings, nil/empty for slices). This is the
+// job_search contract: structured ATS fields win over the LLM's guess, so a
+// Lever posting whose API gave salaryRange{160000,220000,USD} surfaces those
+// exact numbers instead of the LLM's "not specified".
+//
+// structuredByURL keys a structured listing by its URL — the natural join key,
+// since JobListing.URL and SearxngResult.URL carry the same value today. An
+// LLM record with no matching structured entry (generic searxng / LinkedIn
+// path) is left untouched. The LLM path is NOT deleted; this merge runs after
+// it. Pointer fields (SalaryMin/SalaryMax) use nil as the empty sentinel so an
+// absent structured salary does not clobber a real LLM value with a zero.
+func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[string]engine.JobListing) {
+	for i := range llm {
+		s, ok := structuredByURL[llm[i].URL]
+		if !ok {
+			continue
+		}
+		if s.Title != "" {
+			llm[i].Title = s.Title
+		}
+		if s.Company != "" {
+			llm[i].Company = s.Company
+		}
+		if s.URL != "" {
+			llm[i].URL = s.URL
+		}
+		if s.JobID != "" {
+			llm[i].JobID = s.JobID
+		}
+		if s.Source != "" {
+			llm[i].Source = s.Source
+		}
+		if s.Location != "" {
+			llm[i].Location = s.Location
+		}
+		if s.Salary != "" {
+			llm[i].Salary = s.Salary
+		}
+		if s.SalaryMin != nil {
+			llm[i].SalaryMin = s.SalaryMin
+		}
+		if s.SalaryMax != nil {
+			llm[i].SalaryMax = s.SalaryMax
+		}
+		if s.SalaryCurrency != "" {
+			llm[i].SalaryCurrency = s.SalaryCurrency
+		}
+		if s.SalaryInterval != "" {
+			llm[i].SalaryInterval = s.SalaryInterval
+		}
+		if s.JobType != "" {
+			llm[i].JobType = s.JobType
+		}
+		if s.Remote != "" {
+			llm[i].Remote = s.Remote
+		}
+		if s.Experience != "" {
+			llm[i].Experience = s.Experience
+		}
+		if len(s.Skills) > 0 {
+			llm[i].Skills = s.Skills
+		}
+		if s.Description != "" {
+			llm[i].Description = s.Description
+		}
+		if s.Posted != "" {
+			llm[i].Posted = s.Posted
+		}
+	}
 }
 
 // --- Public API: URL parsing + direct board fetch ---

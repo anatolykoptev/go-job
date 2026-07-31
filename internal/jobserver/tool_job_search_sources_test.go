@@ -104,7 +104,7 @@ func TestAggregateSourceResults_Cancellation_ReturnsPartialAndDoesNotHang(t *tes
 	var partial bool
 	go func() {
 		defer close(done)
-		merged, _, sources, partial = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		merged, _, _, sources, partial = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	}()
 
 	select {
@@ -142,7 +142,7 @@ func TestAggregateSourceResults_HappyPath_DrainsAndClassifies(t *testing.T) {
 	dispatched := map[string]bool{"test-slow": true}
 	ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 2), err: nil}
 
-	merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+	merged, _, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	if len(merged) != 2 {
 		t.Fatalf("merged = %d, want 2", len(merged))
 	}
@@ -168,7 +168,7 @@ func TestAggregateSourceResults_GenericSearxngCancelled_MarkedFailed(t *testing.
 	var sources []engine.SourceStatus
 	go func() {
 		defer close(done)
-		_, _, sources, _ = aggregateSourceResults(ctx, srcs, true, ch, 2, dispatched)
+		_, _, _, sources, _ = aggregateSourceResults(ctx, srcs, true, ch, 2, dispatched)
 	}()
 	select {
 	case <-done:
@@ -236,7 +236,7 @@ func TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancella
 		ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 1), err: nil}
 		cancel()
 
-		merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		merged, _, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 
 		if len(merged) != 1 {
 			t.Fatalf("iter %d: merged = %d, want 1 (buffered result must not be dropped)", i, len(merged))
@@ -275,7 +275,7 @@ func TestAggregateSourceResults_NeverDispatched_MarkedNotDispatched(t *testing.T
 	var sources []engine.SourceStatus
 	go func() {
 		defer close(done)
-		_, _, sources, _ = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		_, _, _, sources, _ = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	}()
 	select {
 	case <-done:

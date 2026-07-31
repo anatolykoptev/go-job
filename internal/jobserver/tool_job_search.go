@@ -47,10 +47,11 @@ const (
 
 // sourceResult carries the output of a single connector goroutine.
 type sourceResult struct {
-	name    string
-	results []engine.SearxngResult
-	liJobs  []jobs.LinkedInJob
-	err     error
+	name       string
+	results    []engine.SearxngResult
+	liJobs     []jobs.LinkedInJob
+	structured []engine.JobListing // source-structured listings (ATS connectors); nil for non-structured sources
+	err        error
 }
 
 // jobSearchSem bounds the number of connector goroutines that may run
@@ -219,7 +220,7 @@ spawn:
 	if runGenericSearxng {
 		totalGoroutines++
 	}
-	merged, linkedInJobs, sources, partial := aggregateSourceResults(ctx, srcs, runGenericSearxng, ch, totalGoroutines, dispatched)
+	merged, linkedInJobs, structuredJobs, sources, partial := aggregateSourceResults(ctx, srcs, runGenericSearxng, ch, totalGoroutines, dispatched)
 
 	if len(merged) == 0 {
 		return nil, engine.JobSearchOutput{
@@ -389,6 +390,25 @@ spawn:
 	// M2: positional URL fallback — extracted into assignFallbackURLs so the
 	// correspondence guard is unit-testable (the LLM path is nil in tests).
 	assignFallbackURLs(jobOut.Jobs, top)
+
+	// Source-structured precedence: where a structured ATS listing exists for a
+	// URL, its fields win over the LLM's; the LLM value is kept only where the
+	// structured one is empty. Runs after assignFallbackURLs so the URL join key
+	// is populated, and before the LinkedIn gap-fill loop so structured values
+	// (the primary source) are not clobbered by LinkedIn's empty-only fill.
+	structuredByURL := make(map[string]engine.JobListing, len(structuredJobs))
+	for i := range structuredJobs {
+		if structuredJobs[i].URL != "" {
+			// First-write-wins on duplicate URLs: the ranking/dedup helpers
+			// already deduped SearxngResults by URL upstream, so duplicates are
+			// rare; keeping the first preserves deterministic order.
+			if _, exists := structuredByURL[structuredJobs[i].URL]; !exists {
+				structuredByURL[structuredJobs[i].URL] = structuredJobs[i]
+			}
+		}
+	}
+	jobs.ApplyStructuredPrecedence(jobOut.Jobs, structuredByURL)
+
 	for i := range jobOut.Jobs {
 		j := &jobOut.Jobs[i]
 		if j.JobID == "" && j.URL != "" {
@@ -492,6 +512,17 @@ func runSource(ctx context.Context, src connectors.Source, q connectors.Query, c
 			ch <- sourceResult{name: src.Name(), err: fmt.Errorf("panic: %v", r)}
 		}
 	}()
+	if sf, ok := src.(connectors.StructuredFetcher); ok {
+		results, listings, err := sf.FetchStructured(srcCtx, q)
+		engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
+		if err != nil {
+			slog.Warn("job_search: source error",
+				slog.String("source", src.Name()),
+				slog.Any("error", err))
+		}
+		ch <- sourceResult{name: src.Name(), results: results, structured: listings, err: err}
+		return
+	}
 	if liFetcher, ok := src.(connectors.RawLinkedInFetcher); ok {
 		results, liJobs, err := liFetcher.FetchRaw(srcCtx, q)
 		engine.ObserveSourceDuration(src.Name(), time.Since(start).Seconds())
@@ -642,7 +673,7 @@ func aggregateSourceResults(
 	ch <-chan sourceResult,
 	totalGoroutines int,
 	dispatched map[string]bool,
-) (merged []engine.SearxngResult, linkedInJobs []jobs.LinkedInJob, sources []engine.SourceStatus, partial bool) {
+) (merged []engine.SearxngResult, linkedInJobs []jobs.LinkedInJob, structuredJobs []engine.JobListing, sources []engine.SourceStatus, partial bool) {
 	expected := allSourceNames(srcs, runGenericSearxng)
 	reported := make(map[string]bool, len(expected))
 	received := 0
@@ -656,6 +687,7 @@ func aggregateSourceResults(
 		if r.name == platLinkedIn && len(r.liJobs) > 0 {
 			linkedInJobs = r.liJobs
 		}
+		structuredJobs = append(structuredJobs, r.structured...)
 		sources = append(sources, classifySourceResult(r))
 	}
 
@@ -719,7 +751,7 @@ loop:
 	}
 
 	partial = received < totalGoroutines
-	return merged, linkedInJobs, sources, partial
+	return merged, linkedInJobs, structuredJobs, sources, partial
 }
 
 // classifySourceResult maps a single sourceResult into the response-contract
