@@ -535,9 +535,12 @@ func TestIsNoBinaryErr(t *testing.T) {
 // be installed on the box running the test — the earlier reason this was left
 // unguarded.
 func TestReadyLooksUpTheResolvedBinary(t *testing.T) {
-	const pinned = "/opt/pinned/typst"
-	t.Setenv("RENDER_TYPST_PATH", pinned)
+	const pinnedTypst = "/opt/pinned/typst"
+	const pinnedPandoc = "/opt/pinned/pandoc"
+	t.Setenv("RENDER_TYPST_PATH", pinnedTypst)
 	t.Setenv("VAELOR_TYPST_PATH", "")
+	t.Setenv("RENDER_PANDOC_PATH", pinnedPandoc)
+	t.Setenv("VAELOR_PANDOC_PATH", "")
 
 	var asked []string
 	a := New()
@@ -551,23 +554,65 @@ func TestReadyLooksUpTheResolvedBinary(t *testing.T) {
 
 	a.Ready()
 
-	var sawPinned bool
-	for _, name := range asked {
-		if name == pinned {
-			sawPinned = true
-		}
-		if name == "typst" {
-			t.Errorf("Ready looked up the literal %q while RENDER_TYPST_PATH pinned %q — the renderer gauge would disagree with the font gauge", name, pinned)
+	// Both binaries, not just typst. go-kit resolves pandoc through
+	// RENDER_PANDOC_PATH exactly as it resolves typst, so a literal here leaves
+	// half the bug open — and the half that is open still produces the gauge
+	// disagreement the whole guard exists to prevent.
+	for _, literal := range []string{"typst", "pandoc"} {
+		for _, name := range asked {
+			if name == literal {
+				t.Errorf("Ready looked up the literal %q while its RENDER_*_PATH pinned an explicit install — the renderer gauge would disagree with the font gauge", literal)
+			}
 		}
 	}
-	if !sawPinned {
-		t.Errorf("Ready never looked up the pinned binary %q; it asked for %v", pinned, asked)
+	for _, want := range []string{pinnedTypst, pinnedPandoc} {
+		var saw bool
+		for _, name := range asked {
+			if name == want {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Errorf("Ready never looked up the pinned binary %q; it asked for %v", want, asked)
+		}
+	}
+}
+
+// TestPandocBinary pins the same precedence for pandoc that TestTypstBinary
+// pins for typst. They exist as a pair because the two drifting apart is what
+// left half the gauge-disagreement bug open the first time.
+func TestPandocBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		render, vaelor string
+		want           string
+	}{
+		{"neither set falls back to PATH", "", "", "pandoc"},
+		{"RENDER wins", "/opt/a/pandoc", "/opt/b/pandoc", "/opt/a/pandoc"},
+		{"legacy VAELOR is honoured alone", "", "/opt/b/pandoc", "/opt/b/pandoc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RENDER_PANDOC_PATH", tc.render)
+			t.Setenv("VAELOR_PANDOC_PATH", tc.vaelor)
+			if got := pandocBinary(); got != tc.want {
+				t.Errorf("pandocBinary() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
 // TestZeroValueAdapterReady pins that an adapter built as a literal rather than
 // through New still resolves a lookup instead of panicking on a nil field.
 func TestZeroValueAdapterReady(t *testing.T) {
+	// lookPath stays nil deliberately — that is the field under test. fontLister
+	// is stubbed so the probe does not shell out. Ready still reaches the real
+	// exec.LookPath through the nil fallback, which is the point; the gauges it
+	// writes are restored below so the host's PATH does not leak into a later
+	// test's expectations.
+	restore := func(g prometheus.Gauge, v float64) func() { return func() { g.Set(v) } }
+	t.Cleanup(restore(pdfRendererAvailableGauge, gaugeValue(t, pdfRendererAvailableGauge)))
+	t.Cleanup(restore(pdfFontAvailableGauge, gaugeValue(t, pdfFontAvailableGauge)))
+
 	a := &TypstAdapter{fontLister: func(context.Context) ([]byte, error) {
 		return []byte("IBM Plex Sans\nIBM Plex Mono\n"), nil
 	}}
