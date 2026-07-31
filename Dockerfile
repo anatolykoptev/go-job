@@ -1,3 +1,29 @@
+# fonts stage: install IBM Plex Sans + Mono TTFs when WITH_PDF=1.
+#
+# Typst substitutes a missing font family SILENTLY — no build-time error, no
+# run-time error, no metric. The rendered PDF still looks like a resume, just
+# in the wrong font (Libertinus Serif on a bare alpine/typst image). Shipping
+# the font the theme names is the only way to get the measured design into the
+# container.
+#
+# Ubuntu is used because it carries fonts-ibm-plex 6.1.1-1 (the same build
+# measured on the host). Debian trixie does not carry the package; Alpine has
+# no IBM Plex Sans package at all. The glob pair matches 32 files / 5.3 MB and
+# excludes Arabic/Thai/Hebrew/Devanagari/Condensed/Var families — do not widen
+# it to IBMPlexSans* (the missing hyphen pulls in ~70 MB of scripts nobody
+# renders). Typst finds fonts under /usr/share/fonts/** on its own; no
+# fontconfig, no fc-cache, no TYPST_FONT_PATHS needed.
+FROM ubuntu:24.04 AS fonts
+ARG WITH_PDF=0
+RUN mkdir -p /out && \
+    if [ "$WITH_PDF" = "1" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends fonts-ibm-plex && \
+        cp /usr/share/fonts/truetype/ibm-plex/IBMPlexSans-*.ttf \
+           /usr/share/fonts/truetype/ibm-plex/IBMPlexMono-*.ttf /out/ && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 FROM golang:alpine AS builder
 WORKDIR /build
 
@@ -41,6 +67,11 @@ RUN mkdir -p /data/uploads && chown -R 1001:1001 /app /data/uploads
 # With HOME=/tmp the sessions land on the already-mounted /tmp tmpfs —
 # no extra writable path needed beyond what the compose already provides.
 ENV HOME=/tmp
+
+# Copy IBM Plex fonts into the runtime image. /out is always created by the
+# fonts stage (even when WITH_PDF=0), so this COPY succeeds unconditionally.
+# When WITH_PDF=0 the directory is empty — zero bytes added to the slim image.
+COPY --from=fonts /out/ /usr/share/fonts/truetype/ibm-plex/
 
 USER 1001
 
