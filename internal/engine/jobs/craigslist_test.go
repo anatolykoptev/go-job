@@ -1362,10 +1362,27 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 // miss, it errors rather than searching the wrong city. Both were round-4
 // assertions removed here deliberately.
 //
+// Round 6 restores the two no-comma cases where the city IS a key
+// ("Seattle Washington", "Tacoma Washington") that round 5 dropped. These are
+// the ONLY cases exercising the `case pos < bestPos:` branch in resolveRegion
+// (craigslist.go:197-198): when map iteration visits "washington" (pos 1)
+// before "seattle" (pos 0), the pos<bestPos branch is what makes the earlier
+// city match win. Without the branch the result is nondeterministic —
+// washingtondc when "washington" is visited first — and the whole suite
+// passes GREEN (the #347 wrong-city outcome). Run 200+ iterations to expose
+// the nondeterminism. "Spokane Washington" (city NOT a key) → washingtondc is
+// the deliberate explicit-path trade; it is asserted below so a future round
+// flipping it back is silent.
+//
 // MUTATION-CHECK: restore longest-wins-regardless-of-position (revert to the
 // round-2 token pass over the whole string with len(key) as the primary rank)
 // → "Seattle, Washington" matches "washington" (longest) → washingtondc → the
 // not-washingtondc assertion fails → RED.
+//
+// MUTATION-CHECK (F21): delete the `case pos < bestPos:` branch in
+// resolveRegion → "Seattle Washington"/"Tacoma Washington" resolve to
+// washingtondc when "washington" is visited first (nondeterministic) → the
+// want==seattle assertion fails on those iterations → RED (run 200+ times).
 func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
 	cases := []struct {
 		loc    string
@@ -1376,6 +1393,18 @@ func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
 		// never to washingtondc.
 		{"Seattle, Washington", craigslistRegions["seattle"], true},
 		{"Tacoma, Washington", craigslistRegions["tacoma"], true},
+		// No-comma form where the city IS a key — the EARLIEST match
+		// position must win (pos<bestPos branch). "seattle" matches at
+		// pos 0, "washington" at pos 1; seattle wins. These were dropped
+		// in round 5 and are the only guard on the pos<bestPos branch.
+		{"Seattle Washington", craigslistRegions["seattle"], true},
+		{"Tacoma Washington", craigslistRegions["tacoma"], true},
+		// No-comma form where the city is NOT a key — the state token
+		// "washington" matches and resolves to washingtondc. This is a
+		// DELIBERATE explicit-path trade (caller-visible, out of the
+		// dangerous substituted class). Asserted here so a future round
+		// flipping it back to unmapped is a visible change, not silent.
+		{"Spokane Washington", "washingtondc", true},
 		// City that is NOT a key — the comma form must be unmapped, NOT
 		// fall through to "washington" → washingtondc.
 		{"Spokane, Washington", "", false},
@@ -1391,7 +1420,7 @@ func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, ok := resolveRegion(c.loc)
-		if ok && got == "washingtondc" {
+		if ok && got == "washingtondc" && c.want != "washingtondc" {
 			t.Errorf("resolveRegion(%q) = %q — state beat the city (round-2 regression): the city segment must win and an unmapped city must be unmapped, not the state", c.loc, got)
 			continue
 		}
@@ -1539,7 +1568,7 @@ func TestResolveCraigslistDefaultLocation_ProfileError_DistinctTier(t *testing.T
 // config_after_profile_error assertion fails → RED.
 func TestFormatMetrics_CraigslistDefaultLocationAllTiers(t *testing.T) {
 	out := engine.FormatMetrics()
-	for _, tier := range []string{"profile", "config", "config_after_profile_error"} {
+	for _, tier := range []string{"profile", "config", "config_after_profile_error", "config_after_profile_unmapped"} {
 		label := engine.MetricCraigslistDefaultLocation + "{tier=" + tier + "}"
 		if !strings.Contains(out, label) {
 			t.Errorf("FormatMetrics output must contain %q; got:\n%s", label, out)
@@ -1799,5 +1828,164 @@ func TestResolveRegion_Round4RegressionsGone(t *testing.T) {
 		if ok {
 			t.Errorf("resolveRegion(%q) = (%q, true), want (\"\", false) — round-4 all-segment ranking regressed: a non-city segment matched a state key", loc, region)
 		}
+	}
+}
+
+// --- F19: config rescues a non-exact profile (BLOCKING, round 6) ---
+//
+// The operator's real state: profile holds a free-text value ("San Francisco
+// Bay Area") that is NOT an exact key/slug, AND config is set to an exact slug
+// ("sfbay"). Round 5 returned the profile unconditionally, so the strict gate
+// dead-ended and the config remedy was unreachable. Round 6 makes tier
+// selection strict-aware: a non-exact profile falls through to the config
+// tier, which rescues the search. This test exercises BOTH knobs set — no
+// prior test did (F15 sets config="", F16 sets profile="").
+//
+// MUTATION-CHECK: restore profile-wins-unconditionally (in
+// resolveCraigslistDefaultLocation, return profileVal,"profile" whenever
+// profileVal != "" without the strict check) → resolver returns ("San
+// Francisco Bay Area","profile") → strict gate fails → search refused with
+// errCraigslistUnmapped → the "expected results, got error" assertion fails →
+// RED.
+func TestSearchCraigslistJobs_ConfigRescuesNonExactProfile(t *testing.T) {
+	saveFetchVars(t)
+	saveDefaultLocationDeps(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Profile holds a free-text value the general resolver WOULD match via
+	// substring but the strict resolver REFUSES.
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
+	}
+	// Config holds an exact slug that rescues the search.
+	engine.Cfg.CraigslistDefaultLocation = "sfbay"
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	craigslistStealthFetch = stubStealthSuccess(fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	results, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err != nil {
+		t.Fatalf("config must rescue a non-exact profile, got error: %v — the profile tier fell through to config but the strict gate still refused (profile-wins-unconditionally was restored)", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results from config-rescued search, got 0")
+	}
+}
+
+// --- F20: the config_after_profile_unmapped tier is emitted and bounded ---
+//
+// The new tier label must (a) be accepted by the counter (not silently dropped
+// by the cardinality guard) and (b) appear in the rendered /metrics output.
+// This test drives the REAL SearchCraigslistJobs path with profile non-exact +
+// config exact and asserts the labelled counter increments for
+// config_after_profile_unmapped. It also asserts FormatMetrics renders the
+// series.
+//
+// MUTATION-CHECK: remove "config_after_profile_unmapped" from
+// validCraigslistDefaultLocationTiers → IncrCraigslistDefaultLocation silently
+// drops the label → counter delta is 0 → RED. (FormatMetrics rendering is
+// covered by TestFormatMetrics_CraigslistDefaultLocationAllTiers, which also
+// goes RED on the same mutation.)
+func TestSearchCraigslistJobs_ConfigAfterProfileUnmapped_TierEmittedAndBounded(t *testing.T) {
+	saveFetchVars(t)
+	saveDefaultLocationDeps(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
+	}
+	engine.Cfg.CraigslistDefaultLocation = "sfbay"
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	craigslistStealthFetch = stubStealthSuccess(fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	key := engine.MetricCraigslistDefaultLocation + "{tier=config_after_profile_unmapped}"
+	before := engine.GetMetrics()[key]
+
+	if _, err := SearchCraigslistJobs(context.Background(), "golang", "", 5); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after := engine.GetMetrics()[key]
+	if after <= before {
+		t.Errorf("craigslist_default_location_total{tier=config_after_profile_unmapped} did not increment (before=%d after=%d) — tier label rejected by the cardinality guard (not in validCraigslistDefaultLocationTiers)", before, after)
+	}
+}
+
+// --- F21: the position rule (pos<bestPos) is guarded (MAJOR, round 6) ---
+//
+// The restored no-comma cases "Seattle Washington" and "Tacoma Washington" are
+// the ONLY cases exercising the `case pos < bestPos:` branch in resolveRegion.
+// Without the branch, the result is nondeterministic: when map iteration visits
+// "washington" (pos 1) before "seattle" (pos 0), washingtondc wins. The failure
+// is nondeterministic, so this test runs 300 iterations to expose it.
+//
+// MUTATION-CHECK: delete the `case pos < bestPos:` branch in resolveRegion
+// (craigslist.go:197-198) → on iterations where "washington" is visited first,
+// "Seattle Washington" resolves to washingtondc → the want==seattle assertion
+// fails → RED (nondeterministic, but 300 iterations catches it reliably).
+func TestResolveRegion_PositionRuleGuardedAcrossIterations(t *testing.T) {
+	want := craigslistRegions["seattle"] // "seattle"
+	for i := 0; i < 300; i++ {
+		for _, loc := range []string{"Seattle Washington", "Tacoma Washington"} {
+			got, ok := resolveRegion(loc)
+			if !ok || got != want {
+				t.Fatalf("iteration %d: resolveRegion(%q) = (%q, %v), want (%q, true) — the pos<bestPos branch was deleted or broken (nondeterministic wrong-city)", i, loc, got, ok, want)
+			}
+		}
+	}
+}
+
+// --- F22: refusals are not counted as substitutions (MAJOR, round 6) ---
+//
+// Round 5 fired IncrCraigslistDefaultLocation BEFORE the strict gate, so a
+// refused substitution (non-exact profile, no config) was counted as a
+// successful substitution under the profile tier. Round 6 moves the counter
+// after the gate, so a refusal does not advance any tier counter.
+//
+// MUTATION-CHECK: move the IncrCraigslistDefaultLocation call back before the
+// strict gate in SearchCraigslistJobs → the profile counter increments on the
+// refused search → after > before → the assertion fails → RED.
+func TestSearchCraigslistJobs_RefusalNotCountedAsSubstitution(t *testing.T) {
+	saveFetchVars(t)
+	saveDefaultLocationDeps(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Non-exact profile + empty config → the resolver returns the profile
+	// value with tier "profile", the strict gate refuses, and the counter
+	// must NOT fire.
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
+	}
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxFetchFetch = transportCalledStub(t, "ox-fetch")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	key := engine.MetricCraigslistDefaultLocation + "{tier=profile}"
+	before := engine.GetMetrics()[key]
+
+	_, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err == nil {
+		t.Fatal("expected errCraigslistUnmapped for non-exact profile with no config, got nil")
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Fatalf("expected errCraigslistUnmapped, got: %v", err)
+	}
+
+	after := engine.GetMetrics()[key]
+	if after > before {
+		t.Errorf("craigslist_default_location_total{tier=profile} incremented on a REFUSED substitution (before=%d after=%d) — the counter fires before the strict gate (round-5 bug restored)", before, after)
 	}
 }

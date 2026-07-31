@@ -65,10 +65,14 @@ const (
 	// gojob_craigslist_default_location_total{tier}. Bumped ONCE per
 	// craigslist search that substituted a location because the caller supplied
 	// none — makes an invisible (and, per #347, potentially wrong-city)
-	// substitution observable. tier ∈ {"profile","config"}:
+	// substitution observable. tier ∈ {"profile","config","config_after_profile_error","config_after_profile_unmapped"}:
 	//   - "profile" = the operator's resume_persons.location supplied the value;
 	//   - "config"  = engine.Cfg.CraigslistDefaultLocation supplied it (the
-	//     profile was empty, missing, or its read timed out / errored).
+	//     profile was empty, missing, or its read timed out / errored);
+	//   - "config_after_profile_error" = config supplied it because the profile
+	//     READ failed (saturated pool, ctx deadline);
+	//   - "config_after_profile_unmapped" = config supplied it because the
+	//     profile was non-empty but not an exact key/slug (round 6).
 	// A rising profile rate with no results is the signal that the operator's
 	// stored location does not map to a Craigslist area (resolveRegion returns
 	// false → errCraigslistUnmapped) — visible now instead of as a silent
@@ -732,10 +736,13 @@ func IncrCraigslistDiscoveryFallback(reason string) {
 // it (profile empty/missing); "config_after_profile_error" = the config value
 // supplied it because the profile READ failed (saturated pool, ctx deadline) —
 // distinct from "config" so a chronically saturated pool is not hidden behind
-// the same label as a no-profile deployment. Unrecognised values are dropped
-// silently (cardinality guard).
+// the same label as a no-profile deployment; "config_after_profile_unmapped" =
+// the profile was non-empty but not an exact key/slug, so the config tier
+// rescued it (round 6). Unrecognised values are dropped silently (cardinality
+// guard).
 var validCraigslistDefaultLocationTiers = map[string]bool{
 	"profile": true, "config": true, "config_after_profile_error": true,
+	"config_after_profile_unmapped": true,
 }
 
 // sortedCraigslistDefaultLocationTiers returns the keys of
@@ -752,7 +759,7 @@ func sortedCraigslistDefaultLocationTiers() []string {
 }
 
 // IncrCraigslistDefaultLocation bumps
-// gojob_craigslist_default_location_total{tier=<t>}. tier ∈ {"profile","config","config_after_profile_error"}.
+// gojob_craigslist_default_location_total{tier=<t>}. tier ∈ {"profile","config","config_after_profile_error","config_after_profile_unmapped"}.
 // Called once per craigslist search that substituted a location because the
 // caller supplied none — makes the substitution (and which tier supplied it)
 // observable, so a wrong-city default (#347) is diagnosable instead of silent.

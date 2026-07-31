@@ -261,6 +261,14 @@ func tokensFindRun(haystack, needle []string) int {
 // "San Francisco Bay Area" that is not an exact key or slug fails fast instead
 // of surfacing as errCraigslistUnmapped on the first no-location search. An
 // empty loc is valid (the connector keeps its errCraigslistUnmapped behaviour).
+//
+// Deploy-ordering constraint (round 6): main.go calls this BEFORE the server
+// starts and os.Exit(1)s on failure, so a CRAIGSLIST_DEFAULT_LOCATION carrying
+// a free-text value refuses to start the WHOLE binary — not just degrades the
+// craigslist connector. Nothing sets the var today so this is latent, but a
+// deployment that sets it to a human-readable location (e.g. "Salt Lake City")
+// will not boot. Fix the env value before deploying; the accepted values are
+// the keys of craigslistRegions and the slugs in craigslistRegionSlugs.
 func ValidateCraigslistDefaultLocation(loc string) error {
 	loc = strings.TrimSpace(loc)
 	if loc == "" {
@@ -1094,34 +1102,71 @@ func loadCachedProfileLocation(ctx context.Context) (string, error) {
 // config tier supplies the value, which is the documented degradation.
 //
 // Returns the resolved location AND the tier that supplied it ("profile" /
-// "config" / "config_after_profile_error" / "") so the caller can log the
-// substitution and bump the craigslist_default_location_total{tier} counter —
-// without that, a successful substitution is invisible (the failure path
-// already logs at WARN), which per #347 is exactly what makes a wrong-city
-// default undiagnosable. The "config_after_profile_error" tier distinguishes a
-// config fallback that fired because the profile READ failed (saturated pool,
-// ctx deadline) from one that fired because no profile location exists — a
-// chronically saturated pool otherwise looks exactly like a no-profile
-// deployment.
+// "config" / "config_after_profile_error" / "config_after_profile_unmapped" /
+// "") so the caller can log the substitution and bump the
+// craigslist_default_location_total{tier} counter — without that, a successful
+// substitution is invisible (the failure path already logs at WARN), which per
+// #347 is exactly what makes a wrong-city default undiagnosable.
 //
-// The resolved value is subject to resolveRegionStrict downstream (round 5):
-// a profile or config location that is not an EXACT region key or area slug
-// surfaces errCraigslistUnmapped, which is the honest outcome — the fallback
-// substitutes a location, it does not guess one. See resolveRegionStrict for
-// why the substituted path refuses rather than running the general resolver.
+// Tier semantics:
+//   - "profile" — resume_persons.location supplied an EXACT key/slug.
+//   - "config" — engine.Cfg.CraigslistDefaultLocation supplied it (profile
+//     empty/missing).
+//   - "config_after_profile_error" — config supplied it because the profile
+//     READ failed (saturated pool, ctx deadline); distinct from "config" so a
+//     chronically saturated pool is not hidden behind the same label as a
+//     no-profile deployment.
+//   - "config_after_profile_unmapped" — the profile was non-empty but NOT an
+//     exact key/slug, so the config tier rescued it (round 6). Without this
+//     fall-through a non-exact profile value dead-ended at the strict gate
+//     with no escape — the config default is the documented remedy for an
+//     unmapped profile, and it was unreachable.
+//
+// Strict-aware tier selection (round 6): a profile value that is non-empty but
+// not an exact key/slug is NOT returned — the resolver falls through to the
+// config tier instead. This makes the two knobs (profile + config) compose
+// rather than the profile monopolising the decision with a value that cannot
+// bind. If neither tier supplies an exact value, the last non-empty value is
+// returned with its source tier so the caller's strict gate fires with the
+// correct per-tier remedy (see craigslistDefaultLocationError). An empty loc
+// from both tiers returns ("", "") and the caller keeps its
+// errCraigslistUnmapped behaviour.
 func resolveCraigslistDefaultLocation(ctx context.Context) (string, string) {
 	profileCtx, cancel := context.WithTimeout(ctx, craigslistProfileTimeout)
 	defer cancel()
 	profileLoc, perr := craigslistProfileLocation(profileCtx)
-	if loc := strings.TrimSpace(profileLoc); loc != "" {
-		return loc, "profile"
+	profileVal := strings.TrimSpace(profileLoc)
+
+	// Profile tier: return only if the value is an exact key/slug. A
+	// non-empty but non-exact profile falls through to config — returning it
+	// unconditionally (the round-5 behaviour) made the config tier
+	// unreachable whenever the profile was set, so the remedy the strict
+	// error named ("set CRAIGSLIST_DEFAULT_LOCATION") could never take effect.
+	if profileVal != "" {
+		if _, ok := resolveRegionStrict(profileVal); ok {
+			return profileVal, "profile"
+		}
+		// non-exact profile — fall through to config
 	}
+
 	if cfgLoc := strings.TrimSpace(engine.Cfg.CraigslistDefaultLocation); cfgLoc != "" {
 		if perr != nil {
 			return cfgLoc, "config_after_profile_error"
 		}
+		if profileVal != "" {
+			return cfgLoc, "config_after_profile_unmapped"
+		}
 		return cfgLoc, "config"
 	}
+
+	// Neither tier supplied a config value. If the profile was non-empty but
+	// non-exact and no config rescued it, return the profile value with the
+	// "profile" tier so the caller's strict gate fires with the profile-tier
+	// remedy (the operator must fix their stored profile location).
+	if profileVal != "" {
+		return profileVal, "profile"
+	}
+
 	// No profile location and no config default. If the profile READ also
 	// errored (saturated pool, ctx deadline), log it at WARN so a chronically
 	// saturated pool on a no-config deployment is not silent — the same blind
@@ -1133,6 +1178,28 @@ func resolveCraigslistDefaultLocation(ctx context.Context) (string, string) {
 			slog.Any("error", perr))
 	}
 	return "", ""
+}
+
+// craigslistDefaultLocationError builds a tier-specific errCraigslistUnmapped
+// for a substituted location that failed resolveRegionStrict. The remedy names
+// where the value came from so the operator knows what to fix:
+//   - profile tier: the stored resume-persons.location must be an exact region
+//     key or area slug; update it in the profile.
+//   - config tiers (config / config_after_profile_error /
+//     config_after_profile_unmapped): set CRAIGSLIST_DEFAULT_LOCATION to an
+//     exact key/slug.
+//
+// Accepted values are the keys of craigslistRegions (e.g. "sf") and the slugs
+// in craigslistRegionSlugs (e.g. "sfbay").
+func craigslistDefaultLocationError(location, tier string) error {
+	switch tier {
+	case "profile":
+		return fmt.Errorf("%w: %q (from the operator profile location) — an exact region key (e.g. %q) or area slug (e.g. %q) is required; update the stored profile location to a key/slug defined in craigslistRegions/craigslistRegionSlugs",
+			errCraigslistUnmapped, location, "sf", "sfbay")
+	default: // config, config_after_profile_error, config_after_profile_unmapped
+		return fmt.Errorf("%w: %q (from CRAIGSLIST_DEFAULT_LOCATION) — an exact region key (e.g. %q) or area slug (e.g. %q) is required; set CRAIGSLIST_DEFAULT_LOCATION to a key/slug defined in craigslistRegions/craigslistRegionSlugs",
+			errCraigslistUnmapped, location, "sf", "sfbay")
+	}
 }
 
 // --- Main search function ---
@@ -1163,6 +1230,26 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 	// guard returns errCraigslistUnmapped (the current behaviour).
 	if strings.TrimSpace(location) == "" {
 		if resolved, tier := resolveCraigslistDefaultLocation(ctx); resolved != "" {
+			// Strict-check the substituted value BEFORE logging/counting it
+			// as a success (round 6). The resolver is strict-aware and falls
+			// through to config on a non-exact profile, so this gate fires
+			// only when neither tier supplied an exact value — the error
+			// names the tier that was the last resort and its per-tier remedy
+			// (craigslistDefaultLocationError). Counting/logging happen only
+			// on a confirmed substitution, so a refusal is NOT recorded as a
+			// substitution (round-5 bug: the counter fired before the gate).
+			//
+			// Behaviour change (round 6): a substituted-unmapped location now
+			// returns a hard error here rather than reaching the ladder and
+			// the discovery fallback (IncrCraigslistDiscoveryFallback with
+			// reason="unmapped"). Previously such an operator got (stale-risk)
+			// discovery results; now they get a hard error. Failing loudly
+			// beats serving dead links from a search index — the "unmapped"
+			// discovery arm remains for EXPLICIT unmapped input, which still
+			// reaches the ladder.
+			if _, ok := resolveRegionStrict(resolved); !ok {
+				return nil, craigslistDefaultLocationError(resolved, tier)
+			}
 			location = resolved
 			// A successful substitution is otherwise invisible (the failure
 			// path already logs at WARN) — record it at INFO with the resolved
@@ -1172,17 +1259,6 @@ func SearchCraigslistJobs(ctx context.Context, query, location string, limit int
 				slog.String("location", location),
 				slog.String("tier", tier))
 			engine.IncrCraigslistDefaultLocation(tier)
-			// The substituted location came from a source the caller never
-			// sees (profile or config). Resolve it by EXACT match only — the
-			// general resolver's token/segment machinery has produced
-			// wrong-city results on this path four rounds running, so the
-			// fallback refuses rather than guesses. An operator who hits this
-			// sets CRAIGSLIST_DEFAULT_LOCATION to an exact region key or area
-			// slug. See resolveRegionStrict for the full rationale.
-			if _, ok := resolveRegionStrict(location); !ok {
-				return nil, fmt.Errorf("%w: %q (substituted from %s tier) — an exact region key (e.g. %q) or area slug (e.g. %q) is required; set CRAIGSLIST_DEFAULT_LOCATION accordingly",
-					errCraigslistUnmapped, location, tier, "sf", "sfbay")
-			}
 		}
 	}
 
