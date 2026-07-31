@@ -36,6 +36,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/anatolykoptev/go_job/internal/pdfrender"
+	panelauth "github.com/anatolykoptev/go-panel/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -376,6 +377,17 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 		} else {
 			jobs.SetResumeDB(rdb)
 			slog.Info("resume DB initialized")
+
+			// Phase 11: ensure the panel_accounts table exists for multi-user auth.
+			// The table is created idempotently by PgxAccountStore.EnsureSchema.
+			// Fail-soft: if the accounts table cannot be created, the system
+			// continues in single-operator HMAC mode (admin UI checks ADMIN_HMAC_KEY).
+			accountStore := panelauth.NewPgxAccountStore(rdb.Pool())
+			if err := accountStore.EnsureSchema(context.Background()); err != nil {
+				slog.Warn("panel_accounts schema init failed (multi-user auth deferred)", slog.Any("error", err))
+			} else {
+				slog.Info("panel_accounts table ready (multi-user auth available)")
+			}
 
 			// BH-3 / OBS-5: DB pool stats collector — exposes TotalConns,
 			// IdleConns, and avg acquire wait time as Prometheus gauges.

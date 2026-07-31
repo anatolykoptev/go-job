@@ -450,8 +450,8 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		}
 	}
 
-	if err := db.ClearAllPersons(ctx); err != nil {
-		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
+	if err := db.ClearMasterPerson(ctx); err != nil {
+		return nil, fmt.Errorf("clear master person failed before rebuild: %w", err)
 	}
 
 	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
@@ -461,7 +461,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 	}
 
-	// 6. Insert person
+	// 6. Insert person as the new master.
 	personID, err := db.InsertPerson(ctx, PersonRecord{
 		Name:     parsed.Person.Name,
 		Email:    parsed.Person.Email,
@@ -469,6 +469,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		Location: parsed.Person.Location,
 		Links:    parsed.Person.Links,
 		Summary:  parsed.Person.Summary,
+		IsMaster: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert person: %w", err)

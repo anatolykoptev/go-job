@@ -222,15 +222,19 @@ type PersonRecord struct {
 	Summary         string            `json:"summary"`
 	Headline        string            `json:"headline,omitempty"`
 	HourlyRateCents int64             `json:"hourly_rate_cents,omitempty"`
+	IsMaster        bool              `json:"is_master,omitempty"`
+	ParentID        *int              `json:"parent_id,omitempty"`
+	AccountID       *string           `json:"account_id,omitempty"`
 }
 
 func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, error) {
 	linksJSON, _ := json.Marshal(p.Links)
 	var id int
 	err := db.conn(ctx).QueryRow(ctx,
-		`INSERT INTO resume_persons (name, email, phone, location, links, summary)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		`INSERT INTO resume_persons (name, email, phone, location, links, summary, is_master, parent_id, account_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary,
+		p.IsMaster, p.ParentID, p.AccountID,
 	).Scan(&id)
 	return id, err
 }
@@ -241,9 +245,93 @@ func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
 }
 
 // ClearAllPersons deletes all resume data (single-user system, rebuild from scratch).
+// Deprecated: use ClearMasterPerson in new code — it preserves variants. Kept for
+// BuildMasterResume's full-rebuild path which replaces the master entirely.
 func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
 	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons`)
 	return err
+}
+
+// ClearMasterPerson deletes only the current master person (and cascaded data),
+// preserving variants. Used by BuildMasterResume when rebuilding the master:
+// the old master is removed, a new one is inserted with is_master=true.
+// Variants (parent_id IS NOT NULL, is_master=false) are untouched.
+func (db *ResumeDB) ClearMasterPerson(ctx context.Context) error {
+	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE is_master = true`)
+	return err
+}
+
+// GetMasterPersonID returns the ID of the master person, or 0 if none exists.
+// In the expand phase (account_id nullable) this returns the global master.
+// After the constrain phase, callers pass accountID to scope the lookup.
+func (db *ResumeDB) GetMasterPersonID(ctx context.Context) int {
+	var id int
+	err := db.conn(ctx).QueryRow(ctx,
+		`SELECT id FROM resume_persons WHERE is_master = true ORDER BY id DESC LIMIT 1`,
+	).Scan(&id)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// GetMasterPersonIDChecked is the fail-closed variant for destructive surfaces.
+// It distinguishes the three states a destructive guard must tell apart:
+//   - no master exists:  exists=false, id=0,   err=nil
+//   - a master exists:   exists=true,  id=N,   err=nil
+//   - the query failed:  exists=false, id=0,   err!=nil   ← caller MUST refuse
+func (db *ResumeDB) GetMasterPersonIDChecked(ctx context.Context) (exists bool, id int, err error) {
+	err = db.conn(ctx).QueryRow(ctx,
+		`SELECT id FROM resume_persons WHERE is_master = true ORDER BY id DESC LIMIT 1`,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	return true, id, nil
+}
+
+// SetMasterPerson atomically promotes personID as the sole master, demoting any
+// existing master. Transactional: the demote and promote either both apply or
+// neither does, so there is never a window with zero or two masters.
+func (db *ResumeDB) SetMasterPerson(ctx context.Context, personID int) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("SetMasterPerson: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `UPDATE resume_persons SET is_master = false WHERE is_master = true`); err != nil {
+		return fmt.Errorf("SetMasterPerson: demote existing master: %w", err)
+	}
+	ct, err := tx.Exec(ctx, `UPDATE resume_persons SET is_master = true WHERE id = $1`, personID)
+	if err != nil {
+		return fmt.Errorf("SetMasterPerson: promote new master: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("SetMasterPerson: person %d not found", personID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("SetMasterPerson: commit: %w", err)
+	}
+	return nil
+}
+
+// CreateVariant inserts a tailored variant derived from masterID. The variant
+// carries is_master=false and parent_id=masterID. Returns the new variant's ID.
+func (db *ResumeDB) CreateVariant(ctx context.Context, masterID int, p PersonRecord) (int, error) {
+	linksJSON, _ := json.Marshal(p.Links)
+	p.IsMaster = false
+	p.ParentID = &masterID
+	var id int
+	err := db.conn(ctx).QueryRow(ctx,
+		`INSERT INTO resume_persons (name, email, phone, location, links, summary, is_master, parent_id, account_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8) RETURNING id`,
+		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary, p.ParentID, p.AccountID,
+	).Scan(&id)
+	return id, err
 }
 
 // GetLatestPersonID returns the ID of the most recently created person, or 0 if none.
