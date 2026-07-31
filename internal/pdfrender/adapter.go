@@ -116,12 +116,24 @@ type TypstAdapter struct {
 	// unguarded. Review proved that: with the whole probe block deleted from
 	// Ready, the package stayed green.
 	fontLister func(context.Context) ([]byte, error)
+
+	// lookPath resolves a binary name to a path. Injectable for the same reason
+	// as fontLister, one level down: what needs guarding is not that
+	// typstBinary() is correct — TestTypstBinary pins that — but that Ready
+	// passes its RESULT to the lookup instead of a literal "typst". Reverting
+	// that argument used to leave the suite green, and the regression makes the
+	// two gauges disagree: renderer absent, its fonts present.
+	lookPath func(string) (string, error)
 }
 
 // New creates a TypstAdapter. No state is held by TypstRenderer; safe for
 // concurrent use.
 func New() *TypstAdapter {
-	return &TypstAdapter{r: typst.NewTypstRenderer(), fontLister: typstFontList}
+	return &TypstAdapter{
+		r:          typst.NewTypstRenderer(),
+		fontLister: typstFontList,
+		lookPath:   exec.LookPath,
+	}
 }
 
 // Ready probes typst and pandoc availability, sets both PDF gauges, and returns
@@ -136,12 +148,22 @@ func New() *TypstAdapter {
 // main.go, only emits a Warn. The per-render md-only degrade is decided
 // elsewhere, by isNoBinary on ErrNoBinary.)
 func (a *TypstAdapter) Ready() bool {
-	// LookPath on the SAME binary the font probe and the renderer use, so the
+	// LookPath on the SAME binaries the font probe and the renderer use, so the
 	// two gauges cannot disagree: with RENDER_TYPST_PATH set to an out-of-PATH
 	// install, a bare LookPath("typst") would report the renderer absent while
 	// the font probe read that install's fonts and reported them present.
-	_, typstErr := exec.LookPath(typstBinary())
-	_, pandocErr := exec.LookPath("pandoc")
+	//
+	// BOTH binaries, not just typst. An earlier version resolved typst and left
+	// pandoc a literal, which left exactly half of that bug open: go-kit
+	// resolves pandoc through RENDER_PANDOC_PATH too, so a pinned pandoc made
+	// this report the renderer absent while the font gauge read 1 — the very
+	// state the paragraph above says cannot happen.
+	look := a.lookPath
+	if look == nil {
+		look = exec.LookPath
+	}
+	_, typstErr := look(typstBinary())
+	_, pandocErr := look(pandocBinary())
 	available := typstErr == nil && pandocErr == nil
 	if available {
 		pdfRendererAvailableGauge.Set(1)
@@ -197,12 +219,25 @@ func typstFontList(ctx context.Context) ([]byte, error) {
 
 // typstBinary resolves the typst executable the renderer would use.
 func typstBinary() string {
-	for _, key := range []string{"RENDER_TYPST_PATH", "VAELOR_TYPST_PATH"} {
+	return resolveBinary("typst", "RENDER_TYPST_PATH", "VAELOR_TYPST_PATH")
+}
+
+// pandocBinary resolves the pandoc executable the renderer would use. Kept
+// beside typstBinary rather than inlined, because the two drifting apart is
+// what left half this bug open the first time.
+func pandocBinary() string {
+	return resolveBinary("pandoc", "RENDER_PANDOC_PATH", "VAELOR_PANDOC_PATH")
+}
+
+// resolveBinary mirrors go-kit's resolveEnvOrPath precedence: the RENDER_* key,
+// then the legacy VAELOR_* key, then the bare name for a PATH lookup.
+func resolveBinary(name string, keys ...string) string {
+	for _, key := range keys {
 		if p := os.Getenv(key); p != "" {
 			return p
 		}
 	}
-	return "typst"
+	return name
 }
 
 // missingFontFamilies returns the required families absent from `typst fonts`
