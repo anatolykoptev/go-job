@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -497,5 +498,106 @@ func TestRunSource_NonStructuredSource_LeavesStructuredNil(t *testing.T) {
 	r := <-ch
 	if r.structured != nil {
 		t.Errorf("structured = %v, want nil (non-StructuredFetcher source must not fabricate structured data)", r.structured)
+	}
+}
+
+// TestRunJobSearch_StructuredPrecedence_SalaryWinsOverLLMNil drives runJobSearch
+// end-to-end through the LLM post-processing path (the path the existing handler
+// tests avoid via offset-beyond-total / zero-results / B1-gate early returns).
+// A structured ATS listing carrying SalaryMin=160000 is registered via
+// withTestRegistry, and the summarizeJobResults seam is stubbed to return an LLM
+// record for the SAME URL with Salary "not specified" and SalaryMin nil. The
+// output must carry 160000 — proving jobs.ApplyStructuredPrecedence is wired
+// between the LLM output and the structured map inside runJobSearch.
+//
+// Acceptance is the mutation, not a passing test: amputate the
+// jobs.ApplyStructuredPrecedence(jobOut.Jobs, structuredByURL) call at
+// tool_job_search.go (replace with `_ = structuredByURL`) → SalaryMin stays nil
+// → RED. Revert → green.
+//
+// No t.Parallel(): this test swaps the package-level summarizeJobResults var.
+// A parallel test in the same package could observe the stubbed value and
+// route through the fake summarizer unintentionally. The existing handler tests
+// in this package are likewise non-parallel, so the seam is safe.
+func TestRunJobSearch_StructuredPrecedence_SalaryWinsOverLLMNil(t *testing.T) {
+	const jobURL = "https://jobs.lever.co/testco/abc123"
+
+	minSalary := 160000
+	maxSalary := 220000
+	src := testStructuredSource{
+		results: []engine.SearxngResult{{
+			Title:   "Senior Backend Engineer",
+			URL:     jobURL,
+			Content: "** Senior Backend Engineer at TestCo (markdown marker keeps the content inline, no network fetch)",
+		}},
+		listings: []engine.JobListing{{
+			URL:            jobURL,
+			Title:          "Senior Backend Engineer",
+			Company:        "TestCo",
+			Source:         "lever",
+			SalaryMin:      &minSalary,
+			SalaryMax:      &maxSalary,
+			SalaryCurrency: "USD",
+		}},
+	}
+	withTestRegistry(t, src)
+
+	// Seam: stub the LLM summarizer to return an LLM record for the SAME URL
+	// with no salary. Cleanup restores the real implementation; the assertion
+	// cleanup (registered FIRST so it runs LAST under LIFO) verifies restoration
+	// via reflect pointer identity (func values cannot be compared with ==/!=
+	// except against nil).
+	orig := summarizeJobResults
+	t.Cleanup(func() {
+		got := reflect.ValueOf(summarizeJobResults).Pointer()
+		want := reflect.ValueOf(orig).Pointer()
+		if got != want {
+			t.Errorf("summarizeJobResults not restored after t.Cleanup: got %#x, want %#x", got, want)
+		}
+	})
+	t.Cleanup(func() { summarizeJobResults = orig })
+	summarizeJobResults = func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		return &engine.JobSearchOutput{
+			Query:   query,
+			Summary: "1 result",
+			Jobs: []engine.JobListing{{
+				Title:   "Senior Backend Engineer",
+				Company: "TestCo",
+				URL:     jobURL,
+				Salary:  "not specified", // LLM failed to extract salary
+				// SalaryMin/Max left nil — the case structured precedence must fix.
+			}},
+		}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	input := engine.JobSearchInput{
+		Query:    "structured-precedence-salary-unique-4f1c",
+		Platform: "all",
+	}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if len(out.Jobs) != 1 {
+		t.Fatalf("len(out.Jobs) = %d, want 1", len(out.Jobs))
+	}
+	if out.Jobs[0].URL != jobURL {
+		t.Fatalf("out.Jobs[0].URL = %q, want %q", out.Jobs[0].URL, jobURL)
+	}
+	if out.Jobs[0].SalaryMin == nil {
+		t.Fatalf("out.Jobs[0].SalaryMin = nil, want 160000 (structured precedence must override the LLM's nil salary)")
+	}
+	if *out.Jobs[0].SalaryMin != minSalary {
+		t.Errorf("out.Jobs[0].SalaryMin = %d, want %d (structured value must win over LLM nil)", *out.Jobs[0].SalaryMin, minSalary)
+	}
+	if out.Jobs[0].SalaryMax == nil || *out.Jobs[0].SalaryMax != maxSalary {
+		t.Errorf("out.Jobs[0].SalaryMax = %v, want %d", out.Jobs[0].SalaryMax, maxSalary)
+	}
+	if out.Jobs[0].SalaryCurrency != "USD" {
+		t.Errorf("out.Jobs[0].SalaryCurrency = %q, want USD", out.Jobs[0].SalaryCurrency)
 	}
 }

@@ -66,6 +66,15 @@ type sourceResult struct {
 //nolint:gochecknoglobals // package-level concurrency cap, fixed at 8
 var jobSearchSem = make(chan struct{}, 8)
 
+// summarizeJobResults is the package-level seam over engine.SummarizeJobResults.
+// It defaults to the real implementation; tests swap it to drive runJobSearch's
+// LLM post-processing path end-to-end without a live LLM. Kept inside jobserver
+// (not engine) so the sibling fix/job-search-truncation-never-silent branch's
+// jobSearchComplete seam in internal/engine/bridge_jobs.go does not collide.
+//
+//nolint:gochecknoglobals // test seam, defaults to the real implementation
+var summarizeJobResults = engine.SummarizeJobResults
+
 //nolint:funlen // multi-platform aggregation
 func registerJobSearch(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
@@ -349,7 +358,7 @@ spawn:
 	}
 	wg.Wait()
 
-	jobOut, err := engine.SummarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
+	jobOut, err := summarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
 	if err != nil {
 		// BLOCKER 5 fix: the MCP SDK discards the typed output entirely when
 		// err != nil (go-sdk/mcp/server.go:345-352), so returning an error here
