@@ -412,6 +412,12 @@ func TestCheckFontsDiagnostic(t *testing.T) {
 			if !strings.Contains(out, "level="+tc.wantLevel) {
 				t.Errorf("want level=%s, got: %s", tc.wantLevel, out)
 			}
+			// Upper bound, not just a lower one: without this, a branch that
+			// emits its Warn AND an Error still passes, which is the boot-noise
+			// regression the level split exists to prevent.
+			if tc.wantLevel == "WARN" && strings.Contains(out, "level=ERROR") {
+				t.Errorf("WITH_PDF=0 is a supported build and must not raise an Error: %s", out)
+			}
 			if !strings.Contains(out, tc.wantMsg) {
 				t.Errorf("message does not mention %q — the operator is pointed at the wrong problem.\ngot: %s", tc.wantMsg, out)
 			}
