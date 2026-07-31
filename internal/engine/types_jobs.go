@@ -239,16 +239,21 @@ type PersonResearchInput struct {
 // MasterResumeBuildInput is the input for master_resume_build.
 type MasterResumeBuildInput struct {
 	Resume string `json:"resume" jsonschema:"Full resume text — all experience, education, skills, projects, achievements, certifications"`
-	// Replace must be true to rebuild when a profile already exists. A rebuild
-	// DESTROYS the existing profile (resume_persons and every ON DELETE CASCADE
-	// child: skills, projects, experiences, achievements, educations,
-	// certifications, domains, methodologies, plus upwork_profile data) and
-	// rebuilds from the resume text. When a profile exists and replace is false
-	// (the default) the call refuses and returns what would be destroyed — pass
-	// true only when you intentionally want to replace the whole profile. A
-	// failed/timed-out/cancelled rebuild leaves the existing profile intact
-	// (the clear and all inserts share one transaction).
-	Replace bool `json:"replace,omitempty" jsonschema:"If true, destroy the existing profile and rebuild from scratch. If false (default) and a profile already exists, the call refuses and reports what would be destroyed — pass true only when you intentionally want to replace the whole profile."`
+	// ReplacePersonID is the non-replayable consent to destroy an existing
+	// profile. A rebuild DESTROYS the existing profile (resume_persons and every
+	// ON DELETE CASCADE child: skills, projects, experiences, achievements,
+	// educations, certifications, domains, methodologies, plus upwork_profile
+	// data) and rebuilds from the resume text. When a profile exists the call
+	// refuses unless ReplacePersonID equals the id of the profile actually
+	// present — so a blind retry of the same arguments fails as soon as the id
+	// has changed (e.g. after a successful rebuild created a new profile). To
+	// consent, first read the existing profile's person_id (the refuse error
+	// names it) and pass that id here. A failed/timed-out/cancelled rebuild
+	// leaves the existing profile intact (the clear and all inserts share one
+	// transaction); what protects the data on a retry is that transaction, not
+	// this consent — the consent exists to stop an accidental/agent-replayed
+	// second run from running at all.
+	ReplacePersonID int `json:"replace_person_id,omitempty" jsonschema:"To replace an existing profile, pass the person_id of the profile you intend to destroy (the refuse error names it). A retry carrying a stale id fails once the profile id has changed. Omit/0 for a fresh build with no existing profile."`
 }
 
 // ResumeGenerateInput is the input for resume_generate.

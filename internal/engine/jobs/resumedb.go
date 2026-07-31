@@ -247,6 +247,10 @@ func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
 }
 
 // GetLatestPersonID returns the ID of the most recently created person, or 0 if none.
+// It collapses "no rows" and "query failed" into the same 0 return, which is safe
+// for read-only callers (no profile → nothing to read) but NOT for a destructive
+// surface, where a transient pool error must not read as "no profile". Destructive
+// callers use GetLatestPersonIDChecked instead.
 func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	var id int
 	err := db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
@@ -255,6 +259,36 @@ func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	}
 	return id
 }
+
+// GetLatestPersonIDChecked is the fail-closed variant for destructive surfaces.
+// It distinguishes the three states a destructive guard must tell apart:
+//   - no profile exists:        exists=false, id=0,   err=nil
+//   - a profile exists:         exists=true,  id=N,   err=nil
+//   - the query failed:         exists=false, id=0,   err!=nil   ← caller MUST refuse
+//
+// On a destructive surface the zero value is the safe one: a caller that treats
+// (exists=false) as "nothing to destroy" only destroys data when the query
+// succeeded and genuinely found no rows, never when it failed.
+func (db *ResumeDB) GetLatestPersonIDChecked(ctx context.Context) (exists bool, id int, err error) {
+	err = db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	return true, id, nil
+}
+
+// masterResumeRebuildLockKey is a distinct transaction-scoped advisory-lock
+// namespace for BuildMasterResume's destructive rebuild. It is held for the
+// duration of the rebuild transaction (pg_advisory_xact_lock, released on
+// commit/rollback) so two concurrent rebuilds serialize: the second waits for
+// the first to commit/rollback before it re-reads the person id under the lock,
+// closing the TOCTOU where both read the same id pre-tx and both proceed.
+// Distinct from resumeMigrateLockKey (session-scoped, migration runner only).
+// ASCII "RSM_RBLD" → 0x52534D5F52424C44.
+const masterResumeRebuildLockKey int64 = 0x52534D5F52424C44
 
 // GetPerson returns the person record for the given ID.
 func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord, error) {
