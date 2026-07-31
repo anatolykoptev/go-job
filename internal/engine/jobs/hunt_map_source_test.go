@@ -19,6 +19,12 @@ func TestSourceFromURL(t *testing.T) {
 		{"https://boards.greenhouse.io/airbnb/jobs/12345", "greenhouse"},
 		{"https://job-boards.greenhouse.io/airbnb/jobs/12345", "greenhouse"}, // broad match — previously missed
 		{"https://boards-api.greenhouse.io/airbnb/jobs/12345", "greenhouse"}, // broad match
+		// ATS URL carrying a linkedin marketing query param must classify as
+		// its ATS provider, not linkedin. NormalizeURL strips the query before
+		// classification and the ATS arms sit above the linkedin arm.
+		{"https://boards.greenhouse.io/airbnb/jobs/12345?utm_source=linkedin", "greenhouse"},
+		{"https://jobs.lever.co/stripe/abc?trk=linkedin_share", "lever"},
+		{"https://jobs.ashbyhq.com/openai/role?utm_source=indeed", "ashby"},
 		{"https://jobs.lever.co/stripe/abc", "lever"},
 		{"https://jobs.ashbyhq.com/openai/role", "ashby"},
 		{"https://www.workatastartup.com/jobs/12345", "yc"},

@@ -59,15 +59,25 @@ func BountyListingToHunt(b engine.BountyListing) hunt.Bounty {
 // (jobserver.extractSourceForQuality). Returns empty string when the URL does
 // not match any known portal.
 //
-// The ATS arms (greenhouse/lever/ashby) use broad substring matching on the
-// full lowercased URL — the substrings are unique to those platforms, and
-// broad matching catches job-boards.greenhouse.io (a real Greenhouse domain
-// that the previous narrow boards.greenhouse.io-only match missed). The
-// news.ycombinator.com → "hn" arm is checked BEFORE the broad ycombinator →
-// "yc" arm so HN posts keep their "hn" label (5 quality pts, consistent with
-// hunt_jobs.source) rather than being swallowed into "yc" (15 pts).
+// Classification runs on NormalizeURL(jobURL), not the raw URL: the query
+// string is stripped first so a marketing param like ?utm_source=linkedin or
+// ?trk=…linkedin… (routine on search-harvested job URLs — NormalizeURL's own
+// doc notes LLM URLs "can carry … query params", and hunt/canonical.go strips
+// utm_source for the same reason) cannot pull a Greenhouse/Lever/Ashby URL
+// into the linkedin arm. The host+path are preserved, so the habr.com/ru/jobs
+// and algora.io …/job/ arms still match.
+//
+// The ATS arms (greenhouse/lever/ashby) use broad substring matching and sit
+// ABOVE the linkedin/indeed arms: an ATS URL carrying a linkedin/indeed query
+// param (or a cross-posted board path) must classify as its ATS provider, not
+// as the referrer. broad matching catches job-boards.greenhouse.io (a real
+// Greenhouse domain that the previous narrow boards.greenhouse.io-only match
+// missed). The news.ycombinator.com → "hn" arm is checked BEFORE the broad
+// ycombinator → "yc" arm so HN posts keep their "hn" label (5 quality pts,
+// consistent with hunt_jobs.source) rather than being swallowed into "yc"
+// (15 pts).
 func SourceFromURL(jobURL string) string {
-	u := strings.ToLower(jobURL)
+	u := strings.ToLower(NormalizeURL(jobURL))
 	switch {
 	case strings.Contains(u, "careers.un.org"):
 		return sourceInspira
@@ -76,8 +86,6 @@ func SourceFromURL(jobURL string) string {
 		return sourceUNDP
 	case strings.Contains(u, "news.ycombinator.com"):
 		return "hn"
-	case strings.Contains(u, "linkedin"):
-		return sourceLinkedIn
 	case strings.Contains(u, "greenhouse"):
 		return "greenhouse"
 	case strings.Contains(u, "lever.co"):
@@ -86,6 +94,8 @@ func SourceFromURL(jobURL string) string {
 		return "ashby"
 	case strings.Contains(u, "workatastartup") || strings.Contains(u, "ycombinator"):
 		return "yc"
+	case strings.Contains(u, "linkedin"):
+		return sourceLinkedIn
 	case strings.Contains(u, "indeed"):
 		return "indeed"
 	case strings.Contains(u, "career.habr.com") || strings.Contains(u, "habr.com/ru/jobs"):

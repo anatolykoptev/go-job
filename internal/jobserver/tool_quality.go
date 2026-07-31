@@ -106,7 +106,9 @@ func qualityScoreFromListing(j engine.JobListing) quality.Result {
 // board-domain change) needs one edit in one package, not two. The previous
 // hand-rolled duplicate of the ATS arms lived here and in
 // jobs.extractSourceFromURL; this repo has already eaten one greenhouse host
-// change. Returns one of {greenhouse,lever,ashby,yc,linkedin,indeed} or "".
+// change. Returns whatever jobs.SourceFromURL returns (ATS arms, job-board
+// arms, hn, undp, inspira, habr, remoteok, weworkremotely, remotive,
+// algora-jobs) or "" — see that function for the full arm list.
 func extractSourceForQuality(jobURL string) string {
 	return jobs.SourceFromURL(jobURL)
 }

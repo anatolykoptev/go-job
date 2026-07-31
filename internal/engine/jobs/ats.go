@@ -1306,12 +1306,9 @@ func NormalizeURL(u string) string {
 // wherever the structured source is silent, so a Greenhouse match (no comp
 // field in its API) keeps the LLM's salary, and an Ashby match that published
 // only compensationTierSummary (free-text Salary) keeps the LLM's
-// SalaryMin/Max/Currency/Interval. Salary zeroing was removed: it deleted
-// correct LLM-extracted comp for 100% of Greenhouse matches, then for Lever/
-// Ashby postings whose employer left the structured comp field unfilled (an
-// absent value means "the employer did not fill the field", not "there is no
-// comp") — three measured regressions in three rounds for a speculative
-// anti-hallucination benefit.
+// SalaryMin/Max/Currency/Interval. An absent structured comp field means
+// "the employer did not fill the field", not "there is no comp", so it
+// must never zero a populated LLM value.
 //
 // Join key (HIGH fix): structuredByURL is keyed by normalizeURL(listing.URL)
 // here, and the lookup uses normalizeURL(llm[i].URL). The producer side
@@ -1445,7 +1442,18 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		// and never the numeric fields) and lets a structured numeric range
 		// override the LLM's guess where the source did publish one. Salary
 		// zeroing was removed — see the doc comment above.
-		if s.Salary != "" {
+		// Salary (free-text) is one value expressed five ways, so it is NOT
+		// copied unconditionally: Ashby sets only Salary
+		// (compensationTierSummary) and never the numerics, so an unconditional
+		// copy would pair structured free-text with LLM numerics — a
+		// self-contradictory record neither source produced. The numerics reach
+		// the scorer prompt (hunt/score/scorer.go), the Telegram notification
+		// (hunt/notify/telegram.go), and the persisted columns (hunt/store.go),
+		// so a salary_min filter can admit a job whose displayed range excludes
+		// it. Copy s.Salary only when the structured listing also supplies a
+		// numeric range, OR the LLM carries no numerics; otherwise keep the
+		// LLM's coherent group.
+		if s.Salary != "" && (s.SalaryMin != nil || s.SalaryMax != nil || (llm[i].SalaryMin == nil && llm[i].SalaryMax == nil)) {
 			llm[i].Salary = s.Salary
 		}
 		if s.SalaryMin != nil {

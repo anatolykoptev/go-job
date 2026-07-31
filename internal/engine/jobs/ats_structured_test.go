@@ -670,9 +670,12 @@ func TestApplyStructuredPrecedence_AshbyNumericsPreserved(t *testing.T) {
 
 	ApplyStructuredPrecedence(llm, structured)
 
-	// Free-text Salary from structured wins (it's non-empty).
-	if llm[0].Salary != "$180k–$220k USD" {
-		t.Errorf("Salary = %q, want structured free-text value (non-empty → wins)", llm[0].Salary)
+	// Free-text Salary from structured is NOT copied: structured has only
+	// Salary (no numerics) while the LLM carries numerics, so copying would
+	// pair structured free-text with LLM numerics — a self-contradictory
+	// record. The LLM's coherent Salary is kept instead.
+	if llm[0].Salary != "180000-220000 USD" {
+		t.Errorf("Salary = %q, want LLM value 180000-220000 USD (structured has no numerics → LLM Salary kept for coherence)", llm[0].Salary)
 	}
 	// Numeric fields from LLM preserved — structured has nil/"" for these.
 	if llm[0].SalaryMin == nil || *llm[0].SalaryMin != 180000 {
@@ -686,6 +689,73 @@ func TestApplyStructuredPrecedence_AshbyNumericsPreserved(t *testing.T) {
 	}
 	if llm[0].SalaryInterval != "year" {
 		t.Errorf("SalaryInterval = %q, want year (LLM value preserved — structured has empty)", llm[0].SalaryInterval)
+	}
+	// Non-salary fields still applied from structured.
+	if llm[0].Title != "Eng" {
+		t.Errorf("Title = %q, want Eng (non-salary fields still applied)", llm[0].Title)
+	}
+}
+
+// TestApplyStructuredPrecedence_AshbySalaryDisagreementKeepsLLMGroup
+// verifies the salary-group coherence rule on a DISAGREEMENT case:
+// structured carries only free-text Salary ("$300k–$400k USD", no
+// numerics — the Ashby shape) while the LLM carries a coherent numeric
+// group (180000/220000 USD/year). Provenance differs (platform=all: the
+// LLM record came from a generic searxng page, the structured record from
+// the ATS connector), so the two comp strings genuinely disagree. The
+// record must resolve to ONE coherent group, not a mix: the LLM Salary is
+// kept (structured has no numerics to pair with its free-text), and the
+// LLM numerics stay. The numerics reach the scorer prompt, the Telegram
+// notification, and the persisted columns, so a salary_min filter must not
+// admit a job whose displayed range excludes it.
+//
+// Mutation: restore the unconditional `if s.Salary != ""` copy →
+// llm[0].Salary becomes "$300k–$400k USD" while SalaryMin/Max stay
+// 180000/220000 → RED (self-contradictory record).
+func TestApplyStructuredPrecedence_AshbySalaryDisagreementKeepsLLMGroup(t *testing.T) {
+	structured := map[string]engine.JobListing{
+		"https://jobs.ashbyhq.com/testco/abc": {
+			URL:    "https://jobs.ashbyhq.com/testco/abc",
+			Title:  "Eng",
+			Source: "ashby",
+			Salary: "$300k–$400k USD", // compensationTierSummary, free-text
+			// SalaryMin/Max/Currency/Interval intentionally nil/"" — ashbyJobToListing
+			// never sets the numeric fields.
+		},
+	}
+	llmMin := 180000
+	llmMax := 220000
+	llm := []engine.JobListing{
+		{
+			URL:            "https://jobs.ashbyhq.com/testco/abc",
+			Title:          "Old Title",
+			Salary:         "180000-220000 USD",
+			SalaryMin:      &llmMin,
+			SalaryMax:      &llmMax,
+			SalaryCurrency: "USD",
+			SalaryInterval: "year",
+		},
+	}
+
+	ApplyStructuredPrecedence(llm, structured)
+
+	// The record must be internally consistent: Salary and the numerics come
+	// from the SAME source (the LLM), since structured supplied no numerics
+	// to pair with its free-text.
+	if llm[0].Salary != "180000-220000 USD" {
+		t.Errorf("Salary = %q, want LLM 180000-220000 USD (structured has no numerics → keep LLM coherent group, not the disagreeing free-text)", llm[0].Salary)
+	}
+	if llm[0].SalaryMin == nil || *llm[0].SalaryMin != 180000 {
+		t.Errorf("SalaryMin = %v, want 180000 (LLM preserved)", llm[0].SalaryMin)
+	}
+	if llm[0].SalaryMax == nil || *llm[0].SalaryMax != 220000 {
+		t.Errorf("SalaryMax = %v, want 220000 (LLM preserved)", llm[0].SalaryMax)
+	}
+	if llm[0].SalaryCurrency != "USD" {
+		t.Errorf("SalaryCurrency = %q, want USD (LLM preserved)", llm[0].SalaryCurrency)
+	}
+	if llm[0].SalaryInterval != "year" {
+		t.Errorf("SalaryInterval = %q, want year (LLM preserved)", llm[0].SalaryInterval)
 	}
 	// Non-salary fields still applied from structured.
 	if llm[0].Title != "Eng" {
@@ -939,7 +1009,8 @@ func TestApplyStructuredPrecedence_NoMatchAttributedToNone(t *testing.T) {
 
 // TestLeverPostingToListing_PerMonthSalary verifies that Lever's
 // "per-month-salary" interval maps to "month" (previously unmapped → "" →
-// early return with nil salary pointers → LLM salary zeroed by precedence).
+// early return with nil salary pointers, so the structured listing carried no
+// numeric comp).
 //
 // Mutation: remove "per-month-salary" from normalizeSalaryInterval →
 // SalaryInterval becomes "" → RED.
