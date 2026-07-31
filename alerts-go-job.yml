@@ -350,3 +350,49 @@ groups:
             Triage:
               docker logs go-job --since 30m | grep -E "notifier|telegram.*init"
               Check TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID in container env.
+
+  # freshness_dark = a scheduled ingest source has not yielded any rows in 48h.
+  # This is the PRIMARY signal for silently-dead sources: freshness catches every
+  # failure mode (HTTP 200 empty, source dropped from fan-out, parser yields zero)
+  # including modes nobody predicted — an error counter can only count anticipated
+  # failure modes. All three month-long failures (hackerone truncated read,
+  # himalayas field type, algora 404) would have tripped this alert on day one.
+  #
+  # Window: 48h. The opportunity worker's interval is 12h, so the threshold must
+  # tolerate one missed cycle (12h) without flapping. 48h = 4 missed cycles —
+  # a source that has not produced a single row in 4 consecutive cycles is
+  # genuinely dead, not transiently empty. A shorter window (e.g. 24h = 2 cycles)
+  # would flap on a single missed cycle; a longer window (e.g. 72h) would delay
+  # detection past the point where an operator can act.
+  #
+  # The gauge is pre-touched at 0 for every known source at startup. A source
+  # that has NEVER succeeded (gauge=0) evaluates as time()-0 ≈ 1.7B > 172800,
+  # so the condition is true at startup — but the for:15m window gives the first
+  # cycle (which runs immediately at startup) time to complete and advance the
+  # gauge. If the first cycle succeeds, the gauge advances and the condition
+  # clears before 15m. If the source is dead, the gauge stays at 0 and the alert
+  # fires after 15m — correct, because a source that fails on its very first
+  # cycle is already dead.
+  - alert: GojobHuntSourceStale
+    expr: time() - gojob_hunt_source_last_success_timestamp > 172800
+    for: 15m
+    labels:
+      severity: warning
+      service: go-job
+      receiver: dozor
+      failure_class: freshness_dark
+    annotations:
+      summary: "go-job: source {{ $labels.kind }}/{{ $labels.source }} has not delivered rows in 48h"
+      description: |
+        The scheduled ingest source {{ $labels.kind }}/{{ $labels.source }} has
+        not yielded any rows in over 48h (4 missed cycles at the 12h opportunity
+        worker interval). The source is silently dead — it may be returning HTTP
+        200 with an empty list, its parser may yield zero, or it may have been
+        dropped from the fan-out. Check the per-source outcome counter
+        (gojob_hunt_source_outcome_total{kind,source,outcome}) to distinguish
+        "fetched fine, genuinely empty" (outcome=empty) from "fetch failed"
+        (outcome=fetch_error) from "decode failed" (outcome=parse_error).
+
+        Triage:
+          docker logs go-job --since 12h | grep -E "{{ $labels.source }}|opp worker: cycle complete"
+          Check the source's API endpoint directly if possible.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -72,6 +73,8 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 	start := time.Now()
 	slog.Info("opp worker: cycle start")
 
+	var secSummary, bountySummary, freelanceSummary jobs.SourceSummary
+
 	// Security programs (BTD 5 sources + Immunefi + Sherlock + Cantina + Code4rena)
 	func() {
 		defer func() {
@@ -85,7 +88,8 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 		if cycleSecurityHook != nil {
 			cycleSecurityHook()
 		}
-		secPrograms := jobs.FetchAllSecurityUnlimited(ctx)
+		var secPrograms []engine.SecurityProgram
+		secPrograms, secSummary = jobs.FetchAllSecurityUnlimited(ctx)
 		jobs.PersistSecurity(ctx, secPrograms)
 	}()
 
@@ -99,7 +103,8 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 				)
 			}
 		}()
-		bounties := jobs.FetchAllBountiesUnlimited(ctx)
+		var bounties []engine.BountyListing
+		bounties, bountySummary = jobs.FetchAllBountiesUnlimited(ctx)
 		jobs.PersistBounties(ctx, bounties)
 	}()
 
@@ -113,12 +118,16 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 				)
 			}
 		}()
-		freelance := jobs.FetchAllFreelanceUnlimited(ctx)
+		var freelance []engine.FreelanceJob
+		freelance, freelanceSummary = jobs.FetchAllFreelanceUnlimited(ctx)
 		jobs.PersistFreelanceJobs(ctx, freelance)
 	}()
 
 	slog.Info("opp worker: cycle complete",
 		slog.Duration("elapsed", time.Since(start)),
+		slog.Any("security_sources", secSummary),
+		slog.Any("bounty_sources", bountySummary),
+		slog.Any("freelance_sources", freelanceSummary),
 	)
 }
 
