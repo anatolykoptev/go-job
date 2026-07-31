@@ -55,6 +55,7 @@ github.com/anatolykoptev/go-kit/pgutil
 github.com/anatolykoptev/go-kit/ratelimit
 github.com/anatolykoptev/go-kit/render
 github.com/anatolykoptev/go-kit/render/typst
+github.com/anatolykoptev/go-kit/rerank
 github.com/anatolykoptev/go-kit/retry
 github.com/anatolykoptev/go-kit/strutil
 github.com/anatolykoptev/go-kit/telegram

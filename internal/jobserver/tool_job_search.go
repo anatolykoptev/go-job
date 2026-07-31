@@ -278,6 +278,14 @@ spawn:
 	// Apply blacklist filter.
 	deduped = applyBlacklist(deduped, input.Blacklist)
 
+	// Relevance gate: score every candidate against the query via cosine
+	// similarity (embedder + rerank.MathReranker), then filter by a measured
+	// threshold. Fail-open: if the embedder is unavailable, results pass
+	// through unfiltered and the degradation is made visible in the output
+	// summary + the job_search_relevance_degraded_total{reason} metric.
+	var degraded string
+	deduped, degraded = applyRelevanceGate(ctx, input.Query, deduped)
+
 	// Apply pagination offset.
 	if input.Offset > 0 && input.Offset < len(deduped) {
 		deduped = deduped[input.Offset:]
@@ -330,11 +338,18 @@ spawn:
 		slog.Warn("job_search: LLM summarization failed, returning unprocessed results",
 			slog.Any("error", err),
 			slog.Int("raw_results", len(top)))
+		summary := fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top))
+		if degraded != "" {
+			summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + summary
+		}
 		return nil, engine.JobSearchOutput{
 			Query:   input.Query,
-			Summary: fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top)),
+			Summary: summary,
 			Sources: sources,
 		}, nil
+	}
+	if degraded != "" {
+		jobOut.Summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + jobOut.Summary
 	}
 
 	liByJobID := make(map[string]*jobs.LinkedInJob)
