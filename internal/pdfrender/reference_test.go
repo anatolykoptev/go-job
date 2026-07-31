@@ -77,16 +77,33 @@ func referenceMarkdown(t *testing.T) string {
 // requires the two counts to agree, so an unparsed rule shows up as a count
 // mismatch rather than as silence.
 //
-// showLineRe tolerates leading whitespace on purpose. Anchoring it at column 0
-// left a hole exactly one keystroke wide: an INDENTED `#show` matched neither
-// pattern, so `  #show heading.where(level: 4): it => text(weight: "bold", …)`
-// — a rule that genuinely restyles the page — entered the theme with the count
-// check green. Top-level rules in this theme are column-0 by convention, so an
-// indented one is a hard error rather than a form to support: it will red the
-// count check, and the fix is to unindent it, not to extend showRuleRe.
+// Both patterns tolerate leading whitespace, and the reason changed once a real
+// scoped rule appeared.
+//
+// Anchoring at column 0 first left a hole one keystroke wide: an INDENTED
+// `#show` matched neither pattern, so `  #show heading.where(level: 4): it =>
+// text(weight: "bold", …)` — a rule that genuinely restyles the page — entered
+// the theme with the count check green. That was closed by letting showLineRe
+// see indentation, on the stated grounds that top-level rules are column-0 by
+// convention and an indented one is therefore a mistake to unindent.
+//
+// That second half was wrong. Indentation can BE the scope — typst takes a
+// `#show` inside a block body as scoped to it — and such a rule styles real
+// output exactly as a top-level one does. So showRuleRe parses indented rules
+// too, and the selector they name has to appear in one of the maps below
+// wherever in the file it was written. There is no scoped rule in the theme
+// today; the parser accepts one because it must, not because one exists.
+//
+// showLineRe deliberately carries NO separator class. Requiring a space, then
+// `[ \t]`, leaked twice more: `#show\u00A0emph:` and `#show/*c*/emph:` both
+// compile and both restyle the page, and both were invisible to a class-based
+// pattern. An allowlist against typst's whitespace and comment grammar is the
+// wrong shape. Counting every line that begins `#show` and letting the strict
+// parser disagree makes an unrecognised separator a COUNT MISMATCH instead of a
+// silence — fail-closed for the fourth variant nobody has thought of yet.
 var (
-	showRuleRe = regexp.MustCompile(`(?m)^#show (.+?): (?:it =>|set )`)
-	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show[ :]`)
+	showRuleRe = regexp.MustCompile(`(?m)^[ \t]*#show[ \t]+(.+?): (?:it =>|set )`)
+	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show`)
 )
 
 // exercisedBy maps a theme selector to a substring that must appear in the
@@ -104,7 +121,11 @@ var exercisedBy = map[string]string{
 	// report a missing theme rule.
 	"table":                  "\n| --- ",
 	"table.cell.where(y: 0)": "\n| --- ",
-	"link":                   "](https://",
+	// NOTE: coverage is keyed by SELECTOR, not by rule. Two rules naming the
+	// same selector collapse into one slot and the count guard still balances,
+	// so deleting either would red nothing. The theme has one link rule today;
+	// see #416 before adding a second.
+	"link": "](https://",
 }
 
 // knownUnexercised records the selectors the reference deliberately does not
@@ -132,10 +153,10 @@ func TestThemeRulesAreExercisedByReference(t *testing.T) {
 	if lines := len(showLineRe.FindAllString(resumeTypstPreamble, -1)); lines != len(matches) {
 		t.Fatalf("resume.typ has %d `#show` lines but showRuleRe parsed %d.\n"+
 			"A rule is written in a form the selector pattern does not recognise, so it would\n"+
-			"enter the theme uncovered while this test stayed green. If it is indented, unindent\n"+
-			"it — top-level rules are column-0 here. Otherwise rewrite it as\n"+
-			"`#show <selector>: it => …` / `#show <selector>: set …`, or extend showRuleRe and\n"+
-			"add the mutation that proves the extension works.", lines, len(matches))
+			"enter the theme uncovered while this test stayed green. Indentation is fine — a\n"+
+			"scoped rule is parsed like any other. Rewrite it as `#show <selector>: it => …`\n"+
+			"or `#show <selector>: set …`, or extend showRuleRe and add the mutation that\n"+
+			"proves the extension works.", lines, len(matches))
 	}
 
 	// resumeTypstPreamble is not the only typst the renderer assembles:
