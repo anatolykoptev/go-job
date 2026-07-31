@@ -73,6 +73,35 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           fi
 
+      - name: Install PDF render toolchain
+        run: |
+          # internal/pdfrender renders a resume through pandoc -> typst and
+          # measures the result. Without these binaries those tests SKIP, and a
+          # skipped render test is green over a test that never ran — which is
+          # how the theme shipped for five weeks asking for a font the image
+          # did not carry, with every gauge and every gate green.
+          #
+          # CI is set by GitHub, and requireRenderBinaries() turns a missing
+          # binary here into a failure instead of a skip. So a broken install
+          # step surfaces as a red gate rather than as silent lost coverage.
+          #
+          # Both versions are pinned to what the runtime image installs,
+          # because the geometry assertion is sensitive to each:
+          #   typst          0.14.2    alpine apk        (Dockerfile)
+          #   fonts-ibm-plex 6.1.1-1   ubuntu 24.04 apt  (Dockerfile fonts stage)
+          # This runner is ubuntu-24.04-arm, so apt yields the same font build;
+          # typst is not packaged for 24.04 and comes from the release tarball.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pandoc poppler-utils fonts-ibm-plex
+          TYPST_VERSION=v0.14.2
+          curl -fsSL --retry 3 \
+            "https://github.com/typst/typst/releases/download/${TYPST_VERSION}/typst-aarch64-unknown-linux-musl.tar.xz" \
+            | sudo tar -xJ --strip-components=1 -C /usr/local/bin \
+                typst-aarch64-unknown-linux-musl/typst
+          typst --version
+          pandoc --version | head -1
+          dpkg-query -W -f='fonts-ibm-plex ${Version}\n' fonts-ibm-plex
+
       - name: Run migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
