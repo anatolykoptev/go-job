@@ -77,7 +77,7 @@ func TestFetchAllBountiesImpl_AlgoraRemovedFromFanOut(t *testing.T) {
 		engine.Cfg.FetchTimeout = origTimeout
 	})
 
-	bounties := fetchAllBountiesImpl(context.Background(), 50, true)
+	bounties, _ := fetchAllBountiesImpl(context.Background(), 50, true)
 
 	for _, b := range bounties {
 		if b.Source == sourceAlgora {

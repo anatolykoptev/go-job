@@ -204,19 +204,22 @@ func summaryTitle(kind string, count int, topName string) string {
 
 // FetchAllBountiesUnlimited fetches ALL bounties (no per-call cap) for scheduled ingest.
 // Delegates to fetchAllBountiesImpl with a large limit and no total-result cap.
-func FetchAllBountiesUnlimited(ctx context.Context) []engine.BountyListing {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+func FetchAllBountiesUnlimited(ctx context.Context) ([]engine.BountyListing, SourceSummary) {
 	return fetchAllBountiesImpl(ctx, 10000, false)
 }
 
 // FetchAllSecurityUnlimited fetches ALL security programs (no cap) for scheduled ingest.
 // Delegates to fetchAllSecurityImpl with a large limit and no total-result cap;
 // applyCap=false also bypasses the result cache to pull the full live dataset.
-func FetchAllSecurityUnlimited(ctx context.Context) []engine.SecurityProgram {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+func FetchAllSecurityUnlimited(ctx context.Context) ([]engine.SecurityProgram, SourceSummary) {
 	return fetchAllSecurityImpl(ctx, 10000, false)
 }
 
 // FetchAllFreelanceUnlimited fetches ALL freelance items (no cap) for scheduled ingest.
 // Delegates to fetchAllFreelanceImpl with a large limit and no total-result cap.
-func FetchAllFreelanceUnlimited(ctx context.Context) []engine.FreelanceJob {
+// Returns a SourceSummary mapping source name → row count for the cycle-complete log.
+func FetchAllFreelanceUnlimited(ctx context.Context) ([]engine.FreelanceJob, SourceSummary) {
 	return fetchAllFreelanceImpl(ctx, 10000, false)
 }

@@ -87,27 +87,50 @@ func SearchSecurityPrograms(ctx context.Context, limit int) ([]engine.SecurityPr
 func fetchAllSecurityPrograms(ctx context.Context) ([]engine.SecurityProgram, error) {
 	var all []engine.SecurityProgram
 	var lastErr error
+	var failedCount int
 
 	for _, src := range securitySources {
 		data, err := fetchSecuritySource(ctx, src.url)
 		if err != nil {
+			engine.IncrHuntSourceOutcome("security", src.platform, "fetch_error")
 			slog.Warn("security: source fetch failed",
 				slog.String("platform", src.platform),
 				slog.Any("error", err))
 			lastErr = err
+			failedCount++
 			continue
 		}
 
 		programs, err := src.parser(data)
 		if err != nil {
+			engine.IncrHuntSourceOutcome("security", src.platform, "parse_error")
 			slog.Warn("security: parse failed",
 				slog.String("platform", src.platform),
 				slog.Any("error", err))
 			lastErr = err
+			failedCount++
 			continue
 		}
 
+		if len(programs) > 0 {
+			engine.IncrHuntSourceOutcome("security", src.platform, "ok")
+			engine.SetHuntSourceLastSuccess("security", src.platform)
+		} else {
+			engine.IncrHuntSourceOutcome("security", src.platform, "empty")
+		}
 		all = append(all, programs...)
+	}
+
+	// Do NOT launder partial failure: if most BTD sources failed, log it
+	// explicitly so an operator reading the logs sees the degradation. The
+	// per-source outcome metrics already make it visible in Prometheus; this
+	// log line makes it visible in container logs without reading them by hand.
+	if failedCount > 0 {
+		slog.Warn("security: partial BTD fan-out failure",
+			slog.Int("failed", failedCount),
+			slog.Int("total", len(securitySources)),
+			slog.Int("rows", len(all)),
+		)
 	}
 
 	if len(all) == 0 && lastErr != nil {
