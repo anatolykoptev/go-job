@@ -69,7 +69,7 @@ CANDIDATE DATA:
 - Quantify achievements with numbers wherever possible
 - Include a skills section grouped by category
 - Keep it to 1-2 pages (for senior roles, 2 pages is fine)
-
+%s
 FORMAT: %s
 
 Return a JSON object with this exact structure:
@@ -83,6 +83,142 @@ Return a JSON object with this exact structure:
 
 Return ONLY the JSON object, no markdown, no explanation.`
 
+// markdownBodyShapeGuidance constrains the LLM-produced body for the markdown
+// format. The document header (name, headline, contacts, divider) is assembled
+// in Go from the profile DB — see assembleResumeHeader — so the LLM must never
+// produce it. An LLM asked to retype an email will eventually mangle it, and a
+// wrong contact line on a resume is a silent, total failure.
+//
+// The body shape exists to keep the resume.typ level-4 rule firing: that rule
+// styles an entry's #### subtitle as metadata, and it fires zero times when an
+// entry's title and subtitle are collapsed into one ### line. That drift
+// shipped once (job 65473, 2026-07-30: six ### entries, zero #### lines) with
+// every gate green, so this prose is the guard.
+const markdownBodyShapeGuidance = `
+MARKDOWN DOCUMENT SHAPE — emit the BODY ONLY, never a header:
+- Do NOT emit a header block, a typst block, a name line, or a contact line. The document header (name, headline, contacts, divider) is assembled separately in Go and prepended to your output. Begin your output with the summary paragraph.
+- Do NOT emit a "## Summary" heading. The summary is the first paragraph of the body, plain text with no heading.
+- Use "## " for section headings (e.g. "## Experience", "## Selected Open Source").
+- Every entry under a section is a TWO-LINE structure followed by bullets:
+    ### <title · qualifiers · versions · metrics>
+    #### <one-line descriptor · optional URL>
+    - bullet
+    - bullet
+  The "#### " line is the entry subtitle and is required whenever the entry has a descriptor. An entry that genuinely has no descriptor omits the "#### " line rather than inventing one. NEVER collapse the descriptor into the "### " line — the "#### " line is what the resume theme styles as metadata.
+- The summary paragraph and the section/entry structure above are the ONLY markdown constructs in the body.`
+
+// contactSeparator joins the contact fields in the header. Two spaces, a middle
+// dot, two spaces — load-bearing: it is the approved contact-line rhythm, not a
+// default to re-derive.
+const contactSeparator = "  ·  "
+
+// assembleResumeHeader builds the operator-approved typst header block from
+// profile data assembled in Go. The #v values and colours are the approved
+// vertical rhythm, matched to a reference to three decimals; the #line sits
+// under the contacts, never under the name (the operator's explicit decision).
+//
+// name and headline are inserted verbatim into typst content brackets; contacts
+// is the pre-joined, email-escaped contact line from buildResumeContacts.
+func assembleResumeHeader(name, headline, contacts string) string {
+	var b strings.Builder
+	b.WriteString("```{=typst}\n")
+	fmt.Fprintf(&b, "#text(size: 26pt, weight: \"bold\", fill: rgb(\"#0f172a\"), tracking: -0.4pt)[%s]\n", name)
+	b.WriteString("#v(2.4mm)\n")
+	fmt.Fprintf(&b, "#text(size: 11pt, weight: \"semibold\", fill: rgb(\"#1e293b\"))[%s]\n", headline)
+	b.WriteString("#linebreak()\n")
+	b.WriteString("#v(0.8mm)\n")
+	fmt.Fprintf(&b, "#text(size: 10pt, fill: rgb(\"#64748b\"))[%s]\n", contacts)
+	b.WriteString("#v(1.8mm)\n")
+	b.WriteString("#line(length: 100%, stroke: rgb(\"#cbd5e1\") + 0.7pt)\n")
+	b.WriteString("#v(2.0mm)\n")
+	b.WriteString("```\n")
+	return b.String()
+}
+
+// buildResumeContacts joins the present contact fields in the approved order
+// (location, email, github, linkedin), omitting empty fields so no empty slot
+// or doubled separator is emitted. The email is escaped as \@ inside the typst
+// bracket — an unescaped @ is a typst function-call sigil.
+func buildResumeContacts(location, email, github, linkedin string) string {
+	fields := []string{location, escapeTypstEmail(email), github, linkedin}
+	present := make([]string, 0, 4)
+	for _, f := range fields {
+		if f != "" {
+			present = append(present, f)
+		}
+	}
+	return strings.Join(present, contactSeparator)
+}
+
+// escapeTypstEmail escapes the @ sigil in an email address for a typst content
+// bracket. Only @ is escaped; the rest of an email is typst-safe.
+func escapeTypstEmail(email string) string {
+	return strings.ReplaceAll(email, "@", "\\@")
+}
+
+// buildResumeHeadline builds the per-job headline: the role title plus two or
+// three specialisations joined with the contact separator, one line, no
+// trailing punctuation. specialisations is capped at three.
+func buildResumeHeadline(roleTitle string, specialisations []string) string {
+	parts := make([]string, 0, 4)
+	if roleTitle = strings.TrimSpace(roleTitle); roleTitle != "" {
+		parts = append(parts, roleTitle)
+	}
+	max := 3
+	for _, s := range specialisations {
+		s = strings.TrimSpace(s)
+		if s == "" || len(parts) >= max+1 {
+			continue
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, contactSeparator)
+}
+
+// matchedSpecialisations returns the JD required skills the candidate actually
+// holds, in JD order, for the per-job headline. Match is case-insensitive on
+// the trimmed skill name. The result feeds buildResumeHeadline, which caps it
+// at three.
+func matchedSpecialisations(required []string, candidateSkills []SkillRecord) []string {
+	have := make(map[string]bool, len(candidateSkills))
+	for _, s := range candidateSkills {
+		have[strings.ToLower(strings.TrimSpace(s.Name))] = true
+	}
+	var matched []string
+	for _, r := range required {
+		if have[strings.ToLower(strings.TrimSpace(r))] {
+			matched = append(matched, r)
+		}
+	}
+	return matched
+}
+
+// buildResumeMarkdownHeader assembles the Go-side typst header for the markdown
+// resume: the per-job headline (role title plus matched specialisations) and
+// the contact line straight from the profile DB, so an LLM can never mangle a
+// contact. Returns the full approved header block.
+func buildResumeMarkdownHeader(person *PersonRecord, jd jdRequirements, skills []SkillRecord) string {
+	headline := buildResumeHeadline(jd.RoleTitle, matchedSpecialisations(jd.RequiredSkills, skills))
+	contacts := buildResumeContacts(person.Location, person.Email, person.Links["github"], person.Links["linkedin"])
+	return assembleResumeHeader(person.Name, headline, contacts)
+}
+
+// loadCompanyContext returns the optional company-research enrichment block for
+// the assemble prompt, or "" when company is empty or research yields nothing.
+// Bounded so a slow SearXNG/LLM substep degrades to "no company context"
+// instead of blocking the whole tool past its timeout.
+func loadCompanyContext(ctx context.Context, company string) string {
+	if company == "" {
+		return ""
+	}
+	cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
+	block := BuildCompanyContext(company, cr)
+	if block == "" {
+		return ""
+	}
+	return strings.TrimPrefix(block, "\n") + "\n"
+}
+
 // GenerateResume queries the master resume graph + vectors against a JD and assembles an ATS-optimized resume.
 func GenerateResume(ctx context.Context, jobDescription, company, format string) (*ResumeGenerateResult, error) {
 	db := GetResumeDB()
@@ -95,8 +231,19 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		return nil, errors.New("no master resume found — run master_resume_build first")
 	}
 
+	// The header (name, headline, contacts) is assembled in Go from the profile
+	// DB, so the person record is required even for the body-only LLM call.
+	person, err := db.GetPerson(ctx, personID)
+	if err != nil {
+		return nil, fmt.Errorf("resume_generate load person: %w", err)
+	}
+
+	// Default to markdown: the output's real consumer is application_persist,
+	// which stores markdown and renders it through the typst theme. A plain-text
+	// default silently produces a document the PDF path cannot style. The
+	// explicit "text" and "json" paths keep behaving as before.
 	if format == "" {
-		format = "text"
+		format = "markdown"
 	}
 
 	// 1. Extract JD requirements (LLM call #1)
@@ -227,17 +374,22 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 
 	// 6. Optional company enrichment — bounded so a slow SearXNG/LLM research
 	// substep degrades to "no company context" instead of blocking the whole
-	// tool past its timeout. Returns nil on timeout/error; BuildCompanyContext
-	// then yields an empty string and the resume assembles without it.
-	companyContext := ""
-	if company != "" {
-		cr := ResearchCompanyBounded(ctx, company, DefaultCompanyResearchTimeout)
-		if block := BuildCompanyContext(company, cr); block != "" {
-			companyContext = strings.TrimPrefix(block, "\n") + "\n"
-		}
+	// tool past its timeout.
+	companyContext := loadCompanyContext(ctx, company)
+
+	// 7. Assemble the Go-side header pieces (markdown only). The headline is
+	// the one tailored line: role title plus the candidate's matched
+	// specialisations. Contacts come straight from the profile DB — never the
+	// LLM — so an email cannot be silently mangled.
+	shapeGuidance := ""
+	var resumeHeader string
+	if format == "markdown" {
+		shapeGuidance = markdownBodyShapeGuidance
+		resumeHeader = buildResumeMarkdownHeader(person, jd, skills)
 	}
 
-	// 7. Assemble resume (LLM call #2)
+	// 8. Assemble resume body (LLM call #2). The LLM produces the body only;
+	// the header is prepended in Go below.
 	assemblePrompt := fmt.Sprintf(resumeAssemblePrompt,
 		jd.RoleTitle,
 		jd.Seniority,
@@ -245,6 +397,7 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		strings.Join(jd.NiceToHave, ", "),
 		candidateData,
 		companyContext,
+		shapeGuidance,
 		format,
 	)
 
@@ -263,9 +416,15 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		MissingKeywords []string `json:"missing_keywords"`
 	}
 	if err := json.Unmarshal([]byte(assembleRaw), &assembled); err != nil {
-		// Fallback: if JSON parse fails, treat the raw output as the resume
+		// Fallback: if JSON parse fails, treat the raw output as the resume.
+		// The header is still prepended for markdown so the document keeps its
+		// approved shape even on a parse failure.
+		body := assembleRaw
+		if resumeHeader != "" {
+			body = resumeHeader + "\n\n" + body
+		}
 		return &ResumeGenerateResult{
-			Resume:  assembleRaw,
+			Resume:  body,
 			Summary: "Resume generated (JSON parse failed, returning raw text)",
 		}, nil
 	}
@@ -276,6 +435,9 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		MatchedKeywords: assembled.MatchedKeywords,
 		AddedKeywords:   assembled.AddedKeywords,
 		MissingKeywords: assembled.MissingKeywords,
+	}
+	if resumeHeader != "" {
+		result.Resume = resumeHeader + "\n\n" + result.Resume
 	}
 	result.SelectedItems.Experiences = len(experiences)
 	result.SelectedItems.Projects = len(projects)

@@ -260,7 +260,7 @@ type MasterResumeBuildInput struct {
 type ResumeGenerateInput struct {
 	JobDescription string `json:"job_description" jsonschema:"Job description to tailor the resume for"`
 	Company        string `json:"company,omitempty" jsonschema:"Company name (enriches with company research)"`
-	Format         string `json:"format,omitempty" jsonschema:"Output format: text (default), markdown, json"`
+	Format         string `json:"format,omitempty" jsonschema:"Output format: markdown (default), text, json"`
 }
 
 // ResumeProfileInput is the input for resume_profile.
