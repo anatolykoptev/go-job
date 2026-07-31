@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go-engine/llm"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 )
 
@@ -59,7 +61,7 @@ func withTestRegistry(t *testing.T) *kitmetrics.Registry {
 	// never fires (vacuous test), the series would be absent and the
 	// snapshot would return 0 — indistinguishable from "fired and landed".
 	// Pre-touching makes the baseline explicit and the delta check meaningful.
-	for _, oc := range []string{ExtractionOK, ExtractionTruncatedSalvaged, ExtractionUnparseable} {
+	for _, oc := range []string{ExtractionOK, ExtractionTrailingGarbage, ExtractionTruncatedSalvaged, ExtractionUnparseable} {
 		r.Add(MetricJobSearchExtraction+"{outcome="+oc+"}", 0)
 	}
 	return r
@@ -78,67 +80,105 @@ func extractionDelta(t *testing.T, r *kitmetrics.Registry, outcome string) int64
 	return v
 }
 
+// withJobSearchComplete swaps the LLM completion seam with a canned function
+// that returns rawResp. The seam is the ONLY way to drive SummarizeJobResults
+// without a real LLM call — the test injects the exact truncated response the
+// production bug produced.
+func withJobSearchComplete(t *testing.T, rawResp string) {
+	t.Helper()
+	orig := jobSearchComplete
+	t.Cleanup(func() { jobSearchComplete = orig })
+	jobSearchComplete = func(_ context.Context, _ string, _ float64, _ int, _ ...llm.ChatOption) (string, error) {
+		return rawResp, nil
+	}
+}
+
 // --- F1: truncated response must never become a silent empty result ---
 
-// TestParseJobSearchResponse_TruncatedSalvagesCompleteRecords feeds a canned
-// LLM response cut mid-record (exactly the production failure: the model's
-// JSON is truncated by the output token budget, the full parse fails, and the
-// old code stuffed the raw string into Summary with Jobs=nil).
+// TestSummarizeJobResults_TruncatedResponse_NeverSilent drives the FULL
+// SummarizeJobResults path (via the jobSearchComplete seam) with a canned
+// LLM response truncated mid-record — exactly the production failure. This
+// is the test the PR exists to gate: it asserts (a) Jobs is NOT nil, (b) the
+// truncated_salvaged counter moved, (c) the raw JSON is not in Summary.
 //
-// Asserts: (a) the complete records ARE returned, (b) the dropped count is
-// recorded, (c) the outcome counter moved to truncated_salvaged, (d) Jobs is
-// NOT nil/empty.
-//
-// Mutation: restore the silent raw-string-into-summary fallback
-// (if parsed == nil { return &JobSearchOutput{Summary: raw}, nil }) → this
-// test goes RED because Jobs would be nil and the outcome would be
-// unparseable (or the old code path never calls parseJobSearchResponse at all).
-func TestParseJobSearchResponse_TruncatedSalvagesCompleteRecords(t *testing.T) {
-	// Build a 10-record response, then truncate it mid-record-9 so 8
-	// complete records are salvageable.
+// Mutation: wholesale revert of SummarizeJobResults to its pre-PR body
+// (SummarizeToJSON + "if parsed == nil { return &JobSearchOutput{Query: query,
+// Summary: raw}, nil }") → this test goes RED because Jobs would be nil and
+// the outcome counter would never fire (the old path never calls
+// parseJobSearchResponse or IncrJobSearchExtraction).
+func TestSummarizeJobResults_TruncatedResponse_NeverSilent(t *testing.T) {
+	r := withTestRegistry(t)
+
+	// Build a 10-record response, then truncate mid-record-9 so 8 complete
+	// records are salvageable.
 	full := makeJobJSON(10, "Good matches found.")
-	// Find the start of the 9th record's title field and cut there.
-	// json.Marshal produces compact JSON: "title":"Software Engineer 9"
 	marker := `"title":"Software Engineer 9"`
 	cutIdx := strings.Index(full, marker)
 	if cutIdx < 0 {
 		t.Fatalf("test setup: marker %q not found in JSON", marker)
 	}
-	// Cut a few chars into the 9th record's title value — mid-token.
 	truncated := truncateAt(full, cutIdx+len(marker)-3)
 
-	jobs, summary, outcome, salvaged, dropped := parseJobSearchResponse(truncated)
+	withJobSearchComplete(t, truncated)
 
-	// (a) Complete records ARE returned.
+	out, err := SummarizeJobResults(context.Background(), "golang engineer", JobSearchInstruction, 5000, nil, nil)
+	if err != nil {
+		t.Fatalf("SummarizeJobResults error: %v", err)
+	}
+
+	// (a) Jobs is NOT nil — the silent-empty-result bug is absent.
+	if out.Jobs == nil {
+		t.Fatal("Jobs is nil — the silent-empty-result bug is present")
+	}
+	if len(out.Jobs) < 8 {
+		t.Errorf("salvaged %d jobs, want ≥ 8 complete records", len(out.Jobs))
+	}
+
+	// (b) The truncated_salvaged counter moved.
+	got := extractionDelta(t, r, ExtractionTruncatedSalvaged)
+	if got != 1 {
+		t.Errorf("truncated_salvaged counter = %d, want 1 (delta from baseline 0)", got)
+	}
+
+	// (c) The raw JSON is NOT in Summary (the old bug stuffed it there).
+	if strings.Contains(out.Summary, `"title":`) {
+		t.Error("Summary contains raw JSON — the stuff-raw-into-summary bug is present")
+	}
+}
+
+// TestParseJobSearchResponse_TruncatedSalvagesCompleteRecords feeds a canned
+// LLM response cut mid-record to the pure parser and asserts the salvage
+// mechanics: complete records returned, outcome=truncated_salvaged, dropped≥1.
+//
+// This tests the parser in isolation; the SummarizeJobResults-level gate is
+// F1 above. No mutation claim here — the parser is a pure function whose
+// behaviour is directly asserted.
+func TestParseJobSearchResponse_TruncatedSalvagesCompleteRecords(t *testing.T) {
+	full := makeJobJSON(10, "Good matches found.")
+	marker := `"title":"Software Engineer 9"`
+	cutIdx := strings.Index(full, marker)
+	if cutIdx < 0 {
+		t.Fatalf("test setup: marker %q not found in JSON", marker)
+	}
+	truncated := truncateAt(full, cutIdx+len(marker)-3)
+
+	jobs, _, outcome, salvaged, dropped := parseJobSearchResponse(truncated)
+
 	if len(jobs) < 8 {
 		t.Errorf("salvaged %d jobs, want ≥ 8 complete records", len(jobs))
 	}
-
-	// (b) Dropped count is recorded.
-	if dropped < 1 {
-		t.Errorf("dropped = %d, want ≥ 1 (truncated tail)", dropped)
-	}
-
-	// (c) Outcome is truncated_salvaged.
 	if outcome != ExtractionTruncatedSalvaged {
 		t.Errorf("outcome = %q, want %q", outcome, ExtractionTruncatedSalvaged)
 	}
-
-	// (d) Jobs is NOT nil.
 	if jobs == nil {
 		t.Fatal("jobs is nil — the silent-empty-result bug is present")
 	}
-
-	// Salvaged count matches.
 	if salvaged != len(jobs) {
 		t.Errorf("salvaged = %d, len(jobs) = %d — must match", salvaged, len(jobs))
 	}
-
-	// Summary must NOT be the raw JSON (the old bug).
-	if strings.Contains(summary, `"title":`) {
-		t.Error("summary contains raw JSON — the stuff-raw-into-summary bug is present")
+	if dropped < 1 {
+		t.Errorf("dropped = %d, want ≥ 1 (truncated tail)", dropped)
 	}
-	_ = summary // summary is non-empty (salvage path generates it)
 }
 
 // TestIncrJobSearchExtraction_TruncatedCounterMoves verifies the
@@ -153,13 +193,11 @@ func TestParseJobSearchResponse_TruncatedSalvagesCompleteRecords(t *testing.T) {
 func TestIncrJobSearchExtraction_TruncatedCounterMoves(t *testing.T) {
 	r := withTestRegistry(t)
 
-	// Baseline: pre-touched at 0 — assert it IS 0, not absent.
 	base := extractionDelta(t, r, ExtractionTruncatedSalvaged)
 	if base != 0 {
 		t.Fatalf("baseline delta = %d, want 0 — pre-touch invariant broken", base)
 	}
 
-	// Simulate the SummarizeJobResults counter call.
 	IncrJobSearchExtraction(ExtractionTruncatedSalvaged)
 
 	got := extractionDelta(t, r, ExtractionTruncatedSalvaged)
@@ -172,14 +210,7 @@ func TestIncrJobSearchExtraction_TruncatedCounterMoves(t *testing.T) {
 
 // TestParseJobSearchResponse_FullLimit50Completes feeds a complete 50-record
 // JSON response (the documented max limit) and asserts the outcome is ok with
-// no truncation. Also verifies the output token budget arithmetic: 50 records
-// × 300 tokens/record + 500 summary = 15500, and jobSearchMaxOutputTokens(50)
-// must return ≥ 15500 so the model has enough budget to complete.
-//
-// Mutation: restore the low budget (jobSearchMaxOutputTokens returns
-// cfg.LLMMaxTokens regardless of result count) → the budget assertion goes
-// RED. The parse assertion goes RED if the salvage path is triggered
-// unnecessarily (outcome would be truncated_salvaged instead of ok).
+// no truncation.
 func TestParseJobSearchResponse_FullLimit50Completes(t *testing.T) {
 	full := makeJobJSON(50, "50 matching positions found.")
 	jobs, _, outcome, _, dropped := parseJobSearchResponse(full)
@@ -192,38 +223,6 @@ func TestParseJobSearchResponse_FullLimit50Completes(t *testing.T) {
 	}
 	if dropped != 0 {
 		t.Errorf("dropped = %d, want 0 for a complete response", dropped)
-	}
-
-	// Budget arithmetic: 50 × 300 + 500 = 15500. The function must return
-	// at least this value so the model has enough output tokens to complete.
-	budget := jobSearchMaxOutputTokens(50)
-	minNeeded := 50*jobSearchTokensPerRecord + jobSearchSummaryBudget
-	if budget < minNeeded {
-		t.Errorf("jobSearchMaxOutputTokens(50) = %d, want ≥ %d (50×%d+%d)",
-			budget, minNeeded, jobSearchTokensPerRecord, jobSearchSummaryBudget)
-	}
-}
-
-// --- F3: extraction stage drops nothing for relevance ---
-
-// TestParseJobSearchResponse_NoRelevanceRejection feeds N listings that are
-// off-topic (title/description unrelated to a "python data engineer" query)
-// and asserts all N are returned — the extraction stage's job is to EXTRACT
-// structured fields, not to judge relevance. Relevance belongs to the ranking
-// stage (being rebuilt separately).
-//
-// Mutation: re-add a server-side relevance drop in the extraction path
-// (e.g. filter jobs by keyword match) → len(jobs) < N and this test goes RED.
-func TestParseJobSearchResponse_NoRelevanceRejection(t *testing.T) {
-	const n = 5
-	full := makeJobJSON(n, "All listings extracted.")
-	jobs, _, outcome, _, _ := parseJobSearchResponse(full)
-
-	if len(jobs) != n {
-		t.Errorf("extraction returned %d jobs, want %d — extraction stage must not drop listings for relevance", len(jobs), n)
-	}
-	if outcome != ExtractionOK {
-		t.Errorf("outcome = %q, want %q", outcome, ExtractionOK)
 	}
 }
 
@@ -252,6 +251,20 @@ func TestJobSearchInstruction_NoRejectionDirective(t *testing.T) {
 	// genuinely hands over zero listings, the summary should say so).
 	if !strings.Contains(JobSearchInstruction, "honest statement that none match") {
 		t.Error("JobSearchInstruction lost the honest-empty summary directive — only the rejection rule should be removed")
+	}
+}
+
+// TestJobSearchInstruction_LimitCapMatchesConfig asserts the prompt's
+// extraction cap matches JobSearchInput.Limit's documented max (50), not 15.
+// An operator setting limit=40 must not silently get ≤15.
+//
+// Mutation: revert the prompt to "up to 15" → this test goes RED.
+func TestJobSearchInstruction_LimitCapMatchesConfig(t *testing.T) {
+	if strings.Contains(JobSearchInstruction, "up to 15") {
+		t.Error("JobSearchInstruction still says 'up to 15' — limits 16-50 are dead configuration")
+	}
+	if !strings.Contains(JobSearchInstruction, "up to 50") {
+		t.Error("JobSearchInstruction must say 'up to 50' to match JobSearchInput.Limit max")
 	}
 }
 
@@ -303,5 +316,130 @@ func TestIncrJobSearchExtraction_UnrecognisedDropped(t *testing.T) {
 		if strings.Contains(k, "definitely-not-a-valid-outcome") {
 			t.Errorf("unrecognised outcome leaked into registry: %s", k)
 		}
+	}
+}
+
+// --- MAJOR 1: a complete response with trailing text is NOT truncated ---
+
+// TestParseJobSearchResponse_TrailingTextNotTruncated feeds a complete 3-record
+// JSON response followed by trailing prose ("Hope this helps!") — the shape a
+// chat-tuned model produces. json.Unmarshal rejects trailing non-whitespace,
+// so the salvage path runs, but the array closed cleanly (io.EOF). The
+// outcome must be trailing_garbage, NOT truncated_salvaged, and dropped must
+// be 0. A rate() alert on truncated_salvaged must not fire on healthy traffic.
+func TestParseJobSearchResponse_TrailingTextNotTruncated(t *testing.T) {
+	raw := makeJobJSON(3, "Three good matches.") + "\n\nHope this helps!"
+	jobs, _, outcome, _, dropped := parseJobSearchResponse(raw)
+
+	if len(jobs) != 3 {
+		t.Errorf("got %d jobs, want 3 (all records kept)", len(jobs))
+	}
+	if outcome != ExtractionTrailingGarbage {
+		t.Errorf("outcome = %q, want %q (array closed cleanly — trailing text is not truncation)", outcome, ExtractionTrailingGarbage)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0 (nothing was lost)", dropped)
+	}
+}
+
+// --- MAJOR 2: a valid EMPTY result with trailing text preserves the honest summary ---
+
+// TestParseJobSearchResponse_EmptyArrayTrailingText_PreservesSummary feeds a
+// legitimately empty jobs array with the model's honest "none match" summary,
+// followed by trailing text. The salvage path must recognise the array closed
+// cleanly (count=0, arrayClosed=true) and preserve the summary — NOT replace
+// it with a parse-error message. This is the class the PR closes: a
+// successful-looking result carrying the wrong content.
+func TestParseJobSearchResponse_EmptyArrayTrailingText_PreservesSummary(t *testing.T) {
+	raw := `{"jobs":[],"summary":"None of the listings match your query."}` + "\ntrailing"
+	jobs, summary, outcome, _, dropped := parseJobSearchResponse(raw)
+
+	if len(jobs) != 0 {
+		t.Errorf("got %d jobs, want 0 (legitimate empty array)", len(jobs))
+	}
+	if outcome != ExtractionTrailingGarbage {
+		t.Errorf("outcome = %q, want %q (empty array closed cleanly)", outcome, ExtractionTrailingGarbage)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0", dropped)
+	}
+	if !strings.Contains(summary, "None of the listings match") {
+		t.Errorf("summary = %q — the model's honest explanation was replaced by a parse-error message", summary)
+	}
+}
+
+// --- MAJOR 5: a truncated summary is not delivered verbatim unmarked ---
+
+// TestParseJobSearchResponse_TruncatedSummaryNotDeliveredVerbatim feeds a
+// response where the jobs array is complete but the summary field is cut
+// mid-string (no closing quote). extractSummaryField must signal
+// "unterminated" and return "" so the salvage path does not deliver a partial
+// sentence that stops mid-word. The array closed cleanly, so the outcome is
+// trailing_garbage (not truncated_salvaged — no records were lost); the key
+// assertion is that the partial summary value is absent from the output.
+func TestParseJobSearchResponse_TruncatedSummaryNotDeliveredVerbatim(t *testing.T) {
+	// Complete 2-record array, then a summary field cut mid-value.
+	raw := `{"jobs":[` +
+		`{"title":"Eng 1","company":"Co","location":"Remote","source":"greenhouse","url":"https://ex.com/1","job_type":"full-time","remote":"remote","experience":"senior","skills":["Go"],"description":"Build things.","posted":"2d ago"},` +
+		`{"title":"Eng 2","company":"Co","location":"Remote","source":"greenhouse","url":"https://ex.com/2","job_type":"full-time","remote":"remote","experience":"senior","skills":["Go"],"description":"Build things.","posted":"2d ago"}],` +
+		`"summary":"These two roles look strongest because they ma`
+
+	jobs, summary, outcome, _, _ := parseJobSearchResponse(raw)
+
+	if len(jobs) != 2 {
+		t.Errorf("got %d jobs, want 2 (array complete)", len(jobs))
+	}
+	// Array closed cleanly → trailing_garbage (no records lost).
+	if outcome != ExtractionTrailingGarbage {
+		t.Errorf("outcome = %q, want %q (array closed, summary truncated)", outcome, ExtractionTrailingGarbage)
+	}
+	// The partial summary must NOT be delivered verbatim.
+	if strings.Contains(summary, "These two roles look strongest because they ma") {
+		t.Error("summary contains the partial unterminated value — a mid-word sentence was delivered unmarked")
+	}
+}
+
+// TestExtractSummaryField_UnterminatedReturnsEmpty verifies the
+// extractSummaryField helper signals unterminated and returns "" when the
+// closing quote is missing.
+func TestExtractSummaryField_UnterminatedReturnsEmpty(t *testing.T) {
+	raw := `"summary":"partial sentence with no end`
+	val, terminated := extractSummaryField(raw)
+	if terminated {
+		t.Error("terminated = true, want false (no closing quote)")
+	}
+	if val != "" {
+		t.Errorf("value = %q, want \"\" (unterminated summary must be dropped)", val)
+	}
+}
+
+// TestExtractSummaryField_EscapeHandling verifies the escape sequences that
+// the original fork of llm.ExtractJSONAnswer mishandled (\t, \r, \/, \b, \f
+// passed through literally). Each must decode to its real character.
+func TestExtractSummaryField_EscapeHandling(t *testing.T) {
+	cases := []struct {
+		raw   string
+		want  string
+		label string
+	}{
+		{`"summary":"a\tb"`, "a\tb", `tab`},
+		{`"summary":"a\rb"`, "a\rb", `carriage return`},
+		{`"summary":"a\/b"`, "a/b", `forward slash`},
+		{`"summary":"a\bb"`, "a\bb", `backspace`},
+		{`"summary":"a\fb"`, "a\fb", `form feed`},
+		{`"summary":"a\"b"`, `a"b`, `double quote`},
+		{`"summary":"a\nb"`, "a\nb", `newline`},
+		{`"summary":"a\\b"`, `a\b`, `backslash`},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			got, ok := extractSummaryField(c.raw)
+			if !ok {
+				t.Fatalf("terminated = false, want true")
+			}
+			if got != c.want {
+				t.Errorf("escape %s: got %q, want %q", c.label, got, c.want)
+			}
+		})
 	}
 }

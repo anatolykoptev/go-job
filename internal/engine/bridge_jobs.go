@@ -20,29 +20,11 @@ type llmJobOutput struct {
 	Summary string       `json:"summary"`
 }
 
-// jobSearchTokensPerRecord is the estimated output tokens for one fully-
-// populated JobListing JSON record (title, company, url, source, location,
-// salary_min/max/currency/interval, job_type, remote, experience, skills[],
-// description, posted). 300 is a generous ceiling for the structured fields;
-// models that add reasoning or verbose descriptions are covered by the
-// salvage path (parseJobSearchResponse) as a safety net.
-const jobSearchTokensPerRecord = 300
-
-// jobSearchSummaryBudget reserves output tokens for the "summary" field.
-const jobSearchSummaryBudget = 500
-
-// jobSearchMaxOutputTokens computes the output token budget for a job-search
-// extraction call. The documented max limit is 50 records (types_jobs.go
-// JobSearchInput.Limit). Arithmetic: 50 × 300 + 500 = 15500. We never go
-// below the configured LLM_MAX_TOKENS default (16384) so existing deployments
-// that already work are not regressed. The salvage path handles any residual
-// truncation from models that exceed the per-record estimate.
-func jobSearchMaxOutputTokens(numResults int) int {
-	needed := numResults*jobSearchTokensPerRecord + jobSearchSummaryBudget
-	if cfg.LLMMaxTokens > needed {
-		return cfg.LLMMaxTokens
-	}
-	return needed
+// jobSearchComplete is the LLM completion seam for SummarizeJobResults.
+// Defaults to llmInst.CompleteParams; tests swap it to inject canned
+// responses without touching production structure.
+var jobSearchComplete = func(ctx context.Context, prompt string, temperature float64, maxTokens int, opts ...llm.ChatOption) (string, error) {
+	return llmInst.CompleteParams(ctx, prompt, temperature, maxTokens, opts...)
 }
 
 // SummarizeJobResults calls the LLM with job-specific prompt and parses
@@ -52,17 +34,23 @@ func jobSearchMaxOutputTokens(numResults int) int {
 // and a bounded-label counter (job_search_extraction_total{outcome}) records
 // the outcome. The raw JSON is never stuffed into Summary with Jobs left nil.
 //
+// Reasoning tokens are disabled (WithReasoningEffort("none")) because the
+// default model (gemini-3.x) bounds max_tokens on the COMPLETION including
+// thinking tokens — reasoning can consume the entire output budget and cut
+// the JSON mid-record even when the record count is well within the token
+// ceiling. Every other go-engine LLM path (query.go, summarize.go) already
+// does this; this path was the lone exception.
+//
 // finish_reason is NOT surfaced by the go-engine LLM client (Complete returns
 // only (string, error) — see vendor/.../llm/client.go:369), so truncation is
 // detected by the JSON parse failure itself: if json.Unmarshal of the full
 // response fails, the response is malformed/truncated and the salvage path
 // runs.
 func SummarizeJobResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*JobSearchOutput, error) {
-	sources := llm.BuildSourcesText(results, contents, contentLimit, defaultCharsPerToken)
+	sources := BuildSourcesText(results, contents, contentLimit)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
 
-	maxOut := jobSearchMaxOutputTokens(len(results))
-	raw, err := llmInst.CompleteParams(ctx, prompt, cfg.LLMTemperature, maxOut)
+	raw, err := jobSearchComplete(ctx, prompt, cfg.LLMTemperature, cfg.LLMMaxTokens, llm.WithReasoningEffort("none"))
 	if err != nil {
 		return nil, err
 	}
@@ -92,10 +80,16 @@ func SummarizeJobResults(ctx context.Context, query, instruction string, content
 // (jobs, summary, outcome, salvaged, dropped).
 //
 //   - ok                 — full JSON parsed cleanly; salvaged = len(jobs), dropped = 0
-//   - truncated_salvaged — full parse failed; complete array elements decoded
-//     via json.Decoder; dropped ≥ 1 (the record being decoded at the truncation
-//     point; the true loss may be greater but is unknowable from a truncated stream)
-//   - unparseable        — no complete records could be salvaged
+//   - trailing_garbage   — full parse failed (e.g. trailing prose after the
+//     JSON object) but the "jobs" array closed cleanly via the streaming
+//     decoder; all decoded records are kept, dropped = 0. A chat-tuned model
+//     that appends "Hope this helps!" lands here, NOT in truncated_salvaged.
+//   - truncated_salvaged — the "jobs" array did NOT close cleanly (cut
+//     mid-record by the output token budget); complete elements decoded
+//     before the cut are kept; dropped = 1 (a floor — the true loss may be
+//     greater but is unknowable from a truncated stream)
+//   - unparseable        — no "jobs" array found, or the array was truncated
+//     before any complete record decoded
 //
 // This is a pure function (no LLM, no metrics) so it is directly testable with
 // canned strings — the falsification tests feed cut-mid-record JSON here.
@@ -107,7 +101,19 @@ func parseJobSearchResponse(raw string) (jobs []JobListing, summary string, outc
 
 	// Full parse failed — the response is malformed or truncated. Salvage
 	// complete records from the "jobs" array using a streaming decoder.
-	salvagedJobs, salSummary, n := salvageJobs(raw)
+	salvagedJobs, salSummary, n, arrayClosed := salvageJobs(raw)
+
+	if arrayClosed {
+		// The jobs array was found and closed cleanly (io.EOF from the
+		// decoder). The full-parse failure was caused by something else —
+		// trailing prose, a missing closing brace, etc. — NOT truncation.
+		// Preserve the model's summary (even for an empty array: a
+		// legitimate "none match" explanation must not be replaced by a
+		// parse-error message).
+		return salvagedJobs, salSummary, ExtractionTrailingGarbage, n, 0
+	}
+
+	// Array did not close cleanly — genuine truncation.
 	if n > 0 {
 		summary = salSummary
 		if summary == "" {
@@ -116,30 +122,37 @@ func parseJobSearchResponse(raw string) (jobs []JobListing, summary string, outc
 		return salvagedJobs, summary, ExtractionTruncatedSalvaged, n, 1
 	}
 
-	// Could not salvage any complete records.
+	// Truncated before any complete record could be decoded, or no array found.
 	return nil, "LLM response could not be parsed; no job records extracted.", ExtractionUnparseable, 0, 0
 }
 
 // salvageJobs extracts complete JobListing records from a (possibly
 // truncated) JSON response by streaming the "jobs" array with a json.Decoder.
-// Each array element that decodes fully is kept; the decoder stops at the
-// first error (the truncation point). Returns (jobs, summary, count).
+// Each array element that decodes fully is kept. Returns (jobs, summary,
+// count, arrayClosed).
+//
+// arrayClosed is true when the decoder reached io.EOF after the last element —
+// the array's closing ']' was present in the stream. This distinguishes a
+// complete array with trailing garbage (arrayClosed=true, NOT truncated) from
+// a mid-record cut (arrayClosed=false, truncated). The distinction is code,
+// not a comment: the io.EOF vs other-error branch drives the outcome label.
 //
 // Does NOT fabricate closing brackets — a truncated array's first N elements
 // parse clean, and we explicitly stop at the first failure rather than
 // guessing how many more were intended. This avoids the documented trap where
 // "finished with 8" and "truncated at 8 of 15" become indistinguishable: the
-// outcome counter (truncated_salvaged) makes the distinction visible.
-func salvageJobs(raw string) (jobs []JobListing, summary string, count int) {
+// outcome counter (truncated_salvaged vs trailing_garbage) makes the
+// distinction visible.
+func salvageJobs(raw string) (jobs []JobListing, summary string, count int, arrayClosed bool) {
 	// Find the "jobs" array start.
 	jobsIdx := strings.Index(raw, `"jobs"`)
 	if jobsIdx < 0 {
-		return nil, "", 0
+		return nil, "", 0, false
 	}
 	rest := raw[jobsIdx:]
 	bracketIdx := strings.Index(rest, "[")
 	if bracketIdx < 0 {
-		return nil, "", 0
+		return nil, "", 0, false
 	}
 
 	dec := json.NewDecoder(strings.NewReader(rest[bracketIdx:]))
@@ -147,42 +160,58 @@ func salvageJobs(raw string) (jobs []JobListing, summary string, count int) {
 	// Consume the opening '['.
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('[') {
-		return nil, "", 0
+		return nil, "", 0, false
 	}
 
 	for {
+		if !dec.More() {
+			// No more elements. Distinguish a clean array close from a
+			// truncated stream: consume the next token — if it is the
+			// closing ']', the array closed cleanly (io.EOF here would mean
+			// the stream was cut before the bracket). This is the signal
+			// MAJOR 1 and MAJOR 2 need, written as code not a comment.
+			closer, cerr := dec.Token()
+			if cerr == nil && closer == json.Delim(']') {
+				arrayClosed = true
+			}
+			break
+		}
 		var job JobListing
 		if err := dec.Decode(&job); err != nil {
-			// io.EOF = clean end of array (no truncation, but the outer
-			// object was malformed in some other way — e.g. missing summary).
-			// Any other error = truncated mid-record.
+			// Mid-record decode failure = truncation (the stream was cut
+			// inside an element). arrayClosed stays false.
 			break
 		}
 		jobs = append(jobs, job)
 	}
 
 	// Try to salvage the summary field — it may appear before or after the
-	// jobs array. Search for it in the raw string.
-	summary = extractSummaryField(raw)
+	// jobs array. Search for it in the raw string. An unterminated summary
+	// (cut mid-string by truncation) is dropped, not returned verbatim.
+	summary, _ = extractSummaryField(raw)
 
-	return jobs, summary, len(jobs)
+	return jobs, summary, len(jobs), arrayClosed
 }
 
 // extractSummaryField attempts to extract the "summary" string field from a
-// possibly-truncated JSON response. Returns "" if not found.
-func extractSummaryField(raw string) string {
+// possibly-truncated JSON response. Returns (value, terminated). terminated
+// is false when the opening quote was found but no closing quote was reached
+// before end-of-string — the value is a truncation fragment and is returned
+// as "" so the caller falls back to the synthetic truncated-summary message
+// instead of delivering a partial sentence mid-word.
+func extractSummaryField(raw string) (string, bool) {
 	idx := strings.Index(raw, `"summary"`)
 	if idx < 0 {
-		return ""
+		return "", false
 	}
 	rest := raw[idx+len(`"summary"`):]
 	rest = strings.TrimSpace(rest)
 	if len(rest) == 0 || rest[0] != ':' {
-		return ""
+		return "", false
 	}
 	rest = strings.TrimSpace(rest[1:])
 	if len(rest) == 0 || rest[0] != '"' {
-		return ""
+		return "", false
 	}
 	// Find the closing quote, respecting escaped characters.
 	rest = rest[1:]
@@ -194,22 +223,43 @@ func extractSummaryField(raw string) string {
 				sb.WriteByte('"')
 				i++
 				continue
+			case '\\':
+				sb.WriteByte('\\')
+				i++
+				continue
 			case 'n':
 				sb.WriteByte('\n')
 				i++
 				continue
-			case '\\':
-				sb.WriteByte('\\')
+			case 't':
+				sb.WriteByte('\t')
+				i++
+				continue
+			case 'r':
+				sb.WriteByte('\r')
+				i++
+				continue
+			case '/':
+				sb.WriteByte('/')
+				i++
+				continue
+			case 'b':
+				sb.WriteByte('\b')
+				i++
+				continue
+			case 'f':
+				sb.WriteByte('\f')
 				i++
 				continue
 			}
 		}
 		if rest[i] == '"' {
-			return sb.String()
+			return sb.String(), true
 		}
 		sb.WriteByte(rest[i])
 	}
-	return sb.String()
+	// Reached end-of-string without a closing quote — unterminated.
+	return "", false
 }
 
 // FetchContentsParallel fetches text content from URLs in parallel.

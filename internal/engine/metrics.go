@@ -443,10 +443,12 @@ const (
 	// MetricJobSearchExtraction is the labelled counter
 	// gojob_job_search_extraction_total{outcome}. Bumped once per
 	// SummarizeJobResults call, classifying the LLM JSON parse outcome.
-	// outcome ∈ {ok, truncated_salvaged, unparseable} — bounded enum.
+	// outcome ∈ {ok, trailing_garbage, truncated_salvaged, unparseable} — bounded enum.
 	//   - ok                  — full JSON parsed cleanly, all records kept
-	//   - truncated_salvaged  — full parse failed; complete records salvaged
-	//     from the truncated array via json.Decoder, truncated tail dropped
+	//   - trailing_garbage    — full parse failed (trailing prose, missing brace)
+	//     but the "jobs" array closed cleanly; NOT truncation, dropped = 0
+	//   - truncated_salvaged  — full parse failed; the array was cut mid-record;
+	//     complete records salvaged, truncated tail dropped
 	//   - unparseable         — no complete records could be salvaged
 	// Pre-touched for all outcomes so rate()-floor alerts see 0 before
 	// the first job_search call.
@@ -455,9 +457,10 @@ const (
 
 // Extraction outcome label values (job_search_extraction_total{outcome}).
 const (
-	ExtractionOK               = "ok"
+	ExtractionOK                = "ok"
+	ExtractionTrailingGarbage   = "trailing_garbage"
 	ExtractionTruncatedSalvaged = "truncated_salvaged"
-	ExtractionUnparseable      = "unparseable"
+	ExtractionUnparseable       = "unparseable"
 )
 
 // validExtractionOutcomes bounds the outcome label for
@@ -465,6 +468,7 @@ const (
 // (cardinality guard).
 var validExtractionOutcomes = map[string]bool{
 	ExtractionOK:                true,
+	ExtractionTrailingGarbage:   true,
 	ExtractionTruncatedSalvaged: true,
 	ExtractionUnparseable:       true,
 }
@@ -783,8 +787,8 @@ func FormatMetrics() string {
 		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
 	}
 	// Extraction outcome counters pre-touched so rate()-floor alerts see 0
-	// before the first job_search call. 3 outcomes = 3 series (bounded enum).
-	for _, oc := range []string{ExtractionOK, ExtractionTruncatedSalvaged, ExtractionUnparseable} {
+	// before the first job_search call. 4 outcomes = 4 series (bounded enum).
+	for _, oc := range []string{ExtractionOK, ExtractionTrailingGarbage, ExtractionTruncatedSalvaged, ExtractionUnparseable} {
 		keys = append(keys, MetricJobSearchExtraction+"{outcome="+oc+"}")
 	}
 
