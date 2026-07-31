@@ -1,11 +1,19 @@
 package pdfrender
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/go-kit/render/typst"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TestNormalizeTitleBlock covers the pure normalizeTitleBlock helper.
@@ -204,4 +212,313 @@ func firstLines(s string, n int) string {
 		}
 	}
 	return strings.Join(out, " | ")
+}
+
+// TestThemeRegistration verifies that go-job's init() registered the approved
+// resume theme under the name "resume", replacing go-kit's built-in of the
+// same name. This is the silent-failure surface: if the registration never
+// runs, the built-in renders instead and nothing reports a fault — the output
+// is still a plausible resume, just in the wrong layout.
+//
+// typst.LookupTheme is the exported API that resolveTypstTheme calls
+// internally during a real render (a.PDF → r.Render → pdfSource →
+// resolveTypstTheme). So this test checks exactly what the adapter would
+// resolve when it passes Theme: "resume".
+//
+// The oracle is IDENTITY with the embedded file, not a string literal copied
+// out of it. An earlier version asserted "17.8mm present, 16mm absent"; those
+// pin the design rather than the registration, so a future retune of the margin
+// would red this test with the message "template is not registered", which is
+// false. Identity survives any design edit and still fails the moment the
+// resolved theme is not ours.
+//
+// The second assertion keeps the test from going vacuous: it establishes that
+// the built-in this registration displaces is genuinely different. Without it,
+// a go-kit release that happened to ship our preamble would leave the identity
+// check green with nothing registered at all.
+//
+// Falsification: comment out the RegisterTheme call in init(), or register
+// under a different Name → the built-in is returned → identity fails.
+func TestThemeRegistration(t *testing.T) {
+	t.Parallel()
+
+	theme, ok := typst.LookupTheme("resume")
+	if !ok {
+		t.Fatal("typst.LookupTheme(\"resume\") returned ok=false — no theme registered under \"resume\"")
+	}
+
+	if theme.Preamble != resumeTypstPreamble {
+		t.Errorf("resume theme is not go-job's embedded template — got %d bytes, want %d.\nresolved first 200 chars: %q",
+			len(theme.Preamble), len(resumeTypstPreamble), theme.Preamble[:min(200, len(theme.Preamble))])
+	}
+
+	builtIn, ok := typst.LookupTheme(builtInProbeTheme)
+	if !ok {
+		t.Fatalf("typst.LookupTheme(%q) returned ok=false — go-kit's built-in set is not registered, so this test cannot tell an override from a coincidence", builtInProbeTheme)
+	}
+	if builtIn.Preamble == resumeTypstPreamble {
+		t.Errorf("go-kit's %q preamble is byte-identical to our embedded template — the identity assertion above proves nothing", builtInProbeTheme)
+	}
+}
+
+// builtInProbeTheme is a go-kit built-in that go-job does NOT override, used to
+// prove the registry holds something other than our own file.
+const builtInProbeTheme = "report"
+
+// TestMissingFontFamilies guards the detector for the failure this package's
+// font handling exists to close. typst substitutes a missing family without
+// erroring, so the render still succeeds and the resume still looks like a
+// resume — only in the wrong face. Nothing else in the process notices.
+//
+// The captured input is the real `typst fonts` output from the running go-job
+// container on 2026-07-31, which had typst 0.14.2, pandoc 3.10, and no IBM Plex.
+//
+// Falsification: make missingFontFamilies return nil unconditionally → the
+// "container before the fix" case fails.
+func TestMissingFontFamilies(t *testing.T) {
+	t.Parallel()
+
+	const containerBeforeFix = "DejaVu Sans Mono\nLibertinus Serif\nNew Computer Modern\nNew Computer Modern Math\n"
+	// Weight variants list as separate families; the plain family is what the
+	// preamble names, and only its absence matters.
+	const variantsOnly = "DejaVu Sans Mono\nIBM Plex Sans SmBld\nIBM Plex Sans Thai\nIBM Plex Mono Text\n"
+	const afterFix = "DejaVu Sans Mono\nIBM Plex Mono\nIBM Plex Mono SmBld\nIBM Plex Sans\nIBM Plex Sans SmBld\nLibertinus Serif\n"
+
+	for _, tc := range []struct {
+		name string
+		list string
+		want []string
+	}{
+		{"container before the fix", containerBeforeFix, []string{"IBM Plex Sans", "IBM Plex Mono"}},
+		{"only weight variants present", variantsOnly, []string{"IBM Plex Sans", "IBM Plex Mono"}},
+		{"after the fix", afterFix, nil},
+		{"empty output", "", []string{"IBM Plex Sans", "IBM Plex Mono"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := missingFontFamilies([]byte(tc.list), requiredFontFamilies)
+			if len(got) != len(tc.want) {
+				t.Fatalf("missing = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("missing[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// gaugeValue reads a gauge's current value without prometheus/testutil, which
+// is not vendored.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		t.Fatalf("gauge Write: %v", err)
+	}
+	return m.GetGauge().GetValue()
+}
+
+// TestReadySetsFontGauge guards the DECISION, not the parse. Review deleted the
+// whole probe block out of Ready() and the package stayed green: every earlier
+// mutation targeted missingFontFamilies and requiredFontFamilies, so the parse
+// was pinned while the branch that turns a parse into a gauge value was not.
+// An inverted Set, a dropped case or a removed call all shipped silently — the
+// detector for a silent failure was itself silently deletable.
+//
+// Drives Ready() through an injected lister, so it reaches the decision with or
+// without a typst binary on the box and never skips.
+//
+// Not parallel: the gauges are package-level.
+func TestReadySetsFontGauge(t *testing.T) {
+	const complete = "IBM Plex Sans\nIBM Plex Mono\nDejaVu Sans Mono\n"
+	const containerBeforeFix = "DejaVu Sans Mono\nLibertinus Serif\n"
+
+	for _, tc := range []struct {
+		name string
+		list string
+		err  error
+		want float64
+	}{
+		{"every required face present", complete, nil, 1},
+		{"the pre-fix container", containerBeforeFix, nil, 0},
+		{"typst could not be run", "", errors.New("exec: typst: not found"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pdfFontAvailableGauge.Set(-1) // poison, so a missing Set is visible
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) {
+				return []byte(tc.list), tc.err
+			}
+
+			a.Ready()
+
+			if got := gaugeValue(t, pdfFontAvailableGauge); got != tc.want {
+				t.Errorf("gojob_pdf_font_available = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckFontsDiagnostic pins what the OPERATOR is told, which the gauge
+// cannot express. "typst would not run" and "typst ran, the faces are absent"
+// are both correctly 0, but they send someone to different places — and with
+// the error branch swallowed the second message is emitted for the first
+// condition, which is 0 by the wrong road.
+//
+// It also pins the LEVEL. WITH_PDF=0 is the Dockerfile default, so an Error
+// there fires on every boot of a supported build and devalues the Error that
+// means something.
+//
+// Drives checkFonts directly rather than Ready: Ready derives typstPresent from
+// the real PATH, which would make the level assertion depend on whether the box
+// running the test happens to have typst.
+//
+// Not parallel: gauges and slog.Default are package/global.
+func TestCheckFontsDiagnostic(t *testing.T) {
+	const complete = "IBM Plex Sans\nIBM Plex Mono\n"
+	listerErr := errors.New("exec: typst: not found")
+
+	for _, tc := range []struct {
+		name         string
+		list         string
+		err          error
+		typstPresent bool
+		wantLevel    string // "" = nothing logged at Warn or above
+		wantMsg      string
+	}{
+		{"all faces present", complete, nil, true, "", ""},
+		{"faces absent from the image", "DejaVu Sans Mono\n", nil, true, "ERROR", "are absent from this image"},
+		{"typst present but unreadable", "", listerErr, true, "ERROR", "could not be read"},
+		{"typst absent, a WITH_PDF=0 build", "", listerErr, false, "WARN", "expected on a WITH_PDF=0 build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			defer slog.SetDefault(prev)
+
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) { return []byte(tc.list), tc.err }
+			a.checkFonts(context.Background(), tc.typstPresent)
+
+			out := logged.String()
+			if tc.wantLevel == "" {
+				if out != "" {
+					t.Errorf("nothing should be reported, got: %s", out)
+				}
+				return
+			}
+			if !strings.Contains(out, "level="+tc.wantLevel) {
+				t.Errorf("want level=%s, got: %s", tc.wantLevel, out)
+			}
+			// Upper bound, not just a lower one: without this, a branch that
+			// emits its Warn AND an Error still passes, which is the boot-noise
+			// regression the level split exists to prevent.
+			if tc.wantLevel == "WARN" && strings.Contains(out, "level=ERROR") {
+				t.Errorf("WITH_PDF=0 is a supported build and must not raise an Error: %s", out)
+			}
+			if !strings.Contains(out, tc.wantMsg) {
+				t.Errorf("message does not mention %q — the operator is pointed at the wrong problem.\ngot: %s", tc.wantMsg, out)
+			}
+		})
+	}
+}
+
+// TestTypstBinary pins the precedence go-kit's resolveEnvOrPath uses. Probing a
+// different installation than the renderer runs would measure the wrong font
+// set and report it as fact.
+func TestTypstBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		render, vaelor string
+		want           string
+	}{
+		{"neither set falls back to PATH", "", "", "typst"},
+		{"RENDER wins", "/opt/a/typst", "/opt/b/typst", "/opt/a/typst"},
+		{"legacy VAELOR is honoured alone", "", "/opt/b/typst", "/opt/b/typst"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RENDER_TYPST_PATH", tc.render)
+			t.Setenv("VAELOR_TYPST_PATH", tc.vaelor)
+			if got := typstBinary(); got != tc.want {
+				t.Errorf("typstBinary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRequiredFontFamiliesMatchPreamble keeps requiredFontFamilies honest: a
+// preamble that starts naming a face nobody checks for reopens the silent
+// substitution the gauge exists to detect.
+func TestRequiredFontFamiliesMatchPreamble(t *testing.T) {
+	t.Parallel()
+
+	for _, family := range requiredFontFamilies {
+		if !strings.Contains(resumeTypstPreamble, `font: "`+family+`"`) {
+			t.Errorf("requiredFontFamilies lists %q but resume.typ never names it — the check guards a face the theme does not use", family)
+		}
+	}
+	// And the reverse: every font: "..." in the preamble must be checked.
+	for _, chunk := range strings.Split(resumeTypstPreamble, `font: "`)[1:] {
+		end := strings.Index(chunk, `"`)
+		if end < 0 {
+			t.Errorf(`resume.typ has an unterminated font: " — the preamble is malformed: %q`, chunk[:min(60, len(chunk))])
+			continue
+		}
+		named := chunk[:end]
+		found := false
+		for _, family := range requiredFontFamilies {
+			if family == named {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("resume.typ names font %q but requiredFontFamilies does not check for it — its absence would substitute silently", named)
+		}
+	}
+}
+
+// TestIsNoBinaryErr verifies that isNoBinaryErr classifies errors via the
+// typst.ErrBinaryNotFound sentinel, NOT by substring matching. This is the
+// silent-failure surface in the direction that matters: a false positive
+// reports a real render failure as "binary absent" and degrades the whole
+// request to md-only with a Warn, not an Error.
+//
+// Two directions:
+//   - An error wrapping typst.ErrBinaryNotFound → true (binary absent).
+//   - A plain typst compile failure whose text happens to contain "binary
+//     not found" → false (real failure, NOT binary-absent). This is the
+//     case the substring check misclassifies.
+//
+// Falsification: put the substring check back (strings.Contains(err.Error(),
+// "binary not found")) → the compile-failure case goes RED (substring matches
+// even though the error is not a binary-absent sentinel).
+func TestIsNoBinaryErr(t *testing.T) {
+	t.Parallel()
+
+	// Direction 1: error wrapping the sentinel → true.
+	sentinelErr := fmt.Errorf("typst: %w (set RENDER_TYPST_PATH or ensure typst is on PATH)", typst.ErrBinaryNotFound)
+	if !isNoBinaryErr(sentinelErr) {
+		t.Error("isNoBinaryErr returned false for an error wrapping typst.ErrBinaryNotFound — should be true")
+	}
+
+	// Direction 2: plain compile failure whose text contains "binary not found"
+	// but does NOT wrap the sentinel → false. This is the false-positive case
+	// the substring check misclassifies.
+	compileErr := errors.New("typst compile: exit status 1\nstderr: error: binary not found in source")
+	if isNoBinaryErr(compileErr) {
+		t.Error("isNoBinaryErr returned true for a plain compile failure whose text contains 'binary not found' — should be false (not a binary-absent sentinel)")
+	}
+
+	// Direction 3: nil error → false.
+	if isNoBinaryErr(nil) {
+		t.Error("isNoBinaryErr returned true for nil — should be false")
+	}
+
+	// Direction 4: unrelated error → false.
+	if isNoBinaryErr(errors.New("some other error")) {
+		t.Error("isNoBinaryErr returned true for an unrelated error — should be false")
+	}
 }

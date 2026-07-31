@@ -1,3 +1,38 @@
+# fonts stage: install IBM Plex Sans + Mono TTFs when WITH_PDF=1.
+#
+# Typst substitutes a missing font family SILENTLY — no build-time error, no
+# run-time error, no metric. The rendered PDF still looks like a resume, just
+# in the wrong font (Libertinus Serif on a bare alpine/typst image). Shipping
+# the font the theme names is the only way to get the measured design into the
+# container.
+#
+# Ubuntu is used because it carries fonts-ibm-plex 6.1.1-1 (the same build
+# measured on the host). Debian trixie does not carry the package; Alpine has
+# no IBM Plex Sans package at all. The glob pair matches 32 files / 5.3 MB and
+# excludes Arabic/Thai/Hebrew/Devanagari/Condensed/Var families — do not widen
+# it to IBMPlexSans* (the missing hyphen pulls in ~70 MB of scripts nobody
+# renders). Typst finds fonts under /usr/share/fonts/** on its own; no
+# fontconfig, no fc-cache, no TYPST_FONT_PATHS needed.
+#
+# The two -f tests fail the build when the package rearranges its layout. A
+# zero-match glob already fails the && chain; a PARTIAL match does not, and a
+# partial match is the dangerous one — it produces an image with some faces and
+# a resume rendered in whatever typst picks instead. Checked by file rather than
+# by count so a package that adds a weight does not red the build. This is the
+# build-time half; gojob_pdf_font_available is the run-time half, and it is the
+# one that also catches a base-image change nobody rebuilt against.
+FROM ubuntu:24.04 AS fonts
+ARG WITH_PDF=0
+RUN mkdir -p /out && \
+    if [ "$WITH_PDF" = "1" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends fonts-ibm-plex && \
+        cp /usr/share/fonts/truetype/ibm-plex/IBMPlexSans-*.ttf \
+           /usr/share/fonts/truetype/ibm-plex/IBMPlexMono-*.ttf /out/ && \
+        [ -f /out/IBMPlexSans-Regular.ttf ] && [ -f /out/IBMPlexMono-Regular.ttf ] && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 FROM golang:alpine AS builder
 WORKDIR /build
 
@@ -26,6 +61,13 @@ RUN apk add --no-cache ca-certificates tzdata && \
 # which calls setgroups() and is EPERM under that security profile).
 RUN addgroup -g 1001 -S appuser && \
     adduser -u 1001 -S -G appuser -H -D appuser
+
+# Fonts land BEFORE the binary on purpose. They change roughly never, the
+# binary changes every commit, and a layer's cache key includes everything above
+# it — copied after the binary, these 5.3 MB would be rebuilt and re-pushed on
+# every deploy. /out always exists (the fonts stage mkdir's it unconditionally),
+# so this COPY resolves even when WITH_PDF=0, where the directory is empty.
+COPY --from=fonts /out/ /usr/share/fonts/truetype/ibm-plex/
 
 WORKDIR /app
 COPY --from=builder /build/go_job .
