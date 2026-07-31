@@ -2,6 +2,18 @@
 
 All notable changes to go_job are documented here.
 
+## [1.16.0](https://github.com/anatolykoptev/go-job/compare/v1.15.2...v1.16.0) (2026-07-31)
+
+
+### Features
+
+* **job_search:** relevance scoring, honest degradation, and a gate that ships disabled ([#404](https://github.com/anatolykoptev/go-job/issues/404)) ([4ce5eca](https://github.com/anatolykoptev/go-job/commit/4ce5eca40908165e143e0b5682c4d7f240ee0ed0))
+
+
+### Bug Fixes
+
+* **pdfrender:** name the weight the image actually has ([#403](https://github.com/anatolykoptev/go-job/issues/403)) ([f7f111f](https://github.com/anatolykoptev/go-job/commit/f7f111f86ffff732b26d06bd1e7b47a168342ebd))
+
 ## [1.15.2](https://github.com/anatolykoptev/go-job/compare/v1.15.1...v1.15.2) (2026-07-31)
 
 
