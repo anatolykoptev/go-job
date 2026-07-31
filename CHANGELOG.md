@@ -2,6 +2,19 @@
 
 All notable changes to go_job are documented here.
 
+## [1.15.0](https://github.com/anatolykoptev/go-job/compare/v1.14.3...v1.15.0) (2026-07-31)
+
+
+### Features
+
+* **observability:** per-source freshness gauge + outcome counter for scheduled ingest ([#376](https://github.com/anatolykoptev/go-job/issues/376)) ([9e141ae](https://github.com/anatolykoptev/go-job/commit/9e141ae2bbd84b23232e1321a8de6e6ed58cfde4))
+
+
+### Bug Fixes
+
+* **ingest:** hackerone truncation, himalayas decode, dead algora source ([#374](https://github.com/anatolykoptev/go-job/issues/374)) ([297e8a9](https://github.com/anatolykoptev/go-job/commit/297e8a99c1e6452da903b3dfb294b180285458c2))
+* **resume:** make master_resume_build incapable of damaging the profile ([#366](https://github.com/anatolykoptev/go-job/issues/366)) ([3b210d3](https://github.com/anatolykoptev/go-job/commit/3b210d3179f62ad235b70c2246a648d6b2489eef))
+
 ## [1.14.3](https://github.com/anatolykoptev/go-job/compare/v1.14.2...v1.14.3) (2026-07-30)
 
 
