@@ -157,6 +157,10 @@ func TestResumeDB_Migrate_PgUtil_FreshDB(t *testing.T) {
 			// One-shot data backfill marked -- soft to pass the idempotency
 			// guard; it has no extension gate and always applies.
 			softInstalled[name] = true
+		case "008_resume_master_variant.sql":
+			// One-shot data backfill (DO $$ block) marked -- soft to pass
+			// the idempotency guard; no extension gate, always applies.
+			softInstalled[name] = true
 		}
 	}
 	var want []string
@@ -266,6 +270,10 @@ func TestResumeDB_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 		case "007_resume_vectors_source_backfill.sql":
 			// One-shot data backfill marked -- soft to pass the idempotency
 			// guard; it has no extension gate and always applies.
+			softInstalled[name] = true
+		case "008_resume_master_variant.sql":
+			// One-shot data backfill (DO $$ block) marked -- soft to pass
+			// the idempotency guard; no extension gate, always applies.
 			softInstalled[name] = true
 		}
 	}
