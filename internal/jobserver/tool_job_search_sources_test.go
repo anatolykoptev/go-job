@@ -390,3 +390,112 @@ var _ connectors.Source = testSlowSource{}
 
 // ensure errors import is used.
 var _ = errors.Is
+
+// --- BLOCKER A: delivery chain tests for structured precedence ---
+//
+// These tests exercise the FULL wiring (runSource → sourceResult.structured →
+// aggregateSourceResults → structuredJobs return), NOT just the mappers in
+// isolation. The prior test suite called mappers directly, so deleting
+// ApplyStructuredPrecedence, making the StructuredFetcher branch unreachable,
+// or deleting the allListings append left all tests green. These tests close
+// that gap.
+
+// testStructuredSource is a connectors.Source that also implements
+// connectors.StructuredFetcher. It returns a fixed pair of results + listings
+// so the delivery chain can be exercised without a live HTTP server.
+type testStructuredSource struct {
+	results  []engine.SearxngResult
+	listings []engine.JobListing
+}
+
+func (testStructuredSource) Name() string                        { return "test-structured" }
+func (testStructuredSource) Capabilities() connectors.Capability { return 0 }
+func (testStructuredSource) Groups() []string                    { return []string{"all"} }
+func (testStructuredSource) SiteScope() string                   { return "" }
+func (s testStructuredSource) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	return s.results, nil
+}
+func (s testStructuredSource) FetchStructured(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	return s.results, s.listings, nil
+}
+
+// TestRunSource_StructuredFetcher_PopulatesStructuredField verifies that
+// runSource, when the source implements connectors.StructuredFetcher, takes
+// the FetchStructured branch and populates sourceResult.structured with the
+// structured listings. This is the seam that feeds aggregateSourceResults.
+//
+// Mutation: make the StructuredFetcher branch unreachable (delete the
+// type-assertion at tool_job_search.go:523) → structured stays nil → RED.
+func TestRunSource_StructuredFetcher_PopulatesStructuredField(t *testing.T) {
+	src := testStructuredSource{
+		results:  []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng"}},
+		listings: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng", Company: "testco", Source: "lever"}},
+	}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.name != "test-structured" {
+		t.Errorf("name = %q, want test-structured", r.name)
+	}
+	if len(r.results) != 1 {
+		t.Errorf("results = %d, want 1", len(r.results))
+	}
+	if len(r.structured) != 1 {
+		t.Fatalf("structured = %d, want 1 (StructuredFetcher branch must populate structured field)", len(r.structured))
+	}
+	if r.structured[0].Company != "testco" {
+		t.Errorf("structured[0].Company = %q, want testco", r.structured[0].Company)
+	}
+}
+
+// TestAggregateSourceResults_StructuredData_ReturnsStructuredListings verifies
+// that aggregateSourceResults threads the structured listings from
+// sourceResult.structured into its structuredJobs return value. This is the
+// seam that feeds ApplyStructuredPrecedence in runJobSearch.
+//
+// Mutation: delete the `allListings = append(...)` line in aggregateSourceResults
+// → structuredJobs stays nil → RED.
+func TestAggregateSourceResults_StructuredData_ReturnsStructuredListings(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan sourceResult, 1)
+	srcs := []connectors.Source{testStructuredSource{}}
+	dispatched := map[string]bool{"test-structured": true}
+	ch <- sourceResult{
+		name:       "test-structured",
+		results:    []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng"}},
+		structured: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng", Company: "testco", Source: "lever"}},
+		err:        nil,
+	}
+
+	merged, _, structuredJobs, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+	if len(merged) != 1 {
+		t.Errorf("merged = %d, want 1", len(merged))
+	}
+	if len(structuredJobs) != 1 {
+		t.Fatalf("structuredJobs = %d, want 1 (aggregateSourceResults must thread structured listings through)", len(structuredJobs))
+	}
+	if structuredJobs[0].Company != "testco" {
+		t.Errorf("structuredJobs[0].Company = %q, want testco", structuredJobs[0].Company)
+	}
+	if len(sources) != 1 || sources[0].Outcome != engine.SourceOutcomeOK {
+		t.Errorf("sources = %+v, want one ok", sources)
+	}
+	if partial {
+		t.Error("partial = true, want false")
+	}
+}
+
+// TestRunSource_NonStructuredSource_LeavesStructuredNil verifies that a source
+// that does NOT implement StructuredFetcher (the generic-searxng / LinkedIn
+// path) leaves sourceResult.structured nil. This is the negative half: it
+// guards that the StructuredFetcher branch is NOT taken for non-structured
+// sources, so structured data is not fabricated.
+func TestRunSource_NonStructuredSource_LeavesStructuredNil(t *testing.T) {
+	src := testSlowSource{sleep: 0}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.structured != nil {
+		t.Errorf("structured = %v, want nil (non-StructuredFetcher source must not fabricate structured data)", r.structured)
+	}
+}

@@ -151,7 +151,14 @@ func (s atsSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, 
 
 // FetchStructured satisfies StructuredFetcher for the ATS connectors, returning
 // the source-structured JobListing collection alongside the SearxngResult slice.
+// Returns nil listings (no error) when the provider has no fetchStructured
+// wired — a defensive nil guard so a future atsProvider entry without a
+// structured fetcher does not panic.
 func (s atsSource) FetchStructured(ctx context.Context, q Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	if s.p.fetchStructured == nil {
+		results, err := s.p.fetch(ctx, q.Query, q.Location, defaultATSLimit)
+		return results, nil, err
+	}
 	return s.p.fetchStructured(ctx, q.Query, q.Location, defaultATSLimit)
 }
 

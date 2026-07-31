@@ -413,11 +413,14 @@ type greenhouseResponse struct {
 
 // greenhouseJobToListing builds a structured engine.JobListing from a parsed
 // Greenhouse job, the board slug (company), and the resolved job URL. Populates
-// every field the Greenhouse API carries (title, location.name, absolute_url,
-// updated_at, content, departments[].name, company←board slug). Skills and
-// Experience stay empty — Greenhouse carries neither. Description mirrors the
-// 600-rune truncation the SearxngResult content string uses, so the structured
-// field and the LLM-facing snippet stay consistent.
+// every field the Greenhouse API carries that JobListing has a slot for
+// (title, location.name, absolute_url, updated_at, content, company←board
+// slug). departments[].name is parsed by greenhouseJob but NOT mapped —
+// engine.JobListing has no departments field today; the fixture carries it
+// so a future mapping has the data ready. Skills and Experience stay empty —
+// Greenhouse carries neither. Description mirrors the 600-rune truncation the
+// SearxngResult content string uses, so the structured field and the
+// LLM-facing snippet stay consistent.
 func greenhouseJobToListing(job greenhouseJob, slug, jobURL string) engine.JobListing {
 	desc := ""
 	if job.Content != "" {
@@ -664,6 +667,7 @@ type leverPosting struct {
 		Min      int    `json:"min"`
 		Max      int    `json:"max"`
 		Currency string `json:"currency"`
+		Interval string `json:"interval"` // Lever: "per-year-salary" | "per-hour-wage"
 	} `json:"salaryRange"`
 	CreatedAt        int64  `json:"createdAt"`
 	DescriptionPlain string `json:"descriptionPlain"`
@@ -671,18 +675,93 @@ type leverPosting struct {
 	Country          string `json:"country"`
 }
 
+// normalizeRemote maps a provider's workplace-type vocabulary to the
+// prompt_jobs.go contract vocabulary: remote | hybrid | onsite | "".
+// Returns "" for empty/unspecified so the LLM value survives precedence
+// rather than being overwritten with nothing. Provider vocabularies:
+//   - Lever workplaceType: unspecified | on-site | remote | hybrid
+//   - Ashby workplaceType:  remote | hybrid | onsite (casing may vary)
+//
+// The hunt_jobs.remote column is filtered by EXACT equality (hunt/store.go:542:
+// remote = $N), so "on-site" (Lever's hyphenated form) MUST become "onsite"
+// or hunt_list remote=onsite returns zero Lever rows. Similarly, "unspecified"
+// MUST become "" so it does not clobber a real LLM-normalized value via
+// ApplyStructuredPrecedence.
+func normalizeRemote(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "remote": //nolint:goconst // semantic: JobListing.Remote vocabulary, distinct from algoraRemoteRow
+		return "remote"
+	case "hybrid": //nolint:goconst // semantic: JobListing.Remote vocabulary
+		return "hybrid"
+	case "on-site", "onsite", "on_site":
+		return "onsite"
+	default: // "", "unspecified", anything else
+		return ""
+	}
+}
+
+// normalizeSalaryInterval maps Lever's interval vocabulary to the
+// types_jobs.go contract: "year" | "hour" | "month". Lever emits
+// "per-year-salary" and "per-hour-wage"; these map to "year" and "hour".
+// An unrecognized/empty interval returns "" — callers MUST then leave
+// SalaryMin/SalaryMax nil rather than asserting annual, so a per-hour posting
+// is not scored as annual (BLOCKER D: the scorer at hunt/score/scorer.go:370
+// renders SalaryMin/Max into a prompt whose next line says "Minimum
+// compensation: $X USD total comp"; $80/hour scored as $80/year is the
+// traced failure).
+func normalizeSalaryInterval(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "per-year-salary", "year", "annual": //nolint:goconst // semantic: SalaryInterval vocabulary
+		return "year"
+	case "per-hour-wage", "hour", "hourly":
+		return "hour"
+	case "month", "monthly":
+		return "month"
+	default:
+		return ""
+	}
+}
+
+// leverSalaryString renders a leverPosting's salaryRange as a human-readable
+// string via formatSalary (reused from tracker.go — the fourth copy of salary
+// formatting in this file was the REUSE finding). Returns "" when neither min
+// nor max is positive. Used by the SearxngResult content string and the
+// FetchATSBoard compensation field.
+func leverSalaryString(p leverPosting) string {
+	if p.SalaryRange.Min <= 0 && p.SalaryRange.Max <= 0 {
+		return ""
+	}
+	var minPtr, maxPtr *int
+	if p.SalaryRange.Min > 0 {
+		min := p.SalaryRange.Min
+		minPtr = &min
+	}
+	if p.SalaryRange.Max > 0 {
+		max := p.SalaryRange.Max
+		maxPtr = &max
+	}
+	return formatSalary(minPtr, maxPtr, p.SalaryRange.Currency, normalizeSalaryInterval(p.SalaryRange.Interval))
+}
+
 // leverPostingToListing builds a structured engine.JobListing from a parsed
 // Lever posting, the board slug (company), the resolved job URL, and the
 // resolved location string (categories.location, or allLocations joined — the
 // caller already resolves this for the SearxngResult content). Populates every
 // field the Lever API carries: text→Title, hostedUrl/applyUrl→URL,
-// categories.commitment→JobType, workplaceType→Remote,
-// salaryRange.{min,max,currency}→SalaryMin/SalaryMax/SalaryCurrency (and the
-// human-readable Salary string, kept populated for consumers), createdAt→Posted
-// (ISO via leverCreatedAtToISO), descriptionPlain→Description. Skills and
-// Experience stay empty — Lever carries neither. SalaryMin/SalaryMax pointers
-// are set only when the source min/max is positive, so an absent range leaves
-// them nil (no fabricated zeros).
+// categories.commitment→JobType, workplaceType→Remote (normalized),
+// salaryRange.{min,max,currency,interval}→SalaryMin/SalaryMax/SalaryCurrency/
+// SalaryInterval (and the human-readable Salary string via formatSalary),
+// createdAt→Posted (ISO via leverCreatedAtToISO), descriptionPlain→Description.
+// Skills and Experience stay empty — Lever carries neither.
+//
+// Salary guards (BLOCKER C+D):
+//   - Outer guard is Min > 0 || Max > 0 (NOT Min > 0 alone) so {min:0,
+//     max:220000} is not dropped — the exact failure this PR exists to fix.
+//   - Each pointer is set on its own > 0 test so {min:0,max:220000} yields
+//     SalaryMax only, and {min:180000,max:180000} yields both (the old
+//     Max > Min guard silently dropped single-figure comp).
+//   - When interval is absent, ALL salary pointers stay nil — a per-hour
+//     posting must not be scored as annual (BLOCKER D).
 func leverPostingToListing(p leverPosting, slug, jobURL, loc string) engine.JobListing {
 	desc := ""
 	if p.DescriptionPlain != "" {
@@ -696,21 +775,28 @@ func leverPostingToListing(p leverPosting, slug, jobURL, loc string) engine.JobL
 		Source:      string(PlatformLever),
 		Location:    loc,
 		JobType:     p.Categories.Commitment,
-		Remote:      p.WorkplaceType,
+		Remote:      normalizeRemote(p.WorkplaceType),
 		Description: desc,
 		Posted:      leverCreatedAtToISO(p.CreatedAt),
 	}
-	if p.SalaryRange.Min > 0 {
-		min := p.SalaryRange.Min
-		l.SalaryMin = &min
-		l.SalaryCurrency = p.SalaryRange.Currency
-		if p.SalaryRange.Max > p.SalaryRange.Min {
+	interval := normalizeSalaryInterval(p.SalaryRange.Interval)
+	if interval == "" {
+		// No interval → cannot determine annual vs hourly. Leave nil so
+		// the scorer does not render $50–$80 USD/year for a per-hour posting.
+		return l
+	}
+	if p.SalaryRange.Min > 0 || p.SalaryRange.Max > 0 {
+		if p.SalaryRange.Min > 0 {
+			min := p.SalaryRange.Min
+			l.SalaryMin = &min
+		}
+		if p.SalaryRange.Max > 0 {
 			max := p.SalaryRange.Max
 			l.SalaryMax = &max
-			l.Salary = fmt.Sprintf("$%d-$%d %s", p.SalaryRange.Min, p.SalaryRange.Max, p.SalaryRange.Currency)
-		} else {
-			l.Salary = fmt.Sprintf("$%d %s", p.SalaryRange.Min, p.SalaryRange.Currency)
 		}
+		l.SalaryCurrency = p.SalaryRange.Currency
+		l.SalaryInterval = interval
+		l.Salary = formatSalary(l.SalaryMin, l.SalaryMax, p.SalaryRange.Currency, interval)
 	}
 	return l
 }
@@ -788,12 +874,8 @@ func SearchLeverJobsStructured(ctx context.Context, query, location string, limi
 			if p.WorkplaceType != "" {
 				content += " | **Remote:** " + p.WorkplaceType
 			}
-			if p.SalaryRange.Min > 0 {
-				if p.SalaryRange.Max > p.SalaryRange.Min {
-					content += fmt.Sprintf(" | **Salary:** $%d-$%d %s", p.SalaryRange.Min, p.SalaryRange.Max, p.SalaryRange.Currency)
-				} else {
-					content += fmt.Sprintf(" | **Salary:** $%d %s", p.SalaryRange.Min, p.SalaryRange.Currency)
-				}
+			if salStr := leverSalaryString(p); salStr != "" {
+				content += " | **Salary:** " + salStr
 			}
 			if p.DescriptionPlain != "" {
 				desc := engine.TruncateRunes(p.DescriptionPlain, 600, "...")
@@ -930,9 +1012,14 @@ type ashbyResponse struct {
 // job, the board slug (company), and the resolved job URL. Location is built
 // via the existing buildAshbyLocation helper (reused — it folds isRemote and
 // secondaryLocations into the location string). Remote is derived from
-// isRemote (→"remote") falling back to workplaceType when isRemote is false.
-// Salary carries compensationTierSummary verbatim (Ashby's structured comp
-// string). Skills and Experience stay empty — Ashby carries neither here.
+// workplaceType (normalized to the prompt vocabulary) with isRemote=true as
+// the fallback when workplaceType is absent/unspecified. workplaceType wins
+// because it is the MORE SPECIFIC field (remote/hybrid/onsite vs boolean) and
+// the hunt_jobs.remote filter uses exact equality — storing "remote" for a
+// hybrid job would make hunt_list remote=remote match it and remote=hybrid
+// miss it. Salary carries compensationTierSummary verbatim (Ashby's
+// structured comp string). Skills and Experience stay empty — Ashby carries
+// neither here.
 func ashbyJobToListing(j ashbyJob, slug, jobURL string) engine.JobListing {
 	desc := ""
 	if j.DescriptionPlain != "" {
@@ -949,10 +1036,10 @@ func ashbyJobToListing(j ashbyJob, slug, jobURL string) engine.JobListing {
 		Description: desc,
 		Posted:      j.PublishedAt,
 	}
-	if j.IsRemote {
+	if r := normalizeRemote(j.WorkplaceType); r != "" {
+		l.Remote = r
+	} else if j.IsRemote {
 		l.Remote = "remote" //nolint:goconst // semantic: JobListing.Remote field value, distinct from algoraRemoteRow (algora Tier-2 row-walk key)
-	} else if j.WorkplaceType != "" {
-		l.Remote = j.WorkplaceType
 	}
 	return l
 }
@@ -1152,6 +1239,30 @@ func buildAshbyLocation(j ashbyJob) string {
 	return loc
 }
 
+// NormalizeURL canonicalizes a job URL for use as a map join key. It lowercases
+// the host, strips query and fragment, and removes any trailing slash. This
+// makes the producer side (code-built SearxngResult.URL) and the lookup side
+// (LLM-emitted jobOut.Jobs[i].URL, which can carry trailing slashes, query
+// params, or mixed casing) match — without it, structuredByURL is an exact-
+// string map and a single trailing slash yields zero hits (the HIGH finding:
+// "zero hits for structured data").
+//
+// Exported so tool_job_search.go can build the producer-side map with the same
+// canonicalization the lookup side (ApplyStructuredPrecedence) uses.
+func NormalizeURL(u string) string {
+	parsed, err := url.Parse(strings.TrimSpace(u))
+	if err != nil || parsed.Host == "" {
+		// Not a valid absolute URL — fall back to a best-effort trim so the
+		// caller's ExtractJobID fallback still has something to work with.
+		return strings.TrimRight(strings.TrimSpace(u), "/")
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String()
+}
+
 // ApplyStructuredPrecedence overrides LLM-extracted JobListing fields with
 // source-structured values where the structured listing carries a non-empty
 // value. The LLM value is preserved ONLY where the structured one is empty
@@ -1160,18 +1271,68 @@ func buildAshbyLocation(j ashbyJob) string {
 // Lever posting whose API gave salaryRange{160000,220000,USD} surfaces those
 // exact numbers instead of the LLM's "not specified".
 //
-// structuredByURL keys a structured listing by its URL — the natural join key,
-// since JobListing.URL and SearxngResult.URL carry the same value today. An
-// LLM record with no matching structured entry (generic searxng / LinkedIn
-// path) is left untouched. The LLM path is NOT deleted; this merge runs after
-// it. Pointer fields (SalaryMin/SalaryMax) use nil as the empty sentinel so an
-// absent structured salary does not clobber a real LLM value with a zero.
+// Join key (HIGH fix): structuredByURL is keyed by normalizeURL(listing.URL)
+// here, and the lookup uses normalizeURL(llm[i].URL). The producer side
+// (tool_job_search.go) builds the map with the same normalizeURL so a trailing
+// slash, query param, or host casing variation no longer yields zero hits.
+// When the normalized URL still misses, the lookup falls back to
+// ExtractJobID(llm[i].URL) — the same ID extractor used at tool_job_search.go:415
+// — matched against structuredByJobID (built here from each structured
+// listing's JobID). This catches the case where the LLM emits a different URL
+// for the same job (e.g. the apply URL vs the hosted URL on Lever).
+//
+// Description exclusion (MINOR): s.Description is NOT copied — the structured
+// Description is a 600-rune truncation of descriptionPlain, while the LLM
+// Description is the model's own summary. Overwriting the LLM summary with a
+// truncated raw dump loses the summary. The LLM value is kept.
+//
+// Salary zeroing (MINOR): when a structured listing matches but carries NO
+// salary (SalaryMin/Max nil, Salary ""), the LLM's salary fields are ZEROED.
+// This lets precedence CLEAR a wrong LLM value (e.g. a hallucinated salary)
+// rather than leaving it in place. The structured source is authoritative;
+// its silence is meaningful, not a gap to fill from the LLM's guess.
+//
+// Observability: bumps gojob_structured_precedence_total{source,outcome} for
+// every LLM record — outcome=applied on match, outcome=no_match on miss — so
+// the hit rate is visible and a URL-join-key regression (no_match ratio → 1.0)
+// is detectable.
 func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[string]engine.JobListing) {
+	// Build normalized-key + JobID fallback indices once.
+	byNormURL := make(map[string]engine.JobListing, len(structuredByURL))
+	byJobID := make(map[string]engine.JobListing, len(structuredByURL))
+	for _, s := range structuredByURL {
+		k := NormalizeURL(s.URL)
+		if _, exists := byNormURL[k]; !exists {
+			byNormURL[k] = s
+		}
+		if s.JobID != "" {
+			if _, exists := byJobID[s.JobID]; !exists {
+				byJobID[s.JobID] = s
+			}
+		}
+	}
 	for i := range llm {
-		s, ok := structuredByURL[llm[i].URL]
+		s, ok := byNormURL[NormalizeURL(llm[i].URL)]
 		if !ok {
+			// Fallback: match by JobID. Try llm[i].JobID first (the LLM may
+			// have extracted it from the posting body even when the URL is
+			// wrong), then ExtractJobID(llm[i].URL) — the same extractor
+			// used at tool_job_search.go:415. Catches LLM-emitted URL
+			// variations (apply URL vs hosted URL) that normalizeURL cannot
+			// reconcile.
+			id := llm[i].JobID
+			if id == "" {
+				id = ExtractJobID(llm[i].URL)
+			}
+			if id != "" {
+				s, ok = byJobID[id]
+			}
+		}
+		if !ok {
+			engine.IncrStructuredPrecedence("none", "no_match")
 			continue
 		}
+		engine.IncrStructuredPrecedence(s.Source, "applied")
 		if s.Title != "" {
 			llm[i].Title = s.Title
 		}
@@ -1190,20 +1351,23 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		if s.Location != "" {
 			llm[i].Location = s.Location
 		}
-		if s.Salary != "" {
+		// Salary group: structured is authoritative. When structured HAS a
+		// salary, it wins. When structured has NONE, the LLM's salary is
+		// ZEROED — precedence clears a wrong LLM value (e.g. hallucinated
+		// salary) rather than leaving it.
+		hasStructuredSalary := s.Salary != "" || s.SalaryMin != nil || s.SalaryMax != nil || s.SalaryCurrency != "" || s.SalaryInterval != ""
+		if hasStructuredSalary {
 			llm[i].Salary = s.Salary
-		}
-		if s.SalaryMin != nil {
 			llm[i].SalaryMin = s.SalaryMin
-		}
-		if s.SalaryMax != nil {
 			llm[i].SalaryMax = s.SalaryMax
-		}
-		if s.SalaryCurrency != "" {
 			llm[i].SalaryCurrency = s.SalaryCurrency
-		}
-		if s.SalaryInterval != "" {
 			llm[i].SalaryInterval = s.SalaryInterval
+		} else {
+			llm[i].Salary = ""
+			llm[i].SalaryMin = nil
+			llm[i].SalaryMax = nil
+			llm[i].SalaryCurrency = ""
+			llm[i].SalaryInterval = ""
 		}
 		if s.JobType != "" {
 			llm[i].JobType = s.JobType
@@ -1217,9 +1381,7 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		if len(s.Skills) > 0 {
 			llm[i].Skills = s.Skills
 		}
-		if s.Description != "" {
-			llm[i].Description = s.Description
-		}
+		// Description intentionally NOT copied — see doc comment.
 		if s.Posted != "" {
 			llm[i].Posted = s.Posted
 		}
@@ -1466,14 +1628,7 @@ func FetchATSBoard(ctx context.Context, input FetchATSBoardInput) (*FetchATSBoar
 			if loc == "" && len(p.Categories.AllLocations) > 0 {
 				loc = strings.Join(p.Categories.AllLocations, ", ")
 			}
-			comp := ""
-			if p.SalaryRange.Min > 0 {
-				if p.SalaryRange.Max > p.SalaryRange.Min {
-					comp = fmt.Sprintf("$%d-$%d %s", p.SalaryRange.Min, p.SalaryRange.Max, p.SalaryRange.Currency)
-				} else {
-					comp = fmt.Sprintf("$%d %s", p.SalaryRange.Min, p.SalaryRange.Currency)
-				}
-			}
+			comp := leverSalaryString(p)
 			desc := ""
 			if input.IncludeDescription && p.DescriptionPlain != "" {
 				desc = engine.TruncateRunes(p.DescriptionPlain, atsDescriptionMaxRunes, "...")

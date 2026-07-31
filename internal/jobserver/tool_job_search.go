@@ -396,14 +396,22 @@ spawn:
 	// structured one is empty. Runs after assignFallbackURLs so the URL join key
 	// is populated, and before the LinkedIn gap-fill loop so structured values
 	// (the primary source) are not clobbered by LinkedIn's empty-only fill.
+	//
+	// The map is keyed by jobs.NormalizeURL so the producer side (code-built
+	// SearxngResult.URL) and the lookup side (LLM-emitted jobOut.Jobs[i].URL,
+	// which can carry trailing slashes, query params, or mixed casing) match —
+	// ApplyStructuredPrecedence re-normalizes on lookup. Without this, a single
+	// trailing slash yields zero hits (the HIGH finding: "zero hits for
+	// structured data").
 	structuredByURL := make(map[string]engine.JobListing, len(structuredJobs))
 	for i := range structuredJobs {
 		if structuredJobs[i].URL != "" {
+			k := jobs.NormalizeURL(structuredJobs[i].URL)
 			// First-write-wins on duplicate URLs: the ranking/dedup helpers
 			// already deduped SearxngResults by URL upstream, so duplicates are
 			// rare; keeping the first preserves deterministic order.
-			if _, exists := structuredByURL[structuredJobs[i].URL]; !exists {
-				structuredByURL[structuredJobs[i].URL] = structuredJobs[i]
+			if _, exists := structuredByURL[k]; !exists {
+				structuredByURL[k] = structuredJobs[i]
 			}
 		}
 	}

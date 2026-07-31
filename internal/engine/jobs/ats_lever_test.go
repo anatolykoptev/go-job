@@ -24,8 +24,8 @@ import (
 // configurable result. respondOnScopedFirst controls whether it returns results
 // only for queries that begin with the site-scope prefix (V2 variant test mode).
 type countingDiscoverer struct {
-	calls atomic.Int64
-	mu    sync.Mutex
+	calls   atomic.Int64
+	mu      sync.Mutex
 	queries []string
 	// respondOnScopedFirst: when true, return results only when the query
 	// starts with leverSiteSearch (the V2 "scope-first" variant).
@@ -132,9 +132,9 @@ func TestExtractLeverSlugs_FromURLs(t *testing.T) {
 	results := []engine.SearxngResult{
 		{URL: "https://jobs.lever.co/stripe/engineer-123", Title: "Stripe"},
 		{URL: "https://jobs.lever.co/airbnb/designer-456", Title: "Airbnb"},
-		{URL: "https://jobs.lever.co/stripe/other-789", Title: "Stripe 2"},    // dup slug
-		{URL: "https://boards.greenhouse.io/not-lever", Title: "Greenhouse"},   // wrong domain
-		{URL: "https://jobs.lever.co/", Title: "Root (no slug)"},              // no slug
+		{URL: "https://jobs.lever.co/stripe/other-789", Title: "Stripe 2"},   // dup slug
+		{URL: "https://boards.greenhouse.io/not-lever", Title: "Greenhouse"}, // wrong domain
+		{URL: "https://jobs.lever.co/", Title: "Root (no slug)"},             // no slug
 	}
 	slugs := extractLeverSlugs(results)
 
@@ -146,5 +146,82 @@ func TestExtractLeverSlugs_FromURLs(t *testing.T) {
 		if s != want[i] {
 			t.Errorf("[%d] slug = %q, want %q", i, s, want[i])
 		}
+	}
+}
+
+// TestSearchLeverJobsStructured_ReturnsListingsAndResults drives the FULL
+// structured fetch path (discovery → board fetch → leverPostingToListing →
+// parallel []SearxngResult + []JobListing return) against a stub Lever API.
+// This is the BLOCKER A delivery-chain test: the prior suite called
+// leverPostingToListing directly, so deleting the allListings append or the
+// StructuredFetcher branch left all tests green.
+//
+// Asserts:
+//   - len(listings) == len(results) — the parallel slices must stay in lockstep.
+//   - *listings[0].SalaryMin == 160000 — the salary mapping is wired through
+//     the full fetch path, not just the unit-tested mapper.
+//
+// Mutation: delete `allListings = append(allListings, ...)` at the
+// SearchLeverJobsStructured collection loop → listings stays nil → RED.
+// Mutation: delete the StructuredFetcher branch in runSource → listings nil → RED.
+func TestSearchLeverJobsStructured_ReturnsListingsAndResults(t *testing.T) {
+	resetATSDiscoverer(t)
+	resetSlugCache(t)
+	SetSlugCache(nil)
+	leverBreaker.ForceHalfOpen()
+	leverBreaker.Record(true)
+
+	const slug = "testco"
+	leverStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/"+slug) {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Posting with salaryRange{min:160000, max:220000, currency:USD,
+		// interval:per-year-salary} — exercises the full salary mapping chain.
+		_, _ = w.Write([]byte(`[{"id":"abc123","text":"Golang Engineer","hostedUrl":"https://jobs.lever.co/` + slug + `/abc123","categories":{"location":"Remote","team":"Engineering","commitment":"Full-time"},"workplaceType":"remote","salaryRange":{"min":160000,"max":220000,"currency":"USD","interval":"per-year-salary"},"createdAt":1700000000000}]`))
+	}))
+	t.Cleanup(leverStub.Close)
+
+	d := &countingDiscoverer{
+		results: []engine.SearxngResult{
+			{URL: "https://jobs.lever.co/" + slug + "/abc123", Title: slug},
+		},
+	}
+	ATSDiscoverer = d
+
+	origClient := engine.Cfg.HTTPClient
+	engine.Cfg.HTTPClient = &http.Client{
+		Transport: &redirectTransport{target: leverStub.URL},
+	}
+	t.Cleanup(func() { engine.Cfg.HTTPClient = origClient })
+
+	results, listings, err := SearchLeverJobsStructured(context.Background(), "golang", "", 5)
+	if err != nil {
+		t.Fatalf("SearchLeverJobsStructured: unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("SearchLeverJobsStructured returned 0 results — discovery or fetch failed")
+	}
+	if len(listings) != len(results) {
+		t.Fatalf("len(listings) = %d, len(results) = %d — parallel slices must stay in lockstep",
+			len(listings), len(results))
+	}
+	if listings[0].SalaryMin == nil || *listings[0].SalaryMin != 160000 {
+		t.Errorf("listings[0].SalaryMin = %v, want 160000 (salary mapping wired through full fetch path)",
+			listings[0].SalaryMin)
+	}
+	if listings[0].SalaryMax == nil || *listings[0].SalaryMax != 220000 {
+		t.Errorf("listings[0].SalaryMax = %v, want 220000", listings[0].SalaryMax)
+	}
+	if listings[0].SalaryInterval != "year" {
+		t.Errorf("listings[0].SalaryInterval = %q, want year", listings[0].SalaryInterval)
+	}
+	if listings[0].Remote != "remote" {
+		t.Errorf("listings[0].Remote = %q, want remote (normalized)", listings[0].Remote)
+	}
+	if listings[0].Source != "lever" {
+		t.Errorf("listings[0].Source = %q, want lever", listings[0].Source)
 	}
 }
