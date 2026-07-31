@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/go-kit/fileopt"
 	"github.com/anatolykoptev/go-kit/render"
@@ -58,6 +59,27 @@ var pdfRendererAvailableGauge = promauto.NewGauge(prometheus.GaugeOpts{
 	Help: "1 if typst and pandoc binaries are on PATH; 0 if absent (application_persist degrades to md-only).",
 })
 
+// pdfFontAvailableGauge is the detector for the class this package's font
+// handling exists to close. Binary presence and FACE presence are different
+// facts: typst substitutes a missing family without erroring, so an image with
+// typst but without IBM Plex renders every resume in a fallback serif while
+// gojob_pdf_renderer_available reads 1 and every request "succeeds".
+//
+// That was the state of the running container on 2026-07-31 — typst 0.14.2,
+// pandoc 3.10, and four font families, none of them IBM Plex. Nothing reported
+// it. Shipping the fonts fixes the instance; this gauge is what makes a
+// recurrence visible, because a base-image bump or a renamed apt package
+// reopens it just as silently.
+var pdfFontAvailableGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "gojob_pdf_font_available",
+	Help: "1 if every font family the resume theme names is visible to typst; 0 if any is absent (renders silently substitute another face).",
+})
+
+// requiredFontFamilies are the families resume.typ names in its #set text and
+// #show raw rules. Derived from the preamble, not from a hand-kept list — when
+// the preamble changes its font, this must change with it.
+var requiredFontFamilies = []string{"IBM Plex Sans", "IBM Plex Mono"}
+
 // ligaPreamble is a pandoc raw-typst block that disables OpenType ligature
 // substitution for the entire document body. Prepended to every markdown
 // payload before rendering.
@@ -87,9 +109,15 @@ func New() *TypstAdapter {
 	return &TypstAdapter{r: typst.NewTypstRenderer()}
 }
 
-// Ready probes typst and pandoc availability, sets the
-// gojob_pdf_renderer_available gauge (1=present, 0=absent), and returns true
-// when both are on PATH. Call once at startup after constructing the adapter.
+// Ready probes typst and pandoc availability, sets both PDF gauges, and returns
+// true when both binaries are on PATH. Call once at startup after constructing
+// the adapter.
+//
+// Font absence deliberately does NOT make this return false. A resume in the
+// wrong face is worse than one in the right face, but it is better than no PDF
+// at all, and returning false here degrades every application to md-only. The
+// font finding is reported through gojob_pdf_font_available and an Error log
+// instead, so it is visible without being destructive.
 func (a *TypstAdapter) Ready() bool {
 	_, typstErr := exec.LookPath("typst")
 	_, pandocErr := exec.LookPath("pandoc")
@@ -99,7 +127,60 @@ func (a *TypstAdapter) Ready() bool {
 	} else {
 		pdfRendererAvailableGauge.Set(0)
 	}
+
+	if !available {
+		// No typst means no font list to read; leave the face gauge at 0
+		// rather than reporting an absence we did not measure.
+		pdfFontAvailableGauge.Set(0)
+		return available
+	}
+
+	out, err := typstFontList(context.Background())
+	switch {
+	case err != nil:
+		pdfFontAvailableGauge.Set(0)
+		slog.Error("pdfrender: cannot enumerate typst fonts — unable to confirm the resume theme's faces are present", "err", err)
+	default:
+		if missing := missingFontFamilies(out, requiredFontFamilies); len(missing) > 0 {
+			pdfFontAvailableGauge.Set(0)
+			slog.Error("pdfrender: font families named by the resume theme are absent from this image — typst substitutes silently, so every resume renders in the wrong face",
+				"missing", missing)
+		} else {
+			pdfFontAvailableGauge.Set(1)
+		}
+	}
 	return available
+}
+
+// typstFontList shells out to `typst fonts`, which prints one family name per
+// line. Split from the parsing so the parse is testable without a typst binary.
+func typstFontList(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "typst", "fonts").Output()
+}
+
+// missingFontFamilies returns the required families absent from `typst fonts`
+// output, in the order given.
+//
+// Exact line match, not substring: typst lists weight variants as separate
+// families ("IBM Plex Sans SmBld", "IBM Plex Sans Thai"), and a substring test
+// would accept an image carrying only those while the plain family the preamble
+// asks for is missing.
+func missingFontFamilies(fontList []byte, required []string) []string {
+	visible := make(map[string]bool)
+	for _, line := range strings.Split(string(fontList), "\n") {
+		if f := strings.TrimSpace(line); f != "" {
+			visible[f] = true
+		}
+	}
+	var missing []string
+	for _, family := range required {
+		if !visible[family] {
+			missing = append(missing, family)
+		}
+	}
+	return missing
 }
 
 // PDF converts markdown to a PDF byte slice using pandoc + typst + fileopt.

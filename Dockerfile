@@ -13,6 +13,14 @@
 # it to IBMPlexSans* (the missing hyphen pulls in ~70 MB of scripts nobody
 # renders). Typst finds fonts under /usr/share/fonts/** on its own; no
 # fontconfig, no fc-cache, no TYPST_FONT_PATHS needed.
+#
+# The two -f tests fail the build when the package rearranges its layout. A
+# zero-match glob already fails the && chain; a PARTIAL match does not, and a
+# partial match is the dangerous one — it produces an image with some faces and
+# a resume rendered in whatever typst picks instead. Checked by file rather than
+# by count so a package that adds a weight does not red the build. This is the
+# build-time half; gojob_pdf_font_available is the run-time half, and it is the
+# one that also catches a base-image change nobody rebuilt against.
 FROM ubuntu:24.04 AS fonts
 ARG WITH_PDF=0
 RUN mkdir -p /out && \
@@ -21,6 +29,7 @@ RUN mkdir -p /out && \
         apt-get install -y --no-install-recommends fonts-ibm-plex && \
         cp /usr/share/fonts/truetype/ibm-plex/IBMPlexSans-*.ttf \
            /usr/share/fonts/truetype/ibm-plex/IBMPlexMono-*.ttf /out/ && \
+        [ -f /out/IBMPlexSans-Regular.ttf ] && [ -f /out/IBMPlexMono-Regular.ttf ] && \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
@@ -53,6 +62,13 @@ RUN apk add --no-cache ca-certificates tzdata && \
 RUN addgroup -g 1001 -S appuser && \
     adduser -u 1001 -S -G appuser -H -D appuser
 
+# Fonts land BEFORE the binary on purpose. They change roughly never, the
+# binary changes every commit, and a layer's cache key includes everything above
+# it — copied after the binary, these 5.3 MB would be rebuilt and re-pushed on
+# every deploy. /out always exists (the fonts stage mkdir's it unconditionally),
+# so this COPY resolves even when WITH_PDF=0, where the directory is empty.
+COPY --from=fonts /out/ /usr/share/fonts/truetype/ibm-plex/
+
 WORKDIR /app
 COPY --from=builder /build/go_job .
 
@@ -67,11 +83,6 @@ RUN mkdir -p /data/uploads && chown -R 1001:1001 /app /data/uploads
 # With HOME=/tmp the sessions land on the already-mounted /tmp tmpfs —
 # no extra writable path needed beyond what the compose already provides.
 ENV HOME=/tmp
-
-# Copy IBM Plex fonts into the runtime image. /out is always created by the
-# fonts stage (even when WITH_PDF=0), so this COPY succeeds unconditionally.
-# When WITH_PDF=0 the directory is empty — zero bytes added to the slim image.
-COPY --from=fonts /out/ /usr/share/fonts/truetype/ibm-plex/
 
 USER 1001
 

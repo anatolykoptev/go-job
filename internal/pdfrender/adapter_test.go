@@ -221,16 +221,20 @@ func firstLines(s string, n int) string {
 // resolveTypstTheme). So this test checks exactly what the adapter would
 // resolve when it passes Theme: "resume".
 //
-// Anchors on values that DIFFER between the two themes:
-//   - go-job template: 17.8mm margins, level-4 #show rule
-//   - go-kit built-in: 16mm margins, no level-4 rule
+// The oracle is IDENTITY with the embedded file, not a string literal copied
+// out of it. An earlier version asserted "17.8mm present, 16mm absent"; those
+// pin the design rather than the registration, so a future retune of the margin
+// would red this test with the message "template is not registered", which is
+// false. Identity survives any design edit and still fails the moment the
+// resolved theme is not ours.
 //
-// Asserts both directions: ours present, theirs absent. A test that only
-// checks "some resume theme resolved" passes with the bug in place.
+// The second assertion keeps the test from going vacuous: it establishes that
+// the built-in this registration displaces is genuinely different. Without it,
+// a go-kit release that happened to ship our preamble would leave the identity
+// check green with nothing registered at all.
 //
-// Falsification: comment out the RegisterTheme call in init() → the built-in
-// is returned instead → the 17.8mm assertion fails AND the 16mm assertion
-// fails (built-in has 16mm, which we assert absent).
+// Falsification: comment out the RegisterTheme call in init(), or register
+// under a different Name → the built-in is returned → identity fails.
 func TestThemeRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -239,21 +243,96 @@ func TestThemeRegistration(t *testing.T) {
 		t.Fatal("typst.LookupTheme(\"resume\") returned ok=false — no theme registered under \"resume\"")
 	}
 
-	preamble := theme.Preamble
-
-	// Ours present: 17.8mm margins (go-job template).
-	if !strings.Contains(preamble, "17.8mm") {
-		t.Errorf("resume theme preamble does NOT contain 17.8mm — go-job template is not registered; got built-in or wrong theme.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	if theme.Preamble != resumeTypstPreamble {
+		t.Errorf("resume theme is not go-job's embedded template — got %d bytes, want %d.\nresolved first 200 chars: %q",
+			len(theme.Preamble), len(resumeTypstPreamble), theme.Preamble[:min(200, len(theme.Preamble))])
 	}
 
-	// Ours present: level-4 #show rule (go-job template has it, built-in does not).
-	if !strings.Contains(preamble, "level: 4") {
-		t.Errorf("resume theme preamble does NOT contain 'level: 4' — go-job template's level-4 show rule is missing; got built-in or wrong theme.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+	builtIn, ok := typst.LookupTheme(builtInProbeTheme)
+	if !ok {
+		t.Fatalf("typst.LookupTheme(%q) returned ok=false — go-kit's built-in set is not registered, so this test cannot tell an override from a coincidence", builtInProbeTheme)
 	}
+	if builtIn.Preamble == resumeTypstPreamble {
+		t.Errorf("go-kit's %q preamble is byte-identical to our embedded template — the identity assertion above proves nothing", builtInProbeTheme)
+	}
+}
 
-	// Theirs absent: 16mm margins (go-kit built-in has these, ours does not).
-	if strings.Contains(preamble, "16mm") {
-		t.Errorf("resume theme preamble contains 16mm — go-kit built-in is registered instead of go-job template.\npreamble first 200 chars: %q", preamble[:min(200, len(preamble))])
+// builtInProbeTheme is a go-kit built-in that go-job does NOT override, used to
+// prove the registry holds something other than our own file.
+const builtInProbeTheme = "report"
+
+// TestMissingFontFamilies guards the detector for the failure this package's
+// font handling exists to close. typst substitutes a missing family without
+// erroring, so the render still succeeds and the resume still looks like a
+// resume — only in the wrong face. Nothing else in the process notices.
+//
+// The captured input is the real `typst fonts` output from the running go-job
+// container on 2026-07-31, which had typst 0.14.2, pandoc 3.10, and no IBM Plex.
+//
+// Falsification: make missingFontFamilies return nil unconditionally → the
+// "container before the fix" case fails.
+func TestMissingFontFamilies(t *testing.T) {
+	t.Parallel()
+
+	const containerBeforeFix = "DejaVu Sans Mono\nLibertinus Serif\nNew Computer Modern\nNew Computer Modern Math\n"
+	// Weight variants list as separate families; the plain family is what the
+	// preamble names, and only its absence matters.
+	const variantsOnly = "DejaVu Sans Mono\nIBM Plex Sans SmBld\nIBM Plex Sans Thai\nIBM Plex Mono Text\n"
+	const afterFix = "DejaVu Sans Mono\nIBM Plex Mono\nIBM Plex Mono SmBld\nIBM Plex Sans\nIBM Plex Sans SmBld\nLibertinus Serif\n"
+
+	for _, tc := range []struct {
+		name string
+		list string
+		want []string
+	}{
+		{"container before the fix", containerBeforeFix, []string{"IBM Plex Sans", "IBM Plex Mono"}},
+		{"only weight variants present", variantsOnly, []string{"IBM Plex Sans", "IBM Plex Mono"}},
+		{"after the fix", afterFix, nil},
+		{"empty output", "", []string{"IBM Plex Sans", "IBM Plex Mono"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := missingFontFamilies([]byte(tc.list), requiredFontFamilies)
+			if len(got) != len(tc.want) {
+				t.Fatalf("missing = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("missing[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRequiredFontFamiliesMatchPreamble keeps requiredFontFamilies honest: a
+// preamble that starts naming a face nobody checks for reopens the silent
+// substitution the gauge exists to detect.
+func TestRequiredFontFamiliesMatchPreamble(t *testing.T) {
+	t.Parallel()
+
+	for _, family := range requiredFontFamilies {
+		if !strings.Contains(resumeTypstPreamble, `font: "`+family+`"`) {
+			t.Errorf("requiredFontFamilies lists %q but resume.typ never names it — the check guards a face the theme does not use", family)
+		}
+	}
+	// And the reverse: every font: "..." in the preamble must be checked.
+	for _, chunk := range strings.Split(resumeTypstPreamble, `font: "`)[1:] {
+		end := strings.Index(chunk, `"`)
+		if end < 0 {
+			t.Errorf(`resume.typ has an unterminated font: " — the preamble is malformed: %q`, chunk[:min(60, len(chunk))])
+			continue
+		}
+		named := chunk[:end]
+		found := false
+		for _, family := range requiredFontFamilies {
+			if family == named {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("resume.typ names font %q but requiredFontFamilies does not check for it — its absence would substitute silently", named)
+		}
 	}
 }
 
