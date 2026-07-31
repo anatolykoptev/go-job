@@ -20,17 +20,28 @@
   line(length: 100%, stroke: rgb("#cbd5e1") + 0.6pt)
   v(2.2mm, weak: true)
 }
+// Headings are "bold" (700), not "semibold" (600), and that is deliberate.
+// Measured in the deployed image: family "IBM Plex Sans" carries weights
+// 100/200/300/400/700 only — typst exposes 600 as a SEPARATE family, "IBM Plex
+// Sans SmBld". Asking for 600 here resolved to 700 by nearest-weight, silently,
+// so the approved layout has always been Bold. Naming 700 changes nothing on the
+// page (verified: 942 glyph boxes, every one at an identical position) and stops
+// the preamble asking for a face this image cannot supply.
+//
+// Wanting real SemiBold means naming "IBM Plex Sans SmBld" — the file ships in
+// the image already, no Dockerfile change — and re-approving the result, because
+// it does change the rendering.
 #show heading.where(level: 2): it => {
   v(4.5mm, weak: true)
   block(below: 3mm, breakable: false)[
-    #text(size: 12pt, weight: "semibold", fill: rgb("#334155"), tracking: 0.7pt, upper(it.body))
+    #text(size: 12pt, weight: "bold", fill: rgb("#334155"), tracking: 0.7pt, upper(it.body))
     #v(1mm, weak: true)
     #line(length: 100%, stroke: rgb("#e2e8f0") + 0.6pt)
   ]
 }
 #show heading.where(level: 3): it => {
   v(3.7mm, weak: true)
-  text(size: 11pt, weight: "semibold", fill: rgb("#334155"), it.body)
+  text(size: 11pt, weight: "bold", fill: rgb("#334155"), it.body)
   v(3.5mm, weak: true)
 }
 
@@ -55,7 +66,7 @@
   if y == 0 { (bottom: rgb("#94a3b8") + 1pt) }
   else { (bottom: rgb("#e2e8f0") + 0.6pt) }
 })
-#show table.cell.where(y: 0): set text(weight: "semibold", size: 9pt)
+#show table.cell.where(y: 0): set text(weight: "bold", size: 9pt)
 #set table(inset: (x: 8pt, y: 6pt))
 
 // ── cover (title page) injected by Go before body ────────
