@@ -89,7 +89,7 @@ func (w *OppWorker) runCycle(ctx context.Context) {
 		jobs.PersistSecurity(ctx, secPrograms)
 	}()
 
-	// Bounties (Algora + Opire + BountyHub + Boss + Lightning + Collaborators)
+	// Bounties (Opire + BountyHub + Boss + Lightning + Collaborators)
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
