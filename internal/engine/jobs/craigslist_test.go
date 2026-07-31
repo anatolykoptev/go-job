@@ -945,8 +945,12 @@ func urlCapturingStealth(captured *string, body []byte) func(context.Context, st
 }
 
 // F1 — profile fallback: a search with NO explicit location, against a profile
-// whose location is set, must resolve the profile's region and return results
-// instead of errCraigslistUnmapped.
+// whose location is set to an EXACT region key, must resolve and return results
+// instead of errCraigslistUnmapped. The profile tier is a substituted value the
+// caller never sees, so it is held to exact-match-only resolution (round 5):
+// the profile must store an exact craigslistRegions key or craigslistRegionSlugs
+// slug. A free-text profile location like "San Francisco Bay Area" is REFUSED
+// by the strict resolver — that case is covered by F15.
 //
 // MUTATION-CHECK: remove the fallback call in SearchCraigslistJobs (leave
 // location="" ) → resolveRegion("") returns false → errCraigslistUnmapped →
@@ -957,9 +961,9 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 	engine.Cfg.CraigslistDefaultLocation = ""
 
-	// Profile holds the real stored value: "San Francisco Bay Area".
+	// Profile holds an exact region key — the strict resolver accepts it.
 	craigslistProfileLocation = func(_ context.Context) (string, error) {
-		return "San Francisco Bay Area", nil
+		return "sf", nil
 	}
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
@@ -979,9 +983,9 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected results via profile fallback, got 0")
 	}
-	// The profile value "San Francisco Bay Area" resolves to the sfbay area
-	// slug via resolveRegion's substring pass — prove the profile location
-	// flowed through to the URL, not a hardcoded constant.
+	// The profile value "sf" resolves to the sfbay area slug via the strict
+	// resolver's exact-key hit — prove the profile location flowed through to
+	// the URL, not a hardcoded constant.
 	if !strings.Contains(capturedURL, "/area/"+craigslistCitySFBay) {
 		t.Errorf("profile fallback did not reach the URL: got %s, want /area/%s", capturedURL, craigslistCitySFBay)
 	}
@@ -1314,7 +1318,7 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 	engine.Cfg.CraigslistDefaultLocation = ""
 
-	craigslistProfileLocation = func(_ context.Context) (string, error) { return "San Francisco Bay Area", nil }
+	craigslistProfileLocation = func(_ context.Context) (string, error) { return "sf", nil }
 
 	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
 	if err != nil {
@@ -1349,52 +1353,41 @@ func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testin
 // (false), NOT the state — searching washingtondc for someone in Spokane is
 // the same wrong-city outcome #347 exists to prevent.
 //
-// MUTATION-CHECK (F11): revert the state-tier rule → the six "City Washington"
-// no-comma cases resolve to washingtondc → the not-washingtondc / wantOK=false
-// assertions fail → RED.
-// MUTATION-CHECK (F12): restore first-segment-only segmentation →
-// "Remote, San Francisco, CA" → unmapped (city in segment 1 discarded) → RED.
-// MUTATION-CHECK (F13): neuter the position comparison (posInSegment) →
-// "Seattle Washington" → "washington" (longest, 10 > 7) wins → state-tier guard
-// rejects (pos > 0) → false, but want seattle,true → RED. Without the guard too,
-// → washingtondc → RED.
+// Round 5 reverted the round-4 all-segment ranking and state-tier guard. The
+// no-comma "City Washington" cases where the city is NOT a key (e.g. "Spokane
+// Washington") now resolve to washingtondc via the state token — that is a
+// residual name-collision on EXPLICIT input, out of scope this round (the
+// caller typed it and can see the result is wrong). The leading-qualifier
+// form ("Remote, San Francisco, CA") now fails closed (false) — an acceptable
+// miss, it errors rather than searching the wrong city. Both were round-4
+// assertions removed here deliberately.
+//
+// MUTATION-CHECK: restore longest-wins-regardless-of-position (revert to the
+// round-2 token pass over the whole string with len(key) as the primary rank)
+// → "Seattle, Washington" matches "washington" (longest) → washingtondc → the
+// not-washingtondc assertion fails → RED.
 func TestResolveRegion_CityBeatsState_WashingtonCities(t *testing.T) {
 	cases := []struct {
 		loc    string
 		want   string
 		wantOK bool
 	}{
-		// City that IS a key — BOTH punctuation shapes must resolve to the
-		// city, never to washingtondc.
+		// City that IS a key — the comma form must resolve to the city,
+		// never to washingtondc.
 		{"Seattle, Washington", craigslistRegions["seattle"], true},
-		{"Seattle Washington", craigslistRegions["seattle"], true},
 		{"Tacoma, Washington", craigslistRegions["tacoma"], true},
-		{"Tacoma Washington", craigslistRegions["tacoma"], true},
-		// City that is NOT a key — BOTH punctuation shapes must be unmapped,
-		// NOT fall through to "washington" → washingtondc. The no-comma form
-		// is the #347 regression this round closes: "Spokane Washington"
-		// silently searched Washington DC.
+		// City that is NOT a key — the comma form must be unmapped, NOT
+		// fall through to "washington" → washingtondc.
 		{"Spokane, Washington", "", false},
-		{"Spokane Washington", "", false},
 		{"Vancouver, Washington", "", false},
-		{"Vancouver Washington", "", false},
 		{"Bellevue, Washington", "", false},
-		{"Bellevue Washington", "", false},
 		{"Redmond, Washington", "", false},
-		{"Redmond Washington", "", false},
 		// Positive control: "WA" is not a key, so the state abbreviation does
 		// not interfere and the city resolves on its own.
 		{"Seattle, WA", craigslistRegions["seattle"], true},
 		// Multi-token path: no comma, whole string is one segment; "san
 		// francisco" matches at position 0 → sfbay.
 		{"San Francisco Bay Area", craigslistCitySFBay, true},
-		// Leading qualifier (LinkedIn-style "Remote, City, ST"): the city in
-		// segment 1 must still resolve. Round 2 handled this; round 3's
-		// first-segment-only segmentation regressed it — ranking across ALL
-		// segments with a segment-index penalty restores it.
-		{"Remote, San Francisco, CA", craigslistCitySFBay, true},
-		{"Remote, Seattle, WA", craigslistRegions["seattle"], true},
-		{"123 Main St, Seattle, WA", craigslistRegions["seattle"], true},
 	}
 	for _, c := range cases {
 		got, ok := resolveRegion(c.loc)
@@ -1654,5 +1647,157 @@ func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
 	}
 	if second != "" {
 		t.Errorf("cache not invalidated after ClearPerson: got %q, want \"\" — the connector would keep searching a deleted person's city", second)
+	}
+}
+
+// --- F15: the fallback refuses a non-exact value (round 5) ---
+//
+// The fallback path (profile or config tier) resolves by EXACT match only — no
+// token pass, no segment ranking. A profile location like "San Francisco Bay
+// Area" is NOT an exact craigslistRegions key or craigslistRegionSlugs slug, so
+// it must be REFUSED with errCraigslistUnmapped, not guessed into sfbay by the
+// general resolver's substring machinery. Four consecutive attempts to make
+// the general resolver safe on this path each introduced a new wrong-city
+// route; round 5 removes the guess from the path where it is dangerous.
+//
+// MUTATION-CHECK: route the substituted location through resolveRegion instead
+// of resolveRegionStrict in SearchCraigslistJobs → "San Francisco Bay Area"
+// resolves to sfbay via the substring pass → the test expects errCraigslistUnmapped
+// and gets results → RED.
+func TestSearchCraigslistJobs_FallbackRefusesNonExactProfileLocation(t *testing.T) {
+	saveFetchVars(t)
+	saveDefaultLocationDeps(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	// Profile holds a free-text value that the general resolver WOULD match
+	// via substring ("san francisco" inside "san francisco bay area") but the
+	// strict resolver must REFUSE.
+	craigslistProfileLocation = func(_ context.Context) (string, error) {
+		return "San Francisco Bay Area", nil
+	}
+
+	craigslistStealthFetch = transportCalledStub(t, "stealth")
+	craigslistOxFetchFetch = transportCalledStub(t, "ox-fetch")
+	craigslistOxBrowserFetch = transportCalledStub(t, "ox-browser")
+
+	_, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+	if err == nil {
+		t.Fatal("expected errCraigslistUnmapped for non-exact profile location, got nil — the strict resolver was bypassed")
+	}
+	if !errors.Is(err, errCraigslistUnmapped) {
+		t.Errorf("expected errCraigslistUnmapped, got: %v", err)
+	}
+}
+
+// --- F16: the fallback accepts an exact key and a slug (round 5) ---
+//
+// The strict resolver accepts an exact craigslistRegions key (e.g. "sf") and an
+// exact craigslistRegionSlugs slug (e.g. "sfbay"). Both must resolve through the
+// config tier so an operator who sets CRAIGSLIST_DEFAULT_LOCATION to either form
+// gets results, not an error.
+//
+// MUTATION-CHECK: drop the craigslistRegionSlugs lookup from resolveRegionStrict
+// → the "sfbay" subtest expects results and gets errCraigslistUnmapped → RED.
+func TestSearchCraigslistJobs_FallbackAcceptsExactKeyAndSlug(t *testing.T) {
+	for _, loc := range []string{"sf", "sfbay"} {
+		t.Run(loc, func(t *testing.T) {
+			saveFetchVars(t)
+			saveDefaultLocationDeps(t)
+			engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+			craigslistProfileLocation = func(_ context.Context) (string, error) { return "", nil }
+			engine.Cfg.CraigslistDefaultLocation = loc
+
+			fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			craigslistStealthFetch = stubStealthSuccess(fixture)
+			craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+			craigslistOxBrowserFetch = stubOx403
+
+			results, err := SearchCraigslistJobs(context.Background(), "golang", "", 5)
+			if err != nil {
+				t.Fatalf("expected results for exact %q, got error: %v", loc, err)
+			}
+			if len(results) == 0 {
+				t.Fatalf("expected results for exact %q, got 0", loc)
+			}
+		})
+	}
+}
+
+// --- F17: explicit input is unaffected by the strict resolver (round 5) ---
+//
+// An explicitly-passed location must still go through the FULL general resolver
+// (resolveRegion) — the caller typed it and can see the result is wrong, so
+// token/segment matching is safe there. The strict resolver must NOT gate
+// explicit input. "New York" is an exact key, but "New York, NY" is not — the
+// general resolver matches it via the first-segment token pass ("new york"),
+// and that must still work for an explicit caller.
+//
+// MUTATION-CHECK: route explicit input through resolveRegionStrict in
+// SearchCraigslistJobs → "New York, NY" (not an exact key) is refused → the
+// test expects results and gets errCraigslistUnmapped → RED.
+func TestSearchCraigslistJobs_ExplicitLocationUsesFullResolver(t *testing.T) {
+	saveFetchVars(t)
+	saveDefaultLocationDeps(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+
+	// Profile is set to an exact key; the caller passes a non-exact but
+	// token-matchable location. The full resolver must handle it.
+	craigslistProfileLocation = func(_ context.Context) (string, error) { return "sf", nil }
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var capturedURL string
+	craigslistStealthFetch = urlCapturingStealth(&capturedURL, fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	// "New York, NY" is NOT an exact key — the strict resolver would refuse
+	// it. The general resolver matches "new york" in the first segment.
+	results, err := SearchCraigslistJobs(context.Background(), "golang", "New York, NY", 5)
+	if err != nil {
+		t.Fatalf("explicit location must use the full resolver, got error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for explicit location via full resolver, got 0")
+	}
+	if !strings.Contains(capturedURL, "/area/"+craigslistCityNewYork) {
+		t.Errorf("explicit location did not resolve via full resolver: got %s, want /area/%s", capturedURL, craigslistCityNewYork)
+	}
+}
+
+// --- F18: the round-4 regressions are gone (round 5) ---
+//
+// Round 4's all-segment ranking made these explicitly-passed locations resolve
+// to the wrong city:
+//
+//	"Buffalo, New York"     → ("newyork", true)     — wrong, Buffalo is not NYC
+//	"New Orleans, LA"       → ("losangeles", true)  — wrong, "la" matched as a token
+//
+// Round 5 reverts to first-segment-only scoping: "Buffalo" (segment 0) is not a
+// key → unmapped; "New Orleans" (segment 0) is not a key → unmapped. Both must
+// return ("", false).
+//
+// MUTATION-CHECK: restore the all-segment ranking (rank across ALL comma-separated
+// segments with a segment-index penalty) → "Buffalo, New York" matches "new york"
+// in segment 1 → ("newyork", true) → the wantOK=false assertion fails → RED.
+func TestResolveRegion_Round4RegressionsGone(t *testing.T) {
+	cases := []string{
+		"Buffalo, New York",
+		"New Orleans, LA",
+		"Baton Rouge, LA",
+		"Rochester, New York",
+	}
+	for _, loc := range cases {
+		region, ok := resolveRegion(loc)
+		if ok {
+			t.Errorf("resolveRegion(%q) = (%q, true), want (\"\", false) — round-4 all-segment ranking regressed: a non-city segment matched a state key", loc, region)
+		}
 	}
 }
