@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.17.0](https://github.com/anatolykoptev/go-job/compare/v1.16.0...v1.17.0) (2026-07-31)
+
+
+### Features
+
+* **pdfrender:** apply the design review, and record the standard in DESIGN.md ([#411](https://github.com/anatolykoptev/go-job/issues/411)) ([8e415b6](https://github.com/anatolykoptev/go-job/commit/8e415b6acb107bdb0e50f609c7f7cc7a2e49d110))
+
 ## [1.16.0](https://github.com/anatolykoptev/go-job/compare/v1.15.2...v1.16.0) (2026-07-31)
 
 
