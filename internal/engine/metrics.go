@@ -845,16 +845,6 @@ func IncrYouTubeSearch()         { reg.Incr(MetricYouTubeSearchRequests) }
 func IncrYouTubeTranscript()     { reg.Incr(MetricYouTubeTranscriptReqs) }
 func IncrToolCall()              { reg.Incr(MetricToolCalls) }
 
-// IncrJobSearchRelevance bumps gojob_job_search_relevance_total{outcome=<o>}.
-// outcome ∈ {scored, kept, floor_kept, rejected} — bounded label. Called once per candidate
-// in the relevance-gate stage of runJobSearch.
-func IncrJobSearchRelevance(outcome string) {
-	if !validRelevanceOutcomes[outcome] {
-		return
-	}
-	reg.Incr(MetricJobSearchRelevance + "{outcome=" + outcome + "}")
-}
-
 // AddJobSearchRelevance adds n to gojob_job_search_relevance_total{outcome=<o>}
 // in one reg.Add call, for the per-batch counts (scored/kept/floor_kept/rejected)
 // the gate derives from slice lengths — avoids a per-candidate Incr loop.

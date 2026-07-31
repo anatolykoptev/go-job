@@ -236,13 +236,14 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	scored := rr.Rerank(gateCtx, query, docs)
 
 	// Write cosine into each result's Score field, in scored (desc) order.
-	sorted := make([]engine.SearxngResult, len(scored))
-	for i, s := range scored {
+	sorted := make([]engine.SearxngResult, 0, len(scored))
+	for _, s := range scored {
 		idx := s.OrigRank
-		if idx >= 0 && idx < len(candidates) {
-			candidates[idx].Score = float64(s.Score)
+		if idx < 0 || idx >= len(candidates) {
+			continue
 		}
-		sorted[i] = candidates[idx]
+		candidates[idx].Score = float64(s.Score)
+		sorted = append(sorted, candidates[idx])
 	}
 
 	// Count how many actually passed the threshold (needed to distinguish
@@ -268,10 +269,12 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		engine.AddJobSearchRelevance(engine.RelevanceScored, n)
 	}
 
-	// Did the floor engage? FilterByScore returns results[:minKeep] when
-	// len(passing) < minKeep && len(sorted) >= minKeep. The survivors beyond
-	// the passing count are floor_kept (B2).
-	floorEngaged := jobSearchMinKeep > 0 && passingCount < jobSearchMinKeep && len(sorted) >= jobSearchMinKeep && len(filtered) > passingCount
+	// Did the floor engage? FilterByScore has TWO floor branches: it returns
+	// results[:minKeep] when len(sorted) >= minKeep, and the WHOLE slice when
+	// there are fewer candidates than the floor. Conditioning on the first
+	// branch alone let the second return rejected results as if nothing had
+	// been floored. len(filtered) > passingCount covers both.
+	floorEngaged := jobSearchMinKeep > 0 && passingCount < jobSearchMinKeep && len(filtered) > passingCount
 	floorKeptCount := 0
 	if floorEngaged {
 		floorKeptCount = len(filtered) - passingCount

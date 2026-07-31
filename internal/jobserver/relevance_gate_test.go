@@ -58,6 +58,7 @@ func (f *relevanceFakeEmbedder) Close() error   { return nil }
 // Vector scheme (2-dim, query = [1, 0]):
 //   - on-topic passage:  [0.86, 0.51]  → cosine ≈ 0.86
 //   - off-topic passage: [0.83, 0.56]  → cosine ≈ 0.83
+//
 // margin ≈ 0.03 — a threshold of 0.845 separates them; 0.95 rejects both.
 type relevanceNarrowEmbedder struct {
 	queryVec []float32
@@ -421,10 +422,10 @@ func TestRelevanceGate_B2_FloorEngagedIsObservable(t *testing.T) {
 	withRelevanceConfig(t, 0.845, 3)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"}, // on-topic 0.86
-		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},            // off-topic 0.83
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},     // on-topic 0.86
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},                // off-topic 0.83
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic 0.86
-		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                 // off-topic 0.83
+		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                      // off-topic 0.83
 	}
 
 	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
@@ -442,6 +443,43 @@ func TestRelevanceGate_B2_FloorEngagedIsObservable(t *testing.T) {
 	}
 	if !stringContains(notice, "floor") {
 		t.Fatalf("B2: notice must mention the floor, got %q", notice)
+	}
+}
+
+// === N1: the OTHER floor branch — fewer candidates than the floor ===
+
+// FilterByScore floors in two different ways, and the second one was invisible.
+// With minKeep greater than the candidate count it returns the WHOLE slice, so
+// every rejected result came back to the caller with no notice and no distinct
+// counter — B1 and B2 again, in the one configuration the floor exists for.
+//
+// Reverting the fix (restoring `&& len(sorted) >= jobSearchMinKeep` to the
+// floorEngaged predicate) must turn this RED.
+func TestRelevanceGate_N1_FloorEngagedWhenFewerCandidatesThanFloor(t *testing.T) {
+	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+	// Threshold above everything the embedder can produce: nothing passes.
+	// minKeep=3 with only 2 candidates takes FilterByScore's second branch.
+	withRelevanceConfig(t, 0.95, 3)
+
+	results := []engine.SearxngResult{
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
+		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
+	}
+
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+
+	if degraded != "" {
+		t.Fatalf("gate ran successfully, expected degraded=\"\", got %q", degraded)
+	}
+	if len(got) != 2 {
+		t.Fatalf("FilterByScore returns the whole slice below the floor, expected 2, got %d", len(got))
+	}
+	// The results are BELOW the threshold. Handing them back silently is the bug.
+	if notice == "" {
+		t.Fatal("N1: floor engaged via the fewer-candidates-than-floor branch, but notice is empty — the caller cannot tell rejected results from matches")
+	}
+	if !stringContains(notice, "floor") {
+		t.Fatalf("N1: notice must mention the floor, got %q", notice)
 	}
 }
 
