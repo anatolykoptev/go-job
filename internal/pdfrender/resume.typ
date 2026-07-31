@@ -13,6 +13,10 @@
 #set list(indent: 8pt, spacing: 0.78em)
 #set enum(indent: 8pt, spacing: 0.78em)
 
+// DEAD for resumes and cover letters, kept for any document that does emit a
+// `# ` heading. The name is set by a raw typst block in the CONTENT, at a size
+// this rule does not control — editing 19pt here moves nothing on a resume.
+// The content owns the header; see DESIGN.md.
 #show heading.where(level: 1): it => {
   v(3.5mm, weak: true)
   text(size: 19pt, weight: "bold", fill: rgb("#0f172a"), tracking: -0.4pt, it.body)
@@ -49,12 +53,12 @@
   block(below: 3mm, breakable: false)[
     #text(size: 12pt, weight: "bold", fill: rgb("#334155"), tracking: 0.7pt, upper(it.body))
     #v(1mm, weak: true)
-    #line(length: 100%, stroke: rgb("#e2e8f0") + 0.6pt)
+    #line(length: 100%, stroke: rgb("#cbd5e1") + 0.6pt)
   ]
 }
 #show heading.where(level: 3): it => {
   v(3.7mm, weak: true)
-  text(size: 11pt, weight: "bold", fill: rgb("#334155"), it.body)
+  text(size: 11pt, weight: "bold", fill: rgb("#0f172a"), it.body)
   v(3.5mm, weak: true)
 }
 
@@ -62,7 +66,8 @@
 // contact line (body size, slate-500) so it reads as metadata rather than content.
 // The negative `above` pulls it back under its own heading: level 3 leaves 3.5mm for
 // the bullets that normally follow, and an entry that has no subtitle keeps that gap.
-#show heading.where(level: 4): it => block(above: -2.3mm, below: 3.2mm)[
+#show heading.where(level: 4): it => block(above: -3.3mm, below: 3.2mm)[
+  #show link: set text(fill: rgb("#64748b"))
   #text(size: 10pt, weight: "regular", fill: rgb("#64748b"), it.body)
 ]
 #show raw.where(block: true): it => block(
@@ -71,9 +76,9 @@
   radius: 5pt,
   inset:  (x: 12pt, y: 10pt),
   width:  100%,
-  text(font: "IBM Plex Mono", size: 9pt, fill: rgb("#334155"), it),
+  text(font: "IBM Plex Mono", size: 9.5pt, fill: rgb("#334155"), it),
 )
-#show raw.where(block: false): it => text(font: "IBM Plex Mono", size: 9pt, fill: rgb("#1e293b"), it)
+#show raw.where(block: false): it => text(font: "IBM Plex Mono", size: 9.5pt, fill: rgb("#1e293b"), it)
 
 #show table: set table(stroke: (x, y) => {
   if y == 0 { (bottom: rgb("#94a3b8") + 1pt) }
