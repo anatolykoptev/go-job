@@ -191,3 +191,45 @@ func TestGetMasterPersonIDChecked_States(t *testing.T) {
 		t.Fatalf("master exists: expected (true,%d,nil), got (%v,%d,%v)", masterID, exists, id, err)
 	}
 }
+
+// TestClearMasterPerson_OrphansReparented verifies that after ClearMasterPerson
+// deletes the old master (SET NULL on variants' parent_id), inserting a new
+// master and re-parenting orphans links variants to the new master.
+func TestClearMasterPerson_OrphansReparented(t *testing.T) {
+	db := testResumeDBClean(t)
+	ctx := context.Background()
+
+	masterID := insertTestMaster(t, db, "Old Master")
+	variantID, err := db.CreateVariant(ctx, masterID, PersonRecord{Name: "Orphaned Variant"})
+	if err != nil {
+		t.Fatalf("CreateVariant: %v", err)
+	}
+	t.Cleanup(func() { _ = db.ClearPerson(ctx, variantID) })
+
+	// Delete old master → variant's parent_id becomes NULL (ON DELETE SET NULL).
+	if err := db.ClearMasterPerson(ctx); err != nil {
+		t.Fatalf("ClearMasterPerson: %v", err)
+	}
+
+	// Insert new master.
+	newMasterID := insertTestMaster(t, db, "New Master")
+	t.Cleanup(func() { _ = db.ClearPerson(ctx, newMasterID) })
+
+	// Re-parent orphans (the logic BuildMasterResume runs after InsertPerson).
+	if _, err := db.pool.Exec(ctx,
+		`UPDATE resume_persons SET parent_id = $1 WHERE parent_id IS NULL AND is_master = false`,
+		newMasterID,
+	); err != nil {
+		t.Fatalf("re-parent: %v", err)
+	}
+
+	// Variant's parent_id must now point to the new master.
+	var parentID *int
+	err = db.pool.QueryRow(ctx, `SELECT parent_id FROM resume_persons WHERE id = $1`, variantID).Scan(&parentID)
+	if err != nil {
+		t.Fatalf("query variant: %v", err)
+	}
+	if parentID == nil || *parentID != newMasterID {
+		t.Fatalf("variant parent_id: expected %d, got %v", newMasterID, parentID)
+	}
+}

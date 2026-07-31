@@ -475,6 +475,17 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		return nil, fmt.Errorf("insert person: %w", err)
 	}
 
+	// Re-parent orphaned variants: ClearMasterPerson deleted the old master,
+	// which SET NULL on variants' parent_id (ON DELETE SET NULL). The new
+	// master has a different id — re-link orphans so variants track the new
+	// master. Runs inside the rebuild transaction (conn(ctx) is tx-aware).
+	if _, err := db.conn(ctx).Exec(ctx,
+		`UPDATE resume_persons SET parent_id = $1 WHERE parent_id IS NULL AND is_master = false`,
+		personID,
+	); err != nil {
+		return nil, fmt.Errorf("re-parent orphaned variants: %w", err)
+	}
+
 	result := &MasterResumeBuildResult{PersonID: personID}
 	if isTruncated {
 		result.Truncated = true

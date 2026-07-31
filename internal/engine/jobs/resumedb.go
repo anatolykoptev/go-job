@@ -296,6 +296,10 @@ func (db *ResumeDB) GetMasterPersonIDChecked(ctx context.Context) (exists bool, 
 // SetMasterPerson atomically promotes personID as the sole master, demoting any
 // existing master. Transactional: the demote and promote either both apply or
 // neither does, so there is never a window with zero or two masters.
+//
+// TODO(Phase 11 constrain): add accountID parameter and scope both UPDATEs with
+// AND account_id = $accountID — currently demotes masters across ALL accounts
+// (correct for expand phase: single global master).
 func (db *ResumeDB) SetMasterPerson(ctx context.Context, personID int) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -339,6 +343,13 @@ func (db *ResumeDB) CreateVariant(ctx context.Context, masterID int, p PersonRec
 // for read-only callers (no profile → nothing to read) but NOT for a destructive
 // surface, where a transient pool error must not read as "no profile". Destructive
 // callers use GetLatestPersonIDChecked instead.
+//
+// TODO(Phase 11 constrain): migrate all callers to GetMasterPersonID — with the
+// master/variant model a variant can have a higher id than the master, so
+// ORDER BY id DESC returns the wrong person. Callers that should use the master:
+// resume_profile.go, resume_enrich.go, resume_gen.go, adminui/resume_edit.go,
+// adminui/resume_handler.go, adminui/upwork.go, jobserver/tool_resume_profile.go.
+// Tracked in issue #388 constrain-phase migration.
 func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	var id int
 	err := db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
@@ -384,9 +395,10 @@ func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord,
 	var linksJSON []byte
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,''),
-		        COALESCE(headline,''), COALESCE(hourly_rate,0)
+		        COALESCE(headline,''), COALESCE(hourly_rate,0), is_master, parent_id, account_id
 		 FROM resume_persons WHERE id = $1`, personID,
-	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary, &p.Headline, &p.HourlyRateCents)
+	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary, &p.Headline, &p.HourlyRateCents,
+		&p.IsMaster, &p.ParentID, &p.AccountID)
 	if err != nil {
 		return nil, err
 	}
