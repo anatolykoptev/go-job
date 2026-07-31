@@ -68,10 +68,17 @@ type Config struct {
 
 	// CraigslistDefaultLocation is the fallback location used when a craigslist
 	// job_search is called with no explicit location AND the operator's resume
-	// profile has no location. Empty by default — when both the profile and
-	// this config value are empty, the connector keeps its current
-	// errCraigslistUnmapped behaviour (fails rather than silently searching the
-	// wrong city). Env: CRAIGSLIST_DEFAULT_LOCATION.
+	// profile has no location (or its read timed out / errored). Empty by
+	// default — when both the profile and this config value are empty, the
+	// connector keeps its current errCraigslistUnmapped behaviour (fails rather
+	// than silently searching the wrong city). Env: CRAIGSLIST_DEFAULT_LOCATION.
+	//
+	// NOTE: this config has no setter outside tests in the current single-
+	// operator deployment — the operator's region comes from the resume
+	// profile. It is retained as a deployment default for installations with no
+	// profile and is validated against resolveRegion at startup (main.go) so a
+	// value like "Salt Lake City" that does not map to a Craigslist area fails
+	// fast instead of surfacing as wrong listings (#347).
 	CraigslistDefaultLocation string
 
 	// Bounty notify: env vars are read directly by go-kit's NewProductSinkFromEnv.

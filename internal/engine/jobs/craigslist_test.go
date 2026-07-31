@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go_job/internal/engine"
@@ -906,15 +907,28 @@ var _ stealth.BrowserClient
 // always wins and an unmappable explicit location always errors — silently
 // searching the wrong city is worse than failing.
 
-// saveProfileSeam saves/restores the craigslistProfileLocation seam and the
-// CraigslistDefaultLocation config field so the F1-F3 tests are isolated.
-func saveProfileSeam(t *testing.T) {
+// saveDefaultLocationDeps saves/restores the craigslistProfileLocation seam,
+// the CraigslistDefaultLocation config field, and the profile-location cache
+// so the F1-F6 tests are isolated from each other and from prior runs.
+func saveDefaultLocationDeps(t *testing.T) {
 	t.Helper()
 	origProfile := craigslistProfileLocation
 	origDefault := engine.Cfg.CraigslistDefaultLocation
+	origTimeout := craigslistProfileTimeout
+	profileLocationCacheMu.Lock()
+	origCacheHit := profileLocationCacheHit
+	origCacheVal := profileLocationCached
+	profileLocationCacheHit = false
+	profileLocationCached = ""
+	profileLocationCacheMu.Unlock()
 	t.Cleanup(func() {
 		craigslistProfileLocation = origProfile
 		engine.Cfg.CraigslistDefaultLocation = origDefault
+		craigslistProfileTimeout = origTimeout
+		profileLocationCacheMu.Lock()
+		profileLocationCacheHit = origCacheHit
+		profileLocationCached = origCacheVal
+		profileLocationCacheMu.Unlock()
 	})
 }
 
@@ -936,7 +950,7 @@ func urlCapturingStealth(captured *string, body []byte) func(context.Context, st
 // the test expects results and gets an error → RED.
 func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
 	saveFetchVars(t)
-	saveProfileSeam(t)
+	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 	engine.Cfg.CraigslistDefaultLocation = ""
 
@@ -980,7 +994,7 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesProfileFallback(t *testing.T) {
 // newyork → RED.
 func TestSearchCraigslistJobs_ExplicitLocation_WinsOverProfile(t *testing.T) {
 	saveFetchVars(t)
-	saveProfileSeam(t)
+	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// Profile says SF; caller says New York. Caller must win.
@@ -1023,7 +1037,7 @@ func TestSearchCraigslistJobs_ExplicitLocation_WinsOverProfile(t *testing.T) {
 // no longer errCraigslistUnmapped → RED.
 func TestSearchCraigslistJobs_UnmappableExplicitLocation_StillErrors(t *testing.T) {
 	saveFetchVars(t)
-	saveProfileSeam(t)
+	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// Profile is set, but the caller's explicit "Berlin" must NOT fall back to it.
@@ -1051,7 +1065,7 @@ func TestSearchCraigslistJobs_UnmappableExplicitLocation_StillErrors(t *testing.
 // resolveCraigslistDefaultLocation → returns "" → errCraigslistUnmapped → RED.
 func TestSearchCraigslistJobs_EmptyLocation_UsesConfigDefault(t *testing.T) {
 	saveFetchVars(t)
-	saveProfileSeam(t)
+	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	// No profile location; config default is set.
@@ -1084,7 +1098,7 @@ func TestSearchCraigslistJobs_EmptyLocation_UsesConfigDefault(t *testing.T) {
 // connector keeps the current errCraigslistUnmapped behaviour.
 func TestSearchCraigslistJobs_EmptyLocation_BothEmpty_StillErrors(t *testing.T) {
 	saveFetchVars(t)
-	saveProfileSeam(t)
+	saveDefaultLocationDeps(t)
 	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
 
 	craigslistProfileLocation = func(_ context.Context) string { return "" }
@@ -1100,5 +1114,222 @@ func TestSearchCraigslistJobs_EmptyLocation_BothEmpty_StillErrors(t *testing.T) 
 	}
 	if !errors.Is(err, errCraigslistUnmapped) {
 		t.Errorf("expected errCraigslistUnmapped, got: %v", err)
+	}
+}
+
+// --- F4: token-boundary matching (#347) ---
+//
+// resolveRegion's substring pass matched keys INSIDE words: the two-char key
+// "la" matched inside "salt", "orlando", "cleveland", "dallas", "portland",
+// "atlanta", "oakland", … so an operator in Salt Lake City deterministically
+// got Los Angeles jobs with no error and no log. The fix matches on token
+// boundaries (split on non-letters) so a key only matches a whole token (or a
+// consecutive token run for multi-word keys like "san francisco").
+//
+// MUTATION-CHECK: restore the bare `strings.Contains(loc, key)` substring pass
+// → "Salt Lake City, UT" matches "la" inside "salt" → resolves to losangeles →
+// the losangeles-assertion fails → RED. Every row that previously split to
+// losangeles must now resolve to its honest region or to ("", false).
+//
+// Measured on the tip at 400 iterations/input (map order is randomised):
+//
+//	"Salt Lake City, UT" → losangeles 400/400   (must now be unmapped)
+//	"Orlando, FL"        → losangeles 400/400   (must now be unmapped)
+//	"Cleveland, OH"      → losangeles 400/400   (must now be unmapped)
+//	"Lancaster, PA"      → losangeles 400/400   (must now be unmapped)
+//	"Tallahassee, FL"    → losangeles 400/400   (must now be unmapped)
+//	"Dallas, TX"         → losangeles 218 / dallas 182  (must now be dallas 400/400)
+//	"Atlanta, GA"        → atlanta 215 / losangeles 185 (must now be atlanta 400/400)
+//	"Portland, OR"       → portland 209 / losangeles 191 (must now be portland 400/400)
+//	"Oakland, CA"        → sfbay 394 / losangeles 6      (must now be sfbay 400/400)
+//	"San Francisco Bay Area" → sfbay (positive, must stay sfbay)
+func TestResolveRegion_TokenBoundary_NoLosAngelesFalseMatch(t *testing.T) {
+	// Cities that must NOT resolve to losangeles. Each either maps to its own
+	// region or is honestly unmapped (returns false) — never losangeles.
+	mustNotBeLosAngeles := []string{
+		"Salt Lake City, UT",
+		"Orlando, FL",
+		"Cleveland, OH",
+		"Lancaster, PA",
+		"Tallahassee, FL",
+		"Dallas, TX",
+		"Atlanta, GA",
+		"Portland, OR",
+		"Oakland, CA",
+	}
+	for _, loc := range mustNotBeLosAngeles {
+		region, ok := resolveRegion(loc)
+		if ok && region == "losangeles" {
+			t.Errorf("resolveRegion(%q) = %q — token-boundary fix regressed: \"la\" matched inside a word (was #347)", loc, region)
+		}
+	}
+
+	// Positive: the cities that DO have a key must resolve to that key's region,
+	// deterministically (not losangeles).
+	wantRegion := map[string]string{
+		"Dallas, TX":   craigslistRegions["dallas"],
+		"Atlanta, GA":  craigslistRegions["atlanta"],
+		"Portland, OR": craigslistRegions["portland"],
+		"Oakland, CA":  craigslistCitySFBay,
+	}
+	for loc, want := range wantRegion {
+		region, ok := resolveRegion(loc)
+		if !ok {
+			t.Errorf("resolveRegion(%q): ok=false, want %q — a mapped city stopped resolving", loc, want)
+			continue
+		}
+		if region != want {
+			t.Errorf("resolveRegion(%q) = %q, want %q", loc, region, want)
+		}
+	}
+
+	// "San Francisco Bay Area" stays sfbay (matches "san francisco" + "bay area",
+	// both → sfbay). Its passing is NOT evidence the matcher is sound — it is
+	// asserted here only as a positive so the token-boundary fix does not break a
+	// previously-passing input.
+	region, ok := resolveRegion("San Francisco Bay Area")
+	if !ok || region != craigslistCitySFBay {
+		t.Errorf("resolveRegion(%q) = (%q, %v), want (%q, true) — positive case regressed", "San Francisco Bay Area", region, ok, craigslistCitySFBay)
+	}
+}
+
+// --- F5: determinism ---
+//
+// A single call proves nothing against Go's randomised map iteration — the
+// reviewer needed 400 iterations to see the losangeles/dallas split. The fix
+// picks a deterministic winner (longest matching key) so an input that matches
+// more than one key returns ONE stable answer across many iterations.
+//
+// "Dallas, TX" is the cleanest case: under the buggy bare-substring pass it
+// matches BOTH "dallas" (→ dallas) and "la" inside "dallas" (→ losangeles), so
+// 400 iterations split ~218/182. Under the token-boundary fix only "dallas"
+// matches, so all 400 must return "dallas".
+//
+// MUTATION-CHECK: restore the bare `strings.Contains` substring pass (dropping
+// both token boundaries AND the longest-key-wins sort) → "Dallas, TX" matches
+// "la" again → the 400-iteration run splits between dallas and losangeles →
+// the single-stable-answer assertion fails → RED.
+func TestResolveRegion_Determinism_StableAcrossIterations(t *testing.T) {
+	const iters = 400
+	loc := "Dallas, TX"
+	want := craigslistRegions["dallas"]
+	seen := map[string]int{}
+	for i := 0; i < iters; i++ {
+		region, ok := resolveRegion(loc)
+		if !ok {
+			t.Fatalf("iter %d: resolveRegion(%q) ok=false, want %q", i, loc, want)
+		}
+		seen[region]++
+		if region != want {
+			t.Errorf("iter %d: resolveRegion(%q) = %q, want %q (non-deterministic — map-order leak)", i, loc, region, want)
+		}
+	}
+	if len(seen) != 1 {
+		t.Errorf("resolveRegion(%q) returned %d distinct regions over %d iterations (%v) — must be a single stable answer", loc, len(seen), iters, seen)
+	}
+}
+
+// --- F6: profile read is bounded ---
+//
+// The profile read runs on the raw caller context inside a concurrent source
+// fan-out. With no sub-timeout, a saturated/unreachable pgxpool parks on pool
+// acquisition until the caller context (the ~90s perSourceTimeout) cancels, so
+// the config tier — the documented degradation — is never reached under DB
+// stress. The fix wraps the profile read in its own short timeout
+// (craigslistProfileTimeout); on timeout the profile tier returns "" and the
+// config tier supplies the value.
+//
+// This test simulates a blocking pool: the profile seam parks until its context
+// is cancelled, then returns "". With the sub-timeout (20ms) the profile tier
+// unblocks at 20ms and the config tier is reached; without it (mutation) the
+// seam parks on the 500ms caller context and the config tier is reached only at
+// 500ms — well past the 200ms budget the assertion enforces.
+//
+// MUTATION-CHECK: in resolveCraigslistDefaultLocation replace
+//
+//	profileCtx, cancel := context.WithTimeout(ctx, craigslistProfileTimeout)
+//	defer cancel()
+//
+// with
+//
+//	profileCtx := ctx
+//
+// (i.e. drop the sub-timeout wrap) → the seam parks on the 500ms caller ctx →
+// elapsed ~500ms > 200ms budget → RED. The config value is still returned, but
+// too late — the assertion is that the config tier is reached PROMPTLY, which
+// is exactly what the sub-timeout guarantees and its absence breaks.
+func TestResolveCraigslistDefaultLocation_ProfileReadBounded_ReachesConfigTier(t *testing.T) {
+	saveDefaultLocationDeps(t)
+	craigslistProfileTimeout = 20 * time.Millisecond
+	// Use the map value (not a bare literal) so the test does not push the
+	// "chicago" string over goconst's min-occurrences threshold.
+	wantConfig := craigslistRegions["chicago"]
+	engine.Cfg.CraigslistDefaultLocation = wantConfig
+
+	// Simulate a saturated pgxpool: park until the context is cancelled, then
+	// return "" (the DB query failed on the cancelled context).
+	craigslistProfileLocation = func(ctx context.Context) string {
+		<-ctx.Done()
+		return ""
+	}
+
+	// Caller context simulates perSourceTimeout — generous (500ms) so the ONLY
+	// thing that can bound the profile read is the sub-timeout, not the caller.
+	callerCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	loc, tier := resolveCraigslistDefaultLocation(callerCtx)
+	elapsed := time.Since(start)
+
+	if loc != wantConfig || tier != "config" {
+		t.Fatalf("resolveCraigslistDefaultLocation = (%q, %q), want (%q, %q) — config tier not reached", loc, tier, wantConfig, "config")
+	}
+	// The sub-timeout (20ms) must bound the profile read. Without it the seam
+	// parks on the 500ms caller ctx. 200ms is a generous upper bound that the
+	// fix (20ms) clears easily and the mutation (500ms) blows past.
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("profile read was not bounded by the sub-timeout: elapsed %v > 200ms (config tier reached only after the caller ctx expired — sub-timeout wrap was removed)", elapsed)
+	}
+}
+
+// --- F7: substitution is observable (log + counter) ---
+//
+// On a successful profile-tier substitution nothing previously recorded that a
+// location was substituted or which tier supplied it — combined with #347 that
+// is what made a wrong-city search undiagnosable. The fix logs at INFO and
+// bumps craigslist_default_location_total{tier}. This test drives the REAL
+// SearchCraigslistJobs wiring (not a direct IncrCraigslistDefaultLocation call,
+// which would only prove the stdlib counter moves) and asserts the labelled
+// counter incremented for the profile tier.
+//
+// MUTATION-CHECK: delete the `engine.IncrCraigslistDefaultLocation(tier)` line
+// in SearchCraigslistJobs → the counter delta is 0 → RED.
+func TestSearchCraigslistJobs_DefaultLocationSubstitution_IncrsCounter(t *testing.T) {
+	saveDefaultLocationDeps(t)
+	saveFetchVars(t)
+	engine.Cfg.OxBrowserURL = "http://ox-browser-test:8901"
+	engine.Cfg.CraigslistDefaultLocation = ""
+
+	craigslistProfileLocation = func(_ context.Context) string { return "San Francisco Bay Area" }
+
+	fixture, err := os.ReadFile("testdata/craigslist_html_jjj_warehouse.html")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	craigslistStealthFetch = stubStealthSuccess(fixture)
+	craigslistOxFetchFetch = stubOxFetchSuccess(fixture)
+	craigslistOxBrowserFetch = stubOx403
+
+	key := engine.MetricCraigslistDefaultLocation + "{tier=profile}"
+	before := engine.GetMetrics()[key]
+
+	if _, err := SearchCraigslistJobs(context.Background(), "golang", "", 5); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after := engine.GetMetrics()[key]
+	if after <= before {
+		t.Errorf("craigslist_default_location_total{tier=profile} did not increment (before=%d after=%d) — IncrCraigslistDefaultLocation call was deleted", before, after)
 	}
 }

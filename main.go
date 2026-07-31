@@ -355,6 +355,15 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 
 	engine.Init(c)
 
+	// Validate CRAIGSLIST_DEFAULT_LOCATION at startup: an unmappable default
+	// (e.g. "Salt Lake City") would, after the #347 token-boundary fix, surface
+	// only as errCraigslistUnmapped on the first no-location search — fail fast
+	// instead so the operator fixes the env value before any search runs.
+	if err := jobs.ValidateCraigslistDefaultLocation(c.CraigslistDefaultLocation); err != nil {
+		slog.Error("startup validation failed — exiting", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	// OBS-6: wire the enrichment-skip metric hook so hunt package can bump
 	// the gojob_enrich_semaphore_skipped_total counter without importing engine.
 	hunt.SetEnrichSkipHook(engine.IncrEnrichSemSkipped)
