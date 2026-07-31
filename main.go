@@ -20,6 +20,7 @@ import (
 	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-mcpserver"
+	panelauth "github.com/anatolykoptev/go-panel/auth"
 	panelmcp "github.com/anatolykoptev/go-panel/mcp"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
@@ -36,7 +37,6 @@ import (
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/anatolykoptev/go_job/internal/pdfrender"
-	panelauth "github.com/anatolykoptev/go-panel/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -386,7 +386,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			if err := accountStore.EnsureSchema(context.Background()); err != nil {
 				slog.Warn("panel_accounts schema init failed (multi-user auth deferred)", slog.Any("error", err))
 			} else {
-				slog.Info("panel_accounts table ready (multi-user auth available)")
+				slog.Info("panel_accounts table ready")
 			}
 
 			// BH-3 / OBS-5: DB pool stats collector — exposes TotalConns,
