@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.15.2](https://github.com/anatolykoptev/go-job/compare/v1.15.1...v1.15.2) (2026-07-31)
+
+
+### Bug Fixes
+
+* **pdfrender:** render resumes in the font the theme names, and own the approved template ([#397](https://github.com/anatolykoptev/go-job/issues/397)) ([46d472a](https://github.com/anatolykoptev/go-job/commit/46d472a5eabd18bd00d30a10851e6b00da5dd7e3))
+
 ## [1.15.1](https://github.com/anatolykoptev/go-job/compare/v1.15.0...v1.15.1) (2026-07-31)
 
 
