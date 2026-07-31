@@ -283,9 +283,13 @@ func (a *TypstAdapter) PDF(ctx context.Context, md string) ([]byte, error) {
 	mdWithPreamble := ligaPreamble + mdNorm
 
 	raw, err := a.r.Render(ctx, mdWithPreamble, "markdown", render.Options{
-		// "resume" theme: compact single-column US-Letter layout (IBM Plex Sans,
-		// left-aligned, 20mm margins, no footer date) tuned to keep a content-rich
-		// resume on one page. The liga suppression above composes with its #set text().
+		// "resume" theme: compact single-column US-Letter layout — IBM Plex Sans,
+		// left-aligned, 17.8mm margins on all four sides, no footer date. Density is
+		// tuned to keep a content-rich resume to two pages; the approved reference
+		// output is two pages and so is testdata/resume-reference.md. (This comment
+		// said "20mm" and "one page" — both were inherited from go-kit's built-in
+		// theme and neither matched resume.typ once it was vendored here.)
+		// The liga suppression above composes with its #set text().
 		Theme: "resume",
 	})
 	if err != nil {

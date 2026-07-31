@@ -73,6 +73,67 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           fi
 
+      - name: Install PDF render toolchain
+        run: |
+          # internal/pdfrender renders a resume through pandoc -> typst and
+          # measures the result. Without these binaries those tests SKIP, and a
+          # skipped render test is green over a test that never ran — which is
+          # how the theme shipped for five weeks asking for a font the image
+          # did not carry, with every gauge and every gate green.
+          #
+          # CI is set by GitHub, and requireRenderBinaries() turns a missing
+          # binary here into a failure instead of a skip. So a broken install
+          # step surfaces as a red gate rather than as silent lost coverage.
+          #
+          # Versions here are pinned; the runtime image's are NOT, and that
+          # asymmetry is deliberate but load-bearing, so state it plainly:
+          #
+          #   here            typst v0.14.2 (tarball) · fonts-ibm-plex 6.1.1-1
+          #   Dockerfile      apk add typst  (FROM alpine:latest, unpinned)
+          #                   apt-get install fonts-ibm-plex (ubuntu:24.04, unpinned)
+          #
+          # They agree today — measured, alpine:latest currently carries typst
+          # 0.14.2. When alpine bumps it, prod's renderer moves while this gate
+          # keeps measuring 0.14.2, and the geometry assertion goes green over a
+          # PDF nobody has measured. Pinning the image is tracked in #410.
+          # Until then the mitigation is that the assertion is a RATIO against a
+          # control run set in the same face, which cancels uniform metric
+          # changes (see internal/pdfrender/reference_test.go).
+          #
+          # typst is not packaged for ubuntu 24.04, hence the release tarball;
+          # the runner is ubuntu-24.04-arm, so apt yields the same font build the
+          # image's fonts stage takes from ubuntu:24.04.
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pandoc poppler-utils fonts-ibm-plex
+
+          TYPST_VERSION=v0.14.2
+          TYPST_SHA256=491b101aa40a3a7ea82a3f8a6232cabb4e6a7e233810082e5ac812d43fdcd47a
+          curl -fsSL --retry 3 -o /tmp/typst.tar.xz \
+            "https://github.com/typst/typst/releases/download/${TYPST_VERSION}/typst-aarch64-unknown-linux-musl.tar.xz"
+          echo "${TYPST_SHA256}  /tmp/typst.tar.xz" | sha256sum -c -
+          sudo tar -xJf /tmp/typst.tar.xz --strip-components=1 -C /usr/local/bin \
+            typst-aarch64-unknown-linux-musl/typst
+
+          # Assert, do not merely print. A silent font bump on noble-updates
+          # would otherwise surface later as a geometry failure blaming the
+          # theme, which is the wrong place to look.
+          #
+          # poppler-utils is deliberately NOT asserted, though pdftotext produces
+          # both numbers in that ratio. It measures numerator and denominator
+          # with the same code, so a poppler change shifts both and cancels. The
+          # font package is different in kind: it can change one glyph's advance
+          # relative to another's, and that does not cancel.
+          FONTS_VERSION=$(dpkg-query -W -f='${Version}' fonts-ibm-plex)
+          echo "fonts-ibm-plex ${FONTS_VERSION}"
+          [ "${FONTS_VERSION}" = "6.1.1-1" ] || {
+            echo "::error::fonts-ibm-plex is ${FONTS_VERSION}, expected 6.1.1-1 — glyph metrics may have"
+            echo "::error::moved. Re-measure internal/pdfrender/reference_test.go's ratio before bumping."
+            exit 1
+          }
+          typst --version
+          pandoc --version | head -1
+
       - name: Run migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
