@@ -360,6 +360,66 @@ func TestReadySetsFontGauge(t *testing.T) {
 	}
 }
 
+// TestReadySetsRendererGauge pins the VALUE of gojob_pdf_renderer_available,
+// which nothing did until now. Review found the polarity inverted, the &&
+// widened to ||, and the whole gauge block deleted — all three GREEN. That is
+// the identical gap TestReadySetsFontGauge exists to close, one field over: the
+// font gauge got a guard because deleting its probe stayed green, and the
+// renderer gauge beside it never got the same treatment.
+//
+// It matters now because GojobPdfRendererMissing pages on this gauge, and this
+// package's stated invariant is that the two gauges cannot disagree. An
+// unpinned polarity makes that claim unverifiable.
+//
+// The lookPath seam is what makes this testable at all — before it, asserting
+// on binary absence meant depending on what the box running the test has
+// installed.
+//
+// Not parallel: the gauge is package-level.
+func TestReadySetsRendererGauge(t *testing.T) {
+	const fonts = "IBM Plex Sans\nIBM Plex Mono\n"
+
+	for _, tc := range []struct {
+		name              string
+		typstOK, pandocOK bool
+		want              float64
+		wantReady         bool
+	}{
+		{"both binaries present", true, true, 1, true},
+		{"typst absent", false, true, 0, false},
+		{"pandoc absent", true, false, 0, false},
+		{"neither present", false, false, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pdfRendererAvailableGauge.Set(-1) // poison, so a missing Set is visible
+			a := New()
+			a.fontLister = func(context.Context) ([]byte, error) { return []byte(fonts), nil }
+			a.lookPath = func(name string) (string, error) {
+				ok := true
+				switch {
+				case strings.Contains(name, "typst"):
+					ok = tc.typstOK
+				case strings.Contains(name, "pandoc"):
+					ok = tc.pandocOK
+				}
+				if !ok {
+					return "", exec.ErrNotFound
+				}
+				return name, nil
+			}
+
+			ready := a.Ready()
+
+			if got := gaugeValue(t, pdfRendererAvailableGauge); got != tc.want {
+				t.Errorf("gojob_pdf_renderer_available = %v, want %v", got, tc.want)
+			}
+			if ready != tc.wantReady {
+				t.Errorf("Ready() = %v, want %v", ready, tc.wantReady)
+			}
+		})
+	}
+}
+
 // TestCheckFontsDiagnostic pins what the OPERATOR is told, which the gauge
 // cannot express. "typst would not run" and "typst ran, the faces are absent"
 // are both correctly 0, but they send someone to different places — and with
@@ -521,4 +581,100 @@ func TestIsNoBinaryErr(t *testing.T) {
 	if isNoBinaryErr(errors.New("some other error")) {
 		t.Error("isNoBinaryErr returned true for an unrelated error — should be false")
 	}
+}
+
+// TestReadyLooksUpTheResolvedBinary pins that Ready resolves the SAME typst the
+// font probe and the renderer use, rather than a literal "typst".
+//
+// Not hypothetical: with RENDER_TYPST_PATH pointing at an out-of-PATH install, a
+// bare lookup reports gojob_pdf_renderer_available 0 while gojob_pdf_font_available
+// reads that install's fonts and reports 1. An operator told "no renderer, but
+// its fonts are fine" learns nothing true.
+//
+// Stubs the lookup entirely, so the assertion does not depend on what happens to
+// be installed on the box running the test — the earlier reason this was left
+// unguarded.
+func TestReadyLooksUpTheResolvedBinary(t *testing.T) {
+	const pinnedTypst = "/opt/pinned/typst"
+	const pinnedPandoc = "/opt/pinned/pandoc"
+	t.Setenv("RENDER_TYPST_PATH", pinnedTypst)
+	t.Setenv("VAELOR_TYPST_PATH", "")
+	t.Setenv("RENDER_PANDOC_PATH", pinnedPandoc)
+	t.Setenv("VAELOR_PANDOC_PATH", "")
+
+	var asked []string
+	a := New()
+	a.lookPath = func(name string) (string, error) {
+		asked = append(asked, name)
+		return name, nil
+	}
+	a.fontLister = func(context.Context) ([]byte, error) {
+		return []byte("IBM Plex Sans\nIBM Plex Mono\n"), nil
+	}
+
+	a.Ready()
+
+	// Both binaries, not just typst. go-kit resolves pandoc through
+	// RENDER_PANDOC_PATH exactly as it resolves typst, so a literal here leaves
+	// half the bug open — and the half that is open still produces the gauge
+	// disagreement the whole guard exists to prevent.
+	for _, literal := range []string{"typst", "pandoc"} {
+		for _, name := range asked {
+			if name == literal {
+				t.Errorf("Ready looked up the literal %q while its RENDER_*_PATH pinned an explicit install — the renderer gauge would disagree with the font gauge", literal)
+			}
+		}
+	}
+	for _, want := range []string{pinnedTypst, pinnedPandoc} {
+		var saw bool
+		for _, name := range asked {
+			if name == want {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Errorf("Ready never looked up the pinned binary %q; it asked for %v", want, asked)
+		}
+	}
+}
+
+// TestPandocBinary pins the same precedence for pandoc that TestTypstBinary
+// pins for typst. They exist as a pair because the two drifting apart is what
+// left half the gauge-disagreement bug open the first time.
+func TestPandocBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		render, vaelor string
+		want           string
+	}{
+		{"neither set falls back to PATH", "", "", "pandoc"},
+		{"RENDER wins", "/opt/a/pandoc", "/opt/b/pandoc", "/opt/a/pandoc"},
+		{"legacy VAELOR is honoured alone", "", "/opt/b/pandoc", "/opt/b/pandoc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RENDER_PANDOC_PATH", tc.render)
+			t.Setenv("VAELOR_PANDOC_PATH", tc.vaelor)
+			if got := pandocBinary(); got != tc.want {
+				t.Errorf("pandocBinary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestZeroValueAdapterReady pins that an adapter built as a literal rather than
+// through New still resolves a lookup instead of panicking on a nil field.
+func TestZeroValueAdapterReady(t *testing.T) {
+	// lookPath stays nil deliberately — that is the field under test. fontLister
+	// is stubbed so the probe does not shell out. Ready still reaches the real
+	// exec.LookPath through the nil fallback, which is the point; the gauges it
+	// writes are restored below so the host's PATH does not leak into a later
+	// test's expectations.
+	restore := func(g prometheus.Gauge, v float64) func() { return func() { g.Set(v) } }
+	t.Cleanup(restore(pdfRendererAvailableGauge, gaugeValue(t, pdfRendererAvailableGauge)))
+	t.Cleanup(restore(pdfFontAvailableGauge, gaugeValue(t, pdfFontAvailableGauge)))
+
+	a := &TypstAdapter{fontLister: func(context.Context) ([]byte, error) {
+		return []byte("IBM Plex Sans\nIBM Plex Mono\n"), nil
+	}}
+	a.Ready() // must not panic
 }
