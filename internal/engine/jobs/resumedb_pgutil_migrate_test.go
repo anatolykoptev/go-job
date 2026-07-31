@@ -157,9 +157,11 @@ func TestResumeDB_Migrate_PgUtil_FreshDB(t *testing.T) {
 			// One-shot data backfill marked -- soft to pass the idempotency
 			// guard; it has no extension gate and always applies.
 			softInstalled[name] = true
-		case "008_resume_master_variant.sql":
+		case "009_resume_master_variant_backfill.sql":
 			// One-shot data backfill (DO $$ block) marked -- soft to pass
 			// the idempotency guard; no extension gate, always applies.
+			// 008 (the DDL: columns + indexes) is non-soft — it is
+			// load-bearing and a failure must abort startup.
 			softInstalled[name] = true
 		}
 	}
@@ -271,9 +273,11 @@ func TestResumeDB_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 			// One-shot data backfill marked -- soft to pass the idempotency
 			// guard; it has no extension gate and always applies.
 			softInstalled[name] = true
-		case "008_resume_master_variant.sql":
+		case "009_resume_master_variant_backfill.sql":
 			// One-shot data backfill (DO $$ block) marked -- soft to pass
 			// the idempotency guard; no extension gate, always applies.
+			// 008 (the DDL: columns + indexes) is non-soft — it is
+			// load-bearing and a failure must abort startup.
 			softInstalled[name] = true
 		}
 	}

@@ -210,6 +210,24 @@ func (db *ResumeDB) runMigrations(ctx context.Context) error {
 	})
 }
 
+// accountClause is the ONE place that owns the account_id predicate for
+// master/variant person statements (ADR-C(b)). It returns the SQL fragment
+// (e.g. " AND account_id = $3") and the bind arg that scope a statement to an
+// account. nil accountID = global (the expand-phase single-operator state); a
+// non-nil accountID scopes the statement to that account.
+//
+// When the constrain phase flips account_id to NOT NULL, the nil branch is
+// removed here and every caller that does not pass an account becomes a
+// compile error — the predicate is load-bearing by construction, not by
+// comment. startArg is the 1-based position of the account_id bind parameter
+// in the final statement (after the caller's own args).
+func accountClause(accountID *string, startArg int) (fragment string, arg any) {
+	if accountID == nil {
+		return "", nil
+	}
+	return fmt.Sprintf(" AND account_id = $%d", startArg), *accountID
+}
+
 // --- Person CRUD ---
 
 type PersonRecord struct {
@@ -252,23 +270,72 @@ func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
 	return err
 }
 
+// captureVariantChildren returns the ids of variant rows whose parent_id equals
+// masterID, BEFORE the master is deleted (the FK ON DELETE SET NULL would lose
+// the link after the delete). Used by BuildMasterResume to capture an explicit
+// list of children to re-parent to the new master — the re-parent then updates
+// only those ids, not any unrelated parentless non-master row.
+//
+// accountID scopes the capture: nil = global (expand phase); non-nil = scoped.
+// Runs inside the caller's transaction via conn(ctx).
+func (db *ResumeDB) captureVariantChildren(ctx context.Context, masterID int, accountID *string) ([]int, error) {
+	frag, arg := accountClause(accountID, 2)
+	query := `SELECT id FROM resume_persons WHERE parent_id = $1` + frag
+	var rows pgx.Rows
+	var err error
+	if arg == nil {
+		rows, err = db.conn(ctx).Query(ctx, query, masterID)
+	} else {
+		rows, err = db.conn(ctx).Query(ctx, query, masterID, arg)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if e := rows.Scan(&id); e != nil {
+			return nil, e
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ClearMasterPerson deletes only the current master person (and cascaded data),
 // preserving variants. Used by BuildMasterResume when rebuilding the master:
 // the old master is removed, a new one is inserted with is_master=true.
 // Variants (parent_id IS NOT NULL, is_master=false) are untouched.
-func (db *ResumeDB) ClearMasterPerson(ctx context.Context) error {
-	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE is_master = true`)
+//
+// accountID scopes the delete: nil = global (expand-phase single-operator
+// state); non-nil = scoped to that account. The predicate is owned by
+// accountClause — when the constrain phase flips account_id NOT NULL, a
+// missing account becomes a compile error, not a silent cross-account delete.
+func (db *ResumeDB) ClearMasterPerson(ctx context.Context, accountID *string) error {
+	frag, arg := accountClause(accountID, 1)
+	if arg == nil {
+		_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE is_master = true`+frag)
+		return err
+	}
+	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE is_master = true`+frag, arg)
 	return err
 }
 
 // GetMasterPersonID returns the ID of the master person, or 0 if none exists.
-// In the expand phase (account_id nullable) this returns the global master.
-// After the constrain phase, callers pass accountID to scope the lookup.
-func (db *ResumeDB) GetMasterPersonID(ctx context.Context) int {
+// In the expand phase (account_id nullable) nil accountID returns the global
+// master; a non-nil accountID scopes the lookup to that account. After the
+// constrain phase, callers pass accountID to scope the lookup.
+func (db *ResumeDB) GetMasterPersonID(ctx context.Context, accountID *string) int {
+	frag, arg := accountClause(accountID, 1)
+	query := `SELECT id FROM resume_persons WHERE is_master = true` + frag + ` ORDER BY id DESC LIMIT 1`
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id FROM resume_persons WHERE is_master = true ORDER BY id DESC LIMIT 1`,
-	).Scan(&id)
+	var err error
+	if arg == nil {
+		err = db.conn(ctx).QueryRow(ctx, query).Scan(&id)
+	} else {
+		err = db.conn(ctx).QueryRow(ctx, query, arg).Scan(&id)
+	}
 	if err != nil {
 		return 0
 	}
@@ -276,21 +343,50 @@ func (db *ResumeDB) GetMasterPersonID(ctx context.Context) int {
 }
 
 // GetMasterPersonIDChecked is the fail-closed variant for destructive surfaces.
-// It distinguishes the three states a destructive guard must tell apart:
-//   - no master exists:  exists=false, id=0,   err=nil
-//   - a master exists:   exists=true,  id=N,   err=nil
-//   - the query failed:  exists=false, id=0,   err!=nil   ← caller MUST refuse
-func (db *ResumeDB) GetMasterPersonIDChecked(ctx context.Context) (exists bool, id int, err error) {
-	err = db.conn(ctx).QueryRow(ctx,
-		`SELECT id FROM resume_persons WHERE is_master = true ORDER BY id DESC LIMIT 1`,
-	).Scan(&id)
+// It distinguishes the states a destructive guard must tell apart:
+//   - no master exists:    exists=false, id=0,   err=nil
+//   - a master exists:     exists=true,  id=N,   err=nil
+//   - multiple masters:    exists=false, id=0,   err!=nil   ← caller MUST refuse
+//   - the query failed:    exists=false, id=0,   err!=nil   ← caller MUST refuse
+//
+// Multiple masters (more than one is_master=true row in scope) return an error
+// rather than silently picking one — this value feeds the destructive-consent
+// decision, and picking one of several is the same fail-open stance #366
+// eliminated for the query-error path. Nothing prevents multiple masters until
+// the constrain phase's unique partial index; until then this guard refuses.
+//
+// accountID scopes the lookup: nil = global (expand phase); non-nil = scoped.
+func (db *ResumeDB) GetMasterPersonIDChecked(ctx context.Context, accountID *string) (exists bool, id int, err error) {
+	frag, arg := accountClause(accountID, 1)
+	query := `SELECT id FROM resume_persons WHERE is_master = true` + frag + ` ORDER BY id DESC LIMIT 2`
+	var rows pgx.Rows
+	if arg == nil {
+		rows, err = db.conn(ctx).Query(ctx, query)
+	} else {
+		rows, err = db.conn(ctx).Query(ctx, query, arg)
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, 0, nil
-		}
 		return false, 0, err
 	}
-	return true, id, nil
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var i int
+		if e := rows.Scan(&i); e != nil {
+			return false, 0, e
+		}
+		ids = append(ids, i)
+	}
+	if e := rows.Err(); e != nil {
+		return false, 0, e
+	}
+	if len(ids) == 0 {
+		return false, 0, nil
+	}
+	if len(ids) > 1 {
+		return false, 0, fmt.Errorf("GetMasterPersonIDChecked: multiple master persons found (ids=%v) — expected exactly one; refusing to pick one for a destructive decision", ids)
+	}
+	return true, ids[0], nil
 }
 
 // SetMasterPerson atomically promotes personID as the sole master, demoting any
@@ -349,6 +445,10 @@ func (db *ResumeDB) CreateVariant(ctx context.Context, masterID int, p PersonRec
 // ORDER BY id DESC returns the wrong person. Callers that should use the master:
 // resume_profile.go, resume_enrich.go, resume_gen.go, adminui/resume_edit.go,
 // adminui/resume_handler.go, adminui/upwork.go, jobserver/tool_resume_profile.go.
+// ALSO: internal/hunt/score/profile.go:164 runs its own inline
+// `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1` (not a caller of
+// this method) — it is invisible to a "migrate the callers" sweep and must be
+// migrated to GetMasterPersonID in the same constrain-phase pass.
 // Tracked in issue #388 constrain-phase migration.
 func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 	var id int
