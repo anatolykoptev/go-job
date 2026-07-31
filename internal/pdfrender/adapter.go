@@ -116,12 +116,24 @@ type TypstAdapter struct {
 	// unguarded. Review proved that: with the whole probe block deleted from
 	// Ready, the package stayed green.
 	fontLister func(context.Context) ([]byte, error)
+
+	// lookPath resolves a binary name to a path. Injectable for the same reason
+	// as fontLister, one level down: what needs guarding is not that
+	// typstBinary() is correct — TestTypstBinary pins that — but that Ready
+	// passes its RESULT to the lookup instead of a literal "typst". Reverting
+	// that argument used to leave the suite green, and the regression makes the
+	// two gauges disagree: renderer absent, its fonts present.
+	lookPath func(string) (string, error)
 }
 
 // New creates a TypstAdapter. No state is held by TypstRenderer; safe for
 // concurrent use.
 func New() *TypstAdapter {
-	return &TypstAdapter{r: typst.NewTypstRenderer(), fontLister: typstFontList}
+	return &TypstAdapter{
+		r:          typst.NewTypstRenderer(),
+		fontLister: typstFontList,
+		lookPath:   exec.LookPath,
+	}
 }
 
 // Ready probes typst and pandoc availability, sets both PDF gauges, and returns
@@ -140,8 +152,12 @@ func (a *TypstAdapter) Ready() bool {
 	// two gauges cannot disagree: with RENDER_TYPST_PATH set to an out-of-PATH
 	// install, a bare LookPath("typst") would report the renderer absent while
 	// the font probe read that install's fonts and reported them present.
-	_, typstErr := exec.LookPath(typstBinary())
-	_, pandocErr := exec.LookPath("pandoc")
+	look := a.lookPath
+	if look == nil {
+		look = exec.LookPath
+	}
+	_, typstErr := look(typstBinary())
+	_, pandocErr := look("pandoc")
 	available := typstErr == nil && pandocErr == nil
 	if available {
 		pdfRendererAvailableGauge.Set(1)

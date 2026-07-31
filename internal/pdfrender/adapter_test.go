@@ -522,3 +522,54 @@ func TestIsNoBinaryErr(t *testing.T) {
 		t.Error("isNoBinaryErr returned true for an unrelated error — should be false")
 	}
 }
+
+// TestReadyLooksUpTheResolvedBinary pins that Ready resolves the SAME typst the
+// font probe and the renderer use, rather than a literal "typst".
+//
+// Not hypothetical: with RENDER_TYPST_PATH pointing at an out-of-PATH install, a
+// bare lookup reports gojob_pdf_renderer_available 0 while gojob_pdf_font_available
+// reads that install's fonts and reports 1. An operator told "no renderer, but
+// its fonts are fine" learns nothing true.
+//
+// Stubs the lookup entirely, so the assertion does not depend on what happens to
+// be installed on the box running the test — the earlier reason this was left
+// unguarded.
+func TestReadyLooksUpTheResolvedBinary(t *testing.T) {
+	const pinned = "/opt/pinned/typst"
+	t.Setenv("RENDER_TYPST_PATH", pinned)
+	t.Setenv("VAELOR_TYPST_PATH", "")
+
+	var asked []string
+	a := New()
+	a.lookPath = func(name string) (string, error) {
+		asked = append(asked, name)
+		return name, nil
+	}
+	a.fontLister = func(context.Context) ([]byte, error) {
+		return []byte("IBM Plex Sans\nIBM Plex Mono\n"), nil
+	}
+
+	a.Ready()
+
+	var sawPinned bool
+	for _, name := range asked {
+		if name == pinned {
+			sawPinned = true
+		}
+		if name == "typst" {
+			t.Errorf("Ready looked up the literal %q while RENDER_TYPST_PATH pinned %q — the renderer gauge would disagree with the font gauge", name, pinned)
+		}
+	}
+	if !sawPinned {
+		t.Errorf("Ready never looked up the pinned binary %q; it asked for %v", pinned, asked)
+	}
+}
+
+// TestZeroValueAdapterReady pins that an adapter built as a literal rather than
+// through New still resolves a lookup instead of panicking on a nil field.
+func TestZeroValueAdapterReady(t *testing.T) {
+	a := &TypstAdapter{fontLister: func(context.Context) ([]byte, error) {
+		return []byte("IBM Plex Sans\nIBM Plex Mono\n"), nil
+	}}
+	a.Ready() // must not panic
+}
