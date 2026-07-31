@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,19 +21,24 @@ const (
 
 type himalayasResponse struct {
 	Jobs  []himalayasJob `json:"jobs"`
-	Total int            `json:"total"`
+	Total int            `json:"totalCount"`
 }
 
 type himalayasJob struct {
 	Title          string          `json:"title"`
 	CompanyName    string          `json:"companyName"`
-	ApplicationURL string          `json:"applicationUrl"`
+	ApplicationURL string          `json:"applicationLink"`
 	Categories     []string        `json:"categories"`
 	Seniority      []string        `json:"seniority"`
-	MinSalary      int             `json:"minSalary"`
-	MaxSalary      int             `json:"maxSalary"`
-	PubDate        json.RawMessage `json:"pubDate"`
-	Excerpt        string          `json:"excerpt"`
+	// MinSalary/MaxSalary are nullable and may be fractional (himalayas returns
+	// null for undisclosed salaries and a fractional number for hourly rates,
+	// e.g. 26.5). Declaring int made encoding/json abort the WHOLE Unmarshal on
+	// the first fractional value, losing every himalayas job on every cycle.
+	// *float64 accepts null (→ nil) and any number; salaryFloatToInt converts.
+	MinSalary *float64 `json:"minSalary"`
+	MaxSalary *float64 `json:"maxSalary"`
+	PubDate   json.RawMessage `json:"pubDate"`
+	Excerpt   string          `json:"excerpt"`
 }
 
 // SearchHimalayas fetches jobs from Himalayas. Results are cached.
@@ -116,14 +122,24 @@ func parseHimalayasResponse(data []byte) ([]engine.FreelanceJob, error) {
 			Company:   hj.CompanyName,
 			URL:       hj.ApplicationURL,
 			Tags:      tags,
-			SalaryMin: hj.MinSalary,
-			SalaryMax: hj.MaxSalary,
+			SalaryMin: salaryFloatToInt(hj.MinSalary),
+			SalaryMax: salaryFloatToInt(hj.MaxSalary),
 			Source:    "himalayas",
 			Posted:    parsePubDate(hj.PubDate),
 		})
 	}
 
 	return jobs, nil
+}
+
+// salaryFloatToInt converts a nullable fractional himalayas salary to the int
+// engine.FreelanceJob.SalaryMin/Max contract. Returns 0 for nil (undisclosed).
+// Rounds to the nearest int so an hourly 26.5 → 27 rather than truncating to 26.
+func salaryFloatToInt(v *float64) int {
+	if v == nil {
+		return 0
+	}
+	return int(math.Round(*v))
 }
 
 // parsePubDate handles pubDate as either a JSON string or a Unix timestamp number.

@@ -3,17 +3,25 @@ package jobs
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-const (
-	securityCacheKey  = "security_programs"
-	securityBodyLimit = 10 * 1024 * 1024 // 10 MB
-)
+const securityCacheKey = "security_programs"
+
+// securityBodyLimit is the DoS ceiling for security-source response bodies
+// (hackerone/bugcrowd/intigriti/yeswehack/federacy via security_bounty.go, and
+// the immunefi/sherlock/gowowa_render readers that share this cap).
+//
+// hackerone_data.json measured 17,777,018 bytes (17.8 MB) on 2026-07-30 and
+// grows over time; the old 10 MB cap silently truncated it (io.LimitReader
+// stops without error), producing a misleading "parse failed" log. 64 MiB
+// gives ~3.6x headroom over the measured size and matches the ATS board
+// ceiling (atsBoardMaxBytes). A var (not const) so truncation tests can
+// override it with a small cap, mirroring atsBoardMaxBytes.
+var securityBodyLimit int64 = 64 * 1024 * 1024 // 64 MiB
 
 var securitySources = []struct {
 	url      string
@@ -129,9 +137,9 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("security source returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
+	body, err := readLimitedBody(resp.Body, securityBodyLimit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("security: read body: %w", err)
 	}
 
 	return body, nil

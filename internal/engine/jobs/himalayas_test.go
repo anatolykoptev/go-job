@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +14,7 @@ const sampleHimalayasResponse = `{
     {
       "title": "Backend Engineer (Go)",
       "companyName": "CloudCo",
-      "applicationUrl": "https://himalayas.app/companies/cloudco/jobs/backend-engineer",
+      "applicationLink": "https://himalayas.app/companies/cloudco/jobs/backend-engineer",
       "categories": ["Engineering", "Backend"],
       "seniority": ["Senior"],
       "minSalary": 90000,
@@ -23,7 +25,7 @@ const sampleHimalayasResponse = `{
     {
       "title": "Platform Engineer",
       "companyName": "DevOps Ltd",
-      "applicationUrl": "https://himalayas.app/companies/devops-ltd/jobs/platform-engineer",
+      "applicationLink": "https://himalayas.app/companies/devops-ltd/jobs/platform-engineer",
       "categories": ["DevOps"],
       "seniority": [],
       "minSalary": 0,
@@ -73,10 +75,56 @@ func TestParseHimalayasResponse_nullJobs(t *testing.T) {
 
 func TestParseHimalayasResponse_numericPubDate(t *testing.T) {
 	t.Parallel()
-	resp := `{"jobs": [{"title": "Engineer", "companyName": "Co", "applicationUrl": "https://example.com/job", "categories": [], "seniority": [], "minSalary": 0, "maxSalary": 0, "pubDate": 1741305600000, "excerpt": ""}], "total": 1}`
+	resp := `{"jobs": [{"title": "Engineer", "companyName": "Co", "applicationLink": "https://example.com/job", "categories": [], "seniority": [], "minSalary": 0, "maxSalary": 0, "pubDate": 1741305600000, "excerpt": ""}], "total": 1}`
 	jobs, err := parseHimalayasResponse([]byte(resp))
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
 	// 1741305600000ms = 2025-03-07T00:00:00Z
 	assert.Equal(t, "2025-03-07T00:00:00Z", jobs[0].Posted)
+}
+
+// TestParseHimalayasResponse_RealFixture guards the two total-loss himalayas
+// decode bugs against a REAL captured response body (testdata/himalayas_response_real.json,
+// captured from the live himalayas.app/jobs/api via a Cloudflare-cleared browser
+// on 2026-07-30). The fixture is verbatim real structure; the only synthetic edit
+// is job[0].minSalary/maxSalary = 26.5 — the exact fractional value the production
+// log reported ("cannot unmarshal number 26.5 into ... minSalary of type int").
+//
+// Bug 1 (field type): minSalary/maxSalary were `int`; encoding/json aborts the
+// WHOLE Unmarshal on the first fractional value → every himalayas job lost.
+// Bug 2 (field name): the URL field was tagged `applicationUrl` but the real
+// API field is `applicationLink` → ApplicationURL always "" → the parser's
+// `if hj.ApplicationURL == "" { continue }` skipped EVERY job even after a
+// salary fix.
+//
+// Revert-red:
+//   - Restore MinSalary/MaxSalary to `int` → json.Unmarshal fails on 26.5 →
+//     test fails with a parse error (or 0 jobs).
+//   - Restore the tag to `applicationUrl` → all 3 jobs skipped (len 0) → test
+//     fails with "expected 3 jobs, got 0".
+func TestParseHimalayasResponse_RealFixture(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("testdata", "himalayas_response_real.json"))
+	require.NoError(t, err)
+
+	jobs, err := parseHimalayasResponse(data)
+	require.NoError(t, err, "fractional salary 26.5 must not abort the unmarshal")
+	require.Len(t, jobs, 3, "all 3 jobs must parse; applicationLink (not applicationUrl) must map")
+
+	// job[0]: fractional hourly salary 26.5 → rounded to 27; URL from applicationLink.
+	assert.Equal(t, "https://himalayas.app/companies/radpartners-avature/jobs/remote-overnight-general-radiologist-7-on-14-off-radiology-partners-indiana-no", jobs[0].URL)
+	assert.Equal(t, 27, jobs[0].SalaryMin, "26.5 hourly → rounded to 27")
+	assert.Equal(t, 27, jobs[0].SalaryMax)
+	assert.Equal(t, "Radiology Partners", jobs[0].Company)
+
+	// job[1]: integer annual salary 120000-200000.
+	assert.Equal(t, "https://himalayas.app/companies/lifelancer/jobs/senior-product-manager-medical-inquiry", jobs[1].URL)
+	assert.Equal(t, 120000, jobs[1].SalaryMin)
+	assert.Equal(t, 200000, jobs[1].SalaryMax)
+
+	// job[2]: null salaries → 0 (must not abort, must not skip).
+	assert.Equal(t, "https://himalayas.app/companies/relx/jobs/customer-experience-manager", jobs[2].URL)
+	assert.Equal(t, 0, jobs[2].SalaryMin)
+	assert.Equal(t, 0, jobs[2].SalaryMax)
 }

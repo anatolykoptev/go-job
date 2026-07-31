@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -95,7 +94,7 @@ func fetchSherlockRepos(ctx context.Context) ([]sherlockRepo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sherlock: fetch page %d: %w", page, err)
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, securityBodyLimit))
+		body, err := readLimitedBody(resp.Body, securityBodyLimit)
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("sherlock: read page %d: %w", page, err)
