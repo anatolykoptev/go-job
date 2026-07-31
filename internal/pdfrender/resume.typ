@@ -66,8 +66,11 @@
 // contact line (body size, slate-500) so it reads as metadata rather than content.
 // The negative `above` pulls it back under its own heading: level 3 leaves 3.5mm for
 // the bullets that normally follow, and an entry that has no subtitle keeps that gap.
-#show heading.where(level: 4): it => block(above: -3.3mm, below: 3.2mm)[
-  #show link: set text(fill: rgb("#64748b"))
+// NOTE: `above` is dominated and does nothing. The v(3.5mm, weak: true)
+// closing the level-3 rule above wins, so the heading-to-subtitle gap is
+// 6.68pt whatever this says — swept -20mm..+6mm, subtitle yMin identical to
+// six decimals at every step. To move it, change that v(), not this.
+#show heading.where(level: 4): it => block(above: -2.3mm, below: 3.2mm)[
   #text(size: 10pt, weight: "regular", fill: rgb("#64748b"), it.body)
 ]
 #show raw.where(block: true): it => block(

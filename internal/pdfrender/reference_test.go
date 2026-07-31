@@ -97,9 +97,14 @@ func referenceMarkdown(t *testing.T) string {
 // exactly as a top-level one does, so it earns a coverage decision rather than
 // an exemption; the selector it names simply has to appear in one of the maps
 // below, wherever in the file it was written.
+//
+// Both patterns also accept a TAB as the separator. Requiring a literal space
+// left the same hole one more keystroke along: `#show\tstrong: …` matched
+// neither pattern, and typst renders it identically to the space form —
+// verified byte-identical output. Whitespace after `#show` is whitespace.
 var (
-	showRuleRe = regexp.MustCompile(`(?m)^[ \t]*#show (.+?): (?:it =>|set )`)
-	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show[ :]`)
+	showRuleRe = regexp.MustCompile(`(?m)^[ \t]*#show[ \t]+(.+?): (?:it =>|set )`)
+	showLineRe = regexp.MustCompile(`(?m)^[ \t]*#show[ \t:]`)
 )
 
 // exercisedBy maps a theme selector to a substring that must appear in the
@@ -117,9 +122,10 @@ var exercisedBy = map[string]string{
 	// report a missing theme rule.
 	"table":                  "\n| --- ",
 	"table.cell.where(y: 0)": "\n| --- ",
-	// Appears twice in the theme: the global rule, and a scoped one inside the
-	// level-4 block that holds an entry subtitle's URL in the metadata colour.
-	// Both parse to this same selector, and one probe covers both.
+	// NOTE: coverage is keyed by SELECTOR, not by rule. Two rules naming the
+	// same selector collapse into one slot and the count guard still balances,
+	// so deleting either would red nothing. The theme has one link rule today;
+	// see the tracking issue before adding a second.
 	"link": "](https://",
 }
 
