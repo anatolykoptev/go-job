@@ -471,8 +471,12 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	}
 
 	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).
+	// Constructed via jobserver.NewEmbedClient so the per-request timeout,
+	// retry envelope, and chunk size are derived from the relevance gate's
+	// budget (JOB_SEARCH_RELEVANCE_TIMEOUT) — the gate's inner budgets fit
+	// strictly inside its outer budget. See internal/jobserver/relevance_embed.go.
 	if c.EmbedURL != "" {
-		embedder, embedErr := kitembed.NewClient(c.EmbedURL,
+		embedder, embedErr := jobserver.NewEmbedClient(c.EmbedURL,
 			kitembed.WithBackend("http"),
 			kitembed.WithDim(1024),
 			kitembed.WithLogger(slog.Default()),

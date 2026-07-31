@@ -781,3 +781,38 @@ func itoaTest(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// === Fix C: the degradation notice is suppressed when the gate is inert, ===
+// === kept when the gate is actually configured to filter              ===
+
+// At shipped defaults (minRelevance=0, minKeep=0) the gate scores every
+// candidate but filters none, so a degraded gate and a healthy gate produce
+// IDENTICAL user-facing output. The "Relevance filtering unavailable" notice
+// there distinguishes nothing and is alarming noise. It is kept when the
+// gate is configured to filter, where the disclosure is real information. The
+// floor/truncation notice is always shown. Both directions are tested — the
+// second stops an over-broad fix from deleting the disclosure entirely.
+
+func TestPrependRelevanceNotice_SuppressedWhenGateInert(t *testing.T) {
+	withRelevanceConfig(t, 0.0, 0) // shipped defaults — gate inert
+
+	got := prependRelevanceNotice("base summary", "timeout", "")
+	if stringContains(got, "Relevance filtering unavailable") {
+		t.Fatalf("degradation notice must be suppressed when the gate is inert (it distinguishes nothing), got %q", got)
+	}
+	// The floor/truncation notice is independent of the degraded notice and
+	// must still be shown when the gate is inert — it describes a real state.
+	got = prependRelevanceNotice("base summary", "timeout", "relevance floor engaged: 1 result(s) kept below the bar")
+	if !stringContains(got, "floor") {
+		t.Fatalf("floor notice must still be shown when the gate is inert, got %q", got)
+	}
+}
+
+func TestPrependRelevanceNotice_ShownWhenGateFilters(t *testing.T) {
+	withRelevanceConfig(t, 0.5, 1) // configured to filter — disclosure is real
+
+	got := prependRelevanceNotice("base summary", "timeout", "")
+	if !stringContains(got, "Relevance filtering unavailable") {
+		t.Fatalf("degradation notice must be shown when the gate is configured to filter, got %q", got)
+	}
+}
