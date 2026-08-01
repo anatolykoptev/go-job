@@ -9,10 +9,10 @@ import (
 )
 
 // profilePath resolves the user-profile file under the canonical uploads base
-// ($UPLOADS_ROOT/go-job/profile/profile.json). This is the same writable base
-// the job tracker uses, so a read-only container root (HOME=/root, mounted RO)
-// no longer breaks profile persistence — the operator points UPLOADS_ROOT at a
-// mounted writable volume and both the tracker DB and this profile land there.
+// ($UPLOADS_ROOT/go-job/profile/profile.json), so a read-only container root
+// (HOME=/root, mounted RO) does not break profile persistence — the operator
+// points UPLOADS_ROOT at a mounted writable volume. Search preferences are the
+// only file-backed state left here; tracked jobs moved to Postgres in ADR-002.
 func profilePath() (string, error) {
 	return uploads.Path("go-job", "profile", "profile.json")
 }

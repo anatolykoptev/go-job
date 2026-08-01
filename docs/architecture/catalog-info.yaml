@@ -4,9 +4,11 @@ metadata:
   name: go-job
   title: go-job — jobs / freelance / bounty aggregator
   description: |
-    Job search + tracker + LinkedIn integration + Algora bounty pipeline. Скрапит,
-    ранжирует, генерит resume tailored, cover letters, interview prep. Webshare
-    proxy pool для bypass rate limits. MCP-native.
+    Job search, application tracker, LinkedIn integration and Algora bounty pipeline,
+    MCP-native. Collects from 17 source connectors into a persistent Postgres hunt
+    store, then ranks and prepares applications over that accumulated record.
+    Collection uses public APIs, SearXNG and a proxy pool — plumbing, not the product's
+    edge; see docs/architecture/principles.md.
   annotations:
     github.com/project-slug: anatolykoptev/go-job
     likec4.dev/diagrams: /c4/go-job/
