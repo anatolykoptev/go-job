@@ -91,13 +91,14 @@ const (
 	// SummarizeJobResults call. outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded enum.
 	// "unparseable" fires when the LLM returned a response that could not be
 	// parsed as the expected JSON (truncated output, mid-record cut, schema
-	// echo, etc.). "llm_unavailable" fires when the LLM errored / returned
-	// unparseable output / returned zero jobs BUT deterministic structured
-	// listings survived the relevance gate and were served ranked — the
-	// operator action is "retry the LLM / switch provider", distinct from
-	// "unparseable" (fix the prompt/model). The raw output is NOT surfaced to
-	// the caller; this counter + the WARN log (raw_len, model) are the
-	// diagnostic surface.
+	// echo, etc.). "llm_unavailable" fires when the LLM errored or returned
+	// unparseable output BUT deterministic structured listings survived the
+	// relevance gate and were served ranked — the operator action is "retry
+	// the LLM / switch provider", distinct from "unparseable" (fix the
+	// prompt/model). A HEALTHY LLM returning zero jobs is NOT "llm_unavailable"
+	// — its empty list is the selection set and the result is "ok" (genuine
+	// empty, cacheable). The raw output is NOT surfaced to the caller; this
+	// counter + the WARN log (raw_len, model) are the diagnostic surface.
 	MetricJobSearchExtraction = "job_search_extraction_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
@@ -109,7 +110,7 @@ const (
 	outcomeNoKey       = "no_key"
 	outcomeParseFail   = "parse_fail"
 	outcomeUnparseable = "unparseable"
-	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable/zero-jobs but deterministic listings served
+	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable but deterministic listings served
 	kindJobs           = "jobs"
 	kindBounties       = "bounties"
 	kindFreelance      = "freelance"

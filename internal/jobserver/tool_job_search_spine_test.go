@@ -270,3 +270,102 @@ func TestSpine_F5_LLMUnavailableNotCached(t *testing.T) {
 		t.Errorf("F5 FAIL: LLM-unavailable result must NOT be cached; got a hit: %+v", cached)
 	}
 }
+
+// F6 — A HEALTHY LLM that legitimately found nothing (Jobs: nil, no error,
+// not Unparseable) is NOT unavailable. The LLM's empty list is the selection
+// set: structured listings the LLM did NOT select must NOT be served. The
+// output is the honest-empty path (len 0, honest summary), and the summary
+// must NOT claim the prose is "unavailable".
+//
+// Mutation: tool_job_search.go, reinstate the `no_jobs` arm
+// (`if !llmUnavailable && jobOut != nil && len(jobOut.Jobs) == 0 { llmUnavailable = true; llmErrClass = "no_jobs" }`)
+// -> the 2 structured candidates get served via the unavailable path ->
+// len(out.Jobs) == 2 and summary contains "unavailable" -> RED.
+func TestSpine_F6_HealthyLLMNoJobsIsHonestEmpty(t *testing.T) {
+	const urlA = "https://jobs.lever.co/testco/java-dev"
+	const urlB = "https://jobs.greenhouse.io/testco/dotnet-dev"
+	src := testStructuredSource{
+		results: []engine.SearxngResult{
+			{URL: urlA, Title: "Java Developer", Content: "** Java at TestCo"},
+			{URL: urlB, Title: ".NET Developer", Content: "** .NET at TestCo"},
+		},
+		listings: []engine.JobListing{
+			{URL: urlA, Title: "Java Developer", Company: "TestCo", Source: "lever"},
+			{URL: urlB, Title: ".NET Developer", Company: "TestCo", Source: "greenhouse"},
+		},
+	}
+	withTestRegistry(t, src)
+
+	stubSummarize(t, func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		// Healthy LLM, honest "no match": nil Jobs, a real summary, not Unparseable.
+		return &engine.JobSearchOutput{Query: query, Summary: "No matching roles found for this query."}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := engine.JobSearchInput{Query: "f6-healthy-empty-unique", Platform: "all"}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if len(out.Jobs) != 0 {
+		t.Fatalf("F6 FAIL: len(out.Jobs) = %d, want 0 (healthy LLM's empty selection must not serve unselected structured listings)", len(out.Jobs))
+	}
+	if contains(out.Summary, "unavailable") {
+		t.Errorf("F6 FAIL: a healthy LLM's honest-empty summary must NOT say 'unavailable'; got: %s", out.Summary)
+	}
+}
+
+// F7 — A HEALTHY LLM that selects 1 of 2 structured candidates: the LLM's
+// list is the SELECTION SET. Only the selected structured listing is served
+// (with empty fields filled from the LLM listing); the rejected structured
+// listing is ABSENT.
+//
+// Mutation: tool_job_search.go, reinstate the unconditional union build
+// (iterate `top` and emit every structured listing regardless of LLM
+// selection) -> the rejected Java listing is appended -> len == 2 -> RED.
+func TestSpine_F7_HealthyLLMSelectionDropsUnselected(t *testing.T) {
+	const urlRust = "https://jobs.lever.co/testco/rust-dev"
+	const urlJava = "https://jobs.greenhouse.io/testco/java-dev"
+	src := testStructuredSource{
+		results: []engine.SearxngResult{
+			{URL: urlRust, Title: "Rust Developer", Content: "** Rust at TestCo"},
+			{URL: urlJava, Title: "Java Developer", Content: "** Java at TestCo"},
+		},
+		listings: []engine.JobListing{
+			{URL: urlRust, Title: "Rust Developer", Company: "TestCo", Source: "lever"},
+			{URL: urlJava, Title: "Java Developer", Company: "TestCo", Source: "greenhouse"},
+		},
+	}
+	withTestRegistry(t, src)
+
+	stubSummarize(t, func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		// Healthy LLM selects ONLY the Rust role.
+		return &engine.JobSearchOutput{
+			Query:   query,
+			Summary: "One Rust role found.",
+			Jobs:    []engine.JobListing{{Title: "Rust Developer", Company: "TestCo", URL: urlRust}},
+		}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := engine.JobSearchInput{Query: "f7-selection-unique", Platform: "all"}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if len(out.Jobs) != 1 {
+		t.Fatalf("F7 FAIL: len(out.Jobs) = %d, want 1 (LLM selected 1 of 2; the rejected structured listing must be absent)", len(out.Jobs))
+	}
+	if out.Jobs[0].URL != urlRust {
+		t.Errorf("F7 FAIL: out.Jobs[0].URL = %q, want %q (the selected listing)", out.Jobs[0].URL, urlRust)
+	}
+	for _, j := range out.Jobs {
+		if j.URL == urlJava {
+			t.Errorf("F7 FAIL: rejected structured listing %q must be ABSENT from the output", urlJava)
+		}
+	}
+}
