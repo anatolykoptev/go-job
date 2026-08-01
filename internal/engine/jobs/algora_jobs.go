@@ -519,7 +519,7 @@ func applyAlgoraSalary(j *engine.JobListing, salaryText string) {
 	}
 	if currency != "" && (minVal > 0 || maxVal > 0) {
 		j.SalaryCurrency = currency
-		j.SalaryInterval = "year" // base salary figures are annual
+		j.SalaryInterval = "year" //nolint:goconst // semantic: SalaryInterval vocabulary — base salary figures are annual
 	}
 }
 
