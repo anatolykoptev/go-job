@@ -369,3 +369,195 @@ func TestSpine_F7_HealthyLLMSelectionDropsUnselected(t *testing.T) {
 		}
 	}
 }
+
+// F8 — A healthy LLM listing whose URL does NOT normalize-match its structured
+// counterpart, but whose JobID and Source DO match → the structured fields win.
+// The JobID fallback in jobs.StructuredMatcher.Match (called from
+// buildHealthySelection) resolves the join. This is the #418 defect: a healthy
+// LLM that emits a slightly different URL for the same Lever/Greenhouse/Ashby
+// posting silently got no structured match and shipped the LLM's guessed
+// salary instead of the API's numbers.
+//
+// Mutation: in jobs.StructuredMatcher.Match (ats.go), delete the JobID fallback
+// arm (the `if id != "" { ... }` block) → no match → LLM listing emitted
+// unchanged → SalaryMin stays nil → RED.
+func TestSpine_F8_JobIDFallbackHealthyPath(t *testing.T) {
+	minSalary := 160000
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:       "https://jobs.lever.co/testco/abc",
+			JobID:     "abc",
+			SalaryMin: &minSalary,
+			Source:    "lever",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{
+			// Different URL (no normalize match), same JobID + Source.
+			URL:       "https://jobs.lever.co/testco/abc/apply",
+			JobID:     "abc",
+			Source:    "lever",
+			Title:     "Eng",
+			SalaryMin: nil,
+		},
+	}
+	scoreByURL := map[string]float64{}
+	seen := map[string]bool{}
+
+	out := buildHealthySelection(llmJobs, structuredByURL, scoreByURL, seen)
+
+	if len(out) != 1 {
+		t.Fatalf("F8 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].SalaryMin == nil || *out[0].SalaryMin != 160000 {
+		t.Errorf("F8 FAIL: SalaryMin = %v, want 160000 (JobID fallback must match the structured listing; the LLM's nil must not ship)", out[0].SalaryMin)
+	}
+}
+
+// F9 — Cross-provider JobID collision: an LLM record with a LinkedIn-shaped id
+// and no Source, and a Greenhouse structured candidate carrying the same id
+// string → the JobID fallback must REFUSE (source-equality guard) and the
+// records must NOT merge. This is the reason the guard exists.
+//
+// Mutation: in jobs.StructuredMatcher.Match (ats.go), drop the
+// `llmSrc != "" && cand.Source == llmSrc` condition (match on JobID alone) →
+// the Greenhouse candidate wrongly matches → structured listing emitted with
+// Title "Greenhouse Eng" → RED.
+func TestSpine_F9_CrossProviderCollisionRefused(t *testing.T) {
+	structuredByURL := map[string]engine.JobListing{
+		"https://boards.greenhouse.io/testco/jobs/4001234": {
+			URL:    "https://boards.greenhouse.io/testco/jobs/4001234",
+			JobID:  "4001234",
+			Title:  "Greenhouse Eng",
+			Source: "greenhouse",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{
+			// LinkedIn record — URL does NOT normalize-match the Greenhouse URL,
+			// so the JobID fallback is the only path. Source is EMPTY; the URL
+			// resolves to "" via extractSourceFromURL (LinkedIn is not an ATS)
+			// → llmSrc stays "" → fallback refused.
+			URL:     "https://www.linkedin.com/jobs/view/4001234",
+			JobID:   "4001234",
+			Source:  "",
+			Title:   "LinkedIn Eng",
+			Company: "LinkedInCorp",
+		},
+	}
+	scoreByURL := map[string]float64{}
+	seen := map[string]bool{}
+
+	out := buildHealthySelection(llmJobs, structuredByURL, scoreByURL, seen)
+
+	if len(out) != 1 {
+		t.Fatalf("F9 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].Title != "LinkedIn Eng" {
+		t.Errorf("F9 FAIL: Title = %q, want %q (cross-provider JobID collision must NOT rewrite the LLM record)", out[0].Title, "LinkedIn Eng")
+	}
+	if out[0].Source == "greenhouse" {
+		t.Errorf("F9 FAIL: Source = %q, must NOT be relabelled greenhouse (cross-provider collision refused)", out[0].Source)
+	}
+}
+
+// F10 — Unavailable path with BOTH structured and LLM-only listings → the
+// summary reports the two counts separately and does NOT claim all are
+// machine-extracted. The LLM returned an unparseable response that still
+// carried one LLM-only job (no structured counterpart); one structured listing
+// survived the gate. The summary must name both counts.
+//
+// Mutation: in the summary switch (tool_job_search.go), revert to the single
+// "served from machine-extracted structured sources" claim ignoring nLLMOnly →
+// summary overclaims (says "machine-extracted" for an LLM-only listing) → RED.
+func TestSpine_F10_UnavailableSummaryReportsBothCounts(t *testing.T) {
+	const urlStructured = "https://jobs.lever.co/testco/aaa"    // structured-backed
+	const urlLLMOnly = "https://news.ycombinator.com/item?id=999" // LLM-only
+	src := testStructuredSource{
+		results: []engine.SearxngResult{
+			{URL: urlStructured, Title: "Go Backend", Content: "** Go Backend at TestCo"},
+		},
+		listings: []engine.JobListing{
+			{URL: urlStructured, Title: "Go Backend", Company: "TestCo", Source: "lever"},
+		},
+	}
+	withTestRegistry(t, src)
+
+	// Unparseable response that still carries one LLM-only job — exercises the
+	// LLM-only append arm of buildUnavailableSpine (which production
+	// SummarizeJobResults does not populate today, but the code path must stay
+	// honest if it ever does).
+	stubSummarize(t, func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		return &engine.JobSearchOutput{
+			Query:       query,
+			Summary:     "1 result",
+			Unparseable: true,
+			Jobs: []engine.JobListing{
+				{Title: "HN Text Post", Company: "Startup", URL: urlLLMOnly},
+			},
+		}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := engine.JobSearchInput{Query: "f10-summary-both-counts-unique", Platform: "all"}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if len(out.Jobs) != 2 {
+		t.Fatalf("F10 setup: len(out.Jobs) = %d, want 2 (1 structured + 1 LLM-only)", len(out.Jobs))
+	}
+	// The summary must state BOTH counts and must NOT claim every listing is
+	// machine-extracted (the LLM-only listing is not).
+	if !contains(out.Summary, "1 machine-extracted structured") {
+		t.Errorf("F10 FAIL: summary must name the structured count; got: %s", out.Summary)
+	}
+	if !contains(out.Summary, "1 LLM-extracted") {
+		t.Errorf("F10 FAIL: summary must name the LLM-only count separately; got: %s", out.Summary)
+	}
+}
+
+// F11 — LLM errors, zero structured survive → job_search_extraction_total is
+// incremented. Previously IncrJobSearchExtraction("llm_unavailable") was only
+// reached when structured listings survived, so an LLM error with zero
+// survivors incremented no series at all and the LLM-failure rate read
+// systematically low.
+//
+// Mutation: in tool_job_search.go, move the IncrJobSearchExtraction call back
+// inside the `if len(finalJobs) > 0` block → the empty-error path increments
+// nothing → delta stays 0 → RED.
+func TestSpine_F11_LLMErrorZeroStructuredIncrementsCounter(t *testing.T) {
+	// A non-structured source so no structured listings survive the gate.
+	src := testResultSource{results: []engine.SearxngResult{
+		{URL: "http://example.com/job-1", Title: "Go Dev", Content: "**Source:** test"},
+	}}
+	withTestRegistry(t, src)
+
+	stubSummarize(t, func(_ context.Context, _, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		return nil, &llm.APIError{StatusCode: 529, Body: "Overloaded"}
+	})
+
+	engine.InitTestRegistry()
+	key := engine.MetricJobSearchExtraction + "{outcome=llm_unavailable}"
+	before := engine.GetMetrics()[key]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	input := engine.JobSearchInput{Query: "f11-counter-empty-error-unique", Platform: "all"}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	// Sanity: this is the empty-error path (no structured survived).
+	if len(out.Jobs) != 0 {
+		t.Fatalf("F11 setup: len(out.Jobs) = %d, want 0 (no structured survived)", len(out.Jobs))
+	}
+
+	after := engine.GetMetrics()[key]
+	if delta := after - before; delta != 1 {
+		t.Errorf("F11 FAIL: job_search_extraction_total{outcome=llm_unavailable} delta = %d, want 1 (LLM error with zero survivors must still increment the counter)", delta)
+	}
+}

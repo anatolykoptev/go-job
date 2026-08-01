@@ -507,12 +507,15 @@ func TestRunSource_NonStructuredSource_LeavesStructuredNil(t *testing.T) {
 // A structured ATS listing carrying SalaryMin=160000 is registered via
 // withTestRegistry, and the summarizeJobResults seam is stubbed to return an LLM
 // record for the SAME URL with Salary "not specified" and SalaryMin nil. The
-// output must carry 160000 — proving jobs.ApplyStructuredPrecedence is wired
-// between the LLM output and the structured map inside runJobSearch.
+// output must carry 160000 — proving the structured-LLM join is wired
+// between the LLM output and the structured map inside runJobSearch. The join
+// lives in jobs.StructuredMatcher (called from buildHealthySelection); the
+// field fill is jobs.FillStructuredFromLLM.
 //
-// Acceptance is the mutation, not a passing test: amputate the
-// jobs.ApplyStructuredPrecedence(jobOut.Jobs, structuredByURL) call at
-// tool_job_search.go (replace with `_ = structuredByURL`) → SalaryMin stays nil
+// Acceptance is the mutation, not a passing test: in buildHealthySelection
+// (tool_job_search.go), amputate the structured-match arm — delete the
+// `if s, ok := m.Match(j); ok { jobs.FillStructuredFromLLM(&s, j); ...; continue }`
+// block so the LLM listing is always emitted unchanged → SalaryMin stays nil
 // → RED. Revert → green.
 //
 // No t.Parallel(): this test swaps the package-level summarizeJobResults var.

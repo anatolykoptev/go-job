@@ -91,14 +91,17 @@ const (
 	// SummarizeJobResults call. outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded enum.
 	// "unparseable" fires when the LLM returned a response that could not be
 	// parsed as the expected JSON (truncated output, mid-record cut, schema
-	// echo, etc.). "llm_unavailable" fires when the LLM errored or returned
-	// unparseable output BUT deterministic structured listings survived the
-	// relevance gate and were served ranked — the operator action is "retry
-	// the LLM / switch provider", distinct from "unparseable" (fix the
-	// prompt/model). A HEALTHY LLM returning zero jobs is NOT "llm_unavailable"
-	// — its empty list is the selection set and the result is "ok" (genuine
-	// empty, cacheable). The raw output is NOT surfaced to the caller; this
-	// counter + the WARN log (raw_len, model) are the diagnostic surface.
+	// echo, etc.). "llm_unavailable" fires whenever the LLM-unavailable path is
+	// taken in tool_job_search.go (LLM errored OR returned unparseable output),
+	// whether or not deterministic structured listings survived the relevance
+	// gate — so the LLM-failure rate does not read systematically low (an LLM
+	// error with zero survivors previously incremented no series at all). The
+	// operator action is "retry the LLM / switch provider", distinct from
+	// "unparseable" (fix the prompt/model). A HEALTHY LLM returning zero jobs
+	// is NOT "llm_unavailable" — its empty list is the selection set and the
+	// result is "ok" (genuine empty, cacheable). The raw output is NOT surfaced
+	// to the caller; this counter + the WARN log (raw_len, model) are the
+	// diagnostic surface.
 	MetricJobSearchExtraction = "job_search_extraction_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
@@ -110,7 +113,7 @@ const (
 	outcomeNoKey       = "no_key"
 	outcomeParseFail   = "parse_fail"
 	outcomeUnparseable = "unparseable"
-	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable but deterministic listings served
+	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable — unavailable path taken (listings may or may not have survived)
 	kindJobs           = "jobs"
 	kindBounties       = "bounties"
 	kindFreelance      = "freelance"
@@ -1183,7 +1186,8 @@ var validJobSearchExtractionOutcomes = map[string]bool{
 // IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<outcome>}.
 // outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded label. Unrecognised
 // values are silently dropped. Called once per SummarizeJobResults call ("ok"/"unparseable")
-// and once when deterministic listings are served due to an LLM failure ("llm_unavailable").
+// and once when the LLM-unavailable path is taken in tool_job_search.go
+// ("llm_unavailable"), whether or not structured listings survived the gate.
 func IncrJobSearchExtraction(outcome string) {
 	if !validJobSearchExtractionOutcomes[outcome] {
 		return

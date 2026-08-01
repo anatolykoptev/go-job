@@ -1298,6 +1298,88 @@ func NormalizeURL(u string) string {
 	return parsed.String()
 }
 
+// StructuredMatcher resolves the join of an LLM-extracted JobListing to its
+// structured counterpart. It is the SINGLE place the join lives: the
+// normalized-URL index, the JobID fallback index, and the source-equality
+// guard that refuses a cross-provider JobID collision. Both
+// ApplyStructuredPrecedence (LLM-is-spine, structured overrides fields) and
+// buildHealthySelection in tool_job_search.go (structured-is-spine, LLM fills
+// gaps) resolve their match through this type so the join logic is not
+// duplicated.
+//
+// Join key: the primary lookup is NormalizeURL(llm.URL) against an index built
+// from NormalizeURL(s.URL) for each structured listing — a trailing slash,
+// query param, or host casing variation no longer yields zero hits. When the
+// normalized URL misses, the lookup falls back to llm.JobID matched against a
+// byJobID index (built from each structured listing's JobID). This catches the
+// case where the LLM emits a different URL for the same job (e.g. the apply URL
+// vs the hosted URL on Lever) but extracted the JobID from the posting body.
+type StructuredMatcher struct {
+	byNormURL map[string]engine.JobListing
+	byJobID   map[string]engine.JobListing
+}
+
+// NewStructuredMatcher builds the normalized-URL and JobID indices from
+// structuredByURL. First-write-wins on duplicate keys (mirrors the previous
+// inline behaviour in ApplyStructuredPrecedence).
+func NewStructuredMatcher(structuredByURL map[string]engine.JobListing) *StructuredMatcher {
+	m := &StructuredMatcher{
+		byNormURL: make(map[string]engine.JobListing, len(structuredByURL)),
+		byJobID:   make(map[string]engine.JobListing, len(structuredByURL)),
+	}
+	for _, s := range structuredByURL {
+		k := NormalizeURL(s.URL)
+		if _, exists := m.byNormURL[k]; !exists {
+			m.byNormURL[k] = s
+		}
+		if s.JobID != "" {
+			if _, exists := m.byJobID[s.JobID]; !exists {
+				m.byJobID[s.JobID] = s
+			}
+		}
+	}
+	return m
+}
+
+// Match returns the structured listing joined to llm, or ok=false when no
+// structured counterpart exists. The normalized-URL lookup is tried first; on
+// miss the JobID fallback runs under the source-equality guard.
+//
+// Fallback: match by llm.JobID (the LLM may have extracted it from the posting
+// body even when the URL is wrong). Requires the LLM record's Source to equal
+// the candidate's Source — a cross-provider JobID collision must not rewrite
+// the wrong record. ExtractJobID is NOT used here: it matches only LinkedIn
+// URLs (/jobs/view/…), so it can never produce a Lever/Greenhouse/Ashby id,
+// and the one case it does return (a LinkedIn id) can collide with a
+// Greenhouse int64 id in byJobID.
+//
+// When the LLM record omits Source (json:"source,omitempty", nothing enforces
+// it, and precedence runs BEFORE the extractSourceForQuality backfill in
+// tool_job_search.go), resolve it from the URL via extractSourceFromURL and
+// require equality with the candidate's Source. If the URL is also
+// unresolvable, refuse the JobID fallback — otherwise a LinkedIn record (id
+// 4001234, no Source) would match a Greenhouse candidate with the same int64
+// id and be silently relabelled.
+func (m *StructuredMatcher) Match(llm engine.JobListing) (engine.JobListing, bool) {
+	s, ok := m.byNormURL[NormalizeURL(llm.URL)]
+	if !ok {
+		id := llm.JobID
+		if id != "" {
+			cand, candOk := m.byJobID[id]
+			if candOk {
+				llmSrc := llm.Source
+				if llmSrc == "" {
+					llmSrc = extractSourceFromURL(llm.URL)
+				}
+				if llmSrc != "" && cand.Source == llmSrc {
+					s, ok = cand, true
+				}
+			}
+		}
+	}
+	return s, ok
+}
+
 // ApplyStructuredPrecedence overrides LLM-extracted JobListing fields with
 // source-structured values, FIELD BY FIELD: a structured value wins ONLY where
 // that individual field is non-empty (non-nil pointer for salary, non-"" for
@@ -1310,23 +1392,12 @@ func NormalizeURL(u string) string {
 // "the employer did not fill the field", not "there is no comp", so it
 // must never zero a populated LLM value.
 //
-// Join key (HIGH fix): structuredByURL is keyed by normalizeURL(listing.URL)
-// here, and the lookup uses normalizeURL(llm[i].URL). The producer side
-// (tool_job_search.go) builds the map with the same normalizeURL so a trailing
-// slash, query param, or host casing variation no longer yields zero hits.
-// When the normalized URL still misses, the lookup falls back to
-// llm[i].JobID matched against structuredByJobID (built here from each
-// structured listing's JobID). This catches the case where the LLM emits a
-// different URL for the same job (e.g. the apply URL vs the hosted URL on
-// Lever) but extracted the JobID from the posting body. The fallback requires
-// the LLM record's Source to equal the candidate's Source. When the LLM record
-// omits Source (json:"source,omitempty", nothing enforces it, and precedence
-// runs BEFORE the extractSourceForQuality backfill in tool_job_search.go), the
-// Source is resolved from the URL via extractSourceFromURL and THAT must equal
-// the candidate's Source; if the URL is also unresolvable the JobID fallback is
-// refused — otherwise a LinkedIn record (id 4001234, no Source) would match a
-// Greenhouse candidate with the same int64 id, be silently relabelled
-// greenhouse, and leave nothing downstream able to detect it.
+// Join: the match itself (normalized-URL index, JobID fallback, and the
+// source-equality guard that refuses a cross-provider JobID collision) lives
+// in StructuredMatcher — the single shared implementation. This function
+// applies the field overrides and observability on top of a StructuredMatcher
+// match. See StructuredMatcher for why ExtractJobID is not used and why an
+// empty-Source LLM record is resolved from the URL before the fallback.
 //
 // Description exclusion (MINOR): s.Description is NOT copied — the structured
 // Description is a 600-rune truncation of descriptionPlain, while the LLM
@@ -1353,54 +1424,9 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 		return
 	}
 
-	// Build normalized-key + JobID fallback indices once.
-	byNormURL := make(map[string]engine.JobListing, len(structuredByURL))
-	byJobID := make(map[string]engine.JobListing, len(structuredByURL))
-	for _, s := range structuredByURL {
-		k := NormalizeURL(s.URL)
-		if _, exists := byNormURL[k]; !exists {
-			byNormURL[k] = s
-		}
-		if s.JobID != "" {
-			if _, exists := byJobID[s.JobID]; !exists {
-				byJobID[s.JobID] = s
-			}
-		}
-	}
+	m := NewStructuredMatcher(structuredByURL)
 	for i := range llm {
-		s, ok := byNormURL[NormalizeURL(llm[i].URL)]
-		if !ok {
-			// Fallback: match by llm[i].JobID (the LLM may have extracted it
-			// from the posting body even when the URL is wrong). Requires the
-			// LLM record's Source to equal the candidate's Source — a
-			// cross-provider JobID collision must not rewrite the wrong
-			// record. ExtractJobID is NOT used here: it matches only LinkedIn
-			// URLs (/jobs/view/…), so it can never produce a Lever/Greenhouse/
-			// Ashby id, and the one case it does return (a LinkedIn id) can
-			// collide with a Greenhouse int64 id in byJobID.
-			//
-			// When the LLM record omits Source (json:"source,omitempty",
-			// nothing enforces it, and precedence runs BEFORE the
-			// extractSourceForQuality backfill in tool_job_search.go), resolve
-			// it from the URL via extractSourceFromURL and require equality
-			// with the candidate's Source. If the URL is also unresolvable,
-			// refuse the JobID fallback — otherwise a LinkedIn record (id
-			// 4001234, no Source) would match a Greenhouse candidate with the
-			// same int64 id and be silently relabelled.
-			id := llm[i].JobID
-			if id != "" {
-				cand, candOk := byJobID[id]
-				if candOk {
-					llmSrc := llm[i].Source
-					if llmSrc == "" {
-						llmSrc = extractSourceFromURL(llm[i].URL)
-					}
-					if llmSrc != "" && cand.Source == llmSrc {
-						s, ok = cand, true
-					}
-				}
-			}
-		}
+		s, ok := m.Match(llm[i])
 		if !ok {
 			// Attribute the miss. A resolvable ATS URL → its source label; an
 			// unresolvable URL (non-ATS, or a hallucinated URL for an ATS job)
