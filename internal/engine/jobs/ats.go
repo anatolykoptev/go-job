@@ -1487,6 +1487,84 @@ func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[stri
 	}
 }
 
+// FillStructuredFromLLM fills the EMPTY fields of a structured listing from
+// the matching LLM listing — the inverse of ApplyStructuredPrecedence. The
+// structured listing is the spine (authoritative, machine-extracted from the
+// ATS API); the LLM contributes ONLY where the structured source is silent.
+// This is the field-by-field inverse of ApplyStructuredPrecedence and preserves
+// the same Salary group coherence invariant: structured free-text (Salary) is
+// never paired with LLM-guessed numerics (SalaryMin/Max), mirroring the guard in
+// ApplyStructuredPrecedence (which prevents structured free-text landing on LLM
+// numerics). Here the guard runs the other way: LLM numerics are NOT filled into
+// a structured listing that already carries its own free-text salary, because
+// the LLM's numeric guess could disagree with the authoritative structured text.
+//
+// Description is intentionally NOT filled (mirrors ApplyStructuredPrecedence's
+// "Description intentionally NOT copied" rule): the structured source's full
+// description is authoritative where present, and where it is absent the LLM's
+// summary is not grafted on — the LLM-only listings carry their own description.
+func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
+	if s.Title == "" {
+		s.Title = llm.Title
+	}
+	if s.Company == "" {
+		s.Company = llm.Company
+	}
+	if s.URL == "" {
+		s.URL = llm.URL
+	}
+	if s.JobID == "" {
+		s.JobID = llm.JobID
+	}
+	if s.Source == "" {
+		s.Source = llm.Source
+	}
+	if s.Location == "" {
+		s.Location = llm.Location
+	}
+	// Salary group, field by field (strictly additive, inverse of
+	// ApplyStructuredPrecedence). A structured value is kept wherever it is
+	// non-empty; the LLM fills only the gaps. The coherence guard: LLM
+	// numerics (SalaryMin/Max) are filled ONLY when the structured listing
+	// carries no free-text Salary — otherwise the LLM's guessed numerics
+	// could disagree with the authoritative structured free-text (the Ashby
+	// case: compensationTierSummary is the precise string, LLM numerics are a
+	// guess). LLM free-text Salary is filled whenever structured is empty
+	// (structured numerics + LLM free-text is allowed, matching the original
+	// direction which copies structured numerics onto LLM free-text).
+	if s.Salary == "" && llm.Salary != "" {
+		s.Salary = llm.Salary
+	}
+	if s.SalaryMin == nil && s.Salary == "" && llm.SalaryMin != nil {
+		s.SalaryMin = llm.SalaryMin
+	}
+	if s.SalaryMax == nil && s.Salary == "" && llm.SalaryMax != nil {
+		s.SalaryMax = llm.SalaryMax
+	}
+	if s.SalaryCurrency == "" && llm.SalaryCurrency != "" {
+		s.SalaryCurrency = llm.SalaryCurrency
+	}
+	if s.SalaryInterval == "" && llm.SalaryInterval != "" {
+		s.SalaryInterval = llm.SalaryInterval
+	}
+	if s.JobType == "" {
+		s.JobType = llm.JobType
+	}
+	if s.Remote == "" {
+		s.Remote = llm.Remote
+	}
+	if s.Experience == "" {
+		s.Experience = llm.Experience
+	}
+	if len(s.Skills) == 0 {
+		s.Skills = llm.Skills
+	}
+	// Description intentionally NOT filled — see doc comment.
+	if s.Posted == "" {
+		s.Posted = llm.Posted
+	}
+}
+
 // extractSourceFromURL infers the ATS provider from a URL for metric
 // attribution and the JobID-fallback Source resolution in
 // ApplyStructuredPrecedence. Returns "" for non-ATS URLs; the caller attributes

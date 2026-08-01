@@ -88,11 +88,16 @@ const (
 
 	// MetricJobSearchExtraction is the labelled counter
 	// gojob_job_search_extraction_total{outcome}. Bumped once per
-	// SummarizeJobResults call. outcome ∈ {"ok","unparseable"} — bounded enum.
+	// SummarizeJobResults call. outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded enum.
 	// "unparseable" fires when the LLM returned a response that could not be
 	// parsed as the expected JSON (truncated output, mid-record cut, schema
-	// echo, etc.). The raw output is NOT surfaced to the caller; this counter
-	// + the WARN log (raw_len, model) are the diagnostic surface.
+	// echo, etc.). "llm_unavailable" fires when the LLM errored / returned
+	// unparseable output / returned zero jobs BUT deterministic structured
+	// listings survived the relevance gate and were served ranked — the
+	// operator action is "retry the LLM / switch provider", distinct from
+	// "unparseable" (fix the prompt/model). The raw output is NOT surfaced to
+	// the caller; this counter + the WARN log (raw_len, model) are the
+	// diagnostic surface.
 	MetricJobSearchExtraction = "job_search_extraction_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
@@ -104,6 +109,7 @@ const (
 	outcomeNoKey       = "no_key"
 	outcomeParseFail   = "parse_fail"
 	outcomeUnparseable = "unparseable"
+	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable/zero-jobs but deterministic listings served
 	kindJobs           = "jobs"
 	kindBounties       = "bounties"
 	kindFreelance      = "freelance"
@@ -1168,14 +1174,15 @@ func IncrCompanyResearch(outcome string) {
 }
 
 // validJobSearchExtractionOutcomes bounds the outcome label for
-// gojob_job_search_extraction_total{outcome} to a fixed two-value enum.
+// gojob_job_search_extraction_total{outcome} to a fixed three-value enum.
 var validJobSearchExtractionOutcomes = map[string]bool{
-	outcomeOK: true, outcomeUnparseable: true,
+	outcomeOK: true, outcomeUnparseable: true, outcomeLLMUnavailable: true,
 }
 
 // IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<outcome>}.
-// outcome ∈ {"ok","unparseable"} — bounded label. Unrecognised values are
-// silently dropped. Called once per SummarizeJobResults call.
+// outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded label. Unrecognised
+// values are silently dropped. Called once per SummarizeJobResults call ("ok"/"unparseable")
+// and once when deterministic listings are served due to an LLM failure ("llm_unavailable").
 func IncrJobSearchExtraction(outcome string) {
 	if !validJobSearchExtractionOutcomes[outcome] {
 		return
