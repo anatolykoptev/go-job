@@ -90,7 +90,7 @@ func TestSpine_F1_LLMErrorServesStructured(t *testing.T) {
 // Mutation: tool_job_search.go, in the LLM-only append loop, replace the loop
 // body with `continue` (skip ALL LLM jobs) -> URL B (LLM-only) dropped -> RED.
 func TestSpine_F2_LLMOnlyListingsSurvive(t *testing.T) {
-	const urlA = "https://jobs.lever.co/testco/aaa" // structured-backed
+	const urlA = "https://jobs.lever.co/testco/aaa"         // structured-backed
 	const urlB = "https://news.ycombinator.com/item?id=999" // LLM-only (no structured)
 	src := testStructuredSource{
 		results:  []engine.SearxngResult{{URL: urlA, Title: "Go Backend", Content: "** Go Backend at TestCo"}},
@@ -471,7 +471,7 @@ func TestSpine_F9_CrossProviderCollisionRefused(t *testing.T) {
 // "served from machine-extracted structured sources" claim ignoring nLLMOnly →
 // summary overclaims (says "machine-extracted" for an LLM-only listing) → RED.
 func TestSpine_F10_UnavailableSummaryReportsBothCounts(t *testing.T) {
-	const urlStructured = "https://jobs.lever.co/testco/aaa"    // structured-backed
+	const urlStructured = "https://jobs.lever.co/testco/aaa"      // structured-backed
 	const urlLLMOnly = "https://news.ycombinator.com/item?id=999" // LLM-only
 	src := testStructuredSource{
 		results: []engine.SearxngResult{
@@ -562,13 +562,263 @@ func TestSpine_F11_LLMErrorZeroStructuredIncrementsCounter(t *testing.T) {
 	}
 }
 
+// --- PORTED invariants from the retired ApplyStructuredPrecedence suite ---
+//
+// The following tests (P1–P5) re-express load-bearing invariants that
+// ApplyStructuredPrecedence encoded against the OLD direction (LLM-is-spine,
+// structured overrides fields). The live path inverts that: structured is the
+// spine (buildHealthySelection), and FillStructuredFromLLM fills LLM values
+// only into empty structured gaps. Each test drives buildHealthySelection
+// directly — the same seam F8/F9 use.
+
+// P1 — Normalized-URL keying: an LLM URL with a trailing slash + query param
+// still matches a structured listing with a clean URL. Without NormalizeURL on
+// both sides, structuredByURL is an exact-string map and a single trailing
+// slash yields zero hits (the HIGH finding).
+//
+// Mutation: in jobs.NewStructuredMatcher (ats.go), replace `NormalizeURL(s.URL)`
+// with `s.URL` → no match → LLM emitted unchanged → SalaryMin nil → RED.
+func TestSpine_P1_URLNormalizationMatch(t *testing.T) {
+	min := 160000
+	max := 220000
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:            "https://jobs.lever.co/testco/abc",
+			SalaryMin:      &min,
+			SalaryMax:      &max,
+			SalaryCurrency: "USD",
+			SalaryInterval: "year",
+			Salary:         "160000–220000 USD/year",
+			Source:         "lever",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{
+			// Trailing slash + query — the exact variation that produced zero
+			// hits before NormalizeURL was added to both sides.
+			URL:       "https://jobs.lever.co/testco/abc/?source=llm",
+			Title:     "Eng",
+			SalaryMin: nil,
+		},
+	}
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("P1 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].SalaryMin == nil || *out[0].SalaryMin != 160000 {
+		t.Errorf("P1 FAIL: SalaryMin = %v, want 160000 (normalized URL must match despite trailing slash + query)", out[0].SalaryMin)
+	}
+	if out[0].Salary != "160000–220000 USD/year" {
+		t.Errorf("P1 FAIL: Salary = %q, want structured string (match via normalized URL)", out[0].Salary)
+	}
+}
+
+// P2 — Salary-group coherence guard: an Ashby structured listing carries
+// free-text Salary (compensationTierSummary) but nil numerics. When joined to
+// an LLM listing with a coherent numeric group, the LLM numerics must NOT be
+// grafted onto the structured free-text — that would pair structured free-text
+// with LLM-guessed numerics, a self-contradictory record neither source
+// produced. FillStructuredFromLLM's guard (s.Salary == "" gate on numeric fill)
+// blocks this. The structured free-text Salary is authoritative; the LLM
+// numerics are dropped. This replaces both AshbyNumericsPreserved and
+// AshbySalaryDisagreementKeepsLLMGroup from the old suite — the invariant is
+// the same (don't mix structured free-text with LLM numerics), but the
+// direction inverted: the old path kept the LLM group and dropped structured
+// free-text; the live path keeps structured free-text and drops LLM numerics.
+//
+// Mutation: in jobs.FillStructuredFromLLM (ats.go), remove the `s.Salary == ""`
+// guard on the SalaryMin fill → LLM numerics grafted → SalaryMin=180000 → RED.
+func TestSpine_P2_AshbyCoherenceGuardBlocksLLMNumerics(t *testing.T) {
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.ashbyhq.com/testco/abc": {
+			URL:    "https://jobs.ashbyhq.com/testco/abc",
+			Title:  "Eng",
+			Source: "ashby",
+			Salary: "$300k–$400k USD", // compensationTierSummary, free-text
+			// SalaryMin/Max/Currency/Interval intentionally nil/"" — ashbyJobToListing
+			// never sets the numeric fields.
+		},
+	}
+	llmMin := 180000
+	llmMax := 220000
+	llmJobs := []engine.JobListing{
+		{
+			URL:            "https://jobs.ashbyhq.com/testco/abc",
+			Salary:         "180000-220000 USD",
+			SalaryMin:      &llmMin,
+			SalaryMax:      &llmMax,
+			SalaryCurrency: "USD",
+			SalaryInterval: "year",
+		},
+	}
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("P2 FAIL: len(out) = %d, want 1", len(out))
+	}
+	// Structured free-text Salary is authoritative; LLM Salary NOT grafted.
+	if out[0].Salary != "$300k–$400k USD" {
+		t.Errorf("P2 FAIL: Salary = %q, want structured free-text (authoritative — LLM Salary not grafted onto structured free-text)", out[0].Salary)
+	}
+	// LLM numerics NOT grafted — coherence guard blocks the fill.
+	if out[0].SalaryMin != nil {
+		t.Errorf("P2 FAIL: SalaryMin = %v, want nil (LLM numerics must NOT be grafted onto structured free-text — coherence guard)", out[0].SalaryMin)
+	}
+	if out[0].SalaryMax != nil {
+		t.Errorf("P2 FAIL: SalaryMax = %v, want nil (coherence guard)", out[0].SalaryMax)
+	}
+}
+
+// P3 — LLM salary string fills empty structured: a Greenhouse structured
+// listing has no comp field (the API carries none). When joined to an LLM
+// listing with a salary, FillStructuredFromLLM fills the structured Salary
+// gap — the LLM salary STRING reaches the output. The old invariant
+// ("Greenhouse silence must not zero LLM salary") partially survives in the
+// live path: the Salary string IS filled (the display value the user sees).
+//
+// GAP (reported, not fixed — out of scope): FillStructuredFromLLM fills
+// s.Salary from the LLM first, then the `s.Salary == ""` guard on the numeric
+// fill (SalaryMin/Max) blocks the numerics because s.Salary is now non-empty.
+// The LLM numerics do NOT reach the output for a Greenhouse job — the
+// salary_min filter (hunt/store.go) cannot match it. The old path (LLM spine)
+// preserved both; the live path preserves only the string. The guard's intent
+// is the Ashby coherence case (structured free-text + LLM numerics = bad), but
+// it over-blocks the Greenhouse case (no structured comp at all). Fix: capture
+// the original s.Salary before the fill, or reorder the blocks. Tracked
+// separately — do NOT change production behaviour in this task.
+//
+// Mutation: in jobs.FillStructuredFromLLM (ats.go), remove the
+// `s.Salary == "" && llm.Salary != ""` fill → Salary stays "" → RED.
+func TestSpine_P3_GreenhouseSalaryFillFromLLM(t *testing.T) {
+	structuredByURL := map[string]engine.JobListing{
+		"https://boards.greenhouse.io/testco/jobs/4001234": {
+			URL:     "https://boards.greenhouse.io/testco/jobs/4001234",
+			Title:   "Backend Engineer",
+			Company: "testco",
+			Source:  "greenhouse",
+			// Salary absent — Greenhouse API has no comp field.
+		},
+	}
+	llmMin := 160000
+	llmMax := 220000
+	llmJobs := []engine.JobListing{
+		{
+			URL:            "https://boards.greenhouse.io/testco/jobs/4001234",
+			Salary:         "160000-220000 USD",
+			SalaryMin:      &llmMin,
+			SalaryMax:      &llmMax,
+			SalaryCurrency: "USD",
+			SalaryInterval: "year",
+		},
+	}
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("P3 FAIL: len(out) = %d, want 1", len(out))
+	}
+	// LLM Salary string fills the structured gap (structured has no comp field).
+	if out[0].Salary != "160000-220000 USD" {
+		t.Errorf("P3 FAIL: Salary = %q, want LLM value (structured has no comp — LLM fills gap)", out[0].Salary)
+	}
+	// GAP: numerics NOT filled — the guard blocks them after the Salary fill.
+	// This is the reported regression; the test pins the CURRENT behavior so a
+	// future fix to FillStructuredFromLLM (reorder/capture-original) flips this
+	// to non-nil and the test must be updated to assert the fix.
+	if out[0].SalaryMin != nil {
+		t.Errorf("P3 NOTE: SalaryMin = %v, want nil (GAP — guard blocks numeric fill after Salary fill; reported separately)", out[0].SalaryMin)
+	}
+	if out[0].SalaryMax != nil {
+		t.Errorf("P3 NOTE: SalaryMax = %v, want nil (GAP — same guard ordering issue)", out[0].SalaryMax)
+	}
+	// Structured non-salary fields win.
+	if out[0].Title != "Backend Engineer" {
+		t.Errorf("P3 FAIL: Title = %q, want structured value", out[0].Title)
+	}
+	if out[0].Company != "testco" {
+		t.Errorf("P3 FAIL: Company = %q, want structured value", out[0].Company)
+	}
+}
+
+// P4 — Empty-Source JobID fallback matches same provider: an LLM record with no
+// Source but a Lever URL + JobID still matches a Lever structured candidate.
+// StructuredMatcher.Match resolves the empty Source from the URL via
+// extractSourceFromURL and requires equality with the candidate's Source. F9
+// covers the REFUSE half (non-ATS URL → resolved Source is "" → fallback
+// refused); P4 covers the MATCH half (ATS URL → resolved Source == candidate
+// Source → fallback accepted).
+//
+// Mutation: in jobs.StructuredMatcher.Match (ats.go), refuse the JobID fallback
+// when llm.Source == "" (remove the extractSourceFromURL resolution, treat
+// empty as always-mismatch) → no match → SalaryMin nil → RED.
+func TestSpine_P4_EmptySourceJobIDFallbackMatchesSameProvider(t *testing.T) {
+	min := 160000
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:       "https://jobs.lever.co/testco/abc",
+			JobID:     "abc",
+			SalaryMin: &min,
+			Source:    "lever",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{
+			// Different URL (no normalize match), same JobID, no Source.
+			// The URL resolves to "lever" via extractSourceFromURL.
+			URL:       "https://jobs.lever.co/testco/abc/apply",
+			JobID:     "abc",
+			Source:    "",
+			Title:     "Eng",
+			SalaryMin: nil,
+		},
+	}
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("P4 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].SalaryMin == nil || *out[0].SalaryMin != 160000 {
+		t.Errorf("P4 FAIL: SalaryMin = %v, want 160000 (empty-Source same-provider JobID fallback must match via URL resolution)", out[0].SalaryMin)
+	}
+}
+
+// P5 — First-write-wins on duplicate normalized URLs: two structured listings
+// whose URLs normalize to the same key (trailing slash on the second) →
+// NewStructuredMatcher keeps the first inserted. Map iteration order is
+// non-deterministic, so the test asserts a match happened (Title is one of the
+// two structured values, not the LLM value), not which specific one.
+//
+// Mutation: in jobs.NewStructuredMatcher (ats.go), delete the byNormURL
+// population loop → no URL match, byJobID also empty → no match → Title stays
+// "LLM" → RED.
+func TestSpine_P5_FirstWriteWinsOnDuplicateNormURL(t *testing.T) {
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:    "https://jobs.lever.co/testco/abc",
+			Title:  "First",
+			Source: "lever",
+		},
+		"https://jobs.lever.co/testco/abc/": {
+			URL:    "https://jobs.lever.co/testco/abc/",
+			Title:  "Second",
+			Source: "lever",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{URL: "https://jobs.lever.co/testco/abc", Title: "LLM"},
+	}
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("P5 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].Title != "First" && out[0].Title != "Second" {
+		t.Errorf("P5 FAIL: Title = %q, want one of the two structured titles (first-write-wins dedup must have matched)", out[0].Title)
+	}
+}
+
 // F12 — Cross-provider JobID collision between two RESOLVABLE ATS sources: an
 // LLM record with a Lever URL (no Source field) and a Greenhouse structured
 // candidate carrying the same JobID string. The URLs do not normalize-match, so
-// the JobID fallback is the only path, and this time llmSrc RESOLVES (lever)
+// the JobID fallback is the only path, and this time llmSrc RESOLVES ("lever")
 // — so the refusal can only come from the source-EQUALITY arm of the guard.
 //
-// F9 covers the other arm: an unresolvable source (LinkedIn) leaves llmSrc
+// F9 covers the other arm: an unresolvable source (LinkedIn) leaves llmSrc empty
 // and the fallback is refused by `llmSrc != ""` alone. Dropping only
 // `cand.Source == llmSrc` leaves F9 green, so without F12 half the guard is
 // untested and can be deleted silently.

@@ -686,7 +686,7 @@ type leverPosting struct {
 // remote = $N), so "on-site" (Lever's hyphenated form) MUST become "onsite"
 // or hunt_list remote=onsite returns zero Lever rows. Similarly, "unspecified"
 // MUST become "" so it does not clobber a real LLM-normalized value via
-// ApplyStructuredPrecedence.
+// FillStructuredFromLLM.
 func normalizeRemote(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "remote": //nolint:goconst // semantic: JobListing.Remote vocabulary, distinct from algoraRemoteRow
@@ -1283,7 +1283,7 @@ func buildAshbyLocation(j ashbyJob) string {
 // "zero hits for structured data").
 //
 // Exported so tool_job_search.go can build the producer-side map with the same
-// canonicalization the lookup side (ApplyStructuredPrecedence) uses.
+// canonicalization the lookup side (StructuredMatcher) uses.
 func NormalizeURL(u string) string {
 	parsed, err := url.Parse(strings.TrimSpace(u))
 	if err != nil || parsed.Host == "" {
@@ -1301,10 +1301,9 @@ func NormalizeURL(u string) string {
 // StructuredMatcher resolves the join of an LLM-extracted JobListing to its
 // structured counterpart. It is the SINGLE place the join lives: the
 // normalized-URL index, the JobID fallback index, and the source-equality
-// guard that refuses a cross-provider JobID collision. Both
-// ApplyStructuredPrecedence (LLM-is-spine, structured overrides fields) and
+// guard that refuses a cross-provider JobID collision.
 // buildHealthySelection in tool_job_search.go (structured-is-spine, LLM fills
-// gaps) resolve their match through this type so the join logic is not
+// gaps) resolves its match through this type so the join logic is not
 // duplicated.
 //
 // Join key: the primary lookup is NormalizeURL(llm.URL) against an index built
@@ -1320,8 +1319,7 @@ type StructuredMatcher struct {
 }
 
 // NewStructuredMatcher builds the normalized-URL and JobID indices from
-// structuredByURL. First-write-wins on duplicate keys (mirrors the previous
-// inline behaviour in ApplyStructuredPrecedence).
+// structuredByURL. First-write-wins on duplicate keys.
 func NewStructuredMatcher(structuredByURL map[string]engine.JobListing) *StructuredMatcher {
 	m := &StructuredMatcher{
 		byNormURL: make(map[string]engine.JobListing, len(structuredByURL)),
@@ -1380,153 +1378,21 @@ func (m *StructuredMatcher) Match(llm engine.JobListing) (engine.JobListing, boo
 	return s, ok
 }
 
-// ApplyStructuredPrecedence overrides LLM-extracted JobListing fields with
-// source-structured values, FIELD BY FIELD: a structured value wins ONLY where
-// that individual field is non-empty (non-nil pointer for salary, non-"" for
-// strings, non-empty for slices). A nil/empty structured field NEVER overwrites
-// a populated LLM one. This is strictly additive — the LLM value is preserved
-// wherever the structured source is silent, so a Greenhouse match (no comp
-// field in its API) keeps the LLM's salary, and an Ashby match that published
-// only compensationTierSummary (free-text Salary) keeps the LLM's
-// SalaryMin/Max/Currency/Interval. An absent structured comp field means
-// "the employer did not fill the field", not "there is no comp", so it
-// must never zero a populated LLM value.
-//
-// Join: the match itself (normalized-URL index, JobID fallback, and the
-// source-equality guard that refuses a cross-provider JobID collision) lives
-// in StructuredMatcher — the single shared implementation. This function
-// applies the field overrides and observability on top of a StructuredMatcher
-// match. See StructuredMatcher for why ExtractJobID is not used and why an
-// empty-Source LLM record is resolved from the URL before the fallback.
-//
-// Description exclusion (MINOR): s.Description is NOT copied — the structured
-// Description is a 600-rune truncation of descriptionPlain, while the LLM
-// Description is the model's own summary. Overwriting the LLM summary with a
-// truncated raw dump loses the summary. The LLM value is kept.
-//
-// Observability: bumps gojob_structured_precedence_total{source,outcome} for
-// every LLM record — outcome=applied on match, outcome=no_match on miss — so
-// the hit rate is visible and a URL-join-key regression (no_match ratio → 1.0)
-// is detectable. When structuredByURL is empty (no structured data collected),
-// the counter is skipped entirely — non-ATS LLM records (generic searxng,
-// LinkedIn, hn, yc, indeed) would otherwise dominate no_match on platform=all
-// and mask a per-provider join regression. no_match is attributed via
-// extractSourceFromURL so a Greenhouse-only break is visible as
-// source=greenhouse; an unresolvable URL (non-ATS, or a hallucinated URL for an
-// ATS job) is attributed to source=none so it is NOT dropped — both Lever and
-// Ashby support custom board domains, so a no_match with no attributable source
-// must still increment the counter or a join regression becomes
-// indistinguishable from "no ATS jobs in this search".
-func ApplyStructuredPrecedence(llm []engine.JobListing, structuredByURL map[string]engine.JobListing) {
-	// No structured data → nothing to join against. Skip the counter entirely
-	// so non-ATS LLM records don't pollute no_match on platform=all.
-	if len(structuredByURL) == 0 {
-		return
-	}
-
-	m := NewStructuredMatcher(structuredByURL)
-	for i := range llm {
-		s, ok := m.Match(llm[i])
-		if !ok {
-			// Attribute the miss. A resolvable ATS URL → its source label; an
-			// unresolvable URL (non-ATS, or a hallucinated URL for an ATS job)
-			// → "none" so the miss is still counted — both Lever and Ashby
-			// support custom board domains, so dropping unresolvable misses
-			// would make a join regression indistinguishable from "no ATS jobs
-			// in this search".
-			src := extractSourceFromURL(llm[i].URL)
-			if src == "" {
-				src = "none"
-			}
-			engine.IncrStructuredPrecedence(src, "no_match")
-			continue
-		}
-		engine.IncrStructuredPrecedence(s.Source, "applied")
-		if s.Title != "" {
-			llm[i].Title = s.Title
-		}
-		if s.Company != "" {
-			llm[i].Company = s.Company
-		}
-		if s.URL != "" {
-			llm[i].URL = s.URL
-		}
-		if s.JobID != "" {
-			llm[i].JobID = s.JobID
-		}
-		if s.Source != "" {
-			llm[i].Source = s.Source
-		}
-		if s.Location != "" {
-			llm[i].Location = s.Location
-		}
-		// Salary group, field by field (strictly additive): a structured value
-		// wins ONLY where that individual field is non-empty. A nil/empty
-		// structured field NEVER overwrites a populated LLM one. This keeps the
-		// LLM's salary where the structured source is silent (Greenhouse has no
-		// comp field; Ashby publishes only the free-text compensationTierSummary
-		// and never the numeric fields) and lets a structured numeric range
-		// override the LLM's guess where the source did publish one. Salary
-		// zeroing was removed — see the doc comment above.
-		// Salary (free-text) is one value expressed five ways, so it is NOT
-		// copied unconditionally: Ashby sets only Salary
-		// (compensationTierSummary) and never the numerics, so an unconditional
-		// copy would pair structured free-text with LLM numerics — a
-		// self-contradictory record neither source produced. The numerics reach
-		// the scorer prompt (hunt/score/scorer.go), the Telegram notification
-		// (hunt/notify/telegram.go), and the persisted columns (hunt/store.go),
-		// so a salary_min filter can admit a job whose displayed range excludes
-		// it. Copy s.Salary only when the structured listing also supplies a
-		// numeric range, OR the LLM carries no numerics; otherwise keep the
-		// LLM's coherent group.
-		if s.Salary != "" && (s.SalaryMin != nil || s.SalaryMax != nil || (llm[i].SalaryMin == nil && llm[i].SalaryMax == nil)) {
-			llm[i].Salary = s.Salary
-		}
-		if s.SalaryMin != nil {
-			llm[i].SalaryMin = s.SalaryMin
-		}
-		if s.SalaryMax != nil {
-			llm[i].SalaryMax = s.SalaryMax
-		}
-		if s.SalaryCurrency != "" {
-			llm[i].SalaryCurrency = s.SalaryCurrency
-		}
-		if s.SalaryInterval != "" {
-			llm[i].SalaryInterval = s.SalaryInterval
-		}
-		if s.JobType != "" {
-			llm[i].JobType = s.JobType
-		}
-		if s.Remote != "" {
-			llm[i].Remote = s.Remote
-		}
-		if s.Experience != "" {
-			llm[i].Experience = s.Experience
-		}
-		if len(s.Skills) > 0 {
-			llm[i].Skills = s.Skills
-		}
-		// Description intentionally NOT copied — see doc comment.
-		if s.Posted != "" {
-			llm[i].Posted = s.Posted
-		}
-	}
-}
-
 // FillStructuredFromLLM fills the EMPTY fields of a structured listing from
-// the matching LLM listing — the inverse of ApplyStructuredPrecedence. The
-// structured listing is the spine (authoritative, machine-extracted from the
-// ATS API); the LLM contributes ONLY where the structured source is silent.
-// This is the field-by-field inverse of ApplyStructuredPrecedence and preserves
-// the same Salary group coherence invariant: structured free-text (Salary) is
-// never paired with LLM-guessed numerics (SalaryMin/Max), mirroring the guard in
-// ApplyStructuredPrecedence (which prevents structured free-text landing on LLM
-// numerics). Here the guard runs the other way: LLM numerics are NOT filled into
-// a structured listing that already carries its own free-text salary, because
-// the LLM's numeric guess could disagree with the authoritative structured text.
+// the matching LLM listing. The structured listing is the spine (authoritative,
+// machine-extracted from the ATS API); the LLM contributes ONLY where the
+// structured source is silent.
 //
-// Description is intentionally NOT filled (mirrors ApplyStructuredPrecedence's
-// "Description intentionally NOT copied" rule): the structured source's full
+// Salary group coherence: structured free-text (Salary) is never paired with
+// LLM-guessed numerics (SalaryMin/Max). LLM numerics are NOT filled into a
+// structured listing that already carries its own free-text salary, because the
+// LLM's numeric guess could disagree with the authoritative structured text
+// (the Ashby case: compensationTierSummary is the precise string, LLM numerics
+// are a guess). LLM free-text Salary is filled whenever structured is empty
+// (structured numerics + LLM free-text is allowed — the structured numerics are
+// authoritative and the LLM free-text is a display string).
+//
+// Description is intentionally NOT filled: the structured source's full
 // description is authoritative where present, and where it is absent the LLM's
 // summary is not grafted on — the LLM-only listings carry their own description.
 func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
@@ -1548,16 +1414,14 @@ func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
 	if s.Location == "" {
 		s.Location = llm.Location
 	}
-	// Salary group, field by field (strictly additive, inverse of
-	// ApplyStructuredPrecedence). A structured value is kept wherever it is
-	// non-empty; the LLM fills only the gaps. The coherence guard: LLM
-	// numerics (SalaryMin/Max) are filled ONLY when the structured listing
-	// carries no free-text Salary — otherwise the LLM's guessed numerics
+	// Salary group, field by field (strictly additive). A structured value is
+	// kept wherever it is non-empty; the LLM fills only the gaps. The coherence
+	// guard: LLM numerics (SalaryMin/Max) are filled ONLY when the structured
+	// listing carries no free-text Salary — otherwise the LLM's guessed numerics
 	// could disagree with the authoritative structured free-text (the Ashby
 	// case: compensationTierSummary is the precise string, LLM numerics are a
 	// guess). LLM free-text Salary is filled whenever structured is empty
-	// (structured numerics + LLM free-text is allowed, matching the original
-	// direction which copies structured numerics onto LLM free-text).
+	// (structured numerics + LLM free-text is allowed).
 	if s.Salary == "" && llm.Salary != "" {
 		s.Salary = llm.Salary
 	}
@@ -1591,14 +1455,12 @@ func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
 	}
 }
 
-// extractSourceFromURL infers the ATS provider from a URL for metric
-// attribution and the JobID-fallback Source resolution in
-// ApplyStructuredPrecedence. Returns "" for non-ATS URLs; the caller attributes
-// such misses to "none" so a join regression on a custom-board-domain Lever/
-// Ashby job is still counted. Delegates to SourceFromURL (the single shared
-// URL→source implementation in hunt_map.go) and keeps only the ATS arms — the
-// structured_precedence_total source label is bounded to {greenhouse,lever,
-// ashby,none} by validStructuredPrecedenceSources in metrics.go.
+// extractSourceFromURL infers the ATS provider from a URL for the JobID-fallback
+// Source resolution in StructuredMatcher.Match. Returns "" for non-ATS URLs;
+// the caller refuses the fallback when the resolved Source is empty so a
+// cross-provider JobID collision cannot rewrite the wrong record. Delegates to
+// SourceFromURL (the single shared URL→source implementation in hunt_map.go)
+// and keeps only the ATS arms.
 func extractSourceFromURL(jobURL string) string {
 	s := SourceFromURL(jobURL)
 	switch s {

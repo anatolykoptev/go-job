@@ -396,10 +396,9 @@ var _ = errors.Is
 //
 // These tests exercise the FULL wiring (runSource → sourceResult.structured →
 // aggregateSourceResults → structuredJobs return), NOT just the mappers in
-// isolation. The prior test suite called mappers directly, so deleting
-// ApplyStructuredPrecedence, making the StructuredFetcher branch unreachable,
-// or deleting the allListings append left all tests green. These tests close
-// that gap.
+// isolation. The prior test suite called mappers directly, so making the
+// StructuredFetcher branch unreachable or deleting the allListings append
+// left all tests green. These tests close that gap.
 
 // testStructuredSource is a connectors.Source that also implements
 // connectors.StructuredFetcher. It returns a fixed pair of results + listings
@@ -452,7 +451,7 @@ func TestRunSource_StructuredFetcher_PopulatesStructuredField(t *testing.T) {
 // TestAggregateSourceResults_StructuredData_ReturnsStructuredListings verifies
 // that aggregateSourceResults threads the structured listings from
 // sourceResult.structured into its structuredJobs return value. This is the
-// seam that feeds ApplyStructuredPrecedence in runJobSearch.
+// seam that feeds buildHealthySelection in runJobSearch.
 //
 // Mutation: delete the `allListings = append(...)` line in aggregateSourceResults
 // → structuredJobs stays nil → RED.

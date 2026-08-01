@@ -441,8 +441,8 @@ spawn:
 	// the structured work the process already holds. Iterate `top` (gate
 	// order) and emit every structured listing that survived the gate (its
 	// empty fields filled from any matching LLM listing via
-	// jobs.FillStructuredFromLLM — the inverse of ApplyStructuredPrecedence;
-	// the structured source is authoritative, the LLM fills only the gaps).
+	// jobs.FillStructuredFromLLM — the structured source is authoritative,
+	// the LLM fills only the gaps).
 	// LLM-only listings (URLs with no structured counterpart — HN text posts,
 	// Craigslist, LinkedIn) are appended after them, unchanged. The whole
 	// list is ordered by the gate's cosine score, descending.

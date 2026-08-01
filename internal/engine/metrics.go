@@ -249,17 +249,6 @@ const (
 	// board-fetch failed" visible on the flat metrics endpoint and in Prometheus.
 	MetricATSFetchErrors = "ats_fetch_errors_total"
 
-	// MetricStructuredPrecedence is the labelled counter
-	// gojob_structured_precedence_total{source,outcome}.
-	// Bumped by jobs.ApplyStructuredPrecedence for every LLM-emitted job record:
-	// outcome=applied when a structured listing matched and overrode LLM fields,
-	// outcome=no_match when no structured listing matched (the generic-searxng /
-	// LinkedIn path). source ∈ {greenhouse,lever,ashby,none} — "none" is the
-	// no_match case where no source can be attributed. Lets an operator see the
-	// hit rate of source-structured-over-LLM precedence and detect a regression
-	// where the URL join key stops matching (no_match ratio → 1.0).
-	MetricStructuredPrecedence = "structured_precedence_total"
-
 	// MetricSecurityFetchErrors is the labelled counter
 	// gojob_security_fetch_errors_total{platform,reason}.
 	// Bumped when a security bounty source fetch hits the read-cap DoS ceiling
@@ -687,14 +676,6 @@ func FormatMetrics() string {
 			keys = append(keys, MetricATSFetchErrors+"{platform="+p+",reason="+r+"}")
 		}
 	}
-	// Structured precedence counters pre-touched so rate()-floor alerts see 0
-	// before the first job_search call. 3 sources × 2 outcomes + 1 none/no_match
-	// = 7 series (bounded, safe cardinality). "none" covers the no_match case
-	// where no ATS source can be attributed to the LLM record.
-	for _, src := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
-		keys = append(keys, MetricStructuredPrecedence+"{source="+src+",outcome=applied}")
-	}
-	keys = append(keys, MetricStructuredPrecedence+"{source=none,outcome=no_match}")
 	// hunt_notify_total pre-touched for all outcomes so rate()-floor alerts see 0
 	// before the first notify fire.
 	// outcome ∈ {"sent","failed","stale","no_date","low_fit","unscored","notifier_disabled"}.
@@ -1280,39 +1261,6 @@ func IncrATSFetchErrors(platform, reason string) {
 		return
 	}
 	reg.Incr(MetricATSFetchErrors + "{platform=" + platform + ",reason=" + reason + "}")
-}
-
-// validStructuredPrecedenceSources bounds the source label for
-// structured_precedence_total. "none" is the no_match case where no ATS source
-// can be attributed to the LLM record's URL (non-ATS URL, or a hallucinated
-// URL for an ATS job — both Lever and Ashby support custom board domains).
-// ApplyStructuredPrecedence attributes such misses to "none" rather than
-// dropping them, so a join regression stays distinguishable from "no ATS jobs
-// in this search".
-var validStructuredPrecedenceSources = map[string]bool{
-	DiscoveryPlatformGreenhouse: true,
-	DiscoveryPlatformLever:      true,
-	DiscoveryPlatformAshby:      true,
-	"none":                      true,
-}
-
-// validStructuredPrecedenceOutcomes bounds the outcome label.
-var validStructuredPrecedenceOutcomes = map[string]bool{
-	"applied":  true,
-	"no_match": true,
-}
-
-// IncrStructuredPrecedence bumps gojob_structured_precedence_total{source,outcome}.
-// source ∈ {greenhouse,lever,ashby,none}, outcome ∈ {applied,no_match}.
-// Unrecognised label values are silently dropped (cardinality guard).
-// Called by jobs.ApplyStructuredPrecedence for every LLM-emitted job record so
-// the hit rate of source-structured-over-LLM precedence is visible in
-// Prometheus and a URL-join-key regression (no_match ratio → 1.0) is detectable.
-func IncrStructuredPrecedence(source, outcome string) {
-	if !validStructuredPrecedenceSources[source] || !validStructuredPrecedenceOutcomes[outcome] {
-		return
-	}
-	reg.Incr(MetricStructuredPrecedence + "{source=" + source + ",outcome=" + outcome + "}")
 }
 
 // validSecurityPlatforms bounds the platform label for security_fetch_errors_total.
