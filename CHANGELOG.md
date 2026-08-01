@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.18.3](https://github.com/anatolykoptev/go-job/compare/v1.18.2...v1.18.3) (2026-08-01)
+
+
+### Bug Fixes
+
+* **job_search:** delete the bespoke embed per-request timeout derivation ([#439](https://github.com/anatolykoptev/go-job/issues/439)) ([47af4b5](https://github.com/anatolykoptev/go-job/commit/47af4b599f378697e546a7fc4f2bc68e342687ad))
+
 ## [1.18.2](https://github.com/anatolykoptev/go-job/compare/v1.18.1...v1.18.2) (2026-08-01)
 
 
