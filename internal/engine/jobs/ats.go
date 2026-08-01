@@ -1358,24 +1358,49 @@ func NewStructuredMatcher(structuredByURL map[string]engine.JobListing) *Structu
 // unresolvable, refuse the JobID fallback — otherwise a LinkedIn record (id
 // 4001234, no Source) would match a Greenhouse candidate with the same int64
 // id and be silently relabelled.
+//
+// Observability: every call emits gojob_structured_precedence_total{source,
+// outcome} so the join hit rate per arm is visible in Prometheus and a
+// URL-join-key regression (no_match ratio → 1.0) or a JobID-fallback
+// regression (jobid_fallback rate → 0) is detectable. outcome=url_match for
+// a normalized-URL hit, outcome=jobid_fallback for a JobID-fallback hit (the
+// arm that was silently missing — its rate is the regression signal),
+// outcome=no_match for a miss. source is the matched listing's Source for
+// matches, or extractSourceFromURL(llm.URL) for no_match, falling back to
+// "none" when the URL is unresolvable so a join regression cannot hide as
+// "no ATS jobs in this search". Emission lives HERE (not in the caller) because
+// Match is the single place the join outcome is known: the caller
+// (buildHealthySelection) receives only (listing, ok) and would have to
+// re-derive which arm fired to attribute the counter — re-running the lookup
+// in the caller would duplicate the join logic. The caller always acts on a
+// match (emits structured) and on a miss (emits LLM unchanged), so there is no
+// conditional where a match is silently dropped — every Match call produces
+// exactly one counter increment, and that increment IS the signal.
 func (m *StructuredMatcher) Match(llm engine.JobListing) (engine.JobListing, bool) {
 	s, ok := m.byNormURL[NormalizeURL(llm.URL)]
-	if !ok {
-		id := llm.JobID
-		if id != "" {
-			cand, candOk := m.byJobID[id]
-			if candOk {
-				llmSrc := llm.Source
-				if llmSrc == "" {
-					llmSrc = extractSourceFromURL(llm.URL)
-				}
-				if llmSrc != "" && cand.Source == llmSrc {
-					s, ok = cand, true
-				}
+	if ok {
+		engine.IncrStructuredPrecedence(s.Source, "url_match")
+		return s, true
+	}
+	if llm.JobID != "" {
+		cand, candOk := m.byJobID[llm.JobID]
+		if candOk {
+			llmSrc := llm.Source
+			if llmSrc == "" {
+				llmSrc = extractSourceFromURL(llm.URL)
+			}
+			if llmSrc != "" && cand.Source == llmSrc {
+				engine.IncrStructuredPrecedence(cand.Source, "jobid_fallback")
+				return cand, true
 			}
 		}
 	}
-	return s, ok
+	src := extractSourceFromURL(llm.URL)
+	if src == "" {
+		src = "none"
+	}
+	engine.IncrStructuredPrecedence(src, "no_match")
+	return engine.JobListing{}, false
 }
 
 // FillStructuredFromLLM fills the EMPTY fields of a structured listing from
@@ -1416,19 +1441,30 @@ func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
 	}
 	// Salary group, field by field (strictly additive). A structured value is
 	// kept wherever it is non-empty; the LLM fills only the gaps. The coherence
-	// guard: LLM numerics (SalaryMin/Max) are filled ONLY when the structured
-	// listing carries no free-text Salary — otherwise the LLM's guessed numerics
+	// guard: LLM numerics (SalaryMin/Max) are filled ONLY when the STRUCTURED
+	// listing carried no free-text Salary — otherwise the LLM's guessed numerics
 	// could disagree with the authoritative structured free-text (the Ashby
 	// case: compensationTierSummary is the precise string, LLM numerics are a
 	// guess). LLM free-text Salary is filled whenever structured is empty
 	// (structured numerics + LLM free-text is allowed).
+	//
+	// structuredHadSalary is captured BEFORE the Salary fill so the numeric
+	// guard reads the ORIGINAL structured state, not the post-fill s.Salary the
+	// previous line just mutated. The old guard (s.Salary == "" checked after
+	// the Salary fill) blocked LLM numerics for every job whose salary came
+	// from the LLM — the common Greenhouse path (Greenhouse publishes no comp
+	// field, so the LLM's free-text + numerics are the only salary and are
+	// coherent: same source, same record). A guard that depends on statement
+	// order is the defect; capturing the original state makes the guard
+	// order-independent.
+	structuredHadSalary := s.Salary != ""
 	if s.Salary == "" && llm.Salary != "" {
 		s.Salary = llm.Salary
 	}
-	if s.SalaryMin == nil && s.Salary == "" && llm.SalaryMin != nil {
+	if s.SalaryMin == nil && !structuredHadSalary && llm.SalaryMin != nil {
 		s.SalaryMin = llm.SalaryMin
 	}
-	if s.SalaryMax == nil && s.Salary == "" && llm.SalaryMax != nil {
+	if s.SalaryMax == nil && !structuredHadSalary && llm.SalaryMax != nil {
 		s.SalaryMax = llm.SalaryMax
 	}
 	if s.SalaryCurrency == "" && llm.SalaryCurrency != "" {

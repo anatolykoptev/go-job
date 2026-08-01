@@ -15,6 +15,8 @@ package jobs
 
 import (
 	"testing"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // --- Lever ---
@@ -508,5 +510,113 @@ func TestLeverSalaryString_UnmappedIntervalRenderedVerbatim(t *testing.T) {
 				t.Errorf("leverSalaryString(interval=%q) = %q, want %q", tt.interval, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- StructuredMatcher.Match observability (structured_precedence_total) ---
+//
+// The join in StructuredMatcher.Match emits gojob_structured_precedence_total
+// {source,outcome} per call so a URL-join-key regression (no_match ratio → 1.0)
+// is detectable in Prometheus. outcome distinguishes the three join arms:
+// url_match (normalized-URL hit), jobid_fallback (JobID fallback hit — the arm
+// that was silently missing and just restored), no_match (no structured
+// counterpart). source is the matched listing's Source for matches, or
+// extractSourceFromURL(llm.URL) for no_match, falling back to "none" when the
+// URL is unresolvable so a join regression cannot hide as "no ATS jobs".
+
+// F15 — The JobID-fallback arm increments its OWN outcome (jobid_fallback),
+// distinct from the url_match outcome. An LLM record whose URL does NOT
+// normalize-match but whose JobID + Source DO match → the fallback arm fires
+// and the counter must read jobid_fallback, NOT url_match. This is the arm
+// that was silently missing; its rate is the regression signal.
+//
+// Mutation: in StructuredMatcher.Match (ats.go), emit "url_match" from the
+// fallback arm instead of "jobid_fallback" → the counter cannot distinguish
+// the two arms → delta{outcome=jobid_fallback} stays 0 → RED.
+func TestStructuredMatcher_F15_JobIDFallbackIncrementsOwnOutcome(t *testing.T) {
+	engine.InitTestRegistry()
+
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.lever.co/testco/abc": {
+			URL:    "https://jobs.lever.co/testco/abc",
+			JobID:  "abc",
+			Source: "lever",
+		},
+	}
+	m := NewStructuredMatcher(structuredByURL)
+
+	// URL does NOT normalize-match (trailing /apply), JobID + Source match →
+	// the JobID fallback arm fires.
+	llm := engine.JobListing{
+		URL:    "https://jobs.lever.co/testco/abc/apply",
+		JobID:  "abc",
+		Source: "lever",
+	}
+
+	keyFallback := engine.MetricStructuredPrecedence + "{source=lever,outcome=jobid_fallback}"
+	keyURLMatch := engine.MetricStructuredPrecedence + "{source=lever,outcome=url_match}"
+	beforeFallback := engine.GetMetrics()[keyFallback]
+	beforeURLMatch := engine.GetMetrics()[keyURLMatch]
+
+	s, ok := m.Match(llm)
+	if !ok {
+		t.Fatalf("F15 FAIL: Match returned ok=false, want true (JobID fallback must match)")
+	}
+	if s.JobID != "abc" {
+		t.Fatalf("F15 FAIL: matched JobID = %q, want abc", s.JobID)
+	}
+
+	afterFallback := engine.GetMetrics()[keyFallback]
+	afterURLMatch := engine.GetMetrics()[keyURLMatch]
+
+	if delta := afterFallback - beforeFallback; delta != 1 {
+		t.Errorf("F15 FAIL: structured_precedence_total{source=lever,outcome=jobid_fallback} delta = %d, want 1 (the JobID-fallback arm must increment its OWN outcome)", delta)
+	}
+	if delta := afterURLMatch - beforeURLMatch; delta != 0 {
+		t.Errorf("F15 FAIL: structured_precedence_total{source=lever,outcome=url_match} delta = %d, want 0 (the fallback arm must NOT emit url_match — the two arms must be distinguishable)", delta)
+	}
+}
+
+// F16 — An unresolvable URL that matches nothing is attributed to source=none
+// rather than dropped. A non-ATS URL (LinkedIn) with a JobID that collides with
+// no structured candidate → no_match, and extractSourceFromURL returns "" for a
+// non-ATS URL → the counter must attribute it to "none" so the miss is still
+// counted and a join regression stays distinguishable from "no ATS jobs in
+// this search".
+//
+// Mutation: in StructuredMatcher.Match (ats.go), skip the IncrStructuredPrecedence
+// call when src == "" (drop unresolvable misses instead of attributing to none)
+// → delta{source=none,outcome=no_match} stays 0 → RED.
+func TestStructuredMatcher_F16_UnresolvableURLAttributedToNone(t *testing.T) {
+	engine.InitTestRegistry()
+
+	structuredByURL := map[string]engine.JobListing{
+		"https://boards.greenhouse.io/testco/jobs/4001234": {
+			URL:    "https://boards.greenhouse.io/testco/jobs/4001234",
+			JobID:  "4001234",
+			Source: "greenhouse",
+		},
+	}
+	m := NewStructuredMatcher(structuredByURL)
+
+	// LinkedIn URL — does NOT normalize-match, extractSourceFromURL returns ""
+	// (LinkedIn is not an ATS), JobID collides but Source guard refuses → no_match.
+	llm := engine.JobListing{
+		URL:    "https://www.linkedin.com/jobs/view/4001234",
+		JobID:  "4001234",
+		Source: "",
+	}
+
+	keyNone := engine.MetricStructuredPrecedence + "{source=none,outcome=no_match}"
+	before := engine.GetMetrics()[keyNone]
+
+	_, ok := m.Match(llm)
+	if ok {
+		t.Fatalf("F16 setup: Match returned ok=true, want false (LinkedIn URL must not match a Greenhouse candidate — source guard refuses)")
+	}
+
+	after := engine.GetMetrics()[keyNone]
+	if delta := after - before; delta != 1 {
+		t.Errorf("F16 FAIL: structured_precedence_total{source=none,outcome=no_match} delta = %d, want 1 (unresolvable URL miss must be attributed to none, NOT dropped)", delta)
 	}
 }

@@ -668,26 +668,24 @@ func TestSpine_P2_AshbyCoherenceGuardBlocksLLMNumerics(t *testing.T) {
 	}
 }
 
-// P3 — LLM salary string fills empty structured: a Greenhouse structured
-// listing has no comp field (the API carries none). When joined to an LLM
-// listing with a salary, FillStructuredFromLLM fills the structured Salary
-// gap — the LLM salary STRING reaches the output. The old invariant
-// ("Greenhouse silence must not zero LLM salary") partially survives in the
-// live path: the Salary string IS filled (the display value the user sees).
+// P3 / F13 — Structured listing with NO salary of any kind + LLM carrying
+// free-text AND numerics from the same record → all of Salary, SalaryMin,
+// SalaryMax survive on the output. A Greenhouse structured listing has no comp
+// field (the API carries none). When joined to an LLM listing with a coherent
+// salary group (free-text + numerics + currency + interval), FillStructuredFromLLM
+// fills ALL the gaps — the LLM salary STRING and the LLM numerics both reach the
+// output, so a salary_min filter (hunt/store.go) can match the job.
 //
-// GAP (reported, not fixed — out of scope): FillStructuredFromLLM fills
-// s.Salary from the LLM first, then the `s.Salary == ""` guard on the numeric
-// fill (SalaryMin/Max) blocks the numerics because s.Salary is now non-empty.
-// The LLM numerics do NOT reach the output for a Greenhouse job — the
-// salary_min filter (hunt/store.go) cannot match it. The old path (LLM spine)
-// preserved both; the live path preserves only the string. The guard's intent
-// is the Ashby coherence case (structured free-text + LLM numerics = bad), but
-// it over-blocks the Greenhouse case (no structured comp at all). Fix: capture
-// the original s.Salary before the fill, or reorder the blocks. Tracked
-// separately — do NOT change production behaviour in this task.
+// The guard captures whether the STRUCTURED listing carried free-text salary
+// BEFORE any fill, and guards the numerics on that captured value — not on
+// s.Salary which the Salary fill just mutated. The old order-dependent guard
+// (s.Salary == "" checked AFTER the Salary fill) blocked the numerics because
+// s.Salary was now non-empty; the fix captures structuredHadSalary before the
+// fill so LLM-on-LLM coherence (same source, same record) is preserved.
 //
-// Mutation: in jobs.FillStructuredFromLLM (ats.go), remove the
-// `s.Salary == "" && llm.Salary != ""` fill → Salary stays "" → RED.
+// Mutation: restore the order-dependent guard (guard numerics on s.Salary
+// instead of the captured structuredHadSalary) → s.Salary is non-empty after
+// the fill → numerics nil → RED.
 func TestSpine_P3_GreenhouseSalaryFillFromLLM(t *testing.T) {
 	structuredByURL := map[string]engine.JobListing{
 		"https://boards.greenhouse.io/testco/jobs/4001234": {
@@ -718,15 +716,19 @@ func TestSpine_P3_GreenhouseSalaryFillFromLLM(t *testing.T) {
 	if out[0].Salary != "160000-220000 USD" {
 		t.Errorf("P3 FAIL: Salary = %q, want LLM value (structured has no comp — LLM fills gap)", out[0].Salary)
 	}
-	// GAP: numerics NOT filled — the guard blocks them after the Salary fill.
-	// This is the reported regression; the test pins the CURRENT behavior so a
-	// future fix to FillStructuredFromLLM (reorder/capture-original) flips this
-	// to non-nil and the test must be updated to assert the fix.
-	if out[0].SalaryMin != nil {
-		t.Errorf("P3 NOTE: SalaryMin = %v, want nil (GAP — guard blocks numeric fill after Salary fill; reported separately)", out[0].SalaryMin)
+	// F13: LLM numerics MUST survive — the guard captures structuredHadSalary
+	// before the fill, so the Salary fill does not block the numeric fill.
+	if out[0].SalaryMin == nil || *out[0].SalaryMin != 160000 {
+		t.Errorf("P3 FAIL: SalaryMin = %v, want 160000 (LLM numerics must survive when structured has no salary — guard on captured structuredHadSalary, not mutated s.Salary)", out[0].SalaryMin)
 	}
-	if out[0].SalaryMax != nil {
-		t.Errorf("P3 NOTE: SalaryMax = %v, want nil (GAP — same guard ordering issue)", out[0].SalaryMax)
+	if out[0].SalaryMax == nil || *out[0].SalaryMax != 220000 {
+		t.Errorf("P3 FAIL: SalaryMax = %v, want 220000 (same guard fix)", out[0].SalaryMax)
+	}
+	if out[0].SalaryCurrency != "USD" {
+		t.Errorf("P3 FAIL: SalaryCurrency = %q, want USD", out[0].SalaryCurrency)
+	}
+	if out[0].SalaryInterval != "year" {
+		t.Errorf("P3 FAIL: SalaryInterval = %q, want year", out[0].SalaryInterval)
 	}
 	// Structured non-salary fields win.
 	if out[0].Title != "Backend Engineer" {
