@@ -97,16 +97,17 @@ const (
 
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
-	outcomeOK        = "ok"
-	outcomeEmpty     = "empty"
-	outcomeTimeout   = "timeout"
-	outcomeError     = "error"
-	outcomeNoKey     = "no_key"
-	outcomeParseFail = "parse_fail"
-	kindJobs         = "jobs"
-	kindBounties     = "bounties"
-	kindFreelance    = "freelance"
-	kindSecurity     = "security"
+	outcomeOK          = "ok"
+	outcomeEmpty       = "empty"
+	outcomeTimeout     = "timeout"
+	outcomeError       = "error"
+	outcomeNoKey       = "no_key"
+	outcomeParseFail   = "parse_fail"
+	outcomeUnparseable = "unparseable"
+	kindJobs           = "jobs"
+	kindBounties       = "bounties"
+	kindFreelance      = "freelance"
+	kindSecurity       = "security"
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
@@ -784,7 +785,16 @@ func FormatMetrics() string {
 	}
 	// job_search_extraction_total{outcome} pre-touched so both outcomes appear
 	// on the flat-text endpoint at 0 before the first SummarizeJobResults call.
-	for _, oc := range []string{"ok", "unparseable"} {
+	// Iterates validJobSearchExtractionOutcomes (the same map warmAlertBoundedMetrics
+	// and IncrJobSearchExtraction use) so a future outcome — e.g. "truncated" from
+	// #428's finish_reason plumbing — lands on both surfaces, not just one.
+	// Sorted for deterministic flat-text output (map iteration order is random).
+	extractionOutcomes := make([]string, 0, len(validJobSearchExtractionOutcomes))
+	for oc := range validJobSearchExtractionOutcomes {
+		extractionOutcomes = append(extractionOutcomes, oc)
+	}
+	sort.Strings(extractionOutcomes)
+	for _, oc := range extractionOutcomes {
 		keys = append(keys, MetricJobSearchExtraction+"{outcome="+oc+"}")
 	}
 
@@ -1160,7 +1170,7 @@ func IncrCompanyResearch(outcome string) {
 // validJobSearchExtractionOutcomes bounds the outcome label for
 // gojob_job_search_extraction_total{outcome} to a fixed two-value enum.
 var validJobSearchExtractionOutcomes = map[string]bool{
-	"ok": true, "unparseable": true,
+	outcomeOK: true, outcomeUnparseable: true,
 }
 
 // IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<outcome>}.

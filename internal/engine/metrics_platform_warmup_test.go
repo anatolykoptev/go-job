@@ -54,6 +54,23 @@ func TestWarmAlertBoundedMetrics_PreRegistersFullMatrix(t *testing.T) {
 			t.Errorf("hunt_discovery_source_total series %q missing/non-zero after warm-up (present=%v value=%d)", key, ok, v)
 		}
 	}
+
+	// job_search_extraction_total{outcome} — the Prometheus increase() surface
+	// for the unparseable counter this PR adds. The warm-up feeds the Prom
+	// bridge; FormatMetrics (asserted separately) is a different oracle. A
+	// missing series here means increase() cannot see the first unparseable
+	// event after a restart — the same gap that already cost this repo a
+	// counter that incremented and never appeared. Iterate the SAME map the
+	// warm-up loop uses so a future outcome (e.g. "truncated" from #428) is
+	// asserted automatically.
+	// Mutation: delete the `for oc := range validJobSearchExtractionOutcomes`
+	// loop in warmAlertBoundedMetrics → every key below goes missing → RED.
+	for oc := range validJobSearchExtractionOutcomes {
+		key := MetricJobSearchExtraction + "{outcome=" + oc + "}"
+		if v, ok := snap[key]; !ok || v != 0 {
+			t.Errorf("job_search_extraction_total series %q missing/non-zero after warm-up (present=%v value=%d) — warmAlertBoundedMetrics does not pre-register the extraction outcome matrix", key, ok, v)
+		}
+	}
 }
 
 // TestInit_WarmsPlatformResultsMatrix is an integration-level check that

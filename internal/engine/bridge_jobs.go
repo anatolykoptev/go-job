@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 
@@ -40,24 +39,27 @@ func SummarizeJobResults(ctx context.Context, query, instruction string, content
 		// silent-failure surface in #413). Return an honest message stating
 		// the response was incomplete and how many sources were collected.
 		// Count it and log the two numbers that identify the cause:
-		//   - raw_len: byte length of the model output. If raw_len/4 is near
-		//     the output token budget, the cause is the output cap; if it
-		//     sits far below, the cut is upstream (proxy, stream abort, or a
+		//   - raw_len: byte length of the model output AFTER stripFences
+		//     (go-engine/llm strips ```json fences + surrounding whitespace,
+		//     ≤7 bytes, before returning raw). If raw_len/4 is near the
+		//     output token budget, the cause is the output cap; if it sits
+		//     far below, the cut is upstream (proxy, stream abort, or a
 		//     specific routed model).
 		//   - model + model_weights: which model served the request (nine
 		//     models are weight-routed via LLM_MODEL_WEIGHTS, so the routed
 		//     model is not known today — log the configured model and the
 		//     full weights env so the operator can narrow it).
-		IncrJobSearchExtraction("unparseable")
+		IncrJobSearchExtraction(outcomeUnparseable)
 		slog.Warn("job_search: LLM response unparseable, returning honest empty",
 			slog.Int("raw_len", len(raw)),
 			slog.String("model", cfg.LLMModel),
-			slog.String("model_weights", os.Getenv("LLM_MODEL_WEIGHTS")),
+			slog.String("model_weights", llmModelWeights),
 			slog.Int("sources", len(results)),
 		)
 		return &JobSearchOutput{
-			Query:   query,
-			Summary: fmt.Sprintf("LLM response was incomplete/unparseable; %d source(s) collected but no job listings extracted.", len(results)),
+			Query:       query,
+			Summary:     fmt.Sprintf("LLM response was incomplete/unparseable; %d source(s) collected but no job listings extracted.", len(results)),
+			Unparseable: true,
 		}, nil
 	}
 	IncrJobSearchExtraction("ok")
