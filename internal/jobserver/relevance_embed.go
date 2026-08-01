@@ -1,9 +1,6 @@
 package jobserver
 
 import (
-	"log/slog"
-	"time"
-
 	kitembed "github.com/anatolykoptev/go-kit/embed"
 )
 
@@ -15,89 +12,46 @@ import (
 // candidate set is always a single chunk.
 const relevanceEmbedChunkSize = 32
 
-// The relevance gate makes two sequential embed round-trips inside one
-// jobSearchRelevanceTimeout context: EmbedQuery (the query) then Embed (the
-// candidate passages). With the candidate cap set to relevanceEmbedChunkSize
-// the passage call is a single chunk, so the gate issues exactly
-// relevanceEmbedChunks round-trips total.
-const relevanceEmbedChunks = 2
-
-// The effective retry is kitembed's HTTPEmbedder.withRetry (the v1 internal
-// retry): 3 attempts with 200ms→400ms backoff (2 sleeps for 3 attempts =
-// 600ms). The v2 Client retry is disabled via WithRetry(NoRetry) below so it
-// does not compound on top of the v1 layer (3×3 = 9 attempts), which would
-// make the worst case unbounded relative to the gate budget. The v1 retry is
-// not configurable through opts, so it is the floor this budget accounts for.
-const (
-	relevanceEmbedAttempts = 3
-	relevanceEmbedBackoff  = 200*time.Millisecond + 400*time.Millisecond
-)
-
-// relevanceEmbedPerRequest is the per-request HTTP timeout, derived from the
-// gate budget so the FULL retry envelope for both round-trips fits strictly
-// inside jobSearchRelevanceTimeout (fix A — the pre-fix code passed no
-// WithTimeout, leaving kitembed's 30s default, 2× the 15s gate budget, so the
-// gate deadline was the only timeout that could ever fire and the retry policy
-// could not complete inside the gate):
+// EmbedClientBudgetOpts returns kitembed options that scope the relevance
+// gate's embed client. Apply these LAST at the construction site so they win
+// over any caller-supplied retry/chunk options.
 //
-//	worst_case = relevanceEmbedChunks × (relevanceEmbedAttempts × perRequest + relevanceEmbedBackoff)
-//	constraint: worst_case < jobSearchRelevanceTimeout
+// The per-request HTTP timeout is deliberately NOT tuned here. The OUTER
+// bound is the gate context — jobSearchRelevanceTimeout (15s default, set in
+// relevance_gate.go), which already wraps both embed calls (EmbedQuery then
+// Embed) via context.WithTimeout and is the sole arbiter of when the gate
+// gives up. The per-request timeout is kitembed's library default (30s), the
+// same default every other caller of the same embed server uses (go-search
+// 30s explicit, MemDB 30s default, vaelor 120s explicit — none derive one).
 //
-// Solving for perRequest and taking 80% as a safety margin (jitter, the two
-// calls sharing one context, and the scoring work between them):
+// A per-request timeout TIGHTER than the feature's own outer budget can only
+// convert a graceful degradation into a hard failure: the prior derived
+// 1.84s timeout fired on every gate call before the server responded
+// ("Client.Timeout exceeded while awaiting headers"), so the gate never
+// completed. The library default lets the gate context be the sole arbiter.
 //
-//	perRequest = ((gate / chunks - backoff) / attempts) × 0.8
+// WithRetry(NoRetry) disables the v2 Client retry policy (the RetryPolicy on
+// the *Client) so it does not compound on the v1 ladder. It does NOT disable
+// retries outright: the v1 ladder inside HTTPEmbedder.Embed (http.go:124,
+// defaultRetry at retry.go:166) is always on — 3 attempts, 200ms→400ms
+// backoff — and no kitembed opt reaches it. WithRetry(NoRetry) keeps the
+// total attempt count at 3 (the v1 floor), not 9 (v2×v1 compounding).
 //
-// For the shipped 15s gate this is ((7.5s - 0.6s) / 3) × 0.8 ≈ 1.84s, giving a
-// worst case of ~12.2s < 15s. TestRelevanceEmbedBudget_InvariantFitsGateTimeout
-// asserts the strict inequality for the configured budget, and mutates
-// perRequest to the gate budget to prove the assertion is not vacuous.
-var relevanceEmbedPerRequest = computeEmbedPerRequest(jobSearchRelevanceTimeout)
-
-func computeEmbedPerRequest(gate time.Duration) time.Duration {
-	ceiling := (gate/relevanceEmbedChunks - relevanceEmbedBackoff) / relevanceEmbedAttempts
-	perRequest := ceiling * 4 / 5 // 80% safety margin
-	if perRequest <= 0 {
-		// The gate budget is too small to fit the retry envelope. Clamp so
-		// kitembed's 30s default is never silently restored (WithHTTPTimeout
-		// ignores d<=0); the invariant test still catches the misconfiguration
-		// for the shipped default, and a too-tight gate fails open (safe).
-		slog.Warn("job_search: JOB_SEARCH_RELEVANCE_TIMEOUT too small for the embed retry envelope; clamping per-request to 200ms",
-			slog.Duration("gate", gate),
-			slog.Duration("ceiling", ceiling))
-		perRequest = 200 * time.Millisecond
-	}
-	return perRequest
-}
-
-// worstCaseEmbedEnvelope returns the worst-case wall-clock time the gate's
-// embed work can consume: every round-trip exhausting every retry attempt at
-// the per-request timeout, plus all backoff. The invariant this package
-// enforces is worstCaseEmbedEnvelope() < jobSearchRelevanceTimeout.
-func worstCaseEmbedEnvelope() time.Duration {
-	return time.Duration(relevanceEmbedChunks) *
-		(time.Duration(relevanceEmbedAttempts)*relevanceEmbedPerRequest + relevanceEmbedBackoff)
-}
-
-// EmbedClientBudgetOpts returns kitembed options that bind the embed client's
-// per-request timeout, retry, and chunk size to jobSearchRelevanceTimeout so
-// the gate's inner budgets fit strictly inside its outer budget. Apply these
-// LAST at the construction site so they win over any caller-supplied
-// timeout/retry/chunk options.
+// WithChunkSize(relevanceEmbedChunkSize) makes the passage call a single
+// round-trip (one chunk = one sequential request), matching the server cap.
 func EmbedClientBudgetOpts() []kitembed.Opt {
 	return []kitembed.Opt{
-		kitembed.WithTimeout(relevanceEmbedPerRequest),
 		kitembed.WithRetry(kitembed.NoRetry),
 		kitembed.WithChunkSize(relevanceEmbedChunkSize),
 	}
 }
 
 // NewEmbedClient constructs the embed client used by the job_search relevance
-// gate, with per-request/retry/chunk budgets derived from
-// jobSearchRelevanceTimeout. baseOpts select the backend, dimension, and
-// logger; the budget opts are appended last so they win. Use this at the
-// production construction site (main.go) so the gate's inner budgets cannot
-// drift apart from its outer budget — the defect this fixes.
+// gate, with retry and chunk size scoped to the gate (EmbedClientBudgetOpts).
+// The per-request timeout is kitembed's library default; the gate context
+// (jobSearchRelevanceTimeout) is the sole outer bound. baseOpts select the
+// backend, dimension, and logger; the budget opts are appended last so they
+// win. Use this at the production construction site (main.go).
 func NewEmbedClient(url string, baseOpts ...kitembed.Opt) (*kitembed.Client, error) {
 	opts := append([]kitembed.Opt{}, baseOpts...)
 	opts = append(opts, EmbedClientBudgetOpts()...)
@@ -106,16 +60,16 @@ func NewEmbedClient(url string, baseOpts ...kitembed.Opt) (*kitembed.Client, err
 
 // relevanceEmbedClient is the embed client OWNED by the relevance gate —
 // constructed via NewEmbedClient (which applies EmbedClientBudgetOpts) so its
-// per-request timeout, retry, and chunk size bind to jobSearchRelevanceTimeout.
+// retry and chunk size are scoped to the gate.
 //
 // It is DISTINCT from the package-level singleton in jobs
 // (jobs.SetEmbedClient/GetEmbedClient), which serves algora ingest,
 // resume-vector sync, and profile sync and MUST keep kitembed's library
 // defaults (defaultRetryPolicy: 3 attempts; 30s per-request timeout). Binding
-// the gate's budgets to that shared singleton would leak WithRetry(NoRetry)
-// and WithTimeout(~1.84s) onto those background jobs — a visible gate timeout
-// traded for an invisible ingest reliability regression (one 503 during
-// resume ingest failing on the first attempt where it previously retried).
+// the gate's opts to that shared singleton would leak WithRetry(NoRetry)
+// onto those background jobs — a visible gate change traded for an invisible
+// ingest reliability regression (one 503 during resume ingest failing on the
+// first attempt where it previously retried).
 //
 // Set by main.go via SetRelevanceEmbedClient; tests install fakes via
 // withRelevanceEmbedder. The gate reads it via getRelevanceEmbedClient.
@@ -123,7 +77,7 @@ var relevanceEmbedClient kitembed.Embedder
 
 // SetRelevanceEmbedClient sets the relevance gate's own embed client. Use this
 // at the production construction site (main.go) with a client built via
-// NewEmbedClient so the gate's budgets are scoped to the gate, not the shared
+// NewEmbedClient so the gate's opts are scoped to the gate, not the shared
 // singleton consumed by background ingest.
 func SetRelevanceEmbedClient(c kitembed.Embedder) { relevanceEmbedClient = c }
 
