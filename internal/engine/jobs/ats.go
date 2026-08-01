@@ -1441,7 +1441,8 @@ func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
 	}
 	// Salary group, field by field (strictly additive). A structured value is
 	// kept wherever it is non-empty; the LLM fills only the gaps. The coherence
-	// guard: LLM numerics (SalaryMin/Max) are filled ONLY when the STRUCTURED
+	// guard: the LLM salary GROUP (SalaryMin/Max, Currency, Interval) is filled
+	// ONLY when the STRUCTURED
 	// listing carried no free-text Salary — otherwise the LLM's guessed numerics
 	// could disagree with the authoritative structured free-text (the Ashby
 	// case: compensationTierSummary is the precise string, LLM numerics are a
@@ -1467,10 +1468,10 @@ func FillStructuredFromLLM(s *engine.JobListing, llm engine.JobListing) {
 	if s.SalaryMax == nil && !structuredHadSalary && llm.SalaryMax != nil {
 		s.SalaryMax = llm.SalaryMax
 	}
-	if s.SalaryCurrency == "" && llm.SalaryCurrency != "" {
+	if s.SalaryCurrency == "" && !structuredHadSalary && llm.SalaryCurrency != "" {
 		s.SalaryCurrency = llm.SalaryCurrency
 	}
-	if s.SalaryInterval == "" && llm.SalaryInterval != "" {
+	if s.SalaryInterval == "" && !structuredHadSalary && llm.SalaryInterval != "" {
 		s.SalaryInterval = llm.SalaryInterval
 	}
 	if s.JobType == "" {

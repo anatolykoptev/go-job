@@ -862,3 +862,52 @@ func TestSpine_F12_CrossProviderCollisionResolvableSources(t *testing.T) {
 		t.Errorf("F12 FAIL: Source = %q, must NOT be relabelled greenhouse", out[0].Source)
 	}
 }
+
+// F17 — Salary-group coherence covers the WHOLE group, not just the numerics.
+// When the structured listing carried free-text Salary (the Ashby case:
+// compensationTierSummary is authoritative, the LLM's numbers are a guess), the
+// LLM's SalaryMin/Max are refused — but SalaryCurrency and SalaryInterval were
+// still filled, so the output paired an authoritative structured salary string
+// with currency and interval describing numerics that had just been thrown
+// away. That is the same self-contradictory record the guard exists to prevent,
+// leaking through two fields nobody guarded.
+//
+// Mutation: in FillStructuredFromLLM (ats.go), drop !structuredHadSalary from
+// the SalaryCurrency / SalaryInterval conditions -> EUR/month leak onto a
+// structured USD-range string -> RED.
+func TestSpine_F17_CoherenceGuardCoversCurrencyAndInterval(t *testing.T) {
+	llmMin, llmMax := 100000, 120000
+	structuredByURL := map[string]engine.JobListing{
+		"https://jobs.ashbyhq.com/testco/abc": {
+			URL:    "https://jobs.ashbyhq.com/testco/abc",
+			Title:  "Eng",
+			Source: "ashby",
+			// compensationTierSummary — authoritative free text, no numerics,
+			// no currency, no interval. Exactly what Ashby publishes.
+			Salary: "USD 200,000 - 250,000 per year + equity",
+		},
+	}
+	llmJobs := []engine.JobListing{{
+		URL:            "https://jobs.ashbyhq.com/testco/abc",
+		Title:          "Eng",
+		SalaryMin:      &llmMin,
+		SalaryMax:      &llmMax,
+		SalaryCurrency: "EUR",
+		SalaryInterval: "month",
+	}}
+
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+	if len(out) != 1 {
+		t.Fatalf("F17 FAIL: len(out) = %d, want 1", len(out))
+	}
+	j := out[0]
+	if j.SalaryMin != nil || j.SalaryMax != nil {
+		t.Errorf("F17 FAIL: numerics leaked (min=%v max=%v); structured free-text must refuse them", j.SalaryMin, j.SalaryMax)
+	}
+	if j.SalaryCurrency != "" {
+		t.Errorf("F17 FAIL: SalaryCurrency = %q, want empty — it describes the refused LLM numerics, not the structured string", j.SalaryCurrency)
+	}
+	if j.SalaryInterval != "" {
+		t.Errorf("F17 FAIL: SalaryInterval = %q, want empty — it describes the refused LLM numerics, not the structured string", j.SalaryInterval)
+	}
+}
