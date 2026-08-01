@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/env"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/connectors"
@@ -359,49 +361,49 @@ spawn:
 	wg.Wait()
 
 	jobOut, err := summarizeJobResults(ctx, input.Query, engine.JobSearchInstruction, 5000, top, contents)
-	if err != nil {
-		// BLOCKER 5 fix: the MCP SDK discards the typed output entirely when
-		// err != nil (go-sdk/mcp/server.go:345-352), so returning an error here
-		// drops the populated Sources list — the exact "did it even run?"
-		// blindness this PR exists to remove, on one of the most failure-prone
-		// steps. Mirror the cancellation branch: return a SUCCESS with an
-		// honest summary and the populated Sources.
-		slog.Warn("job_search: LLM summarization failed, returning unprocessed results",
-			slog.Any("error", err),
-			slog.Int("raw_results", len(top)))
-		summary := fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top))
-		summary = prependRelevanceNotice(summary, degraded, notice)
-		return nil, engine.JobSearchOutput{
-			Query:   input.Query,
-			Summary: summary,
-			Sources: sources,
-		}, nil
-	}
-	jobOut.Summary = prependRelevanceNotice(jobOut.Summary, degraded, notice)
 
-	liByJobID := make(map[string]*jobs.LinkedInJob)
-	for i := range linkedInJobs {
-		if linkedInJobs[i].JobID != "" {
-			liByJobID[linkedInJobs[i].JobID] = &linkedInJobs[i]
+	// Classify LLM availability. The LLM is "unavailable" ONLY when it errored
+	// or returned an unparseable response — these are the two cases where its
+	// job list is NOT a usable selection set, and the deterministic structured
+	// listings must become the spine instead (the defect: a 529 discarded 30
+	// fully-populated structured listings because the LLM's empty list was the
+	// spine). A HEALTHY LLM that legitimately found zero jobs is NOT
+	// unavailable: its empty list IS the selection set, and structured listings
+	// it did not select must NOT be served.
+	llmUnavailable := false
+	var llmErrClass string
+	if err != nil {
+		llmUnavailable = true
+		llmErrClass = classifyLLMError(err)
+		slog.Warn("job_search: LLM summarization failed",
+			slog.String("class", llmErrClass),
+			slog.Any("error", err),
+			slog.Int("raw_results", len(top)),
+			slog.Int("structured", len(structuredJobs)))
+		// Empty shell so the union build below has a nil Jobs slice to work with.
+		jobOut = &engine.JobSearchOutput{Query: input.Query}
+	}
+	if jobOut != nil && jobOut.Unparseable {
+		llmUnavailable = true
+		llmErrClass = "unparseable"
+	}
+
+	// Gate cosine per URL (first-write-wins, matching structuredByURL's keying).
+	// Built from `top` — the gate-scored, domain-deduped, limit-truncated slice —
+	// so only URLs that survived the gate carry a score. When the gate is degraded
+	// or not configured, every Score is 0 and the stable sort below preserves the
+	// insertion order (no score is invented).
+	scoreByURL := make(map[string]float64, len(top))
+	for _, r := range top {
+		k := jobs.NormalizeURL(r.URL)
+		if _, exists := scoreByURL[k]; !exists {
+			scoreByURL[k] = r.Score
 		}
 	}
 
-	// M2: positional URL fallback — extracted into assignFallbackURLs so the
-	// correspondence guard is unit-testable (the LLM path is nil in tests).
-	assignFallbackURLs(jobOut.Jobs, top)
-
-	// Source-structured precedence: where a structured ATS listing exists for a
-	// URL, its fields win over the LLM's; the LLM value is kept only where the
-	// structured one is empty. Runs after assignFallbackURLs so the URL join key
-	// is populated, and before the LinkedIn gap-fill loop so structured values
-	// (the primary source) are not clobbered by LinkedIn's empty-only fill.
-	//
-	// The map is keyed by jobs.NormalizeURL so the producer side (code-built
-	// SearxngResult.URL) and the lookup side (LLM-emitted jobOut.Jobs[i].URL,
-	// which can carry trailing slashes, query params, or mixed casing) match —
-	// ApplyStructuredPrecedence re-normalizes on lookup. Without this, a single
-	// trailing slash yields zero hits (the HIGH finding: "zero hits for
-	// structured data").
+	// structuredByURL: keyed by jobs.NormalizeURL so the producer side (code-built
+	// SearxngResult.URL) and the lookup side match — a trailing slash previously
+	// produced zero hits (the HIGH finding: "zero hits for structured data").
 	structuredByURL := make(map[string]engine.JobListing, len(structuredJobs))
 	for i := range structuredJobs {
 		if structuredJobs[i].URL != "" {
@@ -414,10 +416,70 @@ spawn:
 			}
 		}
 	}
-	jobs.ApplyStructuredPrecedence(jobOut.Jobs, structuredByURL)
 
+	// M2: positional URL fallback for the LLM's listings — extracted into
+	// assignFallbackURLs so the correspondence guard is unit-testable. Runs
+	// before the union build so LLM-only listings carry a URL for the join key.
+	assignFallbackURLs(jobOut.Jobs, top)
+
+	// llmByURL: LLM listing per normalized URL, for the inverse fill.
+	llmByURL := make(map[string]engine.JobListing, len(jobOut.Jobs))
 	for i := range jobOut.Jobs {
-		j := &jobOut.Jobs[i]
+		if jobOut.Jobs[i].URL != "" {
+			k := jobs.NormalizeURL(jobOut.Jobs[i].URL)
+			if _, exists := llmByURL[k]; !exists {
+				llmByURL[k] = jobOut.Jobs[i]
+			}
+		}
+	}
+
+	// Build finalJobs. Two modes, branching on llmUnavailable:
+	//
+	// UNAVAILABLE (LLM errored / unparseable): the LLM's list is NOT a usable
+	// selection set. The deterministic structured listings are the spine — a
+	// deterministic UNION ordered by relevance, so a 529 no longer discards
+	// the structured work the process already holds. Iterate `top` (gate
+	// order) and emit every structured listing that survived the gate (its
+	// empty fields filled from any matching LLM listing via
+	// jobs.FillStructuredFromLLM — the structured source is authoritative,
+	// the LLM fills only the gaps).
+	// LLM-only listings (URLs with no structured counterpart — HN text posts,
+	// Craigslist, LinkedIn) are appended after them, unchanged. The whole
+	// list is ordered by the gate's cosine score, descending.
+	//
+	// HEALTHY (err == nil, not Unparseable): the LLM's list IS the selection
+	// set. Iterate jobOut.Jobs; for each entry, emit the structured counterpart
+	// (joined on jobs.NormalizeURL) with empty fields filled from the LLM
+	// listing (FillStructuredFromLLM — the inverted precedence survives), or
+	// the LLM listing unchanged when no structured counterpart exists. Do NOT
+	// add structured listings the LLM did not select — the union was
+	// unconditional and that removed ALL filtering.
+	seenStructured := make(map[string]bool, len(structuredByURL))
+	var finalJobs []engine.JobListing
+	var nStructured, nLLMOnly int
+	if llmUnavailable {
+		finalJobs, nStructured, nLLMOnly = buildUnavailableSpine(top, jobOut.Jobs, structuredByURL, llmByURL, scoreByURL, seenStructured)
+	} else {
+		finalJobs = buildHealthySelection(jobOut.Jobs, structuredByURL, scoreByURL, seenStructured)
+	}
+
+	// Order the whole list by the gate's cosine score, descending. Stable sort
+	// preserves the insertion order (gate order for structured-backed, then
+	// LLM-only) when scores are tied — which is exactly the degraded-gate case
+	// (every Score is 0, no score is invented).
+	sort.SliceStable(finalJobs, func(i, j int) bool {
+		return finalJobs[i].Relevance > finalJobs[j].Relevance
+	})
+
+	liByJobID := make(map[string]*jobs.LinkedInJob)
+	for i := range linkedInJobs {
+		if linkedInJobs[i].JobID != "" {
+			liByJobID[linkedInJobs[i].JobID] = &linkedInJobs[i]
+		}
+	}
+
+	for i := range finalJobs {
+		j := &finalJobs[i]
 		if j.JobID == "" && j.URL != "" {
 			j.JobID = jobs.ExtractJobID(j.URL)
 		}
@@ -440,25 +502,235 @@ spawn:
 		j.QualityScore = qualityScoreFromListing(*j).Score
 	}
 
-	persistJobListings(ctx, jobOut.Jobs)
-	jobOut.Sources = sources
+	// LLM-unavailable path: the LLM errored or returned unparseable output.
+	// The deterministic structured listings are the spine. Serve them ranked,
+	// with a summary that states plainly that the prose summary is unavailable
+	// (carrying the LLM error CLASS, not the raw error text) and that the
+	// listings themselves are complete. The summary states the structured and
+	// LLM-only counts SEPARATELY when both are present — an "all
+	// machine-extracted" claim is wrong when LLM-only listings (no structured
+	// counterpart) are in the list. Do NOT cache — a 529 must not poison the
+	// cache for the next caller (the retry needs a fresh LLM call). If no
+	// structured listings survived, keep exactly today's honest-empty path (do
+	// not weaken it). A HEALTHY LLM returning zero jobs is NOT unavailable and
+	// does NOT take this path — its empty list is the selection set, served
+	// via the honest-empty path below.
+	//
+	// The llm_unavailable counter fires for EVERY unavailable path (error or
+	// unparseable, listings served or not) so the LLM-failure rate does not
+	// read systematically low — previously it was bumped only when structured
+	// listings survived, so an LLM error with zero survivors incremented no
+	// job_search_extraction_total series at all.
+	if llmUnavailable {
+		engine.IncrJobSearchExtraction("llm_unavailable")
+		if len(finalJobs) > 0 {
+			var listingsPart string
+			switch {
+			case nStructured > 0 && nLLMOnly > 0:
+				listingsPart = fmt.Sprintf("%d machine-extracted structured listing(s) and %d LLM-extracted listing(s) with no structured counterpart, ranked by relevance. The listings themselves are complete.", nStructured, nLLMOnly)
+			case nStructured > 0:
+				listingsPart = fmt.Sprintf("%d listing(s) served from machine-extracted structured sources, ranked by relevance. The listings themselves are complete.", nStructured)
+			default:
+				listingsPart = fmt.Sprintf("%d LLM-extracted listing(s) with no structured counterpart, ranked by relevance.", nLLMOnly)
+			}
+			summary := fmt.Sprintf("Prose summary unavailable (LLM %s); %s", llmErrClass, listingsPart)
+			summary = prependRelevanceNotice(summary, degraded, notice)
+			out := engine.JobSearchOutput{
+				Query:   input.Query,
+				Jobs:    finalJobs,
+				Summary: summary,
+				Sources: sources,
+			}
+			persistJobListings(ctx, finalJobs)
+			// Do NOT cache a degraded result (mirrors the !Unparseable guard
+			// below — a 529 must not poison the cache for the next caller).
+			if cr, spilled := handleSpill(ctx, "job_search", out); spilled {
+				var zero engine.JobSearchOutput
+				return cr, zero, nil
+			}
+			return nil, out, nil
+		}
+		// No structured survived the gate — keep today's honest-empty path.
+		if err != nil {
+			// BLOCKER 5 fix: the MCP SDK discards the typed output on err,
+			// so returning an error drops the populated Sources list. Return
+			// a SUCCESS with an honest summary and the populated Sources.
+			summary := fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top))
+			summary = prependRelevanceNotice(summary, degraded, notice)
+			return nil, engine.JobSearchOutput{
+				Query:   input.Query,
+				Summary: summary,
+				Sources: sources,
+			}, nil
+		}
+		// Unparseable with no structured: jobOut already carries the honest
+		// summary from SummarizeJobResults.
+		jobOut.Summary = prependRelevanceNotice(jobOut.Summary, degraded, notice)
+		jobOut.Sources = sources
+		// Unparseable must not be cached (existing guard).
+		if !jobOut.Unparseable {
+			engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+		}
+		if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
+			var zero engine.JobSearchOutput
+			return cr, zero, nil
+		}
+		return nil, *jobOut, nil
+	}
+
+	// Normal path: LLM succeeded (err == nil, not Unparseable). The LLM's list
+	// is the selection set — finalJobs carries the selected listings (structured
+	// counterparts filled, plus LLM-only), ranked by the gate score. A healthy
+	// LLM that found zero jobs reaches this path with finalJobs nil and the LLM's
+	// honest summary; that result is cacheable (genuine empty). The LLM's prose
+	// summary is kept.
+	out := engine.JobSearchOutput{
+		Query:   input.Query,
+		Jobs:    finalJobs,
+		Summary: prependRelevanceNotice(jobOut.Summary, degraded, notice),
+		Sources: sources,
+	}
+	persistJobListings(ctx, finalJobs)
 	// Do NOT cache an unparseable LLM result. The honest summary invites a
 	// retry, and serving it from cache for CacheTTL (15m) would suppress the
 	// LLM call that retry needs — the user cannot recover. It also deflates
 	// gojob_job_search_extraction_total{outcome=unparseable}: the counter
 	// counts distinct cache keys on the cached path, not user-visible
 	// failures, so a cached unparseable makes the truncation rate read
-	// systematically low (the opposite of what this PR measures). The
-	// genuine zero-result and relevance-gate-empty paths produce nil Jobs
-	// too but set Unparseable=false, so they stay cached.
+	// systematically low (the opposite of what this PR measures).
 	if !jobOut.Unparseable {
-		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+		engine.CacheStoreJSON(ctx, cacheKey, input.Query, out)
 	}
-	if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
+	if cr, spilled := handleSpill(ctx, "job_search", out); spilled {
 		var zero engine.JobSearchOutput
 		return cr, zero, nil
 	}
-	return nil, *jobOut, nil
+	return nil, out, nil
+}
+
+// buildUnavailableSpine builds the deterministic spine when the LLM is
+// unavailable (errored / unparseable). Every structured listing that survived
+// the gate is emitted (its empty fields filled from any matching LLM listing
+// via FillStructuredFromLLM), then LLM-only listings (no structured
+// counterpart) are appended. seenStructured is mutated to track emitted URLs.
+// Returns the final list plus the count of structured-backed and LLM-only
+// listings so the caller's summary can state the two separately (an
+// "all machine-extracted" claim is wrong when LLM-only listings are present).
+func buildUnavailableSpine(
+	top []engine.SearxngResult,
+	llmJobs []engine.JobListing,
+	structuredByURL, llmByURL map[string]engine.JobListing,
+	scoreByURL map[string]float64,
+	seenStructured map[string]bool,
+) (finalJobs []engine.JobListing, nStructured, nLLMOnly int) {
+	for _, r := range top {
+		k := jobs.NormalizeURL(r.URL)
+		if seenStructured[k] {
+			continue
+		}
+		s, ok := structuredByURL[k]
+		if !ok {
+			continue
+		}
+		seenStructured[k] = true
+		if llm, ok := llmByURL[k]; ok {
+			jobs.FillStructuredFromLLM(&s, llm)
+		}
+		s.Relevance = scoreByURL[k]
+		finalJobs = append(finalJobs, s)
+		nStructured++
+	}
+	for i := range llmJobs {
+		j := llmJobs[i]
+		if j.URL == "" {
+			// No URL — cannot match a structured listing; it is LLM-only. No
+			// gate score is available (the URL never reached scoreByURL).
+			j.Relevance = 0
+			finalJobs = append(finalJobs, j)
+			nLLMOnly++
+			continue
+		}
+		k := jobs.NormalizeURL(j.URL)
+		if _, hasStructured := structuredByURL[k]; hasStructured {
+			continue // already emitted as structured-backed
+		}
+		if seenStructured[k] {
+			continue // dedup across LLM-only
+		}
+		seenStructured[k] = true
+		j.Relevance = scoreByURL[k]
+		finalJobs = append(finalJobs, j)
+		nLLMOnly++
+	}
+	return finalJobs, nStructured, nLLMOnly
+}
+
+// buildHealthySelection builds finalJobs when the LLM is healthy: the LLM's
+// list IS the selection set. For each LLM entry, emit the structured
+// counterpart (filled via FillStructuredFromLLM) when one exists, else the
+// LLM listing unchanged. Structured listings the LLM did NOT select are
+// dropped — that is the filtering the LLM provides. seenStructured is mutated
+// to track emitted URLs.
+func buildHealthySelection(
+	llmJobs []engine.JobListing,
+	structuredByURL map[string]engine.JobListing,
+	scoreByURL map[string]float64,
+	seenStructured map[string]bool,
+) []engine.JobListing {
+	// The join (normalized-URL lookup + JobID fallback + source-equality guard)
+	// lives in jobs.StructuredMatcher — the single shared implementation, so a
+	// healthy LLM that emits a slightly different URL for the same Lever/
+	// Greenhouse/Ashby posting still gets its structured counterpart (the
+	// exact defect #418 existed to fix). The previous inline
+	// structuredByURL[k] lookup had no JobID fallback and silently missed.
+	m := jobs.NewStructuredMatcher(structuredByURL)
+	var finalJobs []engine.JobListing
+	for i := range llmJobs {
+		j := llmJobs[i]
+		if j.URL == "" {
+			j.Relevance = 0
+			finalJobs = append(finalJobs, j)
+			continue
+		}
+		k := jobs.NormalizeURL(j.URL)
+		if seenStructured[k] {
+			continue
+		}
+		seenStructured[k] = true
+		if s, ok := m.Match(j); ok {
+			jobs.FillStructuredFromLLM(&s, j)
+			s.Relevance = scoreByURL[k]
+			finalJobs = append(finalJobs, s)
+			continue
+		}
+		j.Relevance = scoreByURL[k]
+		finalJobs = append(finalJobs, j)
+	}
+	return finalJobs
+}
+
+// classifyLLMError maps an LLM call error to a short operator-facing class
+// string (carried in the LLM-unavailable summary, NOT the raw error text — the
+// raw text can leak provider details and is not actionable at a glance).
+//   - "overloaded"   — HTTP 529 / 5xx (provider capacity; retry or switch provider)
+//   - "timeout"      — context deadline/cancellation
+//   - "circuit_open" — the go-kit/llm circuit breaker is open
+//   - "error"        — any other failure
+func classifyLLMError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "timeout"
+	}
+	var apiErr *kitllm.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == 529 || apiErr.StatusCode >= 500 {
+			return "overloaded"
+		}
+		return "error"
+	}
+	if errors.Is(err, kitllm.ErrCircuitOpen) {
+		return "circuit_open"
+	}
+	return "error"
 }
 
 // knownPlatform reports whether platform is a recognized job_search platform.
