@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.18.1](https://github.com/anatolykoptev/go-job/compare/v1.18.0...v1.18.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **jobs:** detect and count unparseable LLM responses, never surface raw output ([#434](https://github.com/anatolykoptev/go-job/issues/434)) ([c302fc2](https://github.com/anatolykoptev/go-job/commit/c302fc2beefa497e762ca05d893cb77490edb341))
+
 ## [1.18.0](https://github.com/anatolykoptev/go-job/compare/v1.17.1...v1.18.0) (2026-08-01)
 
 
