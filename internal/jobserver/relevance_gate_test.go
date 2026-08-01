@@ -7,7 +7,6 @@ import (
 
 	kitembed "github.com/anatolykoptev/go-kit/embed"
 	"github.com/anatolykoptev/go_job/internal/engine"
-	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
 // relevanceFakeEmbedder returns deterministic vectors so the relevance gate
@@ -193,13 +192,17 @@ func stringContains(s, sub string) bool {
 	return false
 }
 
-// withRelevanceEmbedder sets the package-level embedder for the duration of
-// the test and restores the previous value on cleanup.
+// withRelevanceEmbedder sets the relevance gate's OWN embed client for the
+// duration of the test and restores the previous value on cleanup. This sets
+// the gate-scoped client (relevanceEmbedClient), NOT the jobs package-level
+// singleton — the gate reads getRelevanceEmbedClient, so fakes must install
+// there. The shared singleton (jobs.SetEmbedClient) is left untouched so
+// non-gate consumers keep their own wiring in their own tests.
 func withRelevanceEmbedder(t *testing.T, e kitembed.Embedder) {
 	t.Helper()
-	prev := jobs.GetEmbedClient()
-	jobs.SetEmbedClient(e)
-	t.Cleanup(func() { jobs.SetEmbedClient(prev) })
+	prev := relevanceEmbedClient
+	relevanceEmbedClient = e
+	t.Cleanup(func() { relevanceEmbedClient = prev })
 }
 
 // withRelevanceConfig overrides the gate config for the test and restores on

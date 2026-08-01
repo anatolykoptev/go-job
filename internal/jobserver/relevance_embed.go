@@ -103,3 +103,30 @@ func NewEmbedClient(url string, baseOpts ...kitembed.Opt) (*kitembed.Client, err
 	opts = append(opts, EmbedClientBudgetOpts()...)
 	return kitembed.NewClient(url, opts...)
 }
+
+// relevanceEmbedClient is the embed client OWNED by the relevance gate —
+// constructed via NewEmbedClient (which applies EmbedClientBudgetOpts) so its
+// per-request timeout, retry, and chunk size bind to jobSearchRelevanceTimeout.
+//
+// It is DISTINCT from the package-level singleton in jobs
+// (jobs.SetEmbedClient/GetEmbedClient), which serves algora ingest,
+// resume-vector sync, and profile sync and MUST keep kitembed's library
+// defaults (defaultRetryPolicy: 3 attempts; 30s per-request timeout). Binding
+// the gate's budgets to that shared singleton would leak WithRetry(NoRetry)
+// and WithTimeout(~1.84s) onto those background jobs — a visible gate timeout
+// traded for an invisible ingest reliability regression (one 503 during
+// resume ingest failing on the first attempt where it previously retried).
+//
+// Set by main.go via SetRelevanceEmbedClient; tests install fakes via
+// withRelevanceEmbedder. The gate reads it via getRelevanceEmbedClient.
+var relevanceEmbedClient kitembed.Embedder
+
+// SetRelevanceEmbedClient sets the relevance gate's own embed client. Use this
+// at the production construction site (main.go) with a client built via
+// NewEmbedClient so the gate's budgets are scoped to the gate, not the shared
+// singleton consumed by background ingest.
+func SetRelevanceEmbedClient(c kitembed.Embedder) { relevanceEmbedClient = c }
+
+// getRelevanceEmbedClient returns the relevance gate's embed client (nil if
+// not configured). Used by applyRelevanceGate; distinct from jobs.GetEmbedClient.
+func getRelevanceEmbedClient() kitembed.Embedder { return relevanceEmbedClient }

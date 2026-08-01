@@ -11,7 +11,6 @@ import (
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/rerank"
 	"github.com/anatolykoptev/go_job/internal/engine"
-	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
 // Relevance gate configuration (env-tunable, validated at init).
@@ -150,7 +149,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		return results, "", ""
 	}
 
-	ec := jobs.GetEmbedClient()
+	ec := getRelevanceEmbedClient()
 	if ec == nil {
 		engine.IncrJobSearchRelevanceDegraded(engine.RelevanceReasonNotConfigured)
 		slog.Info("job_search: relevance gate skipped — embedder not configured")

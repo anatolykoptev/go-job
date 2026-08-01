@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -206,5 +207,113 @@ func TestRelevanceEmbedBudget_CandidateCapIsOneChunk(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&srv.maxInputLen); got != int32(maxRelevanceCandidates) {
 		t.Fatalf("the single passage chunk must carry all %d candidates, got max input len %d", maxRelevanceCandidates, got)
+	}
+}
+
+// === Reflection helpers: read a *kitembed.Client's constructed config ===
+//
+// kitembed.Client's retry/chunkSize fields and the inner HTTPEmbedder's
+// *http.Client are unexported, so a jobserver test cannot call .Interface() on
+// them. reflect permits .Int() on a field reached through unexported parents
+// (only .Interface()/.Addr()/.Set() are denied for unexported fields), so we
+// navigate the chain and read the numeric values directly. This is a
+// structural wiring check — it asserts an Opt was actually applied to the
+// constructed client, which a behavioural test against a bare fake cannot
+// reach (retryReachabilityEmbedder never exercises NewEmbedClient).
+
+// clientHTTPTimeout reads the per-request HTTP timeout the client was
+// constructed with, by reflecting through Client.inner (a *HTTPEmbedder for
+// the http backend) to its *http.Client.Timeout (an exported time.Duration).
+func clientHTTPTimeout(c *kitembed.Client) time.Duration {
+	v := reflect.ValueOf(c).Elem()             // *Client -> Client
+	inner := v.FieldByName("inner")            // Embedder interface (unexported)
+	concrete := inner.Elem()                   // *HTTPEmbedder (concrete value)
+	httpEmb := concrete.Elem()                 // HTTPEmbedder struct
+	clientVal := httpEmb.FieldByName("client") // *http.Client (unexported)
+	httpClient := clientVal.Elem()             // http.Client struct
+	return time.Duration(httpClient.FieldByName("Timeout").Int())
+}
+
+// clientRetryMaxAttempts reads the v2 RetryPolicy.MaxAttempts (3 =
+// defaultRetryPolicy, 1 = NoRetry).
+func clientRetryMaxAttempts(c *kitembed.Client) int {
+	v := reflect.ValueOf(c).Elem()
+	return int(v.FieldByName("retry").FieldByName("MaxAttempts").Int())
+}
+
+// clientChunkSize reads the client-side chunking limit.
+func clientChunkSize(c *kitembed.Client) int {
+	v := reflect.ValueOf(c).Elem()
+	return int(v.FieldByName("chunkSize").Int())
+}
+
+// === F1: the gate's budgets must NOT leak onto the shared (non-gate) client ===
+
+// TestRelevanceEmbedBudget_NonGateClientKeepsLibraryDefaults asserts the
+// shared embed client — the one consumed by algora ingest, resume-vector sync,
+// and profile sync (jobs.SetEmbedClient) — keeps kitembed's library defaults
+// when constructed with ONLY the base opts (no EmbedClientBudgetOpts): the
+// default retry policy (MaxAttempts=3) and the 30s per-request timeout.
+//
+// The gate's WithRetry(NoRetry) and WithTimeout(~1.84s) are correct for a 15s
+// gate but fatal for a background ingest job that legitimately wants retries
+// and a long timeout — one 503 during resume ingest would fail on the first
+// attempt where it previously retried.
+//
+// Falsification: re-apply EmbedClientBudgetOpts() to the shared client's
+// construction (the pre-fix wiring that bound the budgets to the singleton).
+// MaxAttempts becomes 1 (NoRetry) and the timeout becomes
+// relevanceEmbedPerRequest → both assertions RED.
+func TestRelevanceEmbedBudget_NonGateClientKeepsLibraryDefaults(t *testing.T) {
+	srv := newEmbedTestServer(t, 3)
+	// The shared client is constructed with ONLY base opts — no budget opts.
+	client, err := kitembed.NewClient(srv.URL,
+		kitembed.WithBackend("http"),
+		kitembed.WithDim(3),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if got := clientRetryMaxAttempts(client); got != 3 {
+		t.Fatalf("non-gate client must keep the default retry policy (MaxAttempts=3), got %d — the gate's WithRetry(NoRetry) leaked onto the shared client", got)
+	}
+	if got := clientHTTPTimeout(client); got != 30*time.Second {
+		t.Fatalf("non-gate client must keep the default 30s per-request timeout, got %v — the gate's WithTimeout(%v) leaked onto the shared client", got, relevanceEmbedPerRequest)
+	}
+}
+
+// === F2: the gate client's per-request timeout must equal relevanceEmbedPerRequest ===
+
+// TestRelevanceEmbedBudget_GateClientPerRequestTimeout asserts the gate's embed
+// client (constructed via NewEmbedClient, which applies EmbedClientBudgetOpts)
+// has its per-request HTTP timeout set to relevanceEmbedPerRequest — the core
+// of fix A. The pre-fix code passed no WithTimeout, leaving kitembed's 30s
+// default (2× the 15s gate budget), so the gate deadline was the only timeout
+// that could fire and the retry policy could not complete inside the gate.
+//
+// It also asserts the gate's v2 retry is NoRetry (MaxAttempts=1, so it does
+// not compound on the v1 HTTPEmbedder retry) and the chunk size equals
+// relevanceEmbedChunkSize.
+//
+// Falsification: remove kitembed.WithTimeout(relevanceEmbedPerRequest) from
+// EmbedClientBudgetOpts → the timeout stays at the 30s default → the timeout
+// assertion RED.
+func TestRelevanceEmbedBudget_GateClientPerRequestTimeout(t *testing.T) {
+	srv := newEmbedTestServer(t, 3)
+	client, err := NewEmbedClient(srv.URL,
+		kitembed.WithBackend("http"),
+		kitembed.WithDim(3),
+	)
+	if err != nil {
+		t.Fatalf("NewEmbedClient: %v", err)
+	}
+	if got := clientHTTPTimeout(client); got != relevanceEmbedPerRequest {
+		t.Fatalf("gate client per-request timeout must equal relevanceEmbedPerRequest (%v), got %v — WithTimeout was not applied (the 30s default inversion)", relevanceEmbedPerRequest, got)
+	}
+	if got := clientRetryMaxAttempts(client); got != 1 {
+		t.Fatalf("gate client must disable v2 retry (NoRetry, MaxAttempts=1) so it does not compound on the v1 retry, got %d", got)
+	}
+	if got := clientChunkSize(client); got != relevanceEmbedChunkSize {
+		t.Fatalf("gate client chunk size must equal relevanceEmbedChunkSize (%d), got %d", relevanceEmbedChunkSize, got)
 	}
 }
