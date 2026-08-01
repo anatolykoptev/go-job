@@ -14,6 +14,17 @@ type RawLinkedInFetcher interface {
 	FetchRaw(ctx context.Context, q Query) (results []engine.SearxngResult, liJobs []jobs.LinkedInJob, err error)
 }
 
+// StructuredFetcher is implemented by ATS adapters (greenhouse/lever/ashby) to
+// expose the source-structured JobListing collection alongside the
+// SearxngResult slice. The structured listings carry every field the ATS API
+// parsed (salary range, remote, job type, posted date, …) without the
+// lossy markdown→LLM round-trip. runSource prefers FetchStructured over Fetch
+// when present and threads the listings into sourceResult.structured so
+// job_search can apply source-structured-over-LLM precedence.
+type StructuredFetcher interface {
+	FetchStructured(ctx context.Context, q Query) (results []engine.SearxngResult, listings []engine.JobListing, err error)
+}
+
 // Group name constants used in adapter Groups() methods.
 // groupAll is the canonical sentinel; it lives in registry.go.
 const (
@@ -41,7 +52,7 @@ const (
 
 type linkedInSource struct{}
 
-func (linkedInSource) Name() string           { return "linkedin" }
+func (linkedInSource) Name() string             { return "linkedin" }
 func (linkedInSource) Capabilities() Capability { return 0 }
 func (linkedInSource) Groups() []string         { return []string{groupAll} }
 func (linkedInSource) SiteScope() string        { return "site:linkedin.com/jobs" }
@@ -80,6 +91,11 @@ type atsProvider struct {
 	siteScope string   // e.g. "site:boards.greenhouse.io"
 	// fetch delegates to the provider-specific Search* function in jobs/ats.go.
 	fetch func(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, error)
+	// fetchStructured delegates to the provider's Search*Structured function,
+	// returning the parallel []engine.JobListing alongside the SearxngResult
+	// slice. Used by atsSource.FetchStructured (StructuredFetcher) so job_search
+	// can apply source-structured-over-LLM precedence.
+	fetchStructured func(ctx context.Context, query, location string, limit int) ([]engine.SearxngResult, []engine.JobListing, error)
 }
 
 // atsProviders is the static table of all three ATS connectors.
@@ -87,22 +103,25 @@ type atsProvider struct {
 //nolint:gochecknoglobals // package-level init-once table, never mutated
 var atsProviders = map[string]atsProvider{
 	"greenhouse": {
-		name:      "greenhouse",
-		groups:    []string{groupAll, groupATS, groupStartup},
-		siteScope: "site:boards.greenhouse.io",
-		fetch:     jobs.SearchGreenhouseJobs,
+		name:            "greenhouse",
+		groups:          []string{groupAll, groupATS, groupStartup},
+		siteScope:       "site:boards.greenhouse.io",
+		fetch:           jobs.SearchGreenhouseJobs,
+		fetchStructured: jobs.SearchGreenhouseJobsStructured,
 	},
 	"lever": {
-		name:      "lever",
-		groups:    []string{groupAll, groupATS, groupStartup},
-		siteScope: "site:jobs.lever.co",
-		fetch:     jobs.SearchLeverJobs,
+		name:            "lever",
+		groups:          []string{groupAll, groupATS, groupStartup},
+		siteScope:       "site:jobs.lever.co",
+		fetch:           jobs.SearchLeverJobs,
+		fetchStructured: jobs.SearchLeverJobsStructured,
 	},
 	"ashby": {
-		name:      "ashby",
-		groups:    []string{groupAll, groupATS, groupStartup},
-		siteScope: "site:jobs.ashbyhq.com",
-		fetch:     jobs.SearchAshbyJobs,
+		name:            "ashby",
+		groups:          []string{groupAll, groupATS, groupStartup},
+		siteScope:       "site:jobs.ashbyhq.com",
+		fetch:           jobs.SearchAshbyJobs,
+		fetchStructured: jobs.SearchAshbyJobsStructured,
 	},
 }
 
@@ -121,7 +140,7 @@ func ATSSource(provider string) Source {
 	return atsSource{p: p}
 }
 
-func (s atsSource) Name() string           { return s.p.name }
+func (s atsSource) Name() string             { return s.p.name }
 func (s atsSource) Capabilities() Capability { return 0 }
 func (s atsSource) Groups() []string         { return s.p.groups }
 func (s atsSource) SiteScope() string        { return s.p.siteScope }
@@ -130,11 +149,24 @@ func (s atsSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, 
 	return s.p.fetch(ctx, q.Query, q.Location, defaultATSLimit)
 }
 
+// FetchStructured satisfies StructuredFetcher for the ATS connectors, returning
+// the source-structured JobListing collection alongside the SearxngResult slice.
+// Returns nil listings (no error) when the provider has no fetchStructured
+// wired — a defensive nil guard so a future atsProvider entry without a
+// structured fetcher does not panic.
+func (s atsSource) FetchStructured(ctx context.Context, q Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	if s.p.fetchStructured == nil {
+		results, err := s.p.fetch(ctx, q.Query, q.Location, defaultATSLimit)
+		return results, nil, err
+	}
+	return s.p.fetchStructured(ctx, q.Query, q.Location, defaultATSLimit)
+}
+
 // ----- YC -----
 
 type ycSource struct{}
 
-func (ycSource) Name() string           { return "yc" }
+func (ycSource) Name() string             { return "yc" }
 func (ycSource) Capabilities() Capability { return 0 }
 func (ycSource) Groups() []string         { return []string{groupAll, groupStartup} }
 func (ycSource) SiteScope() string        { return "site:workatastartup.com" }
@@ -147,7 +179,7 @@ func (ycSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, err
 
 type hnSource struct{}
 
-func (hnSource) Name() string           { return "hn" }
+func (hnSource) Name() string             { return "hn" }
 func (hnSource) Capabilities() Capability { return 0 }
 func (hnSource) Groups() []string         { return []string{groupAll, groupStartup} }
 func (hnSource) SiteScope() string        { return "site:news.ycombinator.com \"who is hiring\"" }
@@ -160,7 +192,7 @@ func (hnSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, err
 
 type indeedSource struct{}
 
-func (indeedSource) Name() string           { return "indeed" }
+func (indeedSource) Name() string             { return "indeed" }
 func (indeedSource) Capabilities() Capability { return NeedsAPIKey }
 func (indeedSource) Groups() []string         { return []string{groupAll} }
 func (indeedSource) SiteScope() string        { return "site:indeed.com" }
@@ -173,7 +205,7 @@ func (indeedSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult,
 
 type habrSource struct{}
 
-func (habrSource) Name() string           { return "habr" }
+func (habrSource) Name() string             { return "habr" }
 func (habrSource) Capabilities() Capability { return 0 }
 func (habrSource) Groups() []string         { return []string{groupAll} }
 func (habrSource) SiteScope() string        { return "site:career.habr.com" }
@@ -186,7 +218,7 @@ func (habrSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult, e
 
 type twitterSource struct{}
 
-func (twitterSource) Name() string           { return "twitter" }
+func (twitterSource) Name() string             { return "twitter" }
 func (twitterSource) Capabilities() Capability { return 0 }
 func (twitterSource) Groups() []string         { return []string{groupAll} }
 func (twitterSource) SiteScope() string        { return "site:twitter.com" }
@@ -199,7 +231,7 @@ func (twitterSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult
 
 type craigslistSource struct{}
 
-func (craigslistSource) Name() string           { return "craigslist" }
+func (craigslistSource) Name() string             { return "craigslist" }
 func (craigslistSource) Capabilities() Capability { return 0 }
 func (craigslistSource) Groups() []string         { return []string{groupAll} }
 func (craigslistSource) SiteScope() string        { return "site:craigslist.org" }
@@ -270,7 +302,7 @@ func KeylessJSONSource(provider string) Source {
 	return keylessJSONSource{p: p}
 }
 
-func (s keylessJSONSource) Name() string           { return s.p.name }
+func (s keylessJSONSource) Name() string             { return s.p.name }
 func (s keylessJSONSource) Capabilities() Capability { return 0 }
 func (s keylessJSONSource) Groups() []string         { return s.p.groups }
 func (s keylessJSONSource) SiteScope() string        { return s.p.siteScope }
@@ -287,7 +319,7 @@ func (s keylessJSONSource) Fetch(ctx context.Context, q Query) ([]engine.Searxng
 
 type freelancerSource struct{}
 
-func (freelancerSource) Name() string           { return "freelancer" }
+func (freelancerSource) Name() string             { return "freelancer" }
 func (freelancerSource) Capabilities() Capability { return 0 }
 func (freelancerSource) Groups() []string         { return []string{groupAll} }
 func (freelancerSource) SiteScope() string        { return "site:freelancer.com/projects" }
@@ -301,7 +333,7 @@ func (freelancerSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngRes
 
 type googleSource struct{}
 
-func (googleSource) Name() string           { return "google" }
+func (googleSource) Name() string             { return "google" }
 func (googleSource) Capabilities() Capability { return 0 }
 func (googleSource) Groups() []string         { return []string{groupAll} }
 func (googleSource) SiteScope() string        { return "site:careers.google.com OR site:jobs.google.com" }
@@ -317,7 +349,7 @@ func (googleSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult,
 
 type inspiraSource struct{}
 
-func (inspiraSource) Name() string           { return "inspira" }
+func (inspiraSource) Name() string             { return "inspira" }
 func (inspiraSource) Capabilities() Capability { return OptIn }
 func (inspiraSource) Groups() []string         { return []string{groupUN} }
 func (inspiraSource) SiteScope() string        { return "site:careers.un.org" }
@@ -334,7 +366,7 @@ func (inspiraSource) Fetch(ctx context.Context, q Query) ([]engine.SearxngResult
 
 type undpSource struct{}
 
-func (undpSource) Name() string           { return "undp" }
+func (undpSource) Name() string             { return "undp" }
 func (undpSource) Capabilities() Capability { return OptIn }
 func (undpSource) Groups() []string         { return []string{groupUN} }
 func (undpSource) SiteScope() string        { return "site:jobs.undp.org OR site:estm.fa.em2.oraclecloud.com" }

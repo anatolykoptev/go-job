@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -104,7 +105,7 @@ func TestAggregateSourceResults_Cancellation_ReturnsPartialAndDoesNotHang(t *tes
 	var partial bool
 	go func() {
 		defer close(done)
-		merged, _, sources, partial = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		merged, _, _, sources, partial = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	}()
 
 	select {
@@ -142,7 +143,7 @@ func TestAggregateSourceResults_HappyPath_DrainsAndClassifies(t *testing.T) {
 	dispatched := map[string]bool{"test-slow": true}
 	ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 2), err: nil}
 
-	merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+	merged, _, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	if len(merged) != 2 {
 		t.Fatalf("merged = %d, want 2", len(merged))
 	}
@@ -168,7 +169,7 @@ func TestAggregateSourceResults_GenericSearxngCancelled_MarkedFailed(t *testing.
 	var sources []engine.SourceStatus
 	go func() {
 		defer close(done)
-		_, _, sources, _ = aggregateSourceResults(ctx, srcs, true, ch, 2, dispatched)
+		_, _, _, sources, _ = aggregateSourceResults(ctx, srcs, true, ch, 2, dispatched)
 	}()
 	select {
 	case <-done:
@@ -236,7 +237,7 @@ func TestAggregateSourceResults_PriorityDrain_BufferedResultNotDroppedOnCancella
 		ch <- sourceResult{name: "test-slow", results: make([]engine.SearxngResult, 1), err: nil}
 		cancel()
 
-		merged, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		merged, _, _, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 
 		if len(merged) != 1 {
 			t.Fatalf("iter %d: merged = %d, want 1 (buffered result must not be dropped)", i, len(merged))
@@ -275,7 +276,7 @@ func TestAggregateSourceResults_NeverDispatched_MarkedNotDispatched(t *testing.T
 	var sources []engine.SourceStatus
 	go func() {
 		defer close(done)
-		_, _, sources, _ = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+		_, _, _, sources, _ = aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
 	}()
 	select {
 	case <-done:
@@ -390,3 +391,260 @@ var _ connectors.Source = testSlowSource{}
 
 // ensure errors import is used.
 var _ = errors.Is
+
+// --- BLOCKER A: delivery chain tests for structured precedence ---
+//
+// These tests exercise the FULL wiring (runSource → sourceResult.structured →
+// aggregateSourceResults → structuredJobs return), NOT just the mappers in
+// isolation. The prior test suite called mappers directly, so deleting
+// ApplyStructuredPrecedence, making the StructuredFetcher branch unreachable,
+// or deleting the allListings append left all tests green. These tests close
+// that gap.
+
+// testStructuredSource is a connectors.Source that also implements
+// connectors.StructuredFetcher. It returns a fixed pair of results + listings
+// so the delivery chain can be exercised without a live HTTP server.
+type testStructuredSource struct {
+	results  []engine.SearxngResult
+	listings []engine.JobListing
+}
+
+func (testStructuredSource) Name() string                        { return "test-structured" }
+func (testStructuredSource) Capabilities() connectors.Capability { return 0 }
+func (testStructuredSource) Groups() []string                    { return []string{"all"} }
+func (testStructuredSource) SiteScope() string                   { return "" }
+func (s testStructuredSource) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	return s.results, nil
+}
+func (s testStructuredSource) FetchStructured(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	return s.results, s.listings, nil
+}
+
+// TestRunSource_StructuredFetcher_PopulatesStructuredField verifies that
+// runSource, when the source implements connectors.StructuredFetcher, takes
+// the FetchStructured branch and populates sourceResult.structured with the
+// structured listings. This is the seam that feeds aggregateSourceResults.
+//
+// Mutation: make the StructuredFetcher branch unreachable (delete the
+// type-assertion at tool_job_search.go:523) → structured stays nil → RED.
+func TestRunSource_StructuredFetcher_PopulatesStructuredField(t *testing.T) {
+	src := testStructuredSource{
+		results:  []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng"}},
+		listings: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng", Company: "testco", Source: "lever"}},
+	}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.name != "test-structured" {
+		t.Errorf("name = %q, want test-structured", r.name)
+	}
+	if len(r.results) != 1 {
+		t.Errorf("results = %d, want 1", len(r.results))
+	}
+	if len(r.structured) != 1 {
+		t.Fatalf("structured = %d, want 1 (StructuredFetcher branch must populate structured field)", len(r.structured))
+	}
+	if r.structured[0].Company != "testco" {
+		t.Errorf("structured[0].Company = %q, want testco", r.structured[0].Company)
+	}
+}
+
+// TestAggregateSourceResults_StructuredData_ReturnsStructuredListings verifies
+// that aggregateSourceResults threads the structured listings from
+// sourceResult.structured into its structuredJobs return value. This is the
+// seam that feeds ApplyStructuredPrecedence in runJobSearch.
+//
+// Mutation: delete the `allListings = append(...)` line in aggregateSourceResults
+// → structuredJobs stays nil → RED.
+func TestAggregateSourceResults_StructuredData_ReturnsStructuredListings(t *testing.T) {
+	ctx := context.Background()
+	ch := make(chan sourceResult, 1)
+	srcs := []connectors.Source{testStructuredSource{}}
+	dispatched := map[string]bool{"test-structured": true}
+	ch <- sourceResult{
+		name:       "test-structured",
+		results:    []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng"}},
+		structured: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Eng", Company: "testco", Source: "lever"}},
+		err:        nil,
+	}
+
+	merged, _, structuredJobs, sources, partial := aggregateSourceResults(ctx, srcs, false, ch, 1, dispatched)
+	if len(merged) != 1 {
+		t.Errorf("merged = %d, want 1", len(merged))
+	}
+	if len(structuredJobs) != 1 {
+		t.Fatalf("structuredJobs = %d, want 1 (aggregateSourceResults must thread structured listings through)", len(structuredJobs))
+	}
+	if structuredJobs[0].Company != "testco" {
+		t.Errorf("structuredJobs[0].Company = %q, want testco", structuredJobs[0].Company)
+	}
+	if len(sources) != 1 || sources[0].Outcome != engine.SourceOutcomeOK {
+		t.Errorf("sources = %+v, want one ok", sources)
+	}
+	if partial {
+		t.Error("partial = true, want false")
+	}
+}
+
+// TestRunSource_NonStructuredSource_LeavesStructuredNil verifies that a source
+// that does NOT implement StructuredFetcher (the generic-searxng / LinkedIn
+// path) leaves sourceResult.structured nil. This is the negative half: it
+// guards that the StructuredFetcher branch is NOT taken for non-structured
+// sources, so structured data is not fabricated.
+func TestRunSource_NonStructuredSource_LeavesStructuredNil(t *testing.T) {
+	src := testSlowSource{sleep: 0}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.structured != nil {
+		t.Errorf("structured = %v, want nil (non-StructuredFetcher source must not fabricate structured data)", r.structured)
+	}
+}
+
+// TestRunJobSearch_StructuredPrecedence_SalaryWinsOverLLMNil drives runJobSearch
+// end-to-end through the LLM post-processing path (the path the existing handler
+// tests avoid via offset-beyond-total / zero-results / B1-gate early returns).
+// A structured ATS listing carrying SalaryMin=160000 is registered via
+// withTestRegistry, and the summarizeJobResults seam is stubbed to return an LLM
+// record for the SAME URL with Salary "not specified" and SalaryMin nil. The
+// output must carry 160000 — proving jobs.ApplyStructuredPrecedence is wired
+// between the LLM output and the structured map inside runJobSearch.
+//
+// Acceptance is the mutation, not a passing test: amputate the
+// jobs.ApplyStructuredPrecedence(jobOut.Jobs, structuredByURL) call at
+// tool_job_search.go (replace with `_ = structuredByURL`) → SalaryMin stays nil
+// → RED. Revert → green.
+//
+// No t.Parallel(): this test swaps the package-level summarizeJobResults var.
+// A parallel test in the same package could observe the stubbed value and
+// route through the fake summarizer unintentionally. The existing handler tests
+// in this package are likewise non-parallel, so the seam is safe.
+func TestRunJobSearch_StructuredPrecedence_SalaryWinsOverLLMNil(t *testing.T) {
+	const jobURL = "https://jobs.lever.co/testco/abc123"
+
+	minSalary := 160000
+	maxSalary := 220000
+	src := testStructuredSource{
+		results: []engine.SearxngResult{{
+			Title:   "Senior Backend Engineer",
+			URL:     jobURL,
+			Content: "** Senior Backend Engineer at TestCo (markdown marker keeps the content inline, no network fetch)",
+		}},
+		listings: []engine.JobListing{{
+			URL:            jobURL,
+			Title:          "Senior Backend Engineer",
+			Company:        "TestCo",
+			Source:         "lever",
+			SalaryMin:      &minSalary,
+			SalaryMax:      &maxSalary,
+			SalaryCurrency: "USD",
+		}},
+	}
+	withTestRegistry(t, src)
+
+	// Seam: stub the LLM summarizer to return an LLM record for the SAME URL
+	// with no salary. Cleanup restores the real implementation; the assertion
+	// cleanup (registered FIRST so it runs LAST under LIFO) verifies restoration
+	// via reflect pointer identity (func values cannot be compared with ==/!=
+	// except against nil).
+	orig := summarizeJobResults
+	t.Cleanup(func() {
+		got := reflect.ValueOf(summarizeJobResults).Pointer()
+		want := reflect.ValueOf(orig).Pointer()
+		if got != want {
+			t.Errorf("summarizeJobResults not restored after t.Cleanup: got %#x, want %#x", got, want)
+		}
+	})
+	t.Cleanup(func() { summarizeJobResults = orig })
+	summarizeJobResults = func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		return &engine.JobSearchOutput{
+			Query:   query,
+			Summary: "1 result",
+			Jobs: []engine.JobListing{{
+				Title:   "Senior Backend Engineer",
+				Company: "TestCo",
+				URL:     jobURL,
+				Salary:  "not specified", // LLM failed to extract salary
+				// SalaryMin/Max left nil — the case structured precedence must fix.
+			}},
+		}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	input := engine.JobSearchInput{
+		Query:    "structured-precedence-salary-unique-4f1c",
+		Platform: "all",
+	}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if len(out.Jobs) != 1 {
+		t.Fatalf("len(out.Jobs) = %d, want 1", len(out.Jobs))
+	}
+	if out.Jobs[0].URL != jobURL {
+		t.Fatalf("out.Jobs[0].URL = %q, want %q", out.Jobs[0].URL, jobURL)
+	}
+	if out.Jobs[0].SalaryMin == nil {
+		t.Fatalf("out.Jobs[0].SalaryMin = nil, want 160000 (structured precedence must override the LLM's nil salary)")
+	}
+	if *out.Jobs[0].SalaryMin != minSalary {
+		t.Errorf("out.Jobs[0].SalaryMin = %d, want %d (structured value must win over LLM nil)", *out.Jobs[0].SalaryMin, minSalary)
+	}
+	if out.Jobs[0].SalaryMax == nil || *out.Jobs[0].SalaryMax != maxSalary {
+		t.Errorf("out.Jobs[0].SalaryMax = %v, want %d", out.Jobs[0].SalaryMax, maxSalary)
+	}
+	if out.Jobs[0].SalaryCurrency != "USD" {
+		t.Errorf("out.Jobs[0].SalaryCurrency = %q, want USD", out.Jobs[0].SalaryCurrency)
+	}
+}
+
+// testStructuredSourceWithError is a connectors.Source + StructuredFetcher that
+// returns BOTH partial results AND an error from FetchStructured — the
+// partially-successful source case (tool_job_search.go:532-541).
+type testStructuredSourceWithError struct {
+	results  []engine.SearxngResult
+	listings []engine.JobListing
+	err      error
+}
+
+func (testStructuredSourceWithError) Name() string                        { return "test-structured-err" }
+func (testStructuredSourceWithError) Capabilities() connectors.Capability { return 0 }
+func (testStructuredSourceWithError) Groups() []string                    { return []string{"all"} }
+func (testStructuredSourceWithError) SiteScope() string                   { return "" }
+func (s testStructuredSourceWithError) Fetch(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, error) {
+	return s.results, s.err
+}
+func (s testStructuredSourceWithError) FetchStructured(_ context.Context, _ connectors.Query) ([]engine.SearxngResult, []engine.JobListing, error) {
+	return s.results, s.listings, s.err
+}
+
+// TestRunSource_StructuredFetcher_ErrorForwardsResults verifies that when a
+// StructuredFetcher returns BOTH partial results AND an error, runSource
+// forwards BOTH the results and the error on the channel. A future `return`
+// on error would silently drop a partially-successful source's results.
+//
+// Mutation: add `if err != nil { ch <- sourceResult{name: src.Name(), err: err}; return }`
+// before the results are forwarded → r.results becomes nil → RED.
+func TestRunSource_StructuredFetcher_ErrorForwardsResults(t *testing.T) {
+	src := testStructuredSourceWithError{
+		results:  []engine.SearxngResult{{URL: "https://jobs.lever.co/testco/abc", Title: "Partial"}},
+		listings: []engine.JobListing{{URL: "https://jobs.lever.co/testco/abc", Title: "Partial", Source: "lever"}},
+		err:      errors.New("partial failure: upstream timeout"),
+	}
+	ch := make(chan sourceResult, 1)
+	runSource(context.Background(), src, connectors.Query{}, ch)
+	r := <-ch
+	if r.err == nil {
+		t.Fatalf("err = nil, want the partial-failure error (runSource must forward errors)")
+	}
+	if len(r.results) != 1 {
+		t.Errorf("results = %d, want 1 (partial results must be forwarded alongside the error)", len(r.results))
+	}
+	if len(r.structured) != 1 {
+		t.Errorf("structured = %d, want 1 (partial structured listings must be forwarded alongside the error)", len(r.structured))
+	}
+}
