@@ -86,6 +86,15 @@ const (
 	MetricCode4renaRequests         = "code4rena_requests_total"
 	MetricToolCalls                 = "tool_calls_total"
 
+	// MetricJobSearchExtraction is the labelled counter
+	// gojob_job_search_extraction_total{outcome}. Bumped once per
+	// SummarizeJobResults call. outcome ∈ {"ok","unparseable"} — bounded enum.
+	// "unparseable" fires when the LLM returned a response that could not be
+	// parsed as the expected JSON (truncated output, mid-record cut, schema
+	// echo, etc.). The raw output is NOT surfaced to the caller; this counter
+	// + the WARN log (raw_len, model) are the diagnostic surface.
+	MetricJobSearchExtraction = "job_search_extraction_total"
+
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
 	outcomeOK        = "ok"
@@ -773,6 +782,11 @@ func FormatMetrics() string {
 	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeout, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
 		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
 	}
+	// job_search_extraction_total{outcome} pre-touched so both outcomes appear
+	// on the flat-text endpoint at 0 before the first SummarizeJobResults call.
+	for _, oc := range []string{"ok", "unparseable"} {
+		keys = append(keys, MetricJobSearchExtraction+"{outcome="+oc+"}")
+	}
 
 	var sb strings.Builder
 	for _, k := range keys {
@@ -1053,6 +1067,13 @@ func warmAlertBoundedMetrics() {
 	for reason := range validRelevanceDegradedReasons {
 		reg.Add(MetricJobSearchRelevanceDegraded+"{reason="+reason+"}", 0)
 	}
+	// Pre-register job_search_extraction_total{outcome} so the FIRST
+	// unparseable LLM response after a restart is visible to increase()-
+	// based alerts (same gap warmAlertBoundedMetrics fixes for the other
+	// bounded-label counters).
+	for oc := range validJobSearchExtractionOutcomes {
+		reg.Add(MetricJobSearchExtraction+"{outcome="+oc+"}", 0)
+	}
 }
 
 // IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.
@@ -1134,6 +1155,22 @@ func IncrCompanyResearch(outcome string) {
 		return
 	}
 	reg.Incr(MetricCompanyResearch + "{outcome=" + outcome + "}")
+}
+
+// validJobSearchExtractionOutcomes bounds the outcome label for
+// gojob_job_search_extraction_total{outcome} to a fixed two-value enum.
+var validJobSearchExtractionOutcomes = map[string]bool{
+	"ok": true, "unparseable": true,
+}
+
+// IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<outcome>}.
+// outcome ∈ {"ok","unparseable"} — bounded label. Unrecognised values are
+// silently dropped. Called once per SummarizeJobResults call.
+func IncrJobSearchExtraction(outcome string) {
+	if !validJobSearchExtractionOutcomes[outcome] {
+		return
+	}
+	reg.Incr(MetricJobSearchExtraction + "{outcome=" + outcome + "}")
 }
 
 // ATS platform label constants for the hunt_discovery_* metrics.

@@ -4,6 +4,9 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
 
@@ -16,15 +19,48 @@ type llmJobOutput struct {
 	Summary string       `json:"summary"`
 }
 
+// summarizeJobResultsLLM is the seam over the LLM call in SummarizeJobResults.
+// Defaults to the real SummarizeToJSON; tests swap it to inject canned
+// unparseable responses without a live LLM.
+//
+//nolint:gochecknoglobals // test seam, defaults to the real implementation
+var summarizeJobResultsLLM = SummarizeToJSON[llmJobOutput]
+
 // SummarizeJobResults calls the LLM with job-specific prompt and parses structured job listings.
 func SummarizeJobResults(ctx context.Context, query, instruction string, contentLimit int, results []SearxngResult, contents map[string]string) (*JobSearchOutput, error) {
-	parsed, raw, err := SummarizeToJSON[llmJobOutput](ctx, query, instruction, contentLimit, results, contents)
+	parsed, raw, err := summarizeJobResultsLLM(ctx, query, instruction, contentLimit, results, contents)
 	if err != nil {
 		return nil, err
 	}
 	if parsed == nil {
-		return &JobSearchOutput{Query: query, Summary: raw}, nil
+		// LLM returned a response that could not be parsed as the expected
+		// JSON — typically a truncated output (mid-record cut, output cap
+		// hit, stream abort). The raw text must NOT reach the caller (it is
+		// indistinguishable from a real job listing at a glance and was the
+		// silent-failure surface in #413). Return an honest message stating
+		// the response was incomplete and how many sources were collected.
+		// Count it and log the two numbers that identify the cause:
+		//   - raw_len: byte length of the model output. If raw_len/4 is near
+		//     the output token budget, the cause is the output cap; if it
+		//     sits far below, the cut is upstream (proxy, stream abort, or a
+		//     specific routed model).
+		//   - model + model_weights: which model served the request (nine
+		//     models are weight-routed via LLM_MODEL_WEIGHTS, so the routed
+		//     model is not known today — log the configured model and the
+		//     full weights env so the operator can narrow it).
+		IncrJobSearchExtraction("unparseable")
+		slog.Warn("job_search: LLM response unparseable, returning honest empty",
+			slog.Int("raw_len", len(raw)),
+			slog.String("model", cfg.LLMModel),
+			slog.String("model_weights", os.Getenv("LLM_MODEL_WEIGHTS")),
+			slog.Int("sources", len(results)),
+		)
+		return &JobSearchOutput{
+			Query:   query,
+			Summary: fmt.Sprintf("LLM response was incomplete/unparseable; %d source(s) collected but no job listings extracted.", len(results)),
+		}, nil
 	}
+	IncrJobSearchExtraction("ok")
 
 	for i := range parsed.Jobs {
 		if parsed.Jobs[i].URL == "" && i < len(results) {
