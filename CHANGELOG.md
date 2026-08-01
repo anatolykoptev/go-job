@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.19.0](https://github.com/anatolykoptev/go-job/compare/v1.18.4...v1.19.0) (2026-08-01)
+
+
+### Features
+
+* **job_search:** cross-encoder relevance scoring in shadow mode ([#449](https://github.com/anatolykoptev/go-job/issues/449)) ([eebc824](https://github.com/anatolykoptev/go-job/commit/eebc824a1f3ef72e1630ecdfa0ae9483ce9bf92e))
+
 ## [1.18.4](https://github.com/anatolykoptev/go-job/compare/v1.18.3...v1.18.4) (2026-08-01)
 
 
