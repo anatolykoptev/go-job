@@ -1,6 +1,25 @@
 # go_job
 
-Job search, resume optimization, career research, and application tracking — a Go MCP server exposing **28 tools** across LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Twitter/X, Google Jobs, and more.
+Job search, resume optimization, career research, and application tracking — a Go MCP server exposing **32 tools** across LinkedIn, Greenhouse, Lever, Ashby, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Craigslist, Twitter/X, Google Jobs, Inspira/UNDP, and more.
+
+## What makes it different
+
+Not the scraping. Anti-bot bypass is an arms race won by infrastructure scale, and some
+boards will open an API anyway — it is useful today, not an identity.
+
+What a chat window cannot reproduce:
+
+- **The longitudinal record** — which listings you already saw and rejected, where you
+  applied, at what stage, which resume variant went out. Months of accumulation in
+  `hunt_jobs`, the tracker, `application_persist` and `resume_memory`.
+- **Provenance** — `master_resume` traces every claim about you back to a recorded fact,
+  so a cover letter is defensible rather than merely plausible.
+- **Determinism you can audit** — a ranked list that shows its arithmetic, not "the model
+  thought these look promising".
+- **Continuous operation** — a posting appears at 03:00, is scored, and notifies you.
+
+The full statement, including where the code does not yet live up to it, is in
+[`docs/architecture/principles.md`](docs/architecture/principles.md).
 
 ## MCP Tools
 
@@ -9,7 +28,9 @@ Job search, resume optimization, career research, and application tracking — a
 | Tool | Description |
 |------|-------------|
 | `job_search` | Unified search: LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs. `platform=` selects source; `limit` (default 15, max 50) + `offset` for pagination. |
-| `job_match_score` | Score job listings against a resume using Jaccard keyword overlap (0–100). |
+| `job_match_score` | Score job listings against a resume using Jaccard keyword overlap (0–100). Deterministic. |
+| `job_quality_score` | 0–100 posting-quality score, **no LLM**: salary presence, direct-apply URL, freshness, description length, agency detection, source quality. Returns a per-factor breakdown and a verdict band. |
+| `linkedin` | LinkedIn operations (`op=jobs\|profile\|…`) against the Guest API. |
 | `opportunity_search` | Cross-type opportunity search (jobs + freelance + bounty). |
 | `opportunity_analyze` | Deep analyze a single opportunity URL. |
 | `opportunity_claim` | Initiate a claim action on a matched opportunity. |
@@ -25,6 +46,7 @@ Job search, resume optimization, career research, and application tracking — a
 | `resume_generate` | Generate a targeted resume from the master profile. |
 | `resume_enrich` | Enrich master profile via Q&A. |
 | `resume_profile` | View the stored master profile. |
+| `resume_profile_sync` | Re-derive `resume_vectors` from the current profile entities: update changed rows, drop orphans, backfill NULL embeddings. Manual `resume_memory` notes are never touched. |
 | `resume_memory` | Semantic search/add/update over resume memory store. |
 
 ### Research
@@ -50,16 +72,17 @@ Job search, resume optimization, career research, and application tracking — a
 | `application_prep` | One-call combo: resume analysis + cover letter + interview prep + company research. |
 | `offer_compare` | Side-by-side offer comparison with scoring (0–100). |
 | `negotiation_prep` | Salary negotiation playbook: scripts, counters, BATNA. |
-| `linkedin` | LinkedIn profile operations. |
-| `linkedin_profile_ingest` | Ingest a LinkedIn profile for local analysis. |
+| `application_persist` | Persist a prepared resume + cover letter to the uploads store, keyed by `job_id`. Renders PDF via Typst when available, markdown-only otherwise. |
+| `linkedin_profile_ingest` | Ingest a LinkedIn profile into the go-nerv intelligence graph (person / company / skill entities + edges). |
 
 ### Tracker & Utilities
 
 | Tool | Description |
 |------|-------------|
-| `job_tracker` | Track job applications. `action=add\|list\|update`. |
+| `job_tracker` | Track job applications. `action=add\|list\|update`. Backed by Postgres `hunt_jobs` + `hunt_ratings` (ADR-002). |
 | `algora_job_ingest` | Ingest Algora bounty/job listings into the hunt store. |
-| `hunt_list` | List hunt entries from the local store (triggers lazy enrichment). |
+| `vacancy_ingest` | Fetch one posting URL via stealth render, extract structured details, optionally persist into the hunt store. |
+| `hunt_list` | List hunt entries from the hunt store (triggers lazy enrichment). |
 | `oversize` | Retrieve / list / purge oversized MCP responses from the spillover store. |
 
 ## Filters (job_search)
@@ -106,7 +129,7 @@ go_job/
 │   │       ├── match.go       # Jaccard keyword scoring (job_match_score)
 │   │       ├── resume.go      # resume_analyze, cover_letter_generate, resume_tailor
 │   │       ├── research.go    # research tool (salary / company / person)
-│   │       ├── tracker.go     # Job application tracker (SQLite)
+│   │       ├── tracker.go     # Job application tracker (Postgres hunt tables, ADR-002)
 │   │       ├── profile.go     # User profile persistence
 │   │       └── ...            # algora, twitter, linkedin, bounty, opportunity, etc.
 │   │   └── sources/           # Pluggable source connectors
@@ -115,7 +138,7 @@ go_job/
 │   │       ├── hackernews.go  # HN source
 │   │       └── ...
 │   ├── jobserver/
-│   │   ├── register.go        # Tool registrations (28 MCP tools)
+│   │   ├── register.go        # Tool registrations (32 MCP tools)
 │   │   └── tool_*.go          # Per-tool handler files
 │   └── hunt/                  # Hunt store + notifications
 │       ├── notify/
@@ -142,7 +165,7 @@ go_job/
 - `action=add` (title+company required), `action=list`, `action=update` (id required).
 
 ### Data Storage
-- **Job tracker DB**: `$UPLOADS_ROOT/go-job/tracker/tracker.db` (SQLite, table `jobs`). Default path: `$HOME/uploads/go-job/tracker/tracker.db`. Override via `UPLOADS_ROOT`.
+- **Job tracker**: Postgres `hunt_jobs` + `hunt_ratings` via `DATABASE_URL` ([ADR-002](docs/adr/ADR-go-job-002-retire-sqlite-tracker.md)). The legacy SQLite `tracker.db` is read only by the one-shot `cmd/migrate-tracker`; nothing under `internal/` imports SQLite.
 - **User profile**: `$UPLOADS_ROOT/go-job/profile/profile.json`. Default: `$HOME/uploads/go-job/profile/profile.json`.
 - **L1 cache**: in-memory (`sync.Map`), lost on restart.
 - **L2 cache**: Redis (optional), persistent.

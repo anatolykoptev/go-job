@@ -2,6 +2,11 @@
 
 Architecture notes and ADRs for go-job.
 
+**Start here: [principles.md](principles.md)** — what the service is for, which decisions
+are computed rather than judged, where the durable difference lives, and the target shape
+of the search pipeline. It is the tie-breaker: where any other doc in this repo disagrees
+with it, the other doc is the bug.
+
 ## Data & admin UI (load-bearing principle)
 
 - The **gojob Postgres DB** is the single source of truth for all hunt/resume/admin

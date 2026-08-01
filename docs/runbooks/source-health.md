@@ -54,10 +54,14 @@ gojob_platform_results_total{platform="indeed",outcome="no_key"} 7
 The connector's Go struct no longer matches the API's JSON shape.
 
 1. Identify the platform: `grep 'parse_fail' <metrics output>`
-2. Diff the connector's struct against the live API response:
-   - **habr** (`internal/engine/jobs/habr.go`): the `Employment` field changed from
-     `struct{Title string}` to a plain string. Fix in P4(b).
-3. Open a P4 PR fixing the struct. Verify the outcome flips to `ok`.
+2. Diff the connector's struct against the live API response.
+3. Open a PR fixing the struct. Verify the outcome flips to `ok`.
+
+**Worked example (resolved).** Habr's `employment` field changed from
+`{"title": "..."}` to a plain string. The fix was a tolerant `UnmarshalJSON` on
+`habrEmployment` (`internal/engine/jobs/habr.go:39`) that accepts both shapes rather than
+pinning the new one — a connector that only understands today's schema fails again on the
+next drift.
 
 ### `no_key` — missing API key
 
