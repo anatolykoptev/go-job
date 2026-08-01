@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.18.2](https://github.com/anatolykoptev/go-job/compare/v1.18.1...v1.18.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **ci:** keep squash bodies out of the conventional-commit parser ([#437](https://github.com/anatolykoptev/go-job/issues/437)) ([06010c5](https://github.com/anatolykoptev/go-job/commit/06010c5a3ad630e68fed5c44c6d33d9404f7075f))
+
 ## [1.18.1](https://github.com/anatolykoptev/go-job/compare/v1.18.0...v1.18.1) (2026-08-01)
 
 
