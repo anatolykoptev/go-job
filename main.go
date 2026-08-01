@@ -494,19 +494,22 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			kitembed.WithDim(1024),
 			kitembed.WithLogger(slog.Default()),
 		}
-		gateEmbedder, gateErr := jobserver.NewEmbedClient(c.EmbedURL, baseOpts...)
-		if gateErr != nil {
-			slog.Error("gate embed client init failed", slog.Any("error", gateErr))
+		// Both clients come from one call (jobserver.NewEmbedClients) so a
+		// future edit cannot give one the other's options. See
+		// internal/jobserver/embed_clients.go and
+		// TestRelevanceEmbedBudget_WiringSplit.
+		clients := jobserver.NewEmbedClients(c.EmbedURL, baseOpts...)
+		if clients.GateErr != nil {
+			slog.Error("gate embed client init failed", slog.Any("error", clients.GateErr))
 		} else {
-			jobserver.SetRelevanceEmbedClient(gateEmbedder)
+			jobserver.SetRelevanceEmbedClient(clients.Gate)
 			slog.Info("gate embed client initialized (budget-bound to relevance timeout)",
 				slog.String("url", c.EmbedURL))
 		}
-		sharedEmbedder, sharedErr := kitembed.NewClient(c.EmbedURL, baseOpts...)
-		if sharedErr != nil {
-			slog.Error("shared embed client init failed", slog.Any("error", sharedErr))
+		if clients.SharedErr != nil {
+			slog.Error("shared embed client init failed", slog.Any("error", clients.SharedErr))
 		} else {
-			jobs.SetEmbedClient(sharedEmbedder)
+			jobs.SetEmbedClient(clients.Shared)
 			slog.Info("shared embed client initialized (library defaults)",
 				slog.String("url", c.EmbedURL))
 		}

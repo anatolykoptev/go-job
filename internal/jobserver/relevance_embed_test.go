@@ -317,3 +317,62 @@ func TestRelevanceEmbedBudget_GateClientPerRequestTimeout(t *testing.T) {
 		t.Fatalf("gate client chunk size must equal relevanceEmbedChunkSize (%d), got %d", relevanceEmbedChunkSize, got)
 	}
 }
+
+// === F3: the production wiring split — both clients from one NewEmbedClients call ===
+
+// TestRelevanceEmbedBudget_WiringSplit gates the PRODUCTION wiring site
+// (main.go:initEngine), not a client the test constructs itself. The two
+// existing budget tests (NonGateClientKeepsLibraryDefaults,
+// GateClientPerRequestTimeout) each build their own client and so cannot catch
+// a one-line regression at the call site — passing the gate's budget opts to
+// the shared client in main.go builds fine and the whole suite stays green,
+// reintroducing the exact defect this PR exists to prevent (the #418 shape:
+// the feeder is tested, the call site is not).
+//
+// This test calls jobserver.NewEmbedClients — the function main.go calls — and
+// asserts BOTH clients come from that one call with the correct, DISTINCT
+// budgets:
+//
+//   - gate:   per-request == relevanceEmbedPerRequest, retry == NoRetry
+//     (MaxAttempts=1), chunk size == relevanceEmbedChunkSize;
+//   - shared: retry == defaultRetryPolicy (MaxAttempts=3), per-request == 30s
+//     (kitembed library defaults).
+//
+// Falsification: in NewEmbedClients, build the shared client with
+// append(baseOpts, EmbedClientBudgetOpts()...) instead of baseOpts alone (the
+// one-line regression). The shared client's MaxAttempts becomes 1 and its
+// timeout becomes relevanceEmbedPerRequest → both shared assertions RED.
+func TestRelevanceEmbedBudget_WiringSplit(t *testing.T) {
+	srv := newEmbedTestServer(t, 3)
+
+	clients := NewEmbedClients(srv.URL,
+		kitembed.WithBackend("http"),
+		kitembed.WithDim(3),
+	)
+	if clients.GateErr != nil {
+		t.Fatalf("NewEmbedClients gate: %v", clients.GateErr)
+	}
+	if clients.SharedErr != nil {
+		t.Fatalf("NewEmbedClients shared: %v", clients.SharedErr)
+	}
+
+	// Gate client: budget-bound to the relevance timeout.
+	if got := clientHTTPTimeout(clients.Gate); got != relevanceEmbedPerRequest {
+		t.Fatalf("wiring split: gate client per-request timeout must equal relevanceEmbedPerRequest (%v), got %v — the gate's WithTimeout was not applied", relevanceEmbedPerRequest, got)
+	}
+	if got := clientRetryMaxAttempts(clients.Gate); got != 1 {
+		t.Fatalf("wiring split: gate client must disable v2 retry (NoRetry, MaxAttempts=1), got %d", got)
+	}
+	if got := clientChunkSize(clients.Gate); got != relevanceEmbedChunkSize {
+		t.Fatalf("wiring split: gate client chunk size must equal relevanceEmbedChunkSize (%d), got %d", relevanceEmbedChunkSize, got)
+	}
+
+	// Shared client: kitembed library defaults — the gate's budgets MUST NOT
+	// leak onto it. This is the assertion the call-site-untested gap let pass.
+	if got := clientRetryMaxAttempts(clients.Shared); got != 3 {
+		t.Fatalf("wiring split: shared client must keep the default retry policy (MaxAttempts=3), got %d — the gate's WithRetry(NoRetry) leaked onto the shared client at the wiring site", got)
+	}
+	if got := clientHTTPTimeout(clients.Shared); got != 30*time.Second {
+		t.Fatalf("wiring split: shared client must keep the default 30s per-request timeout, got %v — the gate's WithTimeout(%v) leaked onto the shared client at the wiring site", got, relevanceEmbedPerRequest)
+	}
+}
