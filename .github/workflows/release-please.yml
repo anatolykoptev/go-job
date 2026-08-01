@@ -9,6 +9,15 @@ name: release-please
 # ~/bin/goreleaser-release-local.sh (a systemd timer that detects a new
 # release-please tag whose GitHub release has no binary assets and runs
 # `goreleaser release` on the box). Do NOT add a goreleaser job back here.
+# Squash bodies must stay EMPTY. release-please parses the whole commit message
+# by the conventional-commits grammar; on 2026-08-01 a squash body carrying
+# `append(baseOpts, EmbedClientBudgetOpts()...)` died at 109:39, emptied the
+# candidate set to `commits: 0`, opened no release PR — and this workflow went
+# green. Enforced by the repo setting, not by discipline:
+#   gh api -X PATCH repos/anatolykoptev/go-job \
+#     -f squash_merge_commit_message=BLANK -f squash_merge_commit_title=PR_TITLE
+# A body reappearing in a squash commit means that setting was reverted.
+
 on:
   push:
     branches:
