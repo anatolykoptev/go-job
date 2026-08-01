@@ -166,7 +166,7 @@ func main() {
 		MCPReceivingMiddleware: []mcp.Middleware{hooks.Middleware(), mcpmw.Middleware(engine.Reg(), "tool")},
 	}, func(s *mcp.Server) {
 		jobserver.RegisterTools(s, authority)
-		slog.Info("tools registered", slog.Int("count", 44))
+		slog.Info("tools registered", slog.Int("count", 47))
 	}); err != nil {
 		slog.Error("server failed", slog.Any("error", err))
 	}
