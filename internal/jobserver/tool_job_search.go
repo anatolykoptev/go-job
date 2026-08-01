@@ -370,24 +370,14 @@ spawn:
 			slog.Any("error", err),
 			slog.Int("raw_results", len(top)))
 		summary := fmt.Sprintf("LLM summarization failed: %v; %d raw results collected but not processed into job listings.", err, len(top))
-		if degraded != "" {
-			summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + summary
-		}
-		if notice != "" {
-			summary = "⚠ " + notice + ". " + summary
-		}
+		summary = prependRelevanceNotice(summary, degraded, notice)
 		return nil, engine.JobSearchOutput{
 			Query:   input.Query,
 			Summary: summary,
 			Sources: sources,
 		}, nil
 	}
-	if degraded != "" {
-		jobOut.Summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + jobOut.Summary
-	}
-	if notice != "" {
-		jobOut.Summary = "⚠ " + notice + ". " + jobOut.Summary
-	}
+	jobOut.Summary = prependRelevanceNotice(jobOut.Summary, degraded, notice)
 
 	liByJobID := make(map[string]*jobs.LinkedInJob)
 	for i := range linkedInJobs {
@@ -890,4 +880,25 @@ func buildUnprocessedSummary(sources []engine.SourceStatus, rawCount int) string
 		base += " Sources — " + strings.Join(parts, "; ") + "."
 	}
 	return base
+}
+
+// prependRelevanceNotice prepends the relevance gate's user-facing notices to
+// the summary. The degradation notice ("Relevance filtering unavailable") is
+// suppressed when the gate is configured inert (relevanceGateInert): at shipped
+// defaults (minRelevance=0, minKeep=0) the gate scores every candidate but
+// filters none, so a degraded gate and a healthy gate produce IDENTICAL output
+// — the notice distinguishes nothing and is alarming noise (fix C). It is
+// kept when the gate is actually configured to filter, where the disclosure is
+// real information. The floor/truncation notice is always shown (it describes a
+// real state change). The log line and the
+// job_search_relevance_degraded_total counter are NOT affected — only the
+// user-facing summary string is in scope; observability must not regress.
+func prependRelevanceNotice(summary, degraded, notice string) string {
+	if degraded != "" && !relevanceGateInert() {
+		summary = "⚠ Relevance filtering unavailable (" + degraded + ") — results are unfiltered. " + summary
+	}
+	if notice != "" {
+		summary = "⚠ " + notice + ". " + summary
+	}
+	return summary
 }
