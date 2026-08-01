@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/anatolykoptev/go-engine/extract"
@@ -133,6 +134,14 @@ var (
 	llmInst       *engllm.Client       // LLM client
 	reg           *kitmetrics.Registry // metrics counters (Prometheus-bridged)
 	httpClient    *http.Client         // plain HTTP client for GitHub API etc.
+
+	// llmModelWeights is the captured value of LLM_MODEL_WEIGHTS at Init time.
+	// go-kit reads it ONCE at client construction (go-kit/llm/client.go:353),
+	// so it is a process-lifetime constant — reading os.Getenv per unparseable
+	// failure would log a value that can diverge from what the live client
+	// actually routes on. Captured here so the WARN in SummarizeJobResults
+	// reports the same weights the client was built with.
+	llmModelWeights string
 )
 
 // Cfg exposes the engine configuration for sub-packages (jobs, sources).
@@ -142,6 +151,7 @@ var Cfg = &cfg
 func Init(c Config) {
 	cfg = c
 	Cfg = &cfg
+	llmModelWeights = os.Getenv("LLM_MODEL_WEIGHTS")
 
 	// Metrics registry (Prometheus-bridged under "gojob" namespace).
 	reg = kitmetrics.NewPrometheusRegistry("gojob")

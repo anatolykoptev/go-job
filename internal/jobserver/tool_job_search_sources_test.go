@@ -648,3 +648,58 @@ func TestRunSource_StructuredFetcher_ErrorForwardsResults(t *testing.T) {
 		t.Errorf("structured = %d, want 1 (partial structured listings must be forwarded alongside the error)", len(r.structured))
 	}
 }
+
+// TestRunJobSearch_UnparseableResult_NotCached is the F1-cache falsification
+// test at the runJobSearch level. It swaps the summarizeJobResults seam to
+// return an Unparseable=true output and asserts the cache is NOT populated
+// after runJobSearch returns. The cache-skip guard (`if !jobOut.Unparseable`)
+// in tool_job_search.go is the production branch under test.
+//
+// Mutation: restore the unconditional `engine.CacheStoreJSON(...)` call (drop
+// the `if !jobOut.Unparseable` guard) → the cache load succeeds → RED.
+func TestRunJobSearch_UnparseableResult_NotCached(t *testing.T) {
+	// Use a source that returns results so runJobSearch reaches the
+	// summarizeJobResults call (the empty-source path returns early before
+	// the LLM step, never hitting the cache-skip guard).
+	src := testResultSource{results: []engine.SearxngResult{
+		{URL: "http://example.com/job-1", Title: "Go Dev", Content: "**Source:** test"},
+	}}
+	withTestRegistry(t, src)
+
+	orig := summarizeJobResults
+	t.Cleanup(func() { summarizeJobResults = orig })
+	summarizeJobResults = func(_ context.Context, query, _ string, _ int, _ []engine.SearxngResult, _ map[string]string) (*engine.JobSearchOutput, error) {
+		return &engine.JobSearchOutput{
+			Query:       query,
+			Summary:     "LLM response was incomplete/unparseable; 0 source(s) collected.",
+			Unparseable: true,
+		}, nil
+	}
+
+	// InitCache with nil redis → L1-only in-memory cache.
+	engine.InitCache("", engine.CacheTTL, 64, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	input := engine.JobSearchInput{
+		Query:    "unparseable-cache-skip-unique-7e3a",
+		Platform: "all",
+	}
+
+	_, out, err := runJobSearch(ctx, nil, input)
+	if err != nil {
+		t.Fatalf("runJobSearch returned error: %v", err)
+	}
+	if !out.Unparseable {
+		t.Fatalf("test setup: runJobSearch output must have Unparseable=true; got false")
+	}
+
+	// Rebuild the SAME cache key runJobSearch used and assert it is NOT cached.
+	cacheKey := engine.CacheKey("job_search", input.Query, input.Location, input.Experience,
+		input.JobType, input.Remote, input.TimeRange, input.Platform,
+		fmt.Sprintf("limit_%d_offset_%d", input.Limit, input.Offset))
+	if cached, ok := engine.CacheLoadJSON[engine.JobSearchOutput](ctx, cacheKey); ok {
+		t.Errorf("F1-cache FAIL: unparseable result must NOT be cached; got a hit: %+v", cached)
+	}
+}

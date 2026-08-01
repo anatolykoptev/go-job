@@ -452,7 +452,18 @@ spawn:
 
 	persistJobListings(ctx, jobOut.Jobs)
 	jobOut.Sources = sources
-	engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+	// Do NOT cache an unparseable LLM result. The honest summary invites a
+	// retry, and serving it from cache for CacheTTL (15m) would suppress the
+	// LLM call that retry needs — the user cannot recover. It also deflates
+	// gojob_job_search_extraction_total{outcome=unparseable}: the counter
+	// counts distinct cache keys on the cached path, not user-visible
+	// failures, so a cached unparseable makes the truncation rate read
+	// systematically low (the opposite of what this PR measures). The
+	// genuine zero-result and relevance-gate-empty paths produce nil Jobs
+	// too but set Unparseable=false, so they stay cached.
+	if !jobOut.Unparseable {
+		engine.CacheStoreJSON(ctx, cacheKey, input.Query, *jobOut)
+	}
 	if cr, spilled := handleSpill(ctx, "job_search", *jobOut); spilled {
 		var zero engine.JobSearchOutput
 		return cr, zero, nil
