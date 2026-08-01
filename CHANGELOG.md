@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.18.0](https://github.com/anatolykoptev/go-job/compare/v1.17.1...v1.18.0) (2026-08-01)
+
+
+### Features
+
+* **jobs:** emit structured JobListing from ATS sources instead of re-deriving it with an LLM ([#418](https://github.com/anatolykoptev/go-job/issues/418)) ([d039007](https://github.com/anatolykoptev/go-job/commit/d0390072adf8b3447ac0b7767017521e4bf7f279))
+
 ## [1.17.1](https://github.com/anatolykoptev/go-job/compare/v1.17.0...v1.17.1) (2026-07-31)
 
 
