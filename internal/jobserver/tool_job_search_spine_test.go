@@ -561,3 +561,52 @@ func TestSpine_F11_LLMErrorZeroStructuredIncrementsCounter(t *testing.T) {
 		t.Errorf("F11 FAIL: job_search_extraction_total{outcome=llm_unavailable} delta = %d, want 1 (LLM error with zero survivors must still increment the counter)", delta)
 	}
 }
+
+// F12 — Cross-provider JobID collision between two RESOLVABLE ATS sources: an
+// LLM record with a Lever URL (no Source field) and a Greenhouse structured
+// candidate carrying the same JobID string. The URLs do not normalize-match, so
+// the JobID fallback is the only path, and this time llmSrc RESOLVES (lever)
+// — so the refusal can only come from the source-EQUALITY arm of the guard.
+//
+// F9 covers the other arm: an unresolvable source (LinkedIn) leaves llmSrc
+// and the fallback is refused by `llmSrc != ""` alone. Dropping only
+// `cand.Source == llmSrc` leaves F9 green, so without F12 half the guard is
+// untested and can be deleted silently.
+//
+// Mutation: in jobs.StructuredMatcher.Match (ats.go), drop `cand.Source ==
+// llmSrc` from the condition (keep `llmSrc != ""`) → the Greenhouse
+// candidate wrongly matches the Lever record → Title becomes "Greenhouse Eng"
+// → RED.
+func TestSpine_F12_CrossProviderCollisionResolvableSources(t *testing.T) {
+	structuredByURL := map[string]engine.JobListing{
+		"https://boards.greenhouse.io/testco/jobs/4001234": {
+			URL:    "https://boards.greenhouse.io/testco/jobs/4001234",
+			JobID:  "4001234",
+			Title:  "Greenhouse Eng",
+			Source: "greenhouse",
+		},
+	}
+	llmJobs := []engine.JobListing{
+		{
+			// Lever URL — resolves to "lever" via extractSourceFromURL, so
+			// llmSrc is non-empty and only the equality arm can refuse.
+			URL:     "https://jobs.lever.co/testco/4001234",
+			JobID:   "4001234",
+			Source:  "",
+			Title:   "Lever Eng",
+			Company: "LeverCorp",
+		},
+	}
+
+	out := buildHealthySelection(llmJobs, structuredByURL, map[string]float64{}, map[string]bool{})
+
+	if len(out) != 1 {
+		t.Fatalf("F12 FAIL: len(out) = %d, want 1", len(out))
+	}
+	if out[0].Title != "Lever Eng" {
+		t.Errorf("F12 FAIL: Title = %q, want %q (a resolvable cross-provider JobID collision must NOT merge)", out[0].Title, "Lever Eng")
+	}
+	if out[0].Source == "greenhouse" {
+		t.Errorf("F12 FAIL: Source = %q, must NOT be relabelled greenhouse", out[0].Source)
+	}
+}
