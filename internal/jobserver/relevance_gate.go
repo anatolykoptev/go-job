@@ -11,7 +11,6 @@ import (
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/rerank"
 	"github.com/anatolykoptev/go_job/internal/engine"
-	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
 // Relevance gate configuration (env-tunable, validated at init).
@@ -38,10 +37,11 @@ import (
 // notice), never silently indistinguishable from a real match (B2).
 //
 // jobSearchRelevanceTimeout bounds the gate's own embed work, independent of
-// the tool context. The kit embed client chunks at 32 and issues SEQUENTIAL
-// sub-batches at a 30s HTTP timeout each, so a large candidate set can burn
-// the whole remaining tool budget; the failure then surfaces one stage later
-// as "LLM summarization failed", blaming the wrong component (M3).
+// the tool context. The embed client's per-request timeout, retry envelope,
+// and chunk size are derived from this budget (see relevance_embed.go) so the
+// gate's inner budgets fit strictly inside it; without that derivation a slow
+// request or a transient retryable failure surfaces one stage later as "LLM
+// summarization failed", blaming the wrong component (M3).
 var (
 	jobSearchMinRelevance     = env.Float("JOB_SEARCH_MIN_RELEVANCE", 0.0)
 	jobSearchMinKeep          = env.Int("JOB_SEARCH_MIN_KEEP", 0)
@@ -50,6 +50,18 @@ var (
 
 func init() {
 	validateRelevanceConfig()
+}
+
+// relevanceGateInert reports whether the gate is configured to reject nothing
+// (minRelevance <= 0 and minKeep <= 0). At shipped defaults the gate SCORES
+// every candidate but filters none, so a degraded gate and a healthy gate
+// produce identical user-facing output. Used by the summary builder to
+// suppress the "Relevance filtering unavailable" notice when it would be
+// alarming noise that distinguishes nothing (fix C). The log line and the
+// job_search_relevance_degraded_total counter are unaffected — only the
+// user-facing summary string is gated on this.
+func relevanceGateInert() bool {
+	return jobSearchMinRelevance <= 0 && jobSearchMinKeep <= 0
 }
 
 // validateRelevanceConfig parses the env vars with error reporting and range
@@ -99,13 +111,16 @@ func validateRelevanceConfig() {
 const maxSnippetRunes = 500
 
 // maxRelevanceCandidates caps the number of candidates embedded before
-// scoring. deduped is pre-limit and can carry up to 18 connectors' worth; the
-// kit embed client chunks at 32 and issues SEQUENTIAL sub-batches at a 30s
-// HTTP timeout each, so an unbounded set can burn the whole tool budget (M3).
-// 50 aligns with the max job_search limit — scoring more than the user can
-// receive is wasted work. When the cap trims, that is a visible degraded state
-// (truncated reason + a caller notice), not silence.
-const maxRelevanceCandidates = 50
+// scoring. deduped is pre-limit and can carry up to 18 connectors' worth; an
+// unbounded set can burn the whole tool budget (M3). The cap is set equal to
+// relevanceEmbedChunkSize (the embed server's EMBED_MAX_INPUT_ARRAY cap and
+// kitembed's chunk size) so the candidate set is exactly ONE upstream chunk —
+// one sequential round-trip, not two (fix B). Expressing the cap as the chunk
+// size keeps the two from drifting apart: a cap above the chunk size would
+// reintroduce the second round-trip the gate budget no longer accounts for.
+// When the cap trims, that is a visible degraded state (truncated reason + a
+// caller notice), not silence.
+const maxRelevanceCandidates = relevanceEmbedChunkSize
 
 // applyRelevanceGate scores every candidate against the query via cosine
 // similarity (embedder + rerank.MathReranker with Lambda=0 for pure cosine
@@ -134,7 +149,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		return results, "", ""
 	}
 
-	ec := jobs.GetEmbedClient()
+	ec := getRelevanceEmbedClient()
 	if ec == nil {
 		engine.IncrJobSearchRelevanceDegraded(engine.RelevanceReasonNotConfigured)
 		slog.Info("job_search: relevance gate skipped — embedder not configured")
@@ -142,9 +157,10 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	}
 
 	// M3: own short timeout so the gate cannot burn the whole tool budget.
-	// The kit client chunks at 32 and issues sequential sub-batches at a 30s
-	// HTTP timeout each; without this a large candidate set surfaces as a
-	// late "LLM summarization failed" blaming the wrong component.
+	// The embed client's per-request/retry/chunk budgets are derived from
+	// this timeout (see relevance_embed.go); without that derivation a slow
+	// request or transient retryable failure surfaces as a late "LLM
+	// summarization failed" blaming the wrong component.
 	gateCtx, cancel := context.WithTimeout(ctx, jobSearchRelevanceTimeout)
 	defer cancel()
 

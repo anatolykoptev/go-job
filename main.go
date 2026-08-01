@@ -470,18 +470,48 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 		slog.Info("go-search: GO_SEARCH_URL unset — using local SearchDirect fallback for discovery and research")
 	}
 
-	// Embed client (go-kit Embedder; auto-resolves EMBED_TOKEN from env).
+	// Embed clients (go-kit Embedder; auto-resolves EMBED_TOKEN from env).
+	//
+	// TWO clients hit the same embed server with DIFFERENT budgets:
+	//
+	//   - gateEmbedder: the relevance gate's OWN client, built via
+	//     jobserver.NewEmbedClient so its per-request timeout, retry envelope,
+	//     and chunk size are derived from JOB_SEARCH_RELEVANCE_TIMEOUT (the
+	//     gate's inner budgets fit strictly inside its outer budget). Scoped to
+	//     the gate via jobserver.SetRelevanceEmbedClient. See
+	//     internal/jobserver/relevance_embed.go.
+	//
+	//   - sharedEmbedder: the package-level singleton consumed by algora ingest,
+	//     resume-vector sync, and profile sync (jobs.SetEmbedClient). Built via
+	//     kitembed.NewClient with ONLY the base opts so it keeps kitembed's
+	//     library defaults (defaultRetryPolicy: 3 attempts; 30s per-request
+	//     timeout). The gate's budgets MUST NOT leak onto these background jobs
+	//     — they legitimately want retries and a long timeout (one 503 during
+	//     resume ingest must retry, not fail on the first attempt).
 	if c.EmbedURL != "" {
-		embedder, embedErr := kitembed.NewClient(c.EmbedURL,
+		baseOpts := []kitembed.Opt{
 			kitembed.WithBackend("http"),
 			kitembed.WithDim(1024),
 			kitembed.WithLogger(slog.Default()),
-		)
-		if embedErr != nil {
-			slog.Error("embed client init failed", slog.Any("error", embedErr))
+		}
+		// Both clients come from one call (jobserver.NewEmbedClients) so a
+		// future edit cannot give one the other's options. See
+		// internal/jobserver/embed_clients.go and
+		// TestRelevanceEmbedBudget_WiringSplit.
+		clients := jobserver.NewEmbedClients(c.EmbedURL, baseOpts...)
+		if clients.GateErr != nil {
+			slog.Error("gate embed client init failed", slog.Any("error", clients.GateErr))
 		} else {
-			jobs.SetEmbedClient(embedder)
-			slog.Info("embed client initialized", slog.String("url", c.EmbedURL))
+			jobserver.SetRelevanceEmbedClient(clients.Gate)
+			slog.Info("gate embed client initialized (budget-bound to relevance timeout)",
+				slog.String("url", c.EmbedURL))
+		}
+		if clients.SharedErr != nil {
+			slog.Error("shared embed client init failed", slog.Any("error", clients.SharedErr))
+		} else {
+			jobs.SetEmbedClient(clients.Shared)
+			slog.Info("shared embed client initialized (library defaults)",
+				slog.String("url", c.EmbedURL))
 		}
 	}
 
