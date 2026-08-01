@@ -180,6 +180,13 @@ func Init(c Config) {
 	reg.RegisterHistogram(MetricLLMRequestDuration, kitmetrics.WithBuckets(LLMRequestDurationBuckets))
 	// OBS-6: admin UI request latency histogram.
 	reg.RegisterHistogram(MetricAdminRequestDuration, kitmetrics.WithBuckets(AdminRequestDurationBuckets))
+	// Cross-encoder shadow score histogram: buckets resolve the 0.3–0.7 region
+	// where the gte-multi-rerank decision boundary lands. Prometheus default
+	// buckets are latency-shaped and useless for a 0–1 relevance score.
+	reg.RegisterHistogram(MetricJobSearchCrossEncoderScore, kitmetrics.WithBuckets(CrossEncoderScoreBuckets))
+	// Candidate-set size histogram: powers of two resolve whether the set sits
+	// under or over the server's RERANKER_BATCH_MAX=8.
+	reg.RegisterHistogram(MetricJobSearchCandidateSetSize, kitmetrics.WithBuckets(CandidateSetSizeBuckets))
 
 	// Fetcher with proxy (for web pages, direct scrapers).
 	fetcherOpts := []fetch.Option{fetch.WithTimeout(c.FetchTimeout)}
