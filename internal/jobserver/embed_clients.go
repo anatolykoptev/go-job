@@ -7,8 +7,9 @@ import kitembed "github.com/anatolykoptev/go-kit/embed"
 // with DIFFERENT budgets; the split is the contract NewEmbedClients enforces.
 //
 // Gate is the relevance gate's OWN client: built via NewEmbedClient, so its
-// per-request timeout, retry envelope, and chunk size are derived from
-// jobSearchRelevanceTimeout (EmbedClientBudgetOpts is applied). Scoped to the
+// retry and chunk size are scoped to the gate (EmbedClientBudgetOpts is
+// applied). The per-request timeout is kitembed's library default; the gate
+// context (jobSearchRelevanceTimeout) is the sole outer bound. Scoped to the
 // gate via SetRelevanceEmbedClient.
 //
 // Shared is the package-level singleton consumed by algora ingest,
@@ -30,14 +31,14 @@ type EmbedClients struct {
 // NewEmbedClients constructs the two embed clients for one embed server URL
 // from a single call, so a future edit cannot give one client the other's
 // options. baseOpts select the backend, dimension, and logger and are applied
-// to BOTH clients; the budget opts (EmbedClientBudgetOpts) are appended ONLY
+// to BOTH clients; the gate opts (EmbedClientBudgetOpts) are appended ONLY
 // to the gate client (inside NewEmbedClient). The shared client is built with
 // kitembed.NewClient and the base opts alone, preserving kitembed's library
 // defaults.
 //
 // This is the production construction site extracted from main.go:initEngine
 // so the two-client split is testable: TestRelevanceEmbedBudget_WiringSplit
-// asserts both clients come from this call with the correct, distinct budgets.
+// asserts both clients come from this call with the correct, distinct opts.
 func NewEmbedClients(url string, baseOpts ...kitembed.Opt) EmbedClients {
 	gate, gateErr := NewEmbedClient(url, baseOpts...)
 	shared, sharedErr := kitembed.NewClient(url, baseOpts...)
