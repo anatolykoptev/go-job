@@ -25,6 +25,12 @@ func TestSourceFromURL(t *testing.T) {
 		{"https://boards.greenhouse.io/airbnb/jobs/12345?utm_source=linkedin", "greenhouse"},
 		{"https://jobs.lever.co/stripe/abc?trk=linkedin_share", "lever"},
 		{"https://jobs.ashbyhq.com/openai/role?utm_source=indeed", "ashby"},
+		// The MIRROR case, and the one that needs NormalizeURL rather than arm
+		// ordering: a NON-ATS url whose query mentions an ATS provider. Classifying
+		// the raw string returns "greenhouse" here because the ATS arms sit first;
+		// stripping the query first keeps it "linkedin".
+		{"https://www.linkedin.com/jobs/view/12345?utm_source=greenhouse", "linkedin"},
+		{"https://example.com/careers/role?ref=lever.co", ""},
 		{"https://jobs.lever.co/stripe/abc", "lever"},
 		{"https://jobs.ashbyhq.com/openai/role", "ashby"},
 		{"https://www.workatastartup.com/jobs/12345", "yc"},
