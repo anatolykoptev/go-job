@@ -210,7 +210,13 @@ func TestAnnualizeHimalayasSalary_YearlyAliasesAnnual(t *testing.T) {
 // Revert-red: remove the slog.Warn from the default branch → buf is empty →
 // test fails with "expected WARN mentioning period".
 func TestAnnualizeHimalayasSalary_UnknownPeriodLogsWarn(t *testing.T) {
-	t.Parallel()
+	// Deliberately NOT t.Parallel(): this test swaps the process-global slog
+	// default to capture output into a local bytes.Buffer. Running it in the
+	// parallel phase lets a sibling test's slog.Warn write into that buffer
+	// while buf.String() reads it — bytes.Buffer is not concurrency-safe, and
+	// -race flagged exactly that (himalayas.go:175 -> bytes/buffer.go:169).
+	// Non-parallel tests complete before the parallel phase begins, so the
+	// global sink is never swapped while a sibling is running.
 
 	var buf bytes.Buffer
 	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
