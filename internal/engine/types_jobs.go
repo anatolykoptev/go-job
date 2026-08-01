@@ -83,6 +83,19 @@ type JobSearchOutput struct {
 	Jobs    []JobListing   `json:"jobs"`
 	Summary string         `json:"summary"`
 	Sources []SourceStatus `json:"sources,omitempty" jsonschema:"Per-source outcome of the connector fan-out. outcome ∈ {ok, empty, skipped, not_dispatched, blocked, failed}. Present whenever job_search runs its fan-out; absent on cache hits and the platform=twitter raw path."`
+
+	// Unparseable is set when the LLM returned a response that could not be
+	// parsed as the expected JSON (truncated output, mid-record cut, schema
+	// echo). It is an explicit signal — NOT inferred from Jobs==nil, because
+	// the genuine zero-result and relevance-gate-empty paths also produce nil
+	// Jobs and those SHOULD stay cached. Callers must NOT cache an unparseable
+	// result: the honest summary invites a retry, and serving it from cache for
+	// CacheTTL would suppress the LLM call that retry needs, and deflate the
+	// gojob_job_search_extraction_total{outcome=unparseable} counter by the
+	// cache-hit ratio (the counter counts distinct cache keys on the cached
+	// path, not user-visible failures). json:"-" keeps it off the wire and out
+	// of the cached blob.
+	Unparseable bool `json:"-"`
 }
 
 type FreelanceSearchInput struct {
