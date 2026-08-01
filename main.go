@@ -505,6 +505,13 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			jobserver.SetRelevanceEmbedClient(clients.Gate)
 			slog.Info("gate embed client initialized (budget-bound to relevance timeout)",
 				slog.String("url", c.EmbedURL))
+			// Wire the cross-encoder shadow ONLY when the gate embed client
+			// succeeded. The shadow observes the gate's cosine-scored
+			// candidates; if the gate can't score (no embedder), the gate
+			// returns early at the not-configured check and the shadow is
+			// never invoked. Wiring it here makes the intent explicit: the
+			// shadow runs only when the gate is functional.
+			initCrossEncoderShadow(c.EmbedURL)
 		}
 		if clients.SharedErr != nil {
 			slog.Error("shared embed client init failed", slog.Any("error", clients.SharedErr))
@@ -513,7 +520,6 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			slog.Info("shared embed client initialized (library defaults)",
 				slog.String("url", c.EmbedURL))
 		}
-		initCrossEncoderShadow(c.EmbedURL)
 	}
 
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)

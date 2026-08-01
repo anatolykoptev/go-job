@@ -337,7 +337,13 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	// rerank) and record metrics — but NEVER change the keep/reject decision.
 	// The gate's return value (filtered) is already final; the shadow only
 	// observes. Failure is non-fatal and invisible to the caller.
-	observeCrossEncoderShadow(ctx, query, sorted, filtered)
+	//
+	// The shadow is dispatched ASYNC: it does not block the gate's return
+	// (measured 1.12 s for 32 docs on the live reranker — that latency is
+	// visible to the caller, violating the "invisible" contract). The
+	// dispatch is bounded (semaphore) and detached (context.WithoutCancel)
+	// so it survives request cancellation and cannot pile up without bound.
+	dispatchCrossEncoderShadow(ctx, query, sorted, filtered)
 
 	return filtered, "", notice
 }
@@ -375,28 +381,40 @@ func parseInt(s string) (int, error) {
 	return strconv.Atoi(s)
 }
 
-// observeCrossEncoderShadow scores every candidate the gate already scored
-// (cosine) with the cross-encoder (gte-multi-rerank) and records metrics ONLY.
-// It NEVER changes the keep/reject decision — the gate's filtered result is
-// already final when this runs. This is the SHADOW MODE measurement: the
-// cross-encoder score distribution, the candidate-set size, and the
-// agreement/disagreement between the cosine decision and a cross-encoder
-// decision at the 0.5 midpoint.
+// maxConcurrentShadowReranks bounds the number of cross-encoder shadow
+// observations that may run concurrently. The reranker declares
+// MAX_CONCURRENT_RERANK_REQUESTS=4; a goroutine per request under load must
+// not accumulate without bound. When the bound is hit, the sample is DROPPED
+// and counted under shadow_dropped — correct for a shadow that samples a
+// distribution, not one that audits every request.
+const maxConcurrentShadowReranks = 4
+
+// shadowSem is the bounded semaphore for concurrent shadow observations.
+var shadowSem = make(chan struct{}, maxConcurrentShadowReranks)
+
+// shadowScheduler schedules the detached shadow work. Production: launches a
+// goroutine. Tests replace with a synchronous runner (func(work func()) {
+// work() }) so metric assertions are deterministic without sleeping. This is
+// the one piece of production code that exists for test injectability — the
+// alternative (a synchronization point the tests poll) is a flake, and a
+// timer-based wait is explicitly prohibited. The tradeoff: one variable, one
+// line, clearly documented.
+var shadowScheduler = func(work func()) { go work() }
+
+// dispatchCrossEncoderShadow schedules the cross-encoder shadow observation
+// as detached, bounded, non-blocking work. It NEVER blocks the gate's return.
 //
-// Failure is non-fatal and invisible to the caller: if the cross-encoder is
-// not configured, times out, errors, or returns no scores, the degraded
-// counter is bumped and the function returns. The gate's return value is
-// unchanged.
-//
-// Document text fed to the cross-encoder: title + a bounded snippet of Content
-// (maxSnippetRunes, the SAME text the gate embeds for cosine), WITHOUT the
-// "passage:" prefix — that prefix is e5-embed-specific; the cross-encoder is a
-// different model (gte-multi-rerank) and scores the raw text. Feeding the same
-// text makes the cosine/cross-encoder comparison apples-to-apples.
-//
-// scored = all candidates the gate scored (cosine in .Score, desc order).
-// kept = the gate's final filtered result (the keep decision, unchanged).
-func observeCrossEncoderShadow(ctx context.Context, query string, scored []engine.SearxngResult, kept []engine.SearxngResult) {
+// The dispatch:
+//  1. Records the candidate-set size histogram (once per gate application,
+//     regardless of shadow success — this is the gate's input, not the
+//     shadow's).
+//  2. Checks the rerank client (nil/unavailable → not_configured, return).
+//  3. Acquires the semaphore (non-blocking; full → shadow_dropped, return).
+//  4. Creates a detached context (context.WithoutCancel) with the shadow's
+//     own timeout bound, so the shadow survives request cancellation and
+//     cannot outlive its budget.
+//  5. Schedules the observation via shadowScheduler.
+func dispatchCrossEncoderShadow(ctx context.Context, query string, scored []engine.SearxngResult, kept []engine.SearxngResult) {
 	if len(scored) == 0 {
 		return
 	}
@@ -411,6 +429,61 @@ func observeCrossEncoderShadow(ctx context.Context, query string, scored []engin
 		return
 	}
 
+	// Bound concurrent shadows. Non-blocking acquire: when the bound is hit,
+	// drop the sample and count it under its own reason. Dropping is correct
+	// for a shadow — this samples a distribution, it does not audit every
+	// request.
+	select {
+	case shadowSem <- struct{}{}:
+	default:
+		engine.IncrJobSearchCrossEncoderDegraded(engine.CrossEncoderReasonShadowDropped)
+		return
+	}
+
+	// Detached context: the shadow must not be killed when the request's
+	// context ends (the caller has already returned). context.WithoutCancel
+	// detaches from the parent's cancellation; WithTimeout applies the
+	// shadow's own bound. The client no longer applies its own WithTimeout
+	// (removed from NewRelevanceRerankClient — redundant with this bound).
+	shadowCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobSearchCrossEncoderTimeout)
+	shadowScheduler(func() {
+		defer cancel()
+		defer func() { <-shadowSem }()
+		observeCrossEncoderShadow(shadowCtx, rc, query, scored, kept)
+	})
+}
+
+// observeCrossEncoderShadow scores every candidate the gate already scored
+// (cosine) with the cross-encoder (gte-multi-rerank) and records metrics ONLY.
+// It NEVER changes the keep/reject decision — the gate's filtered result is
+// already final when this runs. This is the SHADOW MODE measurement: the
+// cross-encoder score distribution, the candidate-set size, and the
+// agreement/disagreement between the cosine decision and a cross-encoder
+// decision at the 0.5 midpoint.
+//
+// Failure is non-fatal and invisible to the caller: if the cross-encoder
+// times out or errors, the degraded counter is bumped and the function
+// returns. The gate's return value is unchanged.
+//
+// Missing scores: a document the reranker did not return a score for (the
+// client fills unseen docs with Score=0) is NOT entered into the score
+// histogram and does NOT vote in the agreement counter. It is counted
+// separately under job_search_crossencoder_missing_scores_total. This keeps
+// the histogram clean — every sample in it is a real score. The gte-multi-
+// rerank model outputs sigmoid values in (0,1), never exactly 0, so Score=0
+// reliably means "unseen" for this model. If a future change adds client-side
+// normalization (MinMax could produce 0 for the lowest score), this
+// classification would need revisiting.
+//
+// Document text fed to the cross-encoder: title + a bounded snippet of Content
+// (maxSnippetRunes, the SAME text the gate embeds for cosine), WITHOUT the
+// "passage:" prefix — that prefix is e5-embed-specific; the cross-encoder is a
+// different model (gte-multi-rerank) and scores the raw text. Feeding the same
+// text makes the cosine/cross-encoder comparison apples-to-apples.
+//
+// scored = all candidates the gate scored (cosine in .Score, desc order).
+// kept = the gate's final filtered result (the keep decision, unchanged).
+func observeCrossEncoderShadow(ctx context.Context, rc *rerank.Client, query string, scored []engine.SearxngResult, kept []engine.SearxngResult) {
 	// Build docs from the scored candidates. Text = title + content snippet
 	// (same as the embed path, minus the e5 "passage:" prefix).
 	docs := make([]rerank.Doc, len(scored))
@@ -422,31 +495,33 @@ func observeCrossEncoderShadow(ctx context.Context, query string, scored []engin
 		docs[i] = rerank.Doc{ID: r.URL, Text: doc}
 	}
 
-	// Fresh context from the PARENT (not gateCtx — the embed calls may have
-	// nearly exhausted the gate budget). The shadow has its own bound.
-	shadowCtx, cancel := context.WithTimeout(ctx, jobSearchCrossEncoderTimeout)
-	defer cancel()
-
-	res, err := rc.RerankWithResult(shadowCtx, query, docs)
+	res, err := rc.RerankWithResult(ctx, query, docs)
 	if err != nil {
-		engine.IncrJobSearchCrossEncoderDegraded(classifyCrossEncoderError(err))
-		slog.Debug("job_search: cross-encoder shadow degraded",
-			slog.Any("error", err),
-			slog.String("reason", classifyCrossEncoderError(err)))
-		return
-	}
-	if res == nil || res.Status != rerank.StatusOk {
-		reason := crossEncoderStatusReason(res)
+		reason := classifyCrossEncoderError(err)
 		engine.IncrJobSearchCrossEncoderDegraded(reason)
 		slog.Debug("job_search: cross-encoder shadow degraded",
-			slog.String("status", crossEncoderStatusString(res)),
+			slog.Any("error", err),
 			slog.String("reason", reason))
 		return
 	}
 
-	// Map URL → cross-encoder score. Unseen docs keep score 0.
+	// res is always non-nil (RerankWithResult never returns nil). Status is
+	// always StatusOk here: StatusDegraded returns err != nil (caught above),
+	// StatusSkipped is guarded by len(scored)>0 + rc.Available() in the
+	// dispatch, and StatusFallback requires a fallback not configured. The
+	// former res==nil || res.Status != StatusOk branch was unreachable dead
+	// code — removed along with crossEncoderStatusReason/crossEncoderStatusString.
+
+	// Map URL → cross-encoder score. Skip Score=0 entries: the client fills
+	// unseen docs with Score=0, and the gte-multi-rerank model outputs sigmoid
+	// values in (0,1) — never exactly 0. So Score=0 reliably means "the
+	// reranker did not score this document." Excluding these from the map
+	// makes the !ok check below the missing-score detector.
 	xeScores := make(map[string]float32, len(res.Scored))
 	for _, s := range res.Scored {
+		if s.Score == 0 {
+			continue
+		}
 		xeScores[s.ID] = s.Score
 	}
 
@@ -458,18 +533,26 @@ func observeCrossEncoderShadow(ctx context.Context, query string, scored []engin
 	}
 
 	for _, r := range scored {
-		xeScore := float64(xeScores[r.URL])
-		engine.ObserveJobSearchCrossEncoderScore(xeScore)
+		xeScore, ok := xeScores[r.URL]
+		if !ok {
+			// Missing: the reranker did not score this document. Do NOT enter
+			// the histogram, do NOT vote in the agreement counter. Count
+			// separately so a future distribution can be read with confidence
+			// that every sample is real.
+			engine.IncrJobSearchCrossEncoderMissingScores()
+			continue
+		}
+		engine.ObserveJobSearchCrossEncoderScore(float64(xeScore))
 
 		cosineKept := keptURLs[r.URL]
-		xeWouldKeep := xeScore >= crossEncoderMidpoint
+		xeWouldKeep := float64(xeScore) >= crossEncoderMidpoint
 		engine.IncrJobSearchRelevanceAgreement(agreementOutcome(cosineKept, xeWouldKeep))
 
 		slog.Debug("job_search: cross-encoder shadow pair",
 			slog.String("url", r.URL),
 			slog.String("title", r.Title),
 			slog.Float64("cosine", r.Score),
-			slog.Float64("cross_encoder", xeScore),
+			slog.Float64("cross_encoder", float64(xeScore)),
 			slog.Bool("cosine_kept", cosineKept),
 			slog.Bool("xe_would_keep", xeWouldKeep))
 	}
@@ -492,42 +575,21 @@ func agreementOutcome(cosineKept, xeWouldKeep bool) string {
 }
 
 // classifyCrossEncoderError maps a cross-encoder error to a bounded degraded-
-// reason label. circuit_open → rerank.ErrCircuitOpen; timeout → context
-// deadline; else error. Mirrors classifyEmbedError's convention.
+// reason label. timeout → context deadline; else error.
+//
+// circuit_open was removed: the shadow client is constructed without
+// WithCircuit, so ErrCircuitOpen cannot occur. If a future PR wires a circuit
+// breaker, it can re-add the label.
+//
+// context.Canceled is NOT classified as timeout: it means the parent context
+// was cancelled (client disconnect), not a deadline. With the detached
+// context (context.WithoutCancel) Canceled should not reach the rerank call,
+// but if it ever does it falls through to error — correct, not a lie.
+// (The embed path's classifyEmbedError has the same Canceled-as-timeout bug;
+// filed separately, not fixed in this PR.)
 func classifyCrossEncoderError(err error) string {
-	if errors.Is(err, rerank.ErrCircuitOpen) {
-		return engine.CrossEncoderReasonCircuitOpen
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return engine.CrossEncoderReasonTimeout
 	}
 	return engine.CrossEncoderReasonError
-}
-
-// crossEncoderStatusReason maps a non-Ok Result status to a degraded reason.
-// StatusSkipped (no URL / empty docs) → not_configured; StatusDegraded →
-// error; nil → empty.
-func crossEncoderStatusReason(res *rerank.Result) string {
-	if res == nil {
-		return engine.CrossEncoderReasonEmpty
-	}
-	switch res.Status {
-	case rerank.StatusSkipped:
-		return engine.CrossEncoderReasonNotConfigured
-	case rerank.StatusDegraded:
-		if res.Err != nil {
-			return classifyCrossEncoderError(res.Err)
-		}
-		return engine.CrossEncoderReasonError
-	default:
-		return engine.CrossEncoderReasonError
-	}
-}
-
-// crossEncoderStatusString returns a human-readable status for logging.
-func crossEncoderStatusString(res *rerank.Result) string {
-	if res == nil {
-		return "nil"
-	}
-	return res.Status.String()
 }

@@ -3,9 +3,11 @@ package jobserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,14 +15,37 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
+// withShadowScheduler installs a shadow dispatch scheduler for the test.
+// The default (production) scheduler launches a goroutine; tests install a
+// synchronous runner so metric assertions are deterministic without sleeping.
+func withShadowScheduler(t *testing.T, scheduler func(func())) {
+	t.Helper()
+	prev := shadowScheduler
+	shadowScheduler = scheduler
+	t.Cleanup(func() { shadowScheduler = prev })
+}
+
+// withShadowSchedulerSync installs a synchronous shadow scheduler (work runs
+// inline). Used by all metric-asserting tests so the shadow completes before
+// the test reads counters/histograms.
+func withShadowSchedulerSync(t *testing.T) {
+	withShadowScheduler(t, func(work func()) { work() })
+}
+
 // withRelevanceReranker installs a rerank client pointing at an httptest server
 // for the duration of the test and restores the previous value on cleanup.
 // The server's handler controls the cross-encoder scores returned.
+//
+// Also installs a SYNCHRONOUS shadow scheduler so the shadow completes before
+// the test reads counters/histograms — deterministic without sleeping. T8
+// (async dispatch test) does NOT use this helper; it installs the real
+// goroutine scheduler explicitly.
 func withRelevanceReranker(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
+	withShadowSchedulerSync(t)
 	prev := relevanceRerankClient
 	prevTimeout := jobSearchCrossEncoderTimeout
-	jobSearchCrossEncoderTimeout = 5 * time.Second
+	jobSearchCrossEncoderTimeout = 200 * time.Millisecond
 	t.Cleanup(func() {
 		relevanceRerankClient = prev
 		jobSearchCrossEncoderTimeout = prevTimeout
@@ -29,7 +54,6 @@ func withRelevanceReranker(t *testing.T, handler http.HandlerFunc) {
 	t.Cleanup(srv.Close)
 	relevanceRerankClient = rerank.NewClient(srv.URL,
 		rerank.WithModel(crossEncoderModel),
-		rerank.WithTimeout(jobSearchCrossEncoderTimeout),
 		rerank.WithRetry(rerank.NoRetry),
 	)
 }
@@ -37,6 +61,7 @@ func withRelevanceReranker(t *testing.T, handler http.HandlerFunc) {
 // withRelevanceRerankerNil installs a nil rerank client (shadow not configured).
 func withRelevanceRerankerNil(t *testing.T) {
 	t.Helper()
+	withShadowSchedulerSync(t)
 	prev := relevanceRerankClient
 	relevanceRerankClient = nil
 	t.Cleanup(func() { relevanceRerankClient = prev })
@@ -103,14 +128,15 @@ func errorRerankHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
-// slowRerankHandler sleeps for 6s — longer than the 5s client timeout. The
-// client cancels after 5s and returns a deadline-exceeded error; the handler
-// returns after 6s total. srv.Close() in t.Cleanup waits ~1s for the handler
-// to finish. This avoids the httptest.Server.Close deadlock that a
-// r.Context().Done() block creates (Close waits for the handler, the handler
-// waits for r.Context(), r.Context() waits for Close — circular).
+// slowRerankHandler sleeps for 400ms — longer than the 200ms shadow timeout
+// set by withRelevanceReranker. The dispatch context cancels after 200ms and
+// the client returns a deadline-exceeded error; the handler returns after
+// 400ms total. srv.Close() in t.Cleanup waits for the handler to finish.
+// This avoids the httptest.Server.Close deadlock that a r.Context().Done()
+// block creates (Close waits for the handler, the handler waits for
+// r.Context(), r.Context() waits for Close — circular).
 func slowRerankHandler(w http.ResponseWriter, _ *http.Request) {
-	time.Sleep(6 * time.Second)
+	time.Sleep(400 * time.Millisecond)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -141,13 +167,20 @@ func crossEncoderDegradedDelta(fn func()) int64 {
 	var delta int64
 	for _, r := range []string{
 		engine.CrossEncoderReasonNotConfigured, engine.CrossEncoderReasonTimeout,
-		engine.CrossEncoderReasonError, engine.CrossEncoderReasonCircuitOpen,
-		engine.CrossEncoderReasonEmpty,
+		engine.CrossEncoderReasonError, engine.CrossEncoderReasonShadowDropped,
 	} {
 		key := engine.MetricJobSearchCrossEncoderDegraded + "{reason=" + r + "}"
 		delta += after[key] - before[key]
 	}
 	return delta
+}
+
+// missingScoresDelta returns how much the missing-scores counter moved across fn.
+func missingScoresDelta(fn func()) int64 {
+	before := engine.GetMetrics()
+	fn()
+	after := engine.GetMetrics()
+	return after[engine.MetricJobSearchCrossEncoderMissingScores] - before[engine.MetricJobSearchCrossEncoderMissingScores]
 }
 
 // resultURLs returns the URLs of the gate's output in order.
@@ -347,14 +380,6 @@ func TestCrossEncoderShadow_T3_AgreementDistinguishesDirections(t *testing.T) {
 		t.Fatalf("T3: disagree_cosine_rejected_xe_keeps delta=%d, want 2 (off-topic candidates cosine-rejected but xe-kept)",
 			d[engine.DisagreeCosineRejXEKeeps])
 	}
-	// Both disagreement directions must be DISTINCT labels — one must not absorb
-	// the other. If a mutation collapses them, one delta is 0 and the other is 4.
-	keptXEReject := d[engine.DisagreeCosineKeptXEReject]
-	rejXEKeeps := d[engine.DisagreeCosineRejXEKeeps]
-	if keptXEReject == 4 && rejXEKeeps == 4 {
-		t.Fatalf("T3: both disagreement directions collapsed into one label (each should be 2, got %d and %d) — the directions are not distinguishable",
-			keptXEReject, rejXEKeeps)
-	}
 }
 
 // T4 — SCORE HISTOGRAM + CANDIDATE-SET HISTOGRAM: the cross-encoder score
@@ -432,3 +457,209 @@ func TestCrossEncoderShadow_T5_Control_ExistingGateStillGreen(t *testing.T) {
 
 // containsScraping and stringContains are reused from relevance_gate_test.go
 // (same package).
+
+// partialRerankHandler returns cross-encoder scores for ONLY the on-topic docs
+// (containing scraping markers). Off-topic docs get NO result — the rerank
+// client fills them with Score=0. This is the adversarial input for the
+// missing-score test: the shadow must detect the missing scores and exclude
+// them from the histogram and agreement counter.
+func partialRerankHandler(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req rerankRequest
+	_ = json.Unmarshal(body, &req)
+	resp := rerankResponse{Results: []rerankResult{}}
+	for i, doc := range req.Documents {
+		if containsScraping(doc) {
+			resp.Results = append(resp.Results, rerankResult{Index: i, RelevanceScore: 0.8})
+		}
+		// off-topic docs: no result returned — client fills with Score=0
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// T6 — MISSING SCORE: a document the reranker did not score does NOT enter the
+// score histogram and does NOT vote in the agreement counter. It is counted
+// separately under job_search_crossencoder_missing_scores_total.
+//
+// Falsification: remove the Score==0 skip in the map build:
+//   if s.Score == 0 { continue }  →  (deleted)
+// Then xeScores contains all URLs (including unseen ones with Score=0), the
+// !ok check never fires, and all 4 docs enter the histogram → Count=4, want 2
+// → RED.
+func TestCrossEncoderShadow_T6_MissingScoreExcludedFromHistogram(t *testing.T) {
+	engine.InitTestRegistry()
+
+	results := []engine.SearxngResult{
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},   // on-topic
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},              // off-topic
+		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic
+		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                    // off-topic
+	}
+
+	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+	withRelevanceReranker(t, partialRerankHandler) // scores only on-topic (2 of 4)
+	withRelevanceConfig(t, 0.0, 0)                 // keep all so all 4 are scored + shadow-scored
+
+	var degraded string
+	var missingDelta int64
+	var agreeDelta map[string]int64
+	missingDelta = missingScoresDelta(func() {
+		agreeDelta = agreementDeltas(func() {
+			_, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+		})
+	})
+	if degraded != "" {
+		t.Fatalf("gate degraded: %q", degraded)
+	}
+
+	// 2 on-topic docs scored, 2 off-topic docs missing.
+	scoreSnap := engine.GetHistogramSnapshot(engine.MetricJobSearchCrossEncoderScore)
+	if scoreSnap.Count != 2 {
+		t.Fatalf("T6: cross-encoder score histogram Count=%d, want 2 (only scored docs enter; missing docs excluded)", scoreSnap.Count)
+	}
+
+	// Missing-scores counter: 2 (the 2 off-topic docs the reranker did not score).
+	if missingDelta != 2 {
+		t.Fatalf("T6: missing_scores delta=%d, want 2 (2 off-topic docs not scored by the reranker)", missingDelta)
+	}
+
+	// Agreement counter: only 2 votes (the 2 scored docs), not 4.
+	var agreeTotal int64
+	for _, v := range agreeDelta {
+		agreeTotal += v
+	}
+	if agreeTotal != 2 {
+		t.Fatalf("T6: agreement counter total delta=%d, want 2 (missing docs must not vote)", agreeTotal)
+	}
+}
+
+// T7 — DROP PATH: when the concurrency bound (semaphore) is hit, the shadow is
+// dropped and the shadow_dropped counter is incremented.
+//
+// Falsification: remove the counter bump in the default case:
+//   engine.IncrJobSearchCrossEncoderDegraded(engine.CrossEncoderReasonShadowDropped)  →  (deleted)
+// The shadow_dropped delta is 0 → RED.
+func TestCrossEncoderShadow_T7_DropWhenBoundHit(t *testing.T) {
+	engine.InitTestRegistry()
+
+	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+	withRelevanceReranker(t, agreeRerankHandler)
+	withRelevanceConfig(t, 0.0, 0)
+
+	// Fill the semaphore so the next dispatch is dropped.
+	for i := 0; i < maxConcurrentShadowReranks; i++ {
+		shadowSem <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < maxConcurrentShadowReranks; i++ {
+			<-shadowSem
+		}
+	})
+
+	results := []engine.SearxngResult{
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
+	}
+
+	before := engine.GetMetrics()
+	_, degraded, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	after := engine.GetMetrics()
+
+	if degraded != "" {
+		t.Fatalf("gate degraded: %q", degraded)
+	}
+
+	droppedKey := engine.MetricJobSearchCrossEncoderDegraded + "{reason=" + engine.CrossEncoderReasonShadowDropped + "}"
+	delta := after[droppedKey] - before[droppedKey]
+	if delta != 1 {
+		t.Fatalf("T7: shadow_dropped delta=%d, want 1 (the dispatch must drop when the semaphore is full)", delta)
+	}
+}
+
+// T8 — ASYNC DISPATCH: the shadow does not block the gate's return. With the
+// real goroutine scheduler and a handler that blocks on a channel, the gate
+// must return without waiting for the shadow to complete.
+//
+// The time.After is a DEADLOCK DETECTOR, not a sleep: in the success case the
+// gate returns instantly and <-done fires; the timer only fires if the dispatch
+// is broken (synchronous), which would hang the gate on the blocked handler.
+//
+// Falsification: replace the production scheduler with a synchronous one:
+//   var shadowScheduler = func(work func()) { work() }
+// The gate blocks on the handler (which waits on blockCh) → done never fires
+// → the 3s deadlock detector fires → RED.
+func TestCrossEncoderShadow_T8_DispatchDoesNotBlock(t *testing.T) {
+	engine.InitTestRegistry()
+
+	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
+	withRelevanceConfig(t, 0.0, 0)
+	// Use the REAL goroutine scheduler (async).
+	withShadowScheduler(t, func(work func()) { go work() })
+
+	// Handler blocks until released — proves the gate returned without waiting.
+	blockCh := make(chan struct{})
+	var closeOnce sync.Once
+	release := func() { closeOnce.Do(func() { close(blockCh) }) }
+	t.Cleanup(release)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-blockCh
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	prevClient := relevanceRerankClient
+	prevTimeout := jobSearchCrossEncoderTimeout
+	relevanceRerankClient = rerank.NewClient(srv.URL,
+		rerank.WithModel(crossEncoderModel),
+		rerank.WithRetry(rerank.NoRetry),
+	)
+	jobSearchCrossEncoderTimeout = 5 * time.Second
+	t.Cleanup(func() {
+		relevanceRerankClient = prevClient
+		jobSearchCrossEncoderTimeout = prevTimeout
+	})
+
+	results := []engine.SearxngResult{
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+	}
+
+	// The gate must return without waiting for the blocked handler.
+	done := make(chan struct{})
+	go func() {
+		applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// gate returned — shadow is async
+	case <-time.After(3 * time.Second):
+		t.Fatal("T8: gate blocked on shadow — dispatch is not async")
+	}
+	// Release the blocked handler goroutine so srv.Close can finish.
+	release()
+}
+
+// === classifyCrossEncoderError unit tests ===
+
+func TestClassifyCrossEncoderError_DeadlineExceeded(t *testing.T) {
+	got := classifyCrossEncoderError(context.DeadlineExceeded)
+	if got != engine.CrossEncoderReasonTimeout {
+		t.Fatalf("classifyCrossEncoderError(DeadlineExceeded) = %q, want %q", got, engine.CrossEncoderReasonTimeout)
+	}
+}
+
+func TestClassifyCrossEncoderError_CanceledIsNotTimeout(t *testing.T) {
+	got := classifyCrossEncoderError(context.Canceled)
+	if got != engine.CrossEncoderReasonError {
+		t.Fatalf("classifyCrossEncoderError(Canceled) = %q, want %q (Canceled is a disconnect, not a timeout)", got, engine.CrossEncoderReasonError)
+	}
+}
+
+func TestClassifyCrossEncoderError_GenericError(t *testing.T) {
+	got := classifyCrossEncoderError(errors.New("boom"))
+	if got != engine.CrossEncoderReasonError {
+		t.Fatalf("classifyCrossEncoderError(generic) = %q, want %q", got, engine.CrossEncoderReasonError)
+	}
+}

@@ -520,6 +520,16 @@ const (
 	// is a shadow observer: degradation is non-fatal and invisible to the
 	// caller; this counter is the only signal that the shadow went dark.
 	MetricJobSearchCrossEncoderDegraded = "job_search_crossencoder_degraded_total"
+
+	// MetricJobSearchCrossEncoderMissingScores is the counter
+	// gojob_job_search_crossencoder_missing_scores_total — bumped once per
+	// scored candidate the cross-encoder did NOT return a score for (the
+	// client fills unseen docs with Score=0). These docs are excluded from
+	// the score histogram and the agreement counter so the distribution is
+	// not polluted by synthetic zeros. This counter is the separate tally
+	// that lets a future operator read the histogram with confidence that
+	// every sample is real.
+	MetricJobSearchCrossEncoderMissingScores = "job_search_crossencoder_missing_scores_total"
 )
 
 // Relevance gate outcome label values (job_search_relevance_total{outcome}).
@@ -580,12 +590,18 @@ var validRelevanceAgreementOutcomes = map[string]bool{
 // Cross-encoder shadow degraded reason label values
 // (job_search_crossencoder_degraded_total{reason}). Exported so the jobserver
 // package can use them.
+//
+// circuit_open and empty were removed: the shadow client is constructed
+// without WithCircuit (ErrCircuitOpen cannot occur), and RerankWithResult
+// always returns a non-nil Result (the res==nil arm cannot fire). A label
+// that nothing can increment reads as "this failure never happens" on a
+// dashboard — a lie. shadow_dropped was added: the dispatch semaphore bounds
+// concurrent shadows, and a drop is counted under its own reason.
 const (
 	CrossEncoderReasonNotConfigured = "not_configured"
 	CrossEncoderReasonTimeout       = "timeout"
 	CrossEncoderReasonError         = "error"
-	CrossEncoderReasonCircuitOpen   = "circuit_open"
-	CrossEncoderReasonEmpty         = "empty"
+	CrossEncoderReasonShadowDropped = "shadow_dropped"
 )
 
 // validCrossEncoderDegradedReasons bounds the reason label for
@@ -594,8 +610,7 @@ var validCrossEncoderDegradedReasons = map[string]bool{
 	CrossEncoderReasonNotConfigured: true,
 	CrossEncoderReasonTimeout:       true,
 	CrossEncoderReasonError:         true,
-	CrossEncoderReasonCircuitOpen:   true,
-	CrossEncoderReasonEmpty:         true,
+	CrossEncoderReasonShadowDropped: true,
 }
 
 // CrossEncoderScoreBuckets resolve the 0.3–0.7 region where the gte-multi-
@@ -905,9 +920,11 @@ func FormatMetrics() string {
 	for _, oc := range []string{AgreeKept, AgreeRejected, DisagreeCosineKeptXEReject, DisagreeCosineRejXEKeeps} {
 		keys = append(keys, MetricJobSearchRelevanceAgreement+"{outcome="+oc+"}")
 	}
-	for _, r := range []string{CrossEncoderReasonNotConfigured, CrossEncoderReasonTimeout, CrossEncoderReasonError, CrossEncoderReasonCircuitOpen, CrossEncoderReasonEmpty} {
+	for _, r := range []string{CrossEncoderReasonNotConfigured, CrossEncoderReasonTimeout, CrossEncoderReasonError, CrossEncoderReasonShadowDropped} {
 		keys = append(keys, MetricJobSearchCrossEncoderDegraded+"{reason="+r+"}")
 	}
+	// Missing-scores counter pre-touched at 0.
+	keys = append(keys, MetricJobSearchCrossEncoderMissingScores)
 	// job_search_extraction_total{outcome} pre-touched so both outcomes appear
 	// on the flat-text endpoint at 0 before the first SummarizeJobResults call.
 	// Iterates validJobSearchExtractionOutcomes (the same map warmAlertBoundedMetrics
@@ -1069,7 +1086,7 @@ func IncrJobSearchRelevanceAgreement(outcome string) {
 
 // IncrJobSearchCrossEncoderDegraded bumps
 // gojob_job_search_crossencoder_degraded_total{reason=<r>}. reason ∈
-// {not_configured, timeout, error, circuit_open, empty} — bounded label.
+// {not_configured, timeout, error, shadow_dropped} — bounded label.
 // Called once per gate application where the cross-encoder SHADOW could not
 // score. Degradation is non-fatal and invisible to the caller.
 func IncrJobSearchCrossEncoderDegraded(reason string) {
@@ -1077,6 +1094,14 @@ func IncrJobSearchCrossEncoderDegraded(reason string) {
 		return
 	}
 	reg.Incr(MetricJobSearchCrossEncoderDegraded + "{reason=" + reason + "}")
+}
+
+// IncrJobSearchCrossEncoderMissingScores bumps
+// gojob_job_search_crossencoder_missing_scores_total — once per scored
+// candidate the cross-encoder did not return a score for. These are excluded
+// from the score histogram and the agreement counter.
+func IncrJobSearchCrossEncoderMissingScores() {
+	reg.Incr(MetricJobSearchCrossEncoderMissingScores)
 }
 
 // GetHistogramSnapshot returns the snapshot of a named histogram, or a zero
@@ -1264,6 +1289,9 @@ func warmAlertBoundedMetrics() {
 	for reason := range validCrossEncoderDegradedReasons {
 		reg.Add(MetricJobSearchCrossEncoderDegraded+"{reason="+reason+"}", 0)
 	}
+	// Pre-register job_search_crossencoder_missing_scores_total so the FIRST
+	// missing-score event after a restart is visible to increase()-based alerts.
+	reg.Add(MetricJobSearchCrossEncoderMissingScores, 0)
 	// Pre-register job_search_extraction_total{outcome} so the FIRST
 	// unparseable LLM response after a restart is visible to increase()-
 	// based alerts (same gap warmAlertBoundedMetrics fixes for the other

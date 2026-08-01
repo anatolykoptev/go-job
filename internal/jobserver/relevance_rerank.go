@@ -64,11 +64,11 @@ func getRelevanceRerankClient() *rerank.Client { return relevanceRerankClient }
 //   - WithRetry(rerank.NoRetry): the shadow is best-effort; one attempt. A
 //     retry storm on a slow reranker would burn the tool budget for a signal
 //     that changes nothing. The embed client uses the same NoRetry discipline.
-//   - WithTimeout(jobSearchCrossEncoderTimeout): a per-request HTTP timeout
-//     applied via context.WithTimeout. The shadow call also wraps its own
-//     context (derived from the parent, not the gate context) with the same
-//     bound, so the shadow cannot outlive its budget even if the parent
-//     context is long-lived.
+//   - WithTimeout is NOT set here: the dispatch (dispatchCrossEncoderShadow)
+//     creates the context with context.WithTimeout(context.WithoutCancel(ctx),
+//     jobSearchCrossEncoderTimeout), which is the sole bound. A client-side
+//     WithTimeout with the same value was redundant — the inner timeout could
+//     never fire before the outer one.
 //   - MaxDocs is left at go-kit's own default (defaultMaxDocs=50): the
 //     candidate set is capped at maxRelevanceCandidates (32) < 50, so the
 //     whole set ships in one request. The server declares
@@ -84,7 +84,6 @@ func NewRelevanceRerankClient(url string) *rerank.Client {
 	}
 	return rerank.NewClient(url,
 		rerank.WithModel(crossEncoderModel),
-		rerank.WithTimeout(jobSearchCrossEncoderTimeout),
 		rerank.WithRetry(rerank.NoRetry),
 	)
 }
