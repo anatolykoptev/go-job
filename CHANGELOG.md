@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.18.4](https://github.com/anatolykoptev/go-job/compare/v1.18.3...v1.18.4) (2026-08-01)
+
+
+### Bug Fixes
+
+* **job_search:** deterministic listings survive an LLM outage; LLM selection stays the filter ([#442](https://github.com/anatolykoptev/go-job/issues/442)) ([88b95cc](https://github.com/anatolykoptev/go-job/commit/88b95cc63300eef3f738f4aa4029cdad8a1d4763))
+
 ## [1.18.3](https://github.com/anatolykoptev/go-job/compare/v1.18.2...v1.18.3) (2026-08-01)
 
 
