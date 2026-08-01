@@ -37,11 +37,12 @@ import (
 // notice), never silently indistinguishable from a real match (B2).
 //
 // jobSearchRelevanceTimeout bounds the gate's own embed work, independent of
-// the tool context. The embed client's per-request timeout, retry envelope,
-// and chunk size are derived from this budget (see relevance_embed.go) so the
-// gate's inner budgets fit strictly inside it; without that derivation a slow
-// request or a transient retryable failure surfaces one stage later as "LLM
-// summarization failed", blaming the wrong component (M3).
+// the tool context. It is the OUTER bound: it wraps both embed calls
+// (EmbedQuery then Embed) via context.WithTimeout and is the sole arbiter of
+// when the gate gives up. The embed client's per-request timeout is
+// kitembed's library default (see relevance_embed.go); a per-request timeout
+// tighter than this outer budget converts a graceful degradation into a hard
+// failure.
 var (
 	jobSearchMinRelevance     = env.Float("JOB_SEARCH_MIN_RELEVANCE", 0.0)
 	jobSearchMinKeep          = env.Int("JOB_SEARCH_MIN_KEEP", 0)
