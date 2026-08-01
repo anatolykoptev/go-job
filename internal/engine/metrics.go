@@ -88,11 +88,20 @@ const (
 
 	// MetricJobSearchExtraction is the labelled counter
 	// gojob_job_search_extraction_total{outcome}. Bumped once per
-	// SummarizeJobResults call. outcome ∈ {"ok","unparseable"} — bounded enum.
+	// SummarizeJobResults call. outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded enum.
 	// "unparseable" fires when the LLM returned a response that could not be
 	// parsed as the expected JSON (truncated output, mid-record cut, schema
-	// echo, etc.). The raw output is NOT surfaced to the caller; this counter
-	// + the WARN log (raw_len, model) are the diagnostic surface.
+	// echo, etc.). "llm_unavailable" fires whenever the LLM-unavailable path is
+	// taken in tool_job_search.go (LLM errored OR returned unparseable output),
+	// whether or not deterministic structured listings survived the relevance
+	// gate — so the LLM-failure rate does not read systematically low (an LLM
+	// error with zero survivors previously incremented no series at all). The
+	// operator action is "retry the LLM / switch provider", distinct from
+	// "unparseable" (fix the prompt/model). A HEALTHY LLM returning zero jobs
+	// is NOT "llm_unavailable" — its empty list is the selection set and the
+	// result is "ok" (genuine empty, cacheable). The raw output is NOT surfaced
+	// to the caller; this counter + the WARN log (raw_len, model) are the
+	// diagnostic surface.
 	MetricJobSearchExtraction = "job_search_extraction_total"
 
 	// Shared bounded-label values reused across metric incrementors and the flat
@@ -104,6 +113,7 @@ const (
 	outcomeNoKey       = "no_key"
 	outcomeParseFail   = "parse_fail"
 	outcomeUnparseable = "unparseable"
+	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable — unavailable path taken (listings may or may not have survived)
 	kindJobs           = "jobs"
 	kindBounties       = "bounties"
 	kindFreelance      = "freelance"
@@ -241,13 +251,18 @@ const (
 
 	// MetricStructuredPrecedence is the labelled counter
 	// gojob_structured_precedence_total{source,outcome}.
-	// Bumped by jobs.ApplyStructuredPrecedence for every LLM-emitted job record:
-	// outcome=applied when a structured listing matched and overrode LLM fields,
-	// outcome=no_match when no structured listing matched (the generic-searxng /
-	// LinkedIn path). source ∈ {greenhouse,lever,ashby,none} — "none" is the
-	// no_match case where no source can be attributed. Lets an operator see the
-	// hit rate of source-structured-over-LLM precedence and detect a regression
-	// where the URL join key stops matching (no_match ratio → 1.0).
+	// Bumped by jobs.StructuredMatcher.Match for every LLM-emitted job record
+	// resolved against the structured index: outcome=url_match when the
+	// normalized-URL lookup hit, outcome=jobid_fallback when the JobID fallback
+	// resolved the join (the arm that was silently missing — its rate is the
+	// regression signal), outcome=no_match when no structured counterpart
+	// exists. source ∈ {greenhouse,lever,ashby,none} — the matched listing's
+	// Source for matches, or extractSourceFromURL(llm.URL) for no_match,
+	// falling back to "none" when the URL is unresolvable so a join regression
+	// cannot hide as "no ATS jobs in this search". Lets an operator see the
+	// join hit rate per arm and detect a URL-join-key regression
+	// (no_match ratio → 1.0) or a JobID-fallback regression
+	// (jobid_fallback rate → 0 while no_match rises).
 	MetricStructuredPrecedence = "structured_precedence_total"
 
 	// MetricSecurityFetchErrors is the labelled counter
@@ -678,11 +693,13 @@ func FormatMetrics() string {
 		}
 	}
 	// Structured precedence counters pre-touched so rate()-floor alerts see 0
-	// before the first job_search call. 3 sources × 2 outcomes + 1 none/no_match
-	// = 7 series (bounded, safe cardinality). "none" covers the no_match case
-	// where no ATS source can be attributed to the LLM record.
+	// before the first job_search call. 3 sources × 3 outcomes + 1 none/no_match
+	// = 10 series (bounded, safe cardinality). "none" covers the no_match case
+	// where no ATS source can be attributed to the LLM record's URL.
 	for _, src := range []string{DiscoveryPlatformGreenhouse, DiscoveryPlatformLever, DiscoveryPlatformAshby} {
-		keys = append(keys, MetricStructuredPrecedence+"{source="+src+",outcome=applied}")
+		for _, oc := range []string{"url_match", "jobid_fallback", "no_match"} {
+			keys = append(keys, MetricStructuredPrecedence+"{source="+src+",outcome="+oc+"}")
+		}
 	}
 	keys = append(keys, MetricStructuredPrecedence+"{source=none,outcome=no_match}")
 	// hunt_notify_total pre-touched for all outcomes so rate()-floor alerts see 0
@@ -1168,14 +1185,16 @@ func IncrCompanyResearch(outcome string) {
 }
 
 // validJobSearchExtractionOutcomes bounds the outcome label for
-// gojob_job_search_extraction_total{outcome} to a fixed two-value enum.
+// gojob_job_search_extraction_total{outcome} to a fixed three-value enum.
 var validJobSearchExtractionOutcomes = map[string]bool{
-	outcomeOK: true, outcomeUnparseable: true,
+	outcomeOK: true, outcomeUnparseable: true, outcomeLLMUnavailable: true,
 }
 
 // IncrJobSearchExtraction bumps gojob_job_search_extraction_total{outcome=<outcome>}.
-// outcome ∈ {"ok","unparseable"} — bounded label. Unrecognised values are
-// silently dropped. Called once per SummarizeJobResults call.
+// outcome ∈ {"ok","unparseable","llm_unavailable"} — bounded label. Unrecognised
+// values are silently dropped. Called once per SummarizeJobResults call ("ok"/"unparseable")
+// and once when the LLM-unavailable path is taken in tool_job_search.go
+// ("llm_unavailable"), whether or not structured listings survived the gate.
 func IncrJobSearchExtraction(outcome string) {
 	if !validJobSearchExtractionOutcomes[outcome] {
 		return
@@ -1274,7 +1293,7 @@ func IncrATSFetchErrors(platform, reason string) {
 // structured_precedence_total. "none" is the no_match case where no ATS source
 // can be attributed to the LLM record's URL (non-ATS URL, or a hallucinated
 // URL for an ATS job — both Lever and Ashby support custom board domains).
-// ApplyStructuredPrecedence attributes such misses to "none" rather than
+// StructuredMatcher.Match attributes such misses to "none" rather than
 // dropping them, so a join regression stays distinguishable from "no ATS jobs
 // in this search".
 var validStructuredPrecedenceSources = map[string]bool{
@@ -1285,17 +1304,22 @@ var validStructuredPrecedenceSources = map[string]bool{
 }
 
 // validStructuredPrecedenceOutcomes bounds the outcome label.
+// url_match = normalized-URL lookup hit; jobid_fallback = JobID fallback
+// resolved the join (the arm that was silently missing — its rate is the
+// regression signal); no_match = no structured counterpart.
 var validStructuredPrecedenceOutcomes = map[string]bool{
-	"applied":  true,
-	"no_match": true,
+	"url_match":      true,
+	"jobid_fallback": true,
+	"no_match":       true,
 }
 
 // IncrStructuredPrecedence bumps gojob_structured_precedence_total{source,outcome}.
-// source ∈ {greenhouse,lever,ashby,none}, outcome ∈ {applied,no_match}.
+// source ∈ {greenhouse,lever,ashby,none}, outcome ∈ {url_match,jobid_fallback,no_match}.
 // Unrecognised label values are silently dropped (cardinality guard).
-// Called by jobs.ApplyStructuredPrecedence for every LLM-emitted job record so
-// the hit rate of source-structured-over-LLM precedence is visible in
-// Prometheus and a URL-join-key regression (no_match ratio → 1.0) is detectable.
+// Called by jobs.StructuredMatcher.Match for every LLM record resolved against
+// the structured index so the join hit rate per arm is visible in Prometheus
+// and a URL-join-key regression (no_match ratio → 1.0) or a JobID-fallback
+// regression (jobid_fallback rate → 0) is detectable.
 func IncrStructuredPrecedence(source, outcome string) {
 	if !validStructuredPrecedenceSources[source] || !validStructuredPrecedenceOutcomes[outcome] {
 		return
