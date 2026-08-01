@@ -333,6 +333,12 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		slog.Float64("score_median", scoreMed),
 		slog.Float64("score_max", scoreMax))
 
+	// SHADOW MODE: score every candidate with the cross-encoder (gte-multi-
+	// rerank) and record metrics — but NEVER change the keep/reject decision.
+	// The gate's return value (filtered) is already final; the shadow only
+	// observes. Failure is non-fatal and invisible to the caller.
+	observeCrossEncoderShadow(ctx, query, sorted, filtered)
+
 	return filtered, "", notice
 }
 
@@ -367,4 +373,161 @@ func parseFloat64(s string) (float64, error) {
 
 func parseInt(s string) (int, error) {
 	return strconv.Atoi(s)
+}
+
+// observeCrossEncoderShadow scores every candidate the gate already scored
+// (cosine) with the cross-encoder (gte-multi-rerank) and records metrics ONLY.
+// It NEVER changes the keep/reject decision — the gate's filtered result is
+// already final when this runs. This is the SHADOW MODE measurement: the
+// cross-encoder score distribution, the candidate-set size, and the
+// agreement/disagreement between the cosine decision and a cross-encoder
+// decision at the 0.5 midpoint.
+//
+// Failure is non-fatal and invisible to the caller: if the cross-encoder is
+// not configured, times out, errors, or returns no scores, the degraded
+// counter is bumped and the function returns. The gate's return value is
+// unchanged.
+//
+// Document text fed to the cross-encoder: title + a bounded snippet of Content
+// (maxSnippetRunes, the SAME text the gate embeds for cosine), WITHOUT the
+// "passage:" prefix — that prefix is e5-embed-specific; the cross-encoder is a
+// different model (gte-multi-rerank) and scores the raw text. Feeding the same
+// text makes the cosine/cross-encoder comparison apples-to-apples.
+//
+// scored = all candidates the gate scored (cosine in .Score, desc order).
+// kept = the gate's final filtered result (the keep decision, unchanged).
+func observeCrossEncoderShadow(ctx context.Context, query string, scored []engine.SearxngResult, kept []engine.SearxngResult) {
+	if len(scored) == 0 {
+		return
+	}
+
+	// Candidate-set size histogram — once per gate application. Decides
+	// whether a later PR needs a sparse/RRF pre-filter.
+	engine.ObserveJobSearchCandidateSetSize(len(scored))
+
+	rc := getRelevanceRerankClient()
+	if rc == nil || !rc.Available() {
+		engine.IncrJobSearchCrossEncoderDegraded(engine.CrossEncoderReasonNotConfigured)
+		return
+	}
+
+	// Build docs from the scored candidates. Text = title + content snippet
+	// (same as the embed path, minus the e5 "passage:" prefix).
+	docs := make([]rerank.Doc, len(scored))
+	for i, r := range scored {
+		doc := r.Title
+		if r.Content != "" {
+			doc = doc + " " + engine.TruncateRunes(r.Content, maxSnippetRunes, "")
+		}
+		docs[i] = rerank.Doc{ID: r.URL, Text: doc}
+	}
+
+	// Fresh context from the PARENT (not gateCtx — the embed calls may have
+	// nearly exhausted the gate budget). The shadow has its own bound.
+	shadowCtx, cancel := context.WithTimeout(ctx, jobSearchCrossEncoderTimeout)
+	defer cancel()
+
+	res, err := rc.RerankWithResult(shadowCtx, query, docs)
+	if err != nil {
+		engine.IncrJobSearchCrossEncoderDegraded(classifyCrossEncoderError(err))
+		slog.Debug("job_search: cross-encoder shadow degraded",
+			slog.Any("error", err),
+			slog.String("reason", classifyCrossEncoderError(err)))
+		return
+	}
+	if res == nil || res.Status != rerank.StatusOk {
+		reason := crossEncoderStatusReason(res)
+		engine.IncrJobSearchCrossEncoderDegraded(reason)
+		slog.Debug("job_search: cross-encoder shadow degraded",
+			slog.String("status", crossEncoderStatusString(res)),
+			slog.String("reason", reason))
+		return
+	}
+
+	// Map URL → cross-encoder score. Unseen docs keep score 0.
+	xeScores := make(map[string]float32, len(res.Scored))
+	for _, s := range res.Scored {
+		xeScores[s.ID] = s.Score
+	}
+
+	// Build the kept set (which scored candidates the gate kept). URLs are the
+	// doc IDs — the same convention the embed path uses.
+	keptURLs := make(map[string]bool, len(kept))
+	for _, r := range kept {
+		keptURLs[r.URL] = true
+	}
+
+	for _, r := range scored {
+		xeScore := float64(xeScores[r.URL])
+		engine.ObserveJobSearchCrossEncoderScore(xeScore)
+
+		cosineKept := keptURLs[r.URL]
+		xeWouldKeep := xeScore >= crossEncoderMidpoint
+		engine.IncrJobSearchRelevanceAgreement(agreementOutcome(cosineKept, xeWouldKeep))
+
+		slog.Debug("job_search: cross-encoder shadow pair",
+			slog.String("url", r.URL),
+			slog.String("title", r.Title),
+			slog.Float64("cosine", r.Score),
+			slog.Float64("cross_encoder", xeScore),
+			slog.Bool("cosine_kept", cosineKept),
+			slog.Bool("xe_would_keep", xeWouldKeep))
+	}
+}
+
+// agreementOutcome maps the (cosineKept, xeWouldKeep) pair to the bounded
+// agreement/disagreement label. Both disagreement directions are distinct so
+// the operator can tell which way a flip would go.
+func agreementOutcome(cosineKept, xeWouldKeep bool) string {
+	switch {
+	case cosineKept && xeWouldKeep:
+		return engine.AgreeKept
+	case !cosineKept && !xeWouldKeep:
+		return engine.AgreeRejected
+	case cosineKept && !xeWouldKeep:
+		return engine.DisagreeCosineKeptXEReject
+	default: // !cosineKept && xeWouldKeep
+		return engine.DisagreeCosineRejXEKeeps
+	}
+}
+
+// classifyCrossEncoderError maps a cross-encoder error to a bounded degraded-
+// reason label. circuit_open → rerank.ErrCircuitOpen; timeout → context
+// deadline; else error. Mirrors classifyEmbedError's convention.
+func classifyCrossEncoderError(err error) string {
+	if errors.Is(err, rerank.ErrCircuitOpen) {
+		return engine.CrossEncoderReasonCircuitOpen
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return engine.CrossEncoderReasonTimeout
+	}
+	return engine.CrossEncoderReasonError
+}
+
+// crossEncoderStatusReason maps a non-Ok Result status to a degraded reason.
+// StatusSkipped (no URL / empty docs) → not_configured; StatusDegraded →
+// error; nil → empty.
+func crossEncoderStatusReason(res *rerank.Result) string {
+	if res == nil {
+		return engine.CrossEncoderReasonEmpty
+	}
+	switch res.Status {
+	case rerank.StatusSkipped:
+		return engine.CrossEncoderReasonNotConfigured
+	case rerank.StatusDegraded:
+		if res.Err != nil {
+			return classifyCrossEncoderError(res.Err)
+		}
+		return engine.CrossEncoderReasonError
+	default:
+		return engine.CrossEncoderReasonError
+	}
+}
+
+// crossEncoderStatusString returns a human-readable status for logging.
+func crossEncoderStatusString(res *rerank.Result) string {
+	if res == nil {
+		return "nil"
+	}
+	return res.Status.String()
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 )
 
 // Metric name constants.
@@ -475,6 +477,49 @@ const (
 	// text. Pre-touched for all reasons so a rate()-floor alert sees 0 before
 	// the first degradation.
 	MetricJobSearchRelevanceDegraded = "job_search_relevance_degraded_total"
+
+	// MetricJobSearchCrossEncoderScore is the histogram
+	// gojob_job_search_crossencoder_score — the cross-encoder (gte-multi-rerank)
+	// relevance score for every listing the gate scores, recorded in SHADOW MODE.
+	// This is the payload of the whole PR: the distribution the operator reads to
+	// set a defensible cross-encoder threshold (cosine cannot separate a frontend
+	// role from a backend role at 0.0014 margin; the cross-encoder separates them
+	// at 0.31). Buckets resolve the 0.3–0.7 region where the decision boundary
+	// will land — Prometheus default buckets (latency-shaped, exponential from
+	// 1ms) are useless here. Registered via reg.RegisterHistogram in engine.Init().
+	MetricJobSearchCrossEncoderScore = "job_search_crossencoder_score"
+
+	// MetricJobSearchCandidateSetSize is the histogram
+	// gojob_job_search_candidate_set_size — how many listings reach the gate per
+	// application. Decides whether a later PR needs a sparse/RRF pre-filter or
+	// whether the cross-encoder can keep eating the whole set (the server caps
+	// at RERANKER_BATCH_MAX=8; a candidate-set distribution clustered above 8
+	// means the cross-encoder sees a truncated set and the score histogram
+	// describes only the head). Registered via reg.RegisterHistogram in engine.Init().
+	MetricJobSearchCandidateSetSize = "job_search_candidate_set_size"
+
+	// MetricJobSearchRelevanceAgreement is the labelled counter
+	// gojob_job_search_relevance_agreement_total{outcome} — agreement vs
+	// disagreement between the cosine decision (the ACTUAL keep/reject today)
+	// and what a cross-encoder decision would have been at the model's own 0.5
+	// midpoint. Bumped once per scored candidate. outcome ∈ {agree_kept,
+	// agree_rejected, disagree_cosine_kept_xe_rejects,
+	// disagree_cosine_rejected_xe_keeps} — both disagreement directions are
+	// distinguishable so the operator can tell which way the flip would go.
+	// disagree_cosine_kept_xe_rejects = cosine kept it but the cross-encoder
+	// would not (false-positive in the cosine gate); disagree_cosine_rejected_
+	// xe_keeps = cosine rejected it but the cross-encoder would keep it (false-
+	// negative). This is the number that tells the operator the flip is worth it.
+	MetricJobSearchRelevanceAgreement = "job_search_relevance_agreement_total"
+
+	// MetricJobSearchCrossEncoderDegraded is the labelled counter
+	// gojob_job_search_crossencoder_degraded_total{reason} — bumped once per
+	// gate application where the cross-encoder SHADOW could not score (timeout,
+	// error, circuit open, unconfigured, empty result). Reuses the reason=
+	// label convention of job_search_relevance_degraded_total. The cross-encoder
+	// is a shadow observer: degradation is non-fatal and invisible to the
+	// caller; this counter is the only signal that the shadow went dark.
+	MetricJobSearchCrossEncoderDegraded = "job_search_crossencoder_degraded_total"
 )
 
 // Relevance gate outcome label values (job_search_relevance_total{outcome}).
@@ -513,6 +558,61 @@ var validRelevanceDegradedReasons = map[string]bool{
 	RelevanceReasonEmptyVectors:  true,
 	RelevanceReasonTruncated:     true,
 }
+
+// Cross-encoder shadow agreement outcome label values
+// (job_search_relevance_agreement_total{outcome}). Exported so the jobserver
+// package can use them.
+const (
+	AgreeKept                  = "agree_kept"
+	AgreeRejected              = "agree_rejected"
+	DisagreeCosineKeptXEReject = "disagree_cosine_kept_xe_rejects"
+	DisagreeCosineRejXEKeeps   = "disagree_cosine_rejected_xe_keeps"
+)
+
+// validRelevanceAgreementOutcomes bounds the outcome label for
+// job_search_relevance_agreement_total. Both disagreement directions are
+// distinct labels so a mutation that collapses them into one is detectable.
+var validRelevanceAgreementOutcomes = map[string]bool{
+	AgreeKept: true, AgreeRejected: true,
+	DisagreeCosineKeptXEReject: true, DisagreeCosineRejXEKeeps: true,
+}
+
+// Cross-encoder shadow degraded reason label values
+// (job_search_crossencoder_degraded_total{reason}). Exported so the jobserver
+// package can use them.
+const (
+	CrossEncoderReasonNotConfigured = "not_configured"
+	CrossEncoderReasonTimeout       = "timeout"
+	CrossEncoderReasonError         = "error"
+	CrossEncoderReasonCircuitOpen   = "circuit_open"
+	CrossEncoderReasonEmpty         = "empty"
+)
+
+// validCrossEncoderDegradedReasons bounds the reason label for
+// job_search_crossencoder_degraded_total.
+var validCrossEncoderDegradedReasons = map[string]bool{
+	CrossEncoderReasonNotConfigured: true,
+	CrossEncoderReasonTimeout:       true,
+	CrossEncoderReasonError:         true,
+	CrossEncoderReasonCircuitOpen:   true,
+	CrossEncoderReasonEmpty:         true,
+}
+
+// CrossEncoderScoreBuckets resolve the 0.3–0.7 region where the gte-multi-
+// rerank decision boundary will land (live probe 2026-08-01: 0.3056 / 0.3914 /
+// 0.7012). Prometheus default buckets are latency-shaped (exponential from
+// 1ms) and put the entire 0–1 score range in a single +Inf bucket. Steps of
+// 0.05 across 0.30–0.70, with 0.1 shoulders outside, so the threshold cut is
+// resolved to within one bucket. Registered via reg.RegisterHistogram in
+// engine.Init() before first Observe.
+var CrossEncoderScoreBuckets = []float64{0.0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0}
+
+// CandidateSetSizeBuckets cover the gate's candidate-set range. The gate caps
+// at maxRelevanceCandidates (32); buckets at powers of two resolve whether the
+// set sits under or over the server's RERANKER_BATCH_MAX=8 — the signal for
+// whether a later PR needs a sparse/RRF pre-filter. Registered via
+// reg.RegisterHistogram in engine.Init() before first Observe.
+var CandidateSetSizeBuckets = []float64{1, 2, 4, 8, 16, 32, 64, 128}
 
 // Source outcome label values for gojob_hunt_source_outcome_total.
 const (
@@ -800,6 +900,14 @@ func FormatMetrics() string {
 	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeout, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
 		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
 	}
+	// Cross-encoder shadow counters pre-touched so both surfaces (flat-text +
+	// prom bridge) see 0 before the first shadow event.
+	for _, oc := range []string{AgreeKept, AgreeRejected, DisagreeCosineKeptXEReject, DisagreeCosineRejXEKeeps} {
+		keys = append(keys, MetricJobSearchRelevanceAgreement+"{outcome="+oc+"}")
+	}
+	for _, r := range []string{CrossEncoderReasonNotConfigured, CrossEncoderReasonTimeout, CrossEncoderReasonError, CrossEncoderReasonCircuitOpen, CrossEncoderReasonEmpty} {
+		keys = append(keys, MetricJobSearchCrossEncoderDegraded+"{reason="+r+"}")
+	}
 	// job_search_extraction_total{outcome} pre-touched so both outcomes appear
 	// on the flat-text endpoint at 0 before the first SummarizeJobResults call.
 	// Iterates validJobSearchExtractionOutcomes (the same map warmAlertBoundedMetrics
@@ -927,6 +1035,59 @@ func IncrJobSearchRelevanceDegraded(reason string) {
 		return
 	}
 	reg.Incr(MetricJobSearchRelevanceDegraded + "{reason=" + reason + "}")
+}
+
+// ObserveJobSearchCrossEncoderScore records a single cross-encoder (gte-multi-
+// rerank) relevance score into the gojob_job_search_crossencoder_score
+// histogram. Called once per scored candidate in SHADOW MODE — the score is
+// recorded but never influences the keep/reject decision. Buckets are
+// pre-configured via reg.RegisterHistogram in engine.Init().
+func ObserveJobSearchCrossEncoderScore(score float64) {
+	reg.Observe(MetricJobSearchCrossEncoderScore, score)
+}
+
+// ObserveJobSearchCandidateSetSize records the number of listings that reached
+// the gate into the gojob_job_search_candidate_set_size histogram. Called once
+// per gate application. Buckets pre-configured via reg.RegisterHistogram.
+func ObserveJobSearchCandidateSetSize(n int) {
+	reg.Observe(MetricJobSearchCandidateSetSize, float64(n))
+}
+
+// IncrJobSearchRelevanceAgreement bumps
+// gojob_job_search_relevance_agreement_total{outcome=<o>}. outcome ∈
+// {agree_kept, agree_rejected, disagree_cosine_kept_xe_rejects,
+// disagree_cosine_rejected_xe_keeps} — bounded enum. Called once per scored
+// candidate, comparing the cosine keep/reject decision to what a cross-encoder
+// decision at the 0.5 midpoint would have been. Both disagreement directions
+// are distinct labels.
+func IncrJobSearchRelevanceAgreement(outcome string) {
+	if !validRelevanceAgreementOutcomes[outcome] {
+		return
+	}
+	reg.Incr(MetricJobSearchRelevanceAgreement + "{outcome=" + outcome + "}")
+}
+
+// IncrJobSearchCrossEncoderDegraded bumps
+// gojob_job_search_crossencoder_degraded_total{reason=<r>}. reason ∈
+// {not_configured, timeout, error, circuit_open, empty} — bounded label.
+// Called once per gate application where the cross-encoder SHADOW could not
+// score. Degradation is non-fatal and invisible to the caller.
+func IncrJobSearchCrossEncoderDegraded(reason string) {
+	if !validCrossEncoderDegradedReasons[reason] {
+		return
+	}
+	reg.Incr(MetricJobSearchCrossEncoderDegraded + "{reason=" + reason + "}")
+}
+
+// GetHistogramSnapshot returns the snapshot of a named histogram, or a zero
+// HistogramSnapshot if the registry is nil or the histogram has no samples.
+// Exported for test verification from sub-packages (the jobserver cross-encoder
+// shadow tests read the score/candidate-set histograms through this).
+func GetHistogramSnapshot(name string) kitmetrics.HistogramSnapshot {
+	if reg == nil {
+		return kitmetrics.HistogramSnapshot{}
+	}
+	return reg.HistogramSnapshot()[name]
 }
 
 // validHuntKinds is the allowlist for the hunt_ingest_total `kind` label.
@@ -1093,6 +1254,15 @@ func warmAlertBoundedMetrics() {
 	}
 	for reason := range validRelevanceDegradedReasons {
 		reg.Add(MetricJobSearchRelevanceDegraded+"{reason="+reason+"}", 0)
+	}
+	// Pre-register job_search_relevance_agreement_total{outcome} and
+	// job_search_crossencoder_degraded_total{reason} so the FIRST cross-encoder
+	// shadow event after a restart is visible to increase()-based alerts.
+	for oc := range validRelevanceAgreementOutcomes {
+		reg.Add(MetricJobSearchRelevanceAgreement+"{outcome="+oc+"}", 0)
+	}
+	for reason := range validCrossEncoderDegradedReasons {
+		reg.Add(MetricJobSearchCrossEncoderDegraded+"{reason="+reason+"}", 0)
 	}
 	// Pre-register job_search_extraction_total{outcome} so the FIRST
 	// unparseable LLM response after a restart is visible to increase()-

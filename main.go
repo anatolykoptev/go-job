@@ -513,6 +513,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			slog.Info("shared embed client initialized (library defaults)",
 				slog.String("url", c.EmbedURL))
 		}
+		initCrossEncoderShadow(c.EmbedURL)
 	}
 
 	cacheTTL := env.Duration("CACHE_TTL", 15*time.Minute)
@@ -531,6 +532,22 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
 	return huntNotifier
+}
+
+// initCrossEncoderShadow wires the cross-encoder (gte-multi-rerank) shadow
+// client for the relevance gate. The reranker lives on the SAME host:port as
+// the embedder (POST /v1/rerank), so it is wired from the same EMBED_URL. It
+// is a SHADOW observer: it scores every listing the gate scores and records
+// metrics, but NEVER changes the keep/reject decision (which stays on cosine).
+// Failure is non-fatal and invisible to the caller. See
+// internal/jobserver/relevance_rerank.go.
+func initCrossEncoderShadow(embedURL string) {
+	rerankClient := jobserver.NewRelevanceRerankClient(embedURL)
+	jobserver.SetRelevanceRerankClient(rerankClient)
+	if rerankClient != nil {
+		slog.Info("cross-encoder shadow client initialized (shadow mode — decision stays on cosine)",
+			slog.String("url", embedURL))
+	}
 }
 
 // initProxyPool builds the fetch proxy pool: Webshare primary, optional Tor
