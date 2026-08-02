@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.19.1](https://github.com/anatolykoptev/go-job/compare/v1.19.0...v1.19.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **job_search:** relevance gate names whose deadline expired ([#453](https://github.com/anatolykoptev/go-job/issues/453)) ([a177387](https://github.com/anatolykoptev/go-job/commit/a1773871c30cc57c3792cb8f0a4925035b53c0fb))
+
 ## [1.19.0](https://github.com/anatolykoptev/go-job/compare/v1.18.4...v1.19.0) (2026-08-01)
 
 
