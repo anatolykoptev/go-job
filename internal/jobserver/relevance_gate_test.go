@@ -1077,8 +1077,9 @@ func TestRelevanceGate_HTTPLive_GateBudgetTimeout(t *testing.T) {
 // context.Cause(gateCtx) is the parent's cause (DeadlineExceeded), NOT
 // errGateBudget. The classifier must label this timeout_parent.
 //
-// Falsification F2: make the classifier always return timeout_gate (drop the
-// Cause==nil / parent branch). This test REDs (classifies timeout_gate).
+// Falsification F2: drop the `Cause != nil -> timeout_parent` sub-branch. This
+// test REDs. (Making the classifier ALWAYS return timeout_gate is a WIDER
+// mutation — it would also RED the case-C test, which F2 does not claim.)
 func TestRelevanceGate_HTTPLive_ParentBudgetTimeout(t *testing.T) {
 	srv := hangingEmbedServer()
 	defer closeEmbedServer(srv)
@@ -1116,9 +1117,10 @@ func TestRelevanceGate_HTTPLive_ParentBudgetTimeout(t *testing.T) {
 func TestRelevanceGate_HTTPLive_ClientTimeout(t *testing.T) {
 	srv := hangingEmbedServer()
 	defer closeEmbedServer(srv)
-	// Tight per-request HTTP timeout (10ms) so the client fires well before
-	// the 5s gate budget. The v1 retry ladder (3 attempts) retries through
-	// the backoff, but the gate context stays alive throughout.
+	// Tight per-request HTTP timeout (10ms) so each ATTEMPT fires well before
+	// the 5s gate budget. The v1 retry ladder (3 attempts, 200ms+400ms
+	// backoff) exhausts in ~610ms: what fires is the per-request timeout,
+	// never the gate context, which stays alive throughout.
 	withRelevanceEmbedder(t, newTestEmbedClient(t, srv.URL, 10*time.Millisecond))
 	withRelevanceConfig(t, 0.5, 1)
 	origTimeout := jobSearchRelevanceTimeout

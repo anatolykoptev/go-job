@@ -52,8 +52,11 @@ func EmbedClientBudgetOpts() []kitembed.Opt {
 
 // NewEmbedClient constructs the embed client used by the job_search relevance
 // gate, with retry and chunk size scoped to the gate (EmbedClientBudgetOpts).
-// The per-request timeout is kitembed's library default; the gate context
-// (jobSearchRelevanceTimeout) is the sole outer bound. baseOpts select the
+// The per-request timeout is kitembed's library default. The gate context
+// (jobSearchRelevanceTimeout) bounds the gate's own work but is NOT the sole
+// outer bound: WithTimeoutCause yields min(d, parent's remaining), so the
+// parent tool context can expire first — classifyEmbedError tells the two
+// apart. baseOpts select the
 // backend, dimension, and logger; the budget opts are appended last so they
 // win. Use this at the production construction site (main.go).
 func NewEmbedClient(url string, baseOpts ...kitembed.Opt) (*kitembed.Client, error) {

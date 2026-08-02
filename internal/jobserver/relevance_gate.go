@@ -377,8 +377,10 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 //     DeadlineExceeded, so the deadline arm is never entered and the gate's
 //     own timeout is classified embed_error.
 //   - timeout_parent: the parent tool context's deadline expired first.
-//     context.Cause(gateCtx) is the parent's cause (DeadlineExceeded or nil
-//     when cancelled without a cause), NOT errGateBudget.
+//     context.Cause(gateCtx) is the parent's own cause — non-nil and not
+//     errGateBudget. A nil cause means NEITHER budget expired and lands on
+//     timeout_client instead; a cancel carrying no cause surfaces as
+//     context.Canceled and never reaches this arm.
 //   - timeout_client: http.Client.Timeout fired while both budgets were alive.
 //     The *url.Error wraps context.DeadlineExceeded but context.Cause(gateCtx)
 //     is nil — neither the gate nor the parent expired. Folding this into
