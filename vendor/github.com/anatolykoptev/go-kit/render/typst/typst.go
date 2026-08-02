@@ -45,11 +45,33 @@ const (
 // true vector PDFs with real selectable text and file sizes ~10× smaller.
 //
 // Pipeline: content → pandoc (→ typst markup) → theme template → typst compile → PDF bytes
-type TypstRenderer struct{}
+type TypstRenderer struct {
+	// compile runs the typst binary. Injectable so a test can observe WHICH
+	// source each entry point assembled. Without it the wiring is unguarded:
+	// pdfSource and imageSource have identical signatures, so swapping them
+	// compiles, silently changes what every caller gets — a PDF loses its TOC
+	// and, on card/dark, its title — and no test fails.
+	//
+	// Set by NewTypstRenderer and never mutated after construction, so
+	// concurrent use is still safe; tests inject before first use. Nil is
+	// tolerated because TypstRenderer is exported and a consumer may build it
+	// as a literal — no consumer does today, so the fallback is API hygiene
+	// rather than a live dependency.
+	compile func(ctx context.Context, source string, out typstOutput) ([]byte, error)
+}
 
-// NewTypstRenderer creates a TypstRenderer. No state is held; safe for
+// NewTypstRenderer creates a TypstRenderer. No mutable state is held; safe for
 // concurrent use.
-func NewTypstRenderer() *TypstRenderer { return &TypstRenderer{} }
+func NewTypstRenderer() *TypstRenderer { return &TypstRenderer{compile: compileTypst} }
+
+// compiler returns the compile step, falling back to the package function so a
+// zero-value TypstRenderer keeps working.
+func (r *TypstRenderer) compiler() func(context.Context, string, typstOutput) ([]byte, error) {
+	if r.compile != nil {
+		return r.compile
+	}
+	return compileTypst
+}
 
 // typstDocData is the template context injected into a theme preamble.
 type typstDocData struct {
@@ -91,7 +113,7 @@ func (r *TypstRenderer) Render(ctx context.Context, content, inputFmt string, op
 	if err != nil {
 		return nil, err
 	}
-	return compileTypst(ctx, doc, typstOutput{Format: typstFormatPDF})
+	return r.compiler()(ctx, doc, typstOutput{Format: typstFormatPDF})
 }
 
 // pdfSource assembles the .typ source Render compiles. Split out so the path's
@@ -99,10 +121,14 @@ func (r *TypstRenderer) Render(ctx context.Context, content, inputFmt string, op
 // test that restates the arguments mirrors the code instead of guarding it, and
 // stays green when the caller changes.
 //
-// omitTitle is false unconditionally here. No built-in preamble emits a title of
-// its own — card and dark only STYLE a level-1 heading the body is expected to
-// supply — so honoring OmitsTitleBlockOnImage would drop the title from a PDF
-// with nothing replacing it and no error.
+// omitTitle is false unconditionally here. No built-in preamble emits a title
+// BLOCK of its own — card and dark only STYLE a level-1 heading the body is
+// expected to supply — so honoring OmitsTitleBlockOnImage would drop the title
+// from a PDF with nothing replacing it and no error.
+//
+// "Block" is the load-bearing word. report and corporate DO consume opts.Title,
+// templating it into the running page header; that is a header, not a title, and
+// it is why an empty Title leaves them with a blank one.
 func (r *TypstRenderer) pdfSource(ctx context.Context, content, inputFmt string, opts render.Options) (string, error) {
 	// Resolve once: the registry is writable at runtime, and reading it per
 	// decision would let a registration land between the preamble and the
@@ -126,7 +152,7 @@ func (r *TypstRenderer) RenderImage(ctx context.Context, content, inputFmt strin
 	if err != nil {
 		return nil, err
 	}
-	return compileTypst(ctx, doc, typstOutput{Format: typstFormatPNG, PPI: opts.PPI})
+	return r.compiler()(ctx, doc, typstOutput{Format: typstFormatPNG, PPI: opts.PPI})
 }
 
 // imageSource assembles the .typ source RenderImage compiles. Split out for the
