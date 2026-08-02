@@ -548,25 +548,33 @@ var validRelevanceOutcomes = map[string]bool{
 
 // Relevance degraded reason label values (job_search_relevance_degraded_total{reason}).
 // Exported so the jobserver package can use them in the output summary.
+//
+// timeout is split into timeout_gate (the gate's own
+// JOB_SEARCH_RELEVANCE_TIMEOUT expired) and timeout_parent (the parent tool
+// context's deadline expired first). The two call for opposite fixes — raise
+// the gate budget vs leave the gate more of the parent's remaining time — and
+// were indistinguishable under the single "timeout" label (#452).
 const (
-	RelevanceReasonNotConfigured = "not_configured"
-	RelevanceReasonEmbedError    = "embed_error"
-	RelevanceReasonCircuitOpen   = "circuit_open"
-	RelevanceReasonTimeout       = "timeout"
-	RelevanceReasonEmptyVectors  = "empty_vectors"
-	RelevanceReasonTruncated     = "truncated"
+	RelevanceReasonNotConfigured  = "not_configured"
+	RelevanceReasonEmbedError     = "embed_error"
+	RelevanceReasonCircuitOpen    = "circuit_open"
+	RelevanceReasonTimeoutGate    = "timeout_gate"
+	RelevanceReasonTimeoutParent  = "timeout_parent"
+	RelevanceReasonEmptyVectors   = "empty_vectors"
+	RelevanceReasonTruncated      = "truncated"
 )
 
 // validRelevanceDegradedReasons bounds the reason label for
 // job_search_relevance_degraded_total. Unrecognised values are dropped silently
 // (cardinality guard — no free-form strings, no query text).
 var validRelevanceDegradedReasons = map[string]bool{
-	RelevanceReasonNotConfigured: true,
-	RelevanceReasonEmbedError:    true,
-	RelevanceReasonCircuitOpen:   true,
-	RelevanceReasonTimeout:       true,
-	RelevanceReasonEmptyVectors:  true,
-	RelevanceReasonTruncated:     true,
+	RelevanceReasonNotConfigured:  true,
+	RelevanceReasonEmbedError:     true,
+	RelevanceReasonCircuitOpen:    true,
+	RelevanceReasonTimeoutGate:    true,
+	RelevanceReasonTimeoutParent:  true,
+	RelevanceReasonEmptyVectors:   true,
+	RelevanceReasonTruncated:      true,
 }
 
 // Cross-encoder shadow agreement outcome label values
@@ -908,11 +916,11 @@ func FormatMetrics() string {
 		}
 	}
 	// Relevance gate counters pre-touched so rate()-floor alerts see 0 before
-	// the first job_search call. 4 outcomes + 6 degraded reasons = 10 series.
+	// the first job_search call. 4 outcomes + 7 degraded reasons = 11 series.
 	for _, oc := range []string{RelevanceScored, RelevanceKept, RelevanceFloorKept, RelevanceRejected} {
 		keys = append(keys, MetricJobSearchRelevance+"{outcome="+oc+"}")
 	}
-	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeout, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
+	for _, r := range []string{RelevanceReasonNotConfigured, RelevanceReasonEmbedError, RelevanceReasonCircuitOpen, RelevanceReasonTimeoutGate, RelevanceReasonTimeoutParent, RelevanceReasonEmptyVectors, RelevanceReasonTruncated} {
 		keys = append(keys, MetricJobSearchRelevanceDegraded+"{reason="+r+"}")
 	}
 	// Cross-encoder shadow counters pre-touched so both surfaces (flat-text +
