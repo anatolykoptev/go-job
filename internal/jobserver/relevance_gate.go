@@ -38,16 +38,29 @@ import (
 //
 // jobSearchRelevanceTimeout bounds the gate's own embed work, independent of
 // the tool context. It is the OUTER bound: it wraps both embed calls
-// (EmbedQuery then Embed) via context.WithTimeout and is the sole arbiter of
-// when the gate gives up. The embed client's per-request timeout is
-// kitembed's library default (see relevance_embed.go); a per-request timeout
-// tighter than this outer budget converts a graceful degradation into a hard
-// failure.
+// (EmbedQuery then Embed) via context.WithTimeoutCause. It is NOT the sole
+// arbiter — context.WithTimeoutCause yields min(d, parent's remaining), so the
+// gate gives up when EITHER its own budget OR the parent's deadline expires,
+// whichever is first; the two are distinguished via context.Cause. The embed
+// client's per-request timeout is kitembed's library default (see
+// relevance_embed.go); a per-request timeout tighter than this outer budget
+// converts a graceful degradation into a hard failure.
 var (
 	jobSearchMinRelevance     = env.Float("JOB_SEARCH_MIN_RELEVANCE", 0.0)
 	jobSearchMinKeep          = env.Int("JOB_SEARCH_MIN_KEEP", 0)
 	jobSearchRelevanceTimeout = env.Duration("JOB_SEARCH_RELEVANCE_TIMEOUT", 15*time.Second)
 )
+
+// errGateBudget is the cause set on the gate's own context deadline via
+// context.WithTimeoutCause. When the GATE's jobSearchRelevanceTimeout expires
+// first, context.Cause(gateCtx) returns this sentinel; when the PARENT tool
+// context's deadline expires first, context.Cause returns the parent's cause
+// (or the default context.DeadlineExceeded), never this sentinel. That is the
+// distinction classifyEmbedError uses to label timeout_gate vs timeout_parent
+// — two failures that previously shared the single "timeout" label and call
+// for opposite fixes (raise the gate budget vs leave the gate more of the
+// parent's remaining time).
+var errGateBudget = errors.New("relevance gate: own budget expired")
 
 func init() {
 	validateRelevanceConfig()
@@ -162,7 +175,12 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	// this timeout (see relevance_embed.go); without that derivation a slow
 	// request or transient retryable failure surfaces as a late "LLM
 	// summarization failed" blaming the wrong component.
-	gateCtx, cancel := context.WithTimeout(ctx, jobSearchRelevanceTimeout)
+	//
+	// WithTimeoutCause (not WithTimeout) sets errGateBudget as the cause so
+	// classifyEmbedError can tell the gate's own budget expiring apart from
+	// the parent tool context's deadline expiring first — via context.Cause,
+	// not ctx.Err() alone (which is DeadlineExceeded in both cases).
+	gateCtx, cancel := context.WithTimeoutCause(ctx, jobSearchRelevanceTimeout, errGateBudget)
 	defer cancel()
 
 	// M3: cap candidates embedded. When trimmed, mark a visible degraded state
@@ -198,7 +216,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	// Embed query once.
 	qvec, err := ec.EmbedQuery(gateCtx, "query: "+query)
 	if err != nil {
-		reason := classifyEmbedError(err)
+		reason := classifyEmbedError(err, gateCtx)
 		engine.IncrJobSearchRelevanceDegraded(reason)
 		slog.Warn("job_search: relevance gate degraded — embed query failed",
 			slog.Any("error", err),
@@ -214,7 +232,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	// Embed all passages in one batch.
 	vecs, err := ec.Embed(gateCtx, passages)
 	if err != nil {
-		reason := classifyEmbedError(err)
+		reason := classifyEmbedError(err, gateCtx)
 		engine.IncrJobSearchRelevanceDegraded(reason)
 		slog.Warn("job_search: relevance gate degraded — embed passages failed",
 			slog.Any("error", err),
@@ -349,13 +367,61 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 }
 
 // classifyEmbedError maps an embedder error to a bounded degraded-reason label.
-// circuit_open → embed.ErrCircuitOpen; timeout → context deadline; else embed_error.
-func classifyEmbedError(err error) string {
+//
+// Three timeout cases are distinguished:
+//   - timeout_gate: the gate's own jobSearchRelevanceTimeout expired. The cause
+//     (errGateBudget) travels on BOTH the error chain (net/http propagates
+//     context.Cause into the *url.Error) AND context.Cause(gateCtx). Checking
+//     only the latter and gating it behind the DeadlineExceeded arm (the
+//     73ebaec bug) misses case A: in case A the cause is errGateBudget, NOT
+//     DeadlineExceeded, so the deadline arm is never entered and the gate's
+//     own timeout is classified embed_error.
+//   - timeout_parent: the parent tool context's deadline expired first.
+//     context.Cause(gateCtx) is the parent's own cause — non-nil and not
+//     errGateBudget. A nil cause means NEITHER budget expired and lands on
+//     timeout_client instead; a cancel carrying no cause surfaces as
+//     context.Canceled and never reaches this arm.
+//   - timeout_client: http.Client.Timeout fired while both budgets were alive.
+//     The *url.Error wraps context.DeadlineExceeded but context.Cause(gateCtx)
+//     is nil — neither the gate nor the parent expired. Folding this into
+//     timeout_parent (the 73ebaec behaviour) reintroduces the mislabelling
+//     this PR removes: a client-timeout calls for raising the per-request
+//     HTTP timeout, not leaving the gate more of the parent's time.
+//
+// context.Canceled gets its own label (canceled): a cancelled parent (client
+// disconnect) is a different failure from an expired deadline.
+//
+// circuit_open is checked FIRST so that a retry ladder returning a
+// *retry.RetryError{ctxErr: DeadlineExceeded, lastErr: ErrCircuitOpen} — the
+// shape go-kit v0.97.11 produces when the circuit is open and the gate context
+// then expires during the retry backoff — classifies as circuit_open, not
+// timeout. Before v0.97.11 the retry ladder dropped the causal error
+// (fmt.Errorf with %w on ctx.Err, %v on the attempt error), so this case was
+// misclassified as timeout.
+func classifyEmbedError(err error, gateCtx context.Context) string {
 	if errors.Is(err, kitembed.ErrCircuitOpen) {
 		return engine.RelevanceReasonCircuitOpen
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return engine.RelevanceReasonTimeout
+	// Case A: the gate's own budget expired. errGateBudget travels on both
+	// the error chain and context.Cause(gateCtx); check both, and do NOT
+	// gate this behind the DeadlineExceeded arm — in case A the cause is
+	// errGateBudget, not DeadlineExceeded, so the deadline arm is never
+	// entered.
+	if errors.Is(err, errGateBudget) || errors.Is(context.Cause(gateCtx), errGateBudget) {
+		return engine.RelevanceReasonTimeoutGate
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Cases B and C: a deadline expired. context.Cause distinguishes
+		// whose: nil means neither the gate nor the parent expired — the
+		// HTTP client's own Timeout fired (case C); non-nil means the
+		// parent's deadline expired first (case B).
+		if context.Cause(gateCtx) == nil {
+			return engine.RelevanceReasonTimeoutClient
+		}
+		return engine.RelevanceReasonTimeoutParent
+	}
+	if errors.Is(err, context.Canceled) {
+		return engine.RelevanceReasonCanceled
 	}
 	return engine.RelevanceReasonEmbedError
 }
@@ -585,8 +651,9 @@ func agreementOutcome(cosineKept, xeWouldKeep bool) string {
 // was cancelled (client disconnect), not a deadline. With the detached
 // context (context.WithoutCancel) Canceled should not reach the rerank call,
 // but if it ever does it falls through to error — correct, not a lie.
-// (The embed path's classifyEmbedError has the same Canceled-as-timeout bug;
-// filed separately, not fixed in this PR.)
+// (The embed path's classifyEmbedError now classifies Canceled as its own
+// `canceled` label; this cross-encoder path does not need the split because
+// the detached context makes Canceled unreachable here.)
 func classifyCrossEncoderError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return engine.CrossEncoderReasonTimeout

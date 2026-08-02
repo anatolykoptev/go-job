@@ -3,9 +3,14 @@ package jobserver
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	kitembed "github.com/anatolykoptev/go-kit/embed"
+	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
@@ -593,32 +598,152 @@ func TestRelevanceGate_N1_FloorEngagedWhenFewerCandidatesThanFloor(t *testing.T)
 }
 
 // === M1: classifyEmbedError on both branches (previously never tested) ===
+//
+// The classifier now takes the gate context so it can distinguish whose
+// deadline expired via context.Cause (Change 1, #452). A bare
+// context.DeadlineExceeded with an uncancelled gateCtx (Cause == nil) classifies
+// as timeout_parent — the gate's own budget did not fire.
 
 func TestClassifyEmbedError_CircuitOpen(t *testing.T) {
-	got := classifyEmbedError(kitembed.ErrCircuitOpen)
+	got := classifyEmbedError(kitembed.ErrCircuitOpen, context.Background())
 	if got != engine.RelevanceReasonCircuitOpen {
 		t.Fatalf("classifyEmbedError(ErrCircuitOpen) = %q, want %q", got, engine.RelevanceReasonCircuitOpen)
 	}
 }
 
-func TestClassifyEmbedError_Timeout(t *testing.T) {
-	got := classifyEmbedError(context.DeadlineExceeded)
-	if got != engine.RelevanceReasonTimeout {
-		t.Fatalf("classifyEmbedError(DeadlineExceeded) = %q, want %q", got, engine.RelevanceReasonTimeout)
+func TestClassifyEmbedError_DeadlineWithNilCauseIsClientTimeout(t *testing.T) {
+	// A bare DeadlineExceeded with an uncancelled gate context (Cause == nil):
+	// neither the gate's own budget nor the parent's deadline expired — this
+	// is the HTTP client's own per-request Timeout firing (case C) →
+	// timeout_client. The 73ebaec classifier lumped this into timeout_parent;
+	// the three-way split distinguishes it because a client-timeout calls for
+	// raising the per-request HTTP timeout, not leaving the gate more of the
+	// parent's time.
+	got := classifyEmbedError(context.DeadlineExceeded, context.Background())
+	if got != engine.RelevanceReasonTimeoutClient {
+		t.Fatalf("classifyEmbedError(DeadlineExceeded, Cause==nil) = %q, want %q (client timeout, case C)", got, engine.RelevanceReasonTimeoutClient)
 	}
 }
 
-func TestClassifyEmbedError_Canceled(t *testing.T) {
-	got := classifyEmbedError(context.Canceled)
-	if got != engine.RelevanceReasonTimeout {
-		t.Fatalf("classifyEmbedError(Canceled) = %q, want %q", got, engine.RelevanceReasonTimeout)
+func TestClassifyEmbedError_CanceledIsCanceled(t *testing.T) {
+	// Canceled with an uncancelled gate context → canceled. A cancelled
+	// parent (client disconnect) is a different failure from an expired
+	// deadline. The 73ebaec classifier conflated Canceled into timeout_parent;
+	// the split gives it its own label so a disconnect is not misreported as
+	// a timeout.
+	got := classifyEmbedError(context.Canceled, context.Background())
+	if got != engine.RelevanceReasonCanceled {
+		t.Fatalf("classifyEmbedError(Canceled, unexpired gate) = %q, want %q", got, engine.RelevanceReasonCanceled)
 	}
 }
 
 func TestClassifyEmbedError_GenericError(t *testing.T) {
-	got := classifyEmbedError(errors.New("boom"))
+	got := classifyEmbedError(errors.New("boom"), context.Background())
 	if got != engine.RelevanceReasonEmbedError {
 		t.Fatalf("classifyEmbedError(generic) = %q, want %q", got, engine.RelevanceReasonEmbedError)
+	}
+}
+
+// === #452: whose deadline expired — the gate's own budget vs the parent's ===
+
+// TestClassifyEmbedError_GateBudgetTimeout exercises the branch where the
+// GATE's own jobSearchRelevanceTimeout expired: the gate context was created
+// with WithTimeoutCause(..., errGateBudget), so context.Cause returns
+// errGateBudget → timeout_gate.
+//
+// Falsification F1: revert the gate's context creation to context.WithTimeout
+// (drop the cause). context.Cause then returns context.DeadlineExceeded (the
+// default), not errGateBudget → this test REDs (classifies timeout_parent).
+func TestClassifyEmbedError_GateBudgetTimeout(t *testing.T) {
+	gateCtx, cancel := context.WithTimeoutCause(context.Background(), time.Nanosecond, errGateBudget)
+	defer cancel()
+	// Wait for the gate's own deadline to fire so Cause is populated.
+	<-gateCtx.Done()
+	if !errors.Is(context.Cause(gateCtx), errGateBudget) {
+		t.Fatalf("setup: gateCtx Cause must be errGateBudget after the gate budget expired, got %v", context.Cause(gateCtx))
+	}
+	got := classifyEmbedError(context.DeadlineExceeded, gateCtx)
+	if got != engine.RelevanceReasonTimeoutGate {
+		t.Fatalf("classifyEmbedError(DeadlineExceeded, gate-budget-expired) = %q, want %q (the gate's own budget expired)", got, engine.RelevanceReasonTimeoutGate)
+	}
+}
+
+// TestClassifyEmbedError_ParentBudgetTimeout exercises the branch where the
+// PARENT's deadline expired first: the gate context was created with a LONG
+// own budget, but its parent expired, so context.Cause(gateCtx) returns the
+// parent's cause (context.DeadlineExceeded), NOT errGateBudget → timeout_parent.
+//
+// Falsification F2: make the classifier always return timeout_gate (drop the
+// parent branch). This test REDs (classifies timeout_gate instead of
+// timeout_parent). The gate-budget test above stays GREEN under that mutation
+// and REDs under the opposite mutation (always timeout_parent) — proving the
+// two tests reach genuinely different classifications.
+func TestClassifyEmbedError_ParentBudgetTimeout(t *testing.T) {
+	// Parent with a short plain deadline (no cause → Cause == DeadlineExceeded).
+	parent, parentCancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer parentCancel()
+	// Gate with a long own budget; min(d, parent's remaining) = parent's.
+	gateCtx, gateCancel := context.WithTimeoutCause(parent, 5*time.Second, errGateBudget)
+	defer gateCancel()
+	<-gateCtx.Done()
+	if errors.Is(context.Cause(gateCtx), errGateBudget) {
+		t.Fatalf("setup: gateCtx Cause must NOT be errGateBudget when the parent expired first, got errGateBudget — the parent's deadline did not fire before the gate's")
+	}
+	got := classifyEmbedError(context.DeadlineExceeded, gateCtx)
+	if got != engine.RelevanceReasonTimeoutParent {
+		t.Fatalf("classifyEmbedError(DeadlineExceeded, parent-budget-expired) = %q, want %q (the parent's deadline expired first)", got, engine.RelevanceReasonTimeoutParent)
+	}
+}
+
+// === #452 Change 2: go-kit v0.97.11 retry.RetryError preserves the causal error ===
+
+// TestClassifyEmbedError_RetryErrorPreservesCircuitOpen verifies that a
+// *retry.RetryError — the shape go-kit v0.97.11's retry ladder returns when
+// the gate context expires during the retry backoff after a circuit-open
+// attempt — classifies as circuit_open, NOT timeout. Before v0.97.11 the
+// ladder wrapped ctx.Err() with %w and the attempt error with %v, so
+// errors.Is(err, ErrCircuitOpen) could not reach the causal error and the
+// case was misclassified as timeout.
+//
+// Reachability note: the specific shape RetryError{DeadlineExceeded,
+// ErrCircuitOpen} is NOT reachable on the gate path as currently wired — the
+// gate client is constructed without WithCircuit (main.go:492-496), so
+// ErrCircuitOpen is never returned by callBackendResilient's circuit guard,
+// and HTTPEmbedder.Embed never returns it either. The RetryError shape itself
+// IS reachable via the v1 ladder inside HTTPEmbedder.Embed (embed/retry.go
+// withRetry, 3 attempts), but with an HTTP error as the cause, not
+// ErrCircuitOpen. This test pins the circuit_open-wins-over-deadline ordering
+// invariant — correct for when a future PR wires WithCircuit on the gate
+// client. The go-kit v0.97.11 bump is correct (it makes the v1 ladder's
+// RetryError.Is preserve the attempt error); it buys nothing for the gate's
+// classification AS WRITTEN because classifyEmbedError does not inspect the
+// HTTP attempt error, only circuit_open and the context sentinels.
+//
+// Falsification F3: swap the classifier order so the deadline arm is checked
+// BEFORE the circuit_open arm. errors.Is(retryErr, DeadlineExceeded) is true
+// (RetryError.Is matches the ctxErr arm) → classifies as timeout_client
+// (Cause==nil for context.Background) → this test REDs. The circuit_open arm
+// being first is what makes the go-kit bump effective for this case.
+func TestClassifyEmbedError_RetryErrorPreservesCircuitOpen(t *testing.T) {
+	// Construct the v0.97.11 retry-ladder shape: an expired context whose
+	// last attempt error was ErrCircuitOpen. retry.WrapContextErr returns a
+	// *RetryError whose Is matches both ctxErr and the attempt error.
+	expiredCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-expiredCtx.Done()
+	retryErr := retry.WrapContextErr(expiredCtx, 3, kitembed.ErrCircuitOpen)
+
+	// The error must match BOTH sentinels — the property v0.97.11 adds.
+	if !errors.Is(retryErr, context.DeadlineExceeded) {
+		t.Fatalf("setup: retry.WrapContextErr must wrap DeadlineExceeded, errors.Is = false")
+	}
+	if !errors.Is(retryErr, kitembed.ErrCircuitOpen) {
+		t.Fatalf("setup: retry.WrapContextErr must preserve ErrCircuitOpen (go-kit v0.97.11 RetryError.Is), errors.Is = false — did the go-kit bump not take effect?")
+	}
+
+	got := classifyEmbedError(retryErr, context.Background())
+	if got != engine.RelevanceReasonCircuitOpen {
+		t.Fatalf("classifyEmbedError(RetryError{DeadlineExceeded, ErrCircuitOpen}) = %q, want %q — the causal error (circuit_open) must win over the context sentinel", got, engine.RelevanceReasonCircuitOpen)
 	}
 }
 
@@ -640,10 +765,16 @@ func TestRelevanceGate_DegradesOnCircuitOpen(t *testing.T) {
 	}
 }
 
-// TestRelevanceGate_DegradesOnTimeout verifies the timeout embedder error
-// triggers the fail-open path with the timeout reason label. Uses a shrunk
-// gate timeout so the test returns promptly.
-func TestRelevanceGate_DegradesOnTimeout(t *testing.T) {
+// TestRelevanceGate_DegradesOnGateBudgetTimeout verifies the timeout embedder
+// error triggers the fail-open path with the timeout_gate reason label: the
+// gate's OWN budget expired (parent = context.Background, no parent deadline),
+// so context.Cause(gateCtx) == errGateBudget. Uses a shrunk gate timeout so
+// the test returns promptly.
+//
+// Falsification F1: revert the gate's context creation to context.WithTimeout
+// (drop the cause). Cause becomes DeadlineExceeded, not errGateBudget →
+// classifies timeout_parent → this test REDs.
+func TestRelevanceGate_DegradesOnGateBudgetTimeout(t *testing.T) {
 	withRelevanceEmbedder(t, relevanceTimeoutEmbedder{})
 	withRelevanceConfig(t, 0.5, 1)
 	origTimeout := jobSearchRelevanceTimeout
@@ -657,8 +788,41 @@ func TestRelevanceGate_DegradesOnTimeout(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("timeout must fail-open (return all), got %d", len(got))
 	}
-	if degraded != engine.RelevanceReasonTimeout {
-		t.Fatalf("expected degraded %q, got %q", engine.RelevanceReasonTimeout, degraded)
+	if degraded != engine.RelevanceReasonTimeoutGate {
+		t.Fatalf("expected degraded %q (gate's own budget expired; parent had no deadline), got %q", engine.RelevanceReasonTimeoutGate, degraded)
+	}
+}
+
+// TestRelevanceGate_DegradesOnParentBudgetTimeout verifies the complementary
+// branch: the PARENT's deadline expires first (parent = short deadline, gate
+// timeout = long), so context.Cause(gateCtx) is the parent's cause, NOT
+// errGateBudget → timeout_parent. The relevanceTimeoutEmbedder blocks on
+// ctx.Done, so whichever context expires first drives the classification.
+//
+// Falsification F2: make the classifier always return timeout_gate (drop the
+// parent branch). This test REDs (classifies timeout_gate). The gate-budget
+// test above REDs under the opposite mutation (always timeout_parent) — the
+// two tests reach genuinely different classifications.
+func TestRelevanceGate_DegradesOnParentBudgetTimeout(t *testing.T) {
+	withRelevanceEmbedder(t, relevanceTimeoutEmbedder{})
+	withRelevanceConfig(t, 0.5, 1)
+	// Gate timeout LONGER than the parent so the parent fires first.
+	origTimeout := jobSearchRelevanceTimeout
+	jobSearchRelevanceTimeout = 5 * time.Second
+	t.Cleanup(func() { jobSearchRelevanceTimeout = origTimeout })
+
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	results := []engine.SearxngResult{
+		{Title: "Job A", URL: "http://example.com/a", Content: "some job"},
+	}
+	got, degraded, _ := applyRelevanceGate(parent, "q", results)
+	if len(got) != 1 {
+		t.Fatalf("timeout must fail-open (return all), got %d", len(got))
+	}
+	if degraded != engine.RelevanceReasonTimeoutParent {
+		t.Fatalf("expected degraded %q (parent's deadline expired first; gate budget was 5s), got %q", engine.RelevanceReasonTimeoutParent, degraded)
 	}
 }
 
@@ -817,5 +981,160 @@ func TestPrependRelevanceNotice_ShownWhenGateFilters(t *testing.T) {
 	got := prependRelevanceNotice("base summary", "timeout", "")
 	if !stringContains(got, "Relevance filtering unavailable") {
 		t.Fatalf("degradation notice must be shown when the gate is configured to filter, got %q", got)
+	}
+}
+
+// === httptest-driven classification: the production error shape is the oracle ===
+//
+// The stub-based tests above (relevanceTimeoutEmbedder) return ctx.Err()
+// directly, bypassing the HTTP client entirely — so they cannot detect a
+// classifier that misreads the real *url.Error / *retry.RetryError shape that
+// net/http and the v1 retry ladder actually produce. These tests drive a real
+// *http.Client against an httptest.Server so the production error shape is
+// what gets classified.
+//
+// hangingEmbedServer returns an httptest server that accepts the embed
+// request and blocks until the request's context is done (client cancel /
+// timeout). This is the shape that triggers each timeout case:
+//   - case A: the gate's own WithTimeoutCause fires → Cause == errGateBudget.
+//   - case B: the parent's deadline fires first → Cause == parent's cause.
+//   - case C: http.Client.Timeout fires, both budgets alive → Cause == nil.
+func hangingEmbedServer() *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	return srv
+}
+
+// closeEmbedServer closes the httptest server, first force-closing any
+// lingering client connections so a handler blocked on r.Context().Done()
+// unblocks immediately (the HTTP client may keep the TCP connection in its
+// idle pool after Do returns, leaving the server-side request context live).
+func closeEmbedServer(srv *httptest.Server) {
+	srv.CloseClientConnections()
+	srv.Close()
+}
+
+// newTestEmbedClient builds a *kitembed.Client pointing at serverURL with the
+// gate's budget opts (NoRetry v2, chunk size) plus an optional per-request
+// HTTP timeout (via WithTimeout, a base opt that EmbedClientBudgetOpts does
+// not override). Used by the httptest classification tests.
+func newTestEmbedClient(t *testing.T, serverURL string, httpTimeout time.Duration) kitembed.Embedder {
+	t.Helper()
+	baseOpts := []kitembed.Opt{
+		kitembed.WithBackend("http"),
+		kitembed.WithDim(3),
+		kitembed.WithLogger(slog.Default()),
+	}
+	if httpTimeout > 0 {
+		baseOpts = append(baseOpts, kitembed.WithTimeout(httpTimeout))
+	}
+	c, err := NewEmbedClient(serverURL, baseOpts...)
+	if err != nil {
+		t.Fatalf("NewEmbedClient: %v", err)
+	}
+	return c
+}
+
+// TestRelevanceGate_HTTPLive_GateBudgetTimeout is case A: the gate's OWN
+// jobSearchRelevanceTimeout expires first (parent = Background, no parent
+// deadline). A real *http.Client hits a hanging httptest.Server; net/http
+// propagates context.Cause(gateCtx) (= errGateBudget) into the *url.Error,
+// and the v1 retry ladder wraps it in *retry.RetryError. The classifier must
+// label this timeout_gate.
+//
+// Falsification F1: revert classifyEmbedError to the 73ebaec shape (gate the
+// errGateBudget check behind the DeadlineExceeded arm). In case A the cause
+// is errGateBudget, NOT DeadlineExceeded, so the deadline arm is never entered
+// and the error falls through to embed_error → this test REDs.
+func TestRelevanceGate_HTTPLive_GateBudgetTimeout(t *testing.T) {
+	srv := hangingEmbedServer()
+	defer closeEmbedServer(srv)
+	withRelevanceEmbedder(t, newTestEmbedClient(t, srv.URL, 0))
+	withRelevanceConfig(t, 0.5, 1)
+	origTimeout := jobSearchRelevanceTimeout
+	jobSearchRelevanceTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { jobSearchRelevanceTimeout = origTimeout })
+
+	results := []engine.SearxngResult{
+		{Title: "Job A", URL: "http://example.com/a", Content: "some job"},
+	}
+	got, degraded, _ := applyRelevanceGate(context.Background(), "q", results)
+	if len(got) != 1 {
+		t.Fatalf("timeout must fail-open (return all), got %d", len(got))
+	}
+	if degraded != engine.RelevanceReasonTimeoutGate {
+		t.Fatalf("case A: gate's own budget expired (Cause=errGateBudget), want %q, got %q", engine.RelevanceReasonTimeoutGate, degraded)
+	}
+}
+
+// TestRelevanceGate_HTTPLive_ParentBudgetTimeout is case B: the PARENT's
+// deadline expires first (parent = short deadline, gate timeout = long). A
+// real *http.Client hits a hanging httptest.Server; the parent fires, so
+// context.Cause(gateCtx) is the parent's cause (DeadlineExceeded), NOT
+// errGateBudget. The classifier must label this timeout_parent.
+//
+// Falsification F2: drop the `Cause != nil -> timeout_parent` sub-branch. This
+// test REDs. (Making the classifier ALWAYS return timeout_gate is a WIDER
+// mutation — it would also RED the case-C test, which F2 does not claim.)
+func TestRelevanceGate_HTTPLive_ParentBudgetTimeout(t *testing.T) {
+	srv := hangingEmbedServer()
+	defer closeEmbedServer(srv)
+	withRelevanceEmbedder(t, newTestEmbedClient(t, srv.URL, 0))
+	withRelevanceConfig(t, 0.5, 1)
+	// Gate timeout LONGER than the parent so the parent fires first.
+	origTimeout := jobSearchRelevanceTimeout
+	jobSearchRelevanceTimeout = 5 * time.Second
+	t.Cleanup(func() { jobSearchRelevanceTimeout = origTimeout })
+
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	results := []engine.SearxngResult{
+		{Title: "Job A", URL: "http://example.com/a", Content: "some job"},
+	}
+	got, degraded, _ := applyRelevanceGate(parent, "q", results)
+	if len(got) != 1 {
+		t.Fatalf("timeout must fail-open (return all), got %d", len(got))
+	}
+	if degraded != engine.RelevanceReasonTimeoutParent {
+		t.Fatalf("case B: parent's deadline expired first (Cause=DeadlineExceeded), want %q, got %q", engine.RelevanceReasonTimeoutParent, degraded)
+	}
+}
+
+// TestRelevanceGate_HTTPLive_ClientTimeout is case C: the HTTP client's own
+// per-request Timeout fires while both the gate and parent budgets are alive.
+// A real *http.Client (with a tight WithTimeout) hits a hanging httptest.Server;
+// the client timeout fires, the *url.Error wraps DeadlineExceeded, but
+// context.Cause(gateCtx) is nil — neither budget expired. The classifier must
+// label this timeout_client.
+//
+// Falsification F3: fold timeout_client back into timeout_parent (the 73ebaec
+// behaviour). This test REDs (classifies timeout_parent).
+func TestRelevanceGate_HTTPLive_ClientTimeout(t *testing.T) {
+	srv := hangingEmbedServer()
+	defer closeEmbedServer(srv)
+	// Tight per-request HTTP timeout (10ms) so each ATTEMPT fires well before
+	// the 5s gate budget. The v1 retry ladder (3 attempts, 200ms+400ms
+	// backoff) exhausts in ~610ms: what fires is the per-request timeout,
+	// never the gate context, which stays alive throughout.
+	withRelevanceEmbedder(t, newTestEmbedClient(t, srv.URL, 10*time.Millisecond))
+	withRelevanceConfig(t, 0.5, 1)
+	origTimeout := jobSearchRelevanceTimeout
+	jobSearchRelevanceTimeout = 5 * time.Second
+	t.Cleanup(func() { jobSearchRelevanceTimeout = origTimeout })
+
+	results := []engine.SearxngResult{
+		{Title: "Job A", URL: "http://example.com/a", Content: "some job"},
+	}
+	got, degraded, _ := applyRelevanceGate(context.Background(), "q", results)
+	if len(got) != 1 {
+		t.Fatalf("timeout must fail-open (return all), got %d", len(got))
+	}
+	if degraded != engine.RelevanceReasonTimeoutClient {
+		t.Fatalf("case C: client timeout fired (Cause=nil), want %q, got %q", engine.RelevanceReasonTimeoutClient, degraded)
 	}
 }

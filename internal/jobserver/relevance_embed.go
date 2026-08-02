@@ -18,11 +18,15 @@ const relevanceEmbedChunkSize = 32
 //
 // The per-request HTTP timeout is deliberately NOT tuned here. The OUTER
 // bound is the gate context — jobSearchRelevanceTimeout (15s default, set in
-// relevance_gate.go), which already wraps both embed calls (EmbedQuery then
-// Embed) via context.WithTimeout and is the sole arbiter of when the gate
-// gives up. The per-request timeout is kitembed's library default (30s), the
-// same default every other caller of the same embed server uses (go-search
-// 30s explicit, MemDB 30s default, vaelor 120s explicit — none derive one).
+// relevance_gate.go), which wraps both embed calls (EmbedQuery then Embed)
+// via context.WithTimeoutCause. It is NOT the sole arbiter of when the gate
+// gives up: context.WithTimeoutCause yields min(d, parent's remaining), so
+// the gate gives up when EITHER its own budget OR the parent's deadline
+// expires, whichever is first; the two are distinguished via context.Cause
+// in classifyEmbedError. The per-request timeout is kitembed's library
+// default (30s), the same default every other caller of the same embed
+// server uses (go-search 30s explicit, MemDB 30s default, vaelor 120s
+// explicit — none derive one).
 //
 // A per-request timeout TIGHTER than the feature's own outer budget can only
 // convert a graceful degradation into a hard failure: the prior derived
@@ -48,8 +52,11 @@ func EmbedClientBudgetOpts() []kitembed.Opt {
 
 // NewEmbedClient constructs the embed client used by the job_search relevance
 // gate, with retry and chunk size scoped to the gate (EmbedClientBudgetOpts).
-// The per-request timeout is kitembed's library default; the gate context
-// (jobSearchRelevanceTimeout) is the sole outer bound. baseOpts select the
+// The per-request timeout is kitembed's library default. The gate context
+// (jobSearchRelevanceTimeout) bounds the gate's own work but is NOT the sole
+// outer bound: WithTimeoutCause yields min(d, parent's remaining), so the
+// parent tool context can expire first — classifyEmbedError tells the two
+// apart. baseOpts select the
 // backend, dimension, and logger; the budget opts are appended last so they
 // win. Use this at the production construction site (main.go).
 func NewEmbedClient(url string, baseOpts ...kitembed.Opt) (*kitembed.Client, error) {
