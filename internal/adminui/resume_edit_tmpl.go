@@ -39,7 +39,7 @@ const resumeEditTmplSrc = `<style>
   {{/* ─── Person header ─── */}}
   <div class="re-section">
     <h3>Person</h3>
-    <form method="POST" action="/admin/resume/person">
+    <form method="POST" action="/admin/persons/{{.Person.ID}}/edit">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="re-form-grid">
         <div>
@@ -84,7 +84,7 @@ const resumeEditTmplSrc = `<style>
     <div class="re-row">
       <div class="name">{{.Title}} <span class="meta">@ {{.Company}}</span></div>
       <div class="meta">{{.StartDate}}{{if .EndDate}} – {{.EndDate}}{{end}}</div>
-      <form method="POST" action="/admin/resume/experience/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/experiences/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm('Delete experience?')">Del</button>
@@ -93,7 +93,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add experience</h4>
-      <form method="POST" action="/admin/resume/experience">
+      <form method="POST" action="/admin/experiences/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
@@ -144,7 +144,7 @@ const resumeEditTmplSrc = `<style>
         </select>
         <button class="re-btn re-btn-sm" type="submit">Set</button>
       </form>
-      <form method="POST" action="/admin/resume/skill/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/skills/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm('Delete skill?')">Del</button>
@@ -153,7 +153,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add skill</h4>
-      <form method="POST" action="/admin/resume/skill">
+      <form method="POST" action="/admin/skills/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
@@ -189,7 +189,7 @@ const resumeEditTmplSrc = `<style>
       <div class="name">{{.Text}}
         {{if .Metric}}<span class="re-chip">{{.Metric}}{{if .Value}}: {{.Value}}{{end}}</span>{{end}}
       </div>
-      <form method="POST" action="/admin/resume/achievement/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/achievements/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm('Delete achievement?')">Del</button>
@@ -198,7 +198,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add achievement</h4>
-      <form method="POST" action="/admin/resume/achievement">
+      <form method="POST" action="/admin/achievements/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div class="re-form-full">
@@ -231,7 +231,7 @@ const resumeEditTmplSrc = `<style>
     {{range .Domains}}
     <div class="re-row">
       <div class="name">{{.Name}}</div>
-      <form method="POST" action="/admin/resume/domain/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/domains/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm('Delete domain?')">Del</button>
@@ -240,7 +240,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add domain</h4>
-      <form method="POST" action="/admin/resume/domain">
+      <form method="POST" action="/admin/domains/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div>
           <label class="re-label">Name *</label>
@@ -259,7 +259,7 @@ const resumeEditTmplSrc = `<style>
     {{range .Methodologies}}
     <div class="re-row">
       <div class="name">{{.Name}}{{if .Description}} <span class="meta">— {{.Description}}</span>{{end}}</div>
-      <form method="POST" action="/admin/resume/methodology/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/methodologies/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm('Delete methodology?')">Del</button>
@@ -268,7 +268,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add methodology</h4>
-      <form method="POST" action="/admin/resume/methodology">
+      <form method="POST" action="/admin/methodologies/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
@@ -294,7 +294,7 @@ const resumeEditTmplSrc = `<style>
       <div class="name">{{.Name}}{{if .Description}} <span class="meta">— {{.Description}}</span>{{end}}
         {{if .URL}}<a href="{{.URL}}" style="font-size:.78rem;color:#60a5fa" target="_blank">link</a>{{end}}
       </div>
-      <form method="POST" action="/admin/resume/project/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/projects/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm(&#39;Delete project?&#39;)">Del</button>
@@ -303,7 +303,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add project</h4>
-      <form method="POST" action="/admin/resume/project">
+      <form method="POST" action="/admin/projects/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
@@ -334,7 +334,7 @@ const resumeEditTmplSrc = `<style>
       <div class="name">{{.School}}{{if .Degree}} <span class="meta">— {{.Degree}}{{if .Field}} / {{.Field}}{{end}}</span>{{end}}
         {{if .StartDate}}<span class="meta"> {{.StartDate}}–{{.EndDate}}</span>{{end}}
       </div>
-      <form method="POST" action="/admin/resume/education/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/educations/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm(&#39;Delete education?&#39;)">Del</button>
@@ -343,7 +343,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add education</h4>
-      <form method="POST" action="/admin/resume/education">
+      <form method="POST" action="/admin/educations/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
@@ -387,7 +387,7 @@ const resumeEditTmplSrc = `<style>
         {{if .Year}}<span class="meta"> ({{.Year}})</span>{{end}}
         {{if .URL}}<a href="{{.URL}}" style="font-size:.78rem;color:#60a5fa" target="_blank">link</a>{{end}}
       </div>
-      <form method="POST" action="/admin/resume/certification/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/certifications/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button class="re-btn re-btn-sm re-btn-del" type="submit"
           onclick="return confirm(&#39;Delete certification?&#39;)">Del</button>
@@ -396,7 +396,7 @@ const resumeEditTmplSrc = `<style>
     {{end}}
     <div class="re-add-form">
       <h4>Add certification</h4>
-      <form method="POST" action="/admin/resume/certification">
+      <form method="POST" action="/admin/certifications/new">
         <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
         <div class="re-form-grid">
           <div>
