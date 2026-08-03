@@ -66,6 +66,21 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           fi
 
+      - name: Install PDF render toolchain
+        # gremlins runs `go test ./...` for coverage — same test suite as
+        # preflight. pdfrender tests fail without typst+pandoc+fonts
+        # (requireRenderBinaries turns missing binary into failure, not skip).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pandoc poppler-utils fonts-ibm-plex
+          TYPST_VERSION=v0.14.2
+          curl -fsSL -o /tmp/typst.tar.xz \
+            "https://github.com/typst/typst/releases/download/${TYPST_VERSION}/typst-aarch64-unknown-linux-musl.tar.xz"
+          sudo tar -xJf /tmp/typst.tar.xz --strip-components=1 -C /usr/local/bin \
+            typst-aarch64-unknown-linux-musl/typst
+          typst --version
+
       - name: Run migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
