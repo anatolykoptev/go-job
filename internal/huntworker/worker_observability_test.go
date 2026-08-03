@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
 	"github.com/stretchr/testify/assert"
@@ -368,4 +369,108 @@ func Test_BudgetCountsAttempts(t *testing.T) {
 		"LLMResult must be 'parse_fail' when LLM returns malformed JSON")
 	assert.False(t, sr.LLMCalled,
 		"LLMCalled must remain false for failOpen (parse_fail) path")
+}
+
+// ---------------------------------------------------------------------------
+// Gauge refresher tests
+// ---------------------------------------------------------------------------
+
+// fakeUnscoredStatsStore implements unscoredJobStatsStore for gauge refresher tests.
+type fakeUnscoredStatsStore struct {
+	stats hunt.UnscoredJobsStats
+	err   error
+	calls atomic.Int64
+}
+
+func (f *fakeUnscoredStatsStore) UnscoredOpenJobsStats(_ context.Context) (hunt.UnscoredJobsStats, error) {
+	f.calls.Add(1)
+	if f.err != nil {
+		return hunt.UnscoredJobsStats{}, f.err
+	}
+	return f.stats, nil
+}
+
+// Test_RefreshUnscoredGauges_UpdatesGauges verifies that refreshUnscoredGauges
+// calls UnscoredOpenJobsStats and sets both gauges from the result. This is
+// the fix for the false-positive alert: without the periodic refresher, the
+// gauges are frozen between 6h cycles and the >7200s alert fires on stale data.
+//
+// RED-on-revert: remove refreshUnscoredGauges → gauges stay at 0 (never updated
+// between cycles). Remove the engine.SetHuntUnscoredJobsCount/MaxAge calls →
+// gauges don't reflect the stats query result.
+func Test_RefreshUnscoredGauges_UpdatesGauges(t *testing.T) {
+	engine.InitTestRegistry()
+
+	store := &fakeUnscoredStatsStore{
+		stats: hunt.UnscoredJobsStats{
+			Count:     3,
+			OldestAge: 4 * time.Hour,
+		},
+	}
+
+	refreshUnscoredGauges(context.Background(), store)
+
+	assert.Equal(t, int64(1), store.calls.Load(),
+		"refreshUnscoredGauges must call UnscoredOpenJobsStats once")
+
+	assert.Equal(t, float64(3), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+		"gauge count must reflect stats.Count")
+	assert.InDelta(t, 14400, engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge), 1,
+		"gauge max_age must reflect stats.OldestAge in seconds (4h = 14400s)")
+}
+
+// Test_RefreshUnscoredGauges_ZeroCountSetsZero verifies that when there are
+// no unscored jobs, both gauges are set to 0 (not left at stale values).
+func Test_RefreshUnscoredGauges_ZeroCountSetsZero(t *testing.T) {
+	engine.InitTestRegistry()
+
+	// Pre-set gauges to non-zero to verify they get reset.
+	engine.SetHuntUnscoredJobsCount(42)
+	engine.SetHuntUnscoredJobsMaxAge(9999)
+
+	store := &fakeUnscoredStatsStore{
+		stats: hunt.UnscoredJobsStats{Count: 0, OldestAge: 0},
+	}
+
+	refreshUnscoredGauges(context.Background(), store)
+
+	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+		"gauge count must be 0 when no unscored jobs")
+	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge),
+		"gauge max_age must be 0 when no unscored jobs")
+}
+
+// Test_RefreshUnscoredGauges_QueryErrorDoesNotPanic verifies that a query
+// failure is logged (not panicked) and gauges are left at their previous value.
+// A DB query failure is NOT a pipeline stall — the alert should not fire on
+// a transient DB blip.
+func Test_RefreshUnscoredGauges_QueryErrorDoesNotPanic(t *testing.T) {
+	engine.InitTestRegistry()
+
+	engine.SetHuntUnscoredJobsCount(5)
+	engine.SetHuntUnscoredJobsMaxAge(3000)
+
+	store := &fakeUnscoredStatsStore{
+		err: assert.AnError,
+	}
+
+	assert.NotPanics(t, func() {
+		refreshUnscoredGauges(context.Background(), store)
+	})
+
+	assert.Equal(t, float64(5), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+		"gauge count must be unchanged on query error")
+	assert.Equal(t, float64(3000), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge),
+		"gauge max_age must be unchanged on query error")
+}
+
+// Test_RefreshUnscoredGauges_NilSafeStore verifies that refreshUnscoredGauges
+// is a no-op when the store doesn't satisfy unscoredJobStatsStore (e.g. a test
+// fake that only implements UnscoredOpenJobs).
+func Test_RefreshUnscoredGauges_NilSafeStore(t *testing.T) {
+	store := &fakeUnscoredStore{} // does NOT implement unscoredJobStatsStore
+
+	assert.NotPanics(t, func() {
+		refreshUnscoredGauges(context.Background(), store)
+	})
 }
