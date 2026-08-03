@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/text"
@@ -225,20 +227,90 @@ func (c *Client) SummarizeDeepWithOpts(ctx context.Context, opts SummarizeOpts, 
 // SummarizeToJSON builds an LLM prompt from search results and parses the response as JSON into T.
 // Returns (parsed, "", nil) on success, (nil, raw, nil) on parse failure (caller handles fallback),
 // or (nil, "", err) on LLM error.
+// Truncation-aware: uses CompleteDetailed so finish_reason="length" is surfaced instead of
+// being indistinguishable from an honest "nothing found" (issue #413/#428). A truncated response
+// increments the bounded llm_truncations counter and logs raw_len + served model so the first
+// recurrence root-causes itself (raw_len/4 ≈ max_tokens → output cap; far below → upstream cut).
 func SummarizeToJSON[T any](ctx context.Context, c *Client, query, instruction string, maxTokens int, charsPerToken float64, results []sources.Result, contents map[string]string) (*T, string, error) {
 	sources := BuildSourcesText(results, contents, maxTokens, charsPerToken)
 	prompt := fmt.Sprintf("%s\n\nQuery: %s\n\nSources:\n%s", instruction, query, sources)
 
-	raw, err := c.Complete(ctx, prompt)
+	maxOut := c.maxTokens
+	if maxTokens > 0 {
+		maxOut = maxTokens
+	}
+	resp, err := c.CompleteDetailed(ctx, prompt, WithChatMaxTokens(maxOut))
 	if err != nil {
 		return nil, "", err
+	}
+	raw := resp.Content
+	rawLen := len(raw)
+
+	if resp.FinishReason == "length" {
+		IncTruncated("length", resp.ServedBy, rawLen)
+		slog.Warn("llm: response truncated by length limit",
+			slog.Int("raw_len", rawLen),
+			slog.Int("max_tokens", maxOut),
+			slog.String("model", resp.ServedBy),
+			slog.String("query", truncateForLog(query, 80)),
+		)
+		return nil, raw, nil // caller sees raw, but truncation is now visible
 	}
 
 	var out T
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		IncTruncated("unparseable", resp.ServedBy, rawLen)
+		slog.Warn("llm: response unparseable as JSON (possibly truncated)",
+			slog.Int("raw_len", rawLen),
+			slog.String("model", resp.ServedBy),
+			slog.String("finish_reason", resp.FinishReason),
+		)
 		return nil, raw, nil //nolint:nilerr // by design: parse failure returns raw for caller handling
 	}
 	return &out, "", nil
+}
+
+// truncationCounters is a bounded counter (ok/truncated/unparseable) for LLM
+// response classification. Pre-touched at zero so dashboards see a real 0→N
+// transition on first occurrence, not just the second.
+// ponytail: process-local mutex-protected counters; promote to metrics registry
+// if per-model labels are ever needed.
+var (
+	truncationMu     sync.Mutex
+	truncationCounts = map[string]int{"ok": 0, "truncated": 0, "unparseable": 0}
+)
+
+// IncTruncated increments the bounded truncation counter for a class.
+func IncTruncated(class, model string, rawLen int) {
+	truncationMu.Lock()
+	defer truncationMu.Unlock()
+	truncationCounts[class]++
+	if model != "" {
+		// Keep the last routed model per class (bounded at 9 weight-routed models).
+		lastModel[class] = model
+	}
+}
+
+// lastModel records the most recent routed model per class (bounded at 9).
+var lastModel = map[string]string{}
+
+// TruncationStats returns a copy of the truncation counters.
+func TruncationStats() map[string]int {
+	truncationMu.Lock()
+	defer truncationMu.Unlock()
+	out := make(map[string]int, len(truncationCounts))
+	for k, v := range truncationCounts {
+		out[k] = v
+	}
+	return out
+}
+
+// truncateForLog shortens query strings for log lines.
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // SummarizeWithTier summarizes with tier-specific weights and prompt selection.

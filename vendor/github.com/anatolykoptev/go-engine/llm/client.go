@@ -419,6 +419,55 @@ func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string, 
 	return stripFences(raw), nil
 }
 
+// CompleteDetailed returns the full ChatResponse including FinishReason,
+// ServedBy (model that served), Usage, and Reasoning.
+// Non-breaking addition for callers needing finish_reason / model attribution.
+func (c *Client) CompleteDetailed(ctx context.Context, prompt string, opts ...ChatOption) (*kitllm.ChatResponse, error) {
+	if c.disabled {
+		return nil, ErrUnavailable
+	}
+	var resp *kitllm.ChatResponse
+	err := metrics.TrackCall(c.metrics, "llm_calls_total", "llm_errors_total", func() error {
+		var e error
+		kitOpts := append([]ChatOption{
+			kitllm.WithChatTemperature(c.temperature),
+			kitllm.WithChatMaxTokens(c.maxTokens),
+		}, opts...)
+		resp, e = c.kit.Chat(ctx, []kitllm.Message{{Role: "user", Content: prompt}}, kitOpts...)
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// CompleteDetailedWithSystem returns the full ChatResponse with an explicit system message.
+func (c *Client) CompleteDetailedWithSystem(ctx context.Context, system, prompt string, opts ...ChatOption) (*kitllm.ChatResponse, error) {
+	if c.disabled {
+		return nil, ErrUnavailable
+	}
+	var resp *kitllm.ChatResponse
+	err := metrics.TrackCall(c.metrics, "llm_calls_total", "llm_errors_total", func() error {
+		var e error
+		kitOpts := append([]ChatOption{
+			kitllm.WithChatTemperature(c.temperature),
+			kitllm.WithChatMaxTokens(c.maxTokens),
+		}, opts...)
+		msgs := []kitllm.Message{}
+		if system != "" {
+			msgs = append(msgs, kitllm.Message{Role: "system", Content: system})
+		}
+		msgs = append(msgs, kitllm.Message{Role: "user", Content: prompt})
+		resp, e = c.kit.Chat(ctx, msgs, kitOpts...)
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // stripFences removes markdown code fences from LLM output.
 func stripFences(s string) string {
 	s = strings.TrimPrefix(s, "```json")
