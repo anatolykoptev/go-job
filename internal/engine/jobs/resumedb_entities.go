@@ -149,25 +149,6 @@ func (db *ResumeDB) GetAllSkills(ctx context.Context, personID int) ([]SkillReco
 	return results, rows.Err()
 }
 
-// GetSkillByID fetches a single skill row by primary key.
-func (db *ResumeDB) GetSkillByID(ctx context.Context, skillID int) (SkillRecord, error) {
-	var r SkillRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, '')
-		 FROM resume_skills WHERE id = $1`, skillID).
-		Scan(&r.ID, &r.PersonID, &r.Name, &r.Category, &r.Level)
-	return r, err
-}
-
-// UpdateSkill updates the editable columns of a skill row.
-func (db *ResumeDB) UpdateSkill(ctx context.Context, skillID int, s SkillRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_skills SET name = $2, category = $3, level = $4, updated_at = now()
-		 WHERE id = $1`,
-		skillID, s.Name, s.Category, s.Level)
-	return err
-}
-
 // --- Project CRUD ---
 
 type ProjectRecord struct {
@@ -232,25 +213,6 @@ func (db *ResumeDB) GetProjectsByIDs(ctx context.Context, ids []int) ([]ProjectR
 		results = append(results, r)
 	}
 	return results, rows.Err()
-}
-
-// GetProjectByID fetches a single project row by primary key.
-func (db *ResumeDB) GetProjectByID(ctx context.Context, projectID int) (ProjectRecord, error) {
-	var r ProjectRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
-		 FROM resume_projects WHERE id = $1`, projectID).
-		Scan(&r.ID, &r.PersonID, &r.Name, &r.Description, &r.URL, &r.Tech, &r.Highlights)
-	return r, err
-}
-
-// UpdateProject updates the editable columns of a project row.
-func (db *ResumeDB) UpdateProject(ctx context.Context, projectID int, p ProjectRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_projects SET name = $2, description = $3, url = $4, tech = $5, highlights = $6, updated_at = now()
-		 WHERE id = $1`,
-		projectID, p.Name, p.Description, p.URL, p.Tech, p.Highlights)
-	return err
 }
 
 // --- Achievement CRUD ---
@@ -319,25 +281,6 @@ func (db *ResumeDB) GetAchievementsByIDs(ctx context.Context, ids []int) ([]Achi
 	return results, rows.Err()
 }
 
-// GetAchievementByID fetches a single achievement row by primary key.
-func (db *ResumeDB) GetAchievementByID(ctx context.Context, achvID int) (AchievementRecord, error) {
-	var r AchievementRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
-		 FROM resume_achievements WHERE id = $1`, achvID).
-		Scan(&r.ID, &r.PersonID, &r.Text, &r.Metric, &r.Value, &r.Context)
-	return r, err
-}
-
-// UpdateAchievement updates the editable columns of an achievement row.
-func (db *ResumeDB) UpdateAchievement(ctx context.Context, achvID int, a AchievementRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_achievements SET text = $2, metric = $3, value = $4, context = $5, updated_at = now()
-		 WHERE id = $1`,
-		achvID, a.Text, a.Metric, a.Value, a.Context)
-	return err
-}
-
 // --- Education CRUD ---
 
 type EducationRecord struct {
@@ -384,28 +327,6 @@ func (db *ResumeDB) GetAllEducations(ctx context.Context, personID int) ([]Educa
 	return results, rows.Err()
 }
 
-// GetEducationByID fetches a single education row by primary key.
-func (db *ResumeDB) GetEducationByID(ctx context.Context, eduID int) (EducationRecord, error) {
-	var r EducationRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, COALESCE(person_id, 0), school, degree, COALESCE(field, ''),
-		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(gpa, ''), highlights
-		 FROM resume_educations WHERE id = $1`, eduID).
-		Scan(&r.ID, &r.PersonID, &r.School, &r.Degree, &r.Field,
-			&r.StartDate, &r.EndDate, &r.GPA, &r.Highlights)
-	return r, err
-}
-
-// UpdateEducation updates the editable columns of an education row.
-func (db *ResumeDB) UpdateEducation(ctx context.Context, eduID int, e EducationRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_educations SET school = $2, degree = $3, field = $4, start_date = $5, end_date = $6,
-		     gpa = $7, highlights = $8, updated_at = now()
-		 WHERE id = $1`,
-		eduID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights)
-	return err
-}
-
 // --- Certification CRUD ---
 
 type CertificationRecord struct {
@@ -447,25 +368,6 @@ func (db *ResumeDB) GetAllCertifications(ctx context.Context, personID int) ([]C
 	return results, rows.Err()
 }
 
-// GetCertificationByID fetches a single certification row by primary key.
-func (db *ResumeDB) GetCertificationByID(ctx context.Context, certID int) (CertificationRecord, error) {
-	var r CertificationRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, COALESCE(person_id, 0), name, COALESCE(issuer, ''), COALESCE(year, ''), COALESCE(url, '')
-		 FROM resume_certifications WHERE id = $1`, certID).
-		Scan(&r.ID, &r.PersonID, &r.Name, &r.Issuer, &r.Year, &r.URL)
-	return r, err
-}
-
-// UpdateCertification updates the editable columns of a certification row.
-func (db *ResumeDB) UpdateCertification(ctx context.Context, certID int, c CertificationRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_certifications SET name = $2, issuer = $3, year = $4, url = $5, updated_at = now()
-		 WHERE id = $1`,
-		certID, c.Name, c.Issuer, c.Year, c.URL)
-	return err
-}
-
 // --- Domain CRUD ---
 
 type DomainRecord struct {
@@ -500,23 +402,6 @@ func (db *ResumeDB) GetAllDomains(ctx context.Context, personID int) ([]DomainRe
 		results = append(results, r)
 	}
 	return results, rows.Err()
-}
-
-// GetDomainByID fetches a single domain row by primary key.
-func (db *ResumeDB) GetDomainByID(ctx context.Context, domainID int) (DomainRecord, error) {
-	var r DomainRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, name FROM public.resume_domains WHERE id = $1`, domainID).
-		Scan(&r.ID, &r.Name)
-	return r, err
-}
-
-// UpdateDomain updates the name of a domain row.
-func (db *ResumeDB) UpdateDomain(ctx context.Context, domainID int, name string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE public.resume_domains SET name = $2 WHERE id = $1`,
-		domainID, name)
-	return err
 }
 
 // --- Methodology CRUD ---
@@ -554,23 +439,6 @@ func (db *ResumeDB) GetAllMethodologies(ctx context.Context, personID int) ([]Me
 		results = append(results, r)
 	}
 	return results, rows.Err()
-}
-
-// GetMethodologyByID fetches a single methodology row by primary key.
-func (db *ResumeDB) GetMethodologyByID(ctx context.Context, methodID int) (MethodologyRecord, error) {
-	var r MethodologyRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies WHERE id = $1`, methodID).
-		Scan(&r.ID, &r.Name, &r.Description)
-	return r, err
-}
-
-// UpdateMethodology updates the name and description of a methodology row.
-func (db *ResumeDB) UpdateMethodology(ctx context.Context, methodID int, name, desc string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE public.resume_methodologies SET name = $2, description = $3 WHERE id = $1`,
-		methodID, name, desc)
-	return err
 }
 
 // --- Extended mutations ---

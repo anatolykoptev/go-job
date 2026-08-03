@@ -109,6 +109,108 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 	}
 }
 
+// resumePersonEditHandler handles POST /admin/resume/person.
+func resumePersonEditHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		// Validate form inputs before any DB call.
+		if r.FormValue("name") == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		headline := r.FormValue("headline")
+		hourlyRateCents, rateErr := parseDollarsToCents(r.FormValue("hourly_rate"))
+		if rateErr != nil {
+			http.Error(w, rateErr.Error(), http.StatusBadRequest)
+			return
+		}
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+
+		person, err := db.GetPerson(r.Context(), personID)
+		if err != nil || person == nil {
+			http.Error(w, "person not found", http.StatusNotFound)
+			return
+		}
+		updated := jobs.PersonRecord{
+			ID:       person.ID,
+			Name:     r.FormValue("name"),
+			Email:    r.FormValue("email"),
+			Phone:    r.FormValue("phone"),
+			Location: r.FormValue("location"),
+			Links:    person.Links,
+			Summary:  r.FormValue("summary"),
+		}
+		if err := db.UpdateResumePerson(r.Context(), personID, updated); err != nil {
+			slog.Error("resumePersonEditHandler: UpdateResumePerson", "err", err)
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		// Update Upwork-specific fields.
+		if err := db.UpdatePersonUpworkFields(r.Context(), personID, headline, hourlyRateCents); err != nil {
+			slog.Error("resumePersonEditHandler: UpdatePersonUpworkFields", "err", err)
+			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeSkillCreateHandler handles POST /admin/resume/skill.
+func resumeSkillCreateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		name := r.FormValue("name")
+		if name == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		level := r.FormValue("level")
+		if level == "" {
+			level = "intermediate"
+		}
+		if !jobs.IsValidSkillLevel(level) {
+			http.Error(w, fmt.Sprintf("invalid level %q", level), http.StatusBadRequest)
+			return
+		}
+		s := jobs.SkillRecord{Name: name, Category: r.FormValue("category"), Level: level}
+		if _, err := db.InsertSkill(r.Context(), personID, s); err != nil {
+			slog.Error("resumeSkillCreateHandler: InsertSkill", "err", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeSkillDeleteHandler handles POST /admin/resume/skill/{id}/delete.
+// parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
+func resumeSkillDeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		id, ok := parseIDParam(w, r)
+		if !ok {
+			return
+		}
+		db, _, ok2 := requireResumeDB(w, r)
+		if !ok2 {
+			return
+		}
+		if err := db.DeleteSkill(r.Context(), id); err != nil {
+			slog.Error("resumeSkillDeleteHandler: DeleteSkill", "id", id, "err", err)
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
 // resumeSkillLevelHandler handles POST /admin/resume/skill/{id}/level.
 // parseIDParam + level validation run BEFORE requireResumeDB for early rejection.
 func resumeSkillLevelHandler() http.HandlerFunc {
@@ -130,6 +232,145 @@ func resumeSkillLevelHandler() http.HandlerFunc {
 		if err := db.UpdateSkillLevel(r.Context(), id, level); err != nil {
 			slog.Error("resumeSkillLevelHandler: UpdateSkillLevel", "id", id, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeAchievementCreateHandler handles POST /admin/resume/achievement.
+//
+//nolint:dupl
+func resumeAchievementCreateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		text := r.FormValue("text")
+		if text == "" {
+			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		ach := jobs.AchievementRecord{
+			Text:    text,
+			Metric:  r.FormValue("metric"),
+			Value:   r.FormValue("value"),
+			Context: r.FormValue("context"),
+		}
+		if _, err := db.InsertAchievement(r.Context(), personID, ach); err != nil {
+			slog.Error("resumeAchievementCreateHandler: InsertAchievement", "err", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+		syncProfileVectorsBestEffort(r, personID)
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeAchievementDeleteHandler handles POST /admin/resume/achievement/{id}/delete.
+func resumeAchievementDeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		id, ok := parseIDParam(w, r)
+		if !ok {
+			return
+		}
+		db, personID, ok2 := requireResumeDB(w, r)
+		if !ok2 {
+			return
+		}
+		if err := db.DeleteAchievement(r.Context(), id); err != nil {
+			slog.Error("resumeAchievementDeleteHandler: DeleteAchievement", "id", id, "err", err)
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		syncProfileVectorsBestEffort(r, personID)
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeDomainCreateHandler handles POST /admin/resume/domain.
+func resumeDomainCreateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		name := r.FormValue("name")
+		if name == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if _, err := db.InsertDomain(r.Context(), personID, name); err != nil {
+			slog.Error("resumeDomainCreateHandler: InsertDomain", "err", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeDomainDeleteHandler handles POST /admin/resume/domain/{id}/delete.
+func resumeDomainDeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		id, ok := parseIDParam(w, r)
+		if !ok {
+			return
+		}
+		db, _, ok2 := requireResumeDB(w, r)
+		if !ok2 {
+			return
+		}
+		if err := db.DeleteDomain(r.Context(), id); err != nil {
+			slog.Error("resumeDomainDeleteHandler: DeleteDomain", "id", id, "err", err)
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeMethodologyCreateHandler handles POST /admin/resume/methodology.
+func resumeMethodologyCreateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		db, personID, ok := requireResumeDB(w, r)
+		if !ok {
+			return
+		}
+		name := r.FormValue("name")
+		if name == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if _, err := db.InsertMethodology(r.Context(), personID, name, r.FormValue("description")); err != nil {
+			slog.Error("resumeMethodologyCreateHandler: InsertMethodology", "err", err)
+			http.Error(w, "insert failed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
+	}
+}
+
+// resumeMethodologyDeleteHandler handles POST /admin/resume/methodology/{id}/delete.
+func resumeMethodologyDeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CSRF already verified by MountAction — no verifyCSRF call needed.
+		id, ok := parseIDParam(w, r)
+		if !ok {
+			return
+		}
+		db, _, ok2 := requireResumeDB(w, r)
+		if !ok2 {
+			return
+		}
+		if err := db.DeleteMethodology(r.Context(), id); err != nil {
+			slog.Error("resumeMethodologyDeleteHandler: DeleteMethodology", "id", id, "err", err)
+			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
 		}
 		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
@@ -165,7 +406,14 @@ func parseIDParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return id, true
 }
 
-// syncProfileVectorsBestEffort was the *r.Request-based variant of the profile
-// vector sync. It is no longer called — all resume entity mutations now go
-// through go-panel Writer hooks which use syncProfileVectorsBestEffortCtx
-// (context-based). Removed to satisfy the unused linter.
+// syncProfileVectorsBestEffort re-derives the structured-profile resume_vectors
+// rows after a profile mutation. It is best-effort: the entity mutation has
+// already persisted, so an embedder outage or a vector-store error must NOT
+// fail the HTTP response — the derived rows degrade to NULL embeddings for a
+// later backfill. Manual source='agent' memories are never touched by the sync.
+func syncProfileVectorsBestEffort(r *http.Request, personID int) {
+	if err := jobs.SyncProfileVectors(r.Context(), personID); err != nil {
+		slog.Warn("resume edit: profile vector sync failed (mutation already persisted)",
+			slog.Int("person_id", personID), slog.Any("err", err))
+	}
+}
