@@ -63,6 +63,110 @@ type unscoredJobStatsStore interface {
 	UnscoredOpenJobsStats(ctx context.Context) (hunt.UnscoredJobsStats, error)
 }
 
+// huntSettingsStore is the narrow store interface for loading/saving hunt
+// settings. Implemented by *hunt.Store; tests inject a fake.
+type huntSettingsStore interface {
+	GetHuntSettings(ctx context.Context) (hunt.HuntSettings, error)
+}
+
+// LoadSettings loads hunt worker settings from the DB (primary) with env-var
+// fallbacks for any zero-value field. This allows the operator to tune the
+// worker via the admin UI without a redeploy — changes apply on the next cycle.
+//
+// Merge rules (per field):
+//   - Enabled: DB value if row exists, else env HUNT_INGEST_ENABLED (default false).
+//   - Interval: DB value if > 0, else env HUNT_INGEST_INTERVAL (default 6h).
+//   - Queries: DB value if non-empty, else env HUNT_INGEST_QUERIES (default
+//     "software engineer,backend engineer,golang developer").
+//   - NotifyChatID: DB value if > 0, else env HUNT_NOTIFY_CHAT_ID (default 0).
+//   - NotifyMinFit: DB value if > 0, else env HUNT_NOTIFY_MIN_FIT (default 0).
+//     Clamped to [0,100].
+//   - NotifyMaxAge: DB value if > 0, else env HUNT_NOTIFY_MAX_AGE (default 48h).
+//   - ScoreEnabled: DB value if row exists, else env HUNT_SCORE_ENABLED (default true).
+//   - ScoreMinJaccard: DB value if > 0, else env HUNT_SCORE_MIN_JACCARD (default 8).
+//   - ScoreMaxLLMPerCycle: DB value if > 0, else env HUNT_SCORE_MAX_LLM_PER_CYCLE (default 50).
+//   - ScoreSweepLimit: DB value if > 0, else env HUNT_SCORE_SWEEP_LIMIT (default 50).
+//   - ScoreFailOpen: DB value if row exists, else env HUNT_SCORE_FAIL_OPEN (default true).
+func LoadSettings(ctx context.Context, store huntSettingsStore) hunt.HuntSettings {
+	s := hunt.HuntSettings{
+		Enabled:             envEqualFold("HUNT_INGEST_ENABLED", "true"),
+		Interval:            env.MustDuration("HUNT_INGEST_INTERVAL", 6*time.Hour),
+		Queries:             env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries),
+		NotifyChatID:        int64(env.MustInt("HUNT_NOTIFY_CHAT_ID", 0)),
+		NotifyMinFit:        clampNotifyMinFit(env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)),
+		NotifyMaxAge:        env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour),
+		ScoreEnabled:        envEqualFold("HUNT_SCORE_ENABLED", "true"),
+		ScoreMinJaccard:     env.MustInt("HUNT_SCORE_MIN_JACCARD", 8),
+		ScoreMaxLLMPerCycle: env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50),
+		ScoreSweepLimit:     env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50),
+		ScoreFailOpen:       envEqualFold("HUNT_SCORE_FAIL_OPEN", "true"),
+	}
+	if store == nil {
+		return s
+	}
+	db, err := store.GetHuntSettings(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "hunt worker: settings DB load error, using env defaults",
+			slog.Any("error", err))
+		return s
+	}
+	// Merge: DB wins for non-zero values; zero-value DB fields keep env defaults.
+	// Enabled/ScoreEnabled/ScoreFailOpen are bools — DB always wins if the row
+	// exists (GetHuntSettings returns zero-value HuntSettings with all bools =
+	// false when the row is absent, but in that case we keep env defaults).
+	if db.Interval > 0 {
+		s.Interval = db.Interval
+	}
+	if db.Queries != "" {
+		s.Queries = db.Queries
+	}
+	if db.NotifyChatID > 0 {
+		s.NotifyChatID = db.NotifyChatID
+	}
+	if db.NotifyMinFit > 0 {
+		s.NotifyMinFit = clampNotifyMinFit(db.NotifyMinFit)
+	}
+	if db.NotifyMaxAge > 0 {
+		s.NotifyMaxAge = db.NotifyMaxAge
+	}
+	if db.ScoreMinJaccard > 0 {
+		s.ScoreMinJaccard = db.ScoreMinJaccard
+	}
+	if db.ScoreMaxLLMPerCycle > 0 {
+		s.ScoreMaxLLMPerCycle = db.ScoreMaxLLMPerCycle
+	}
+	if db.ScoreSweepLimit > 0 {
+		s.ScoreSweepLimit = db.ScoreSweepLimit
+	}
+	// Bool fields: DB wins only if the row actually exists (UpdatedAt non-zero).
+	if !db.UpdatedAt.IsZero() {
+		s.Enabled = db.Enabled
+		s.ScoreEnabled = db.ScoreEnabled
+		s.ScoreFailOpen = db.ScoreFailOpen
+	}
+	return s
+}
+
+// envEqualFold reads an env var and compares case-insensitively to val.
+func envEqualFold(key, val string) bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(key)), val)
+}
+
+// clampNotifyMinFit clamps the fit-gate threshold to [0,100] with a warning
+// on out-of-range values (PF-14 fix: a malformed knob must never silently open
+// the gate or block all notifications).
+func clampNotifyMinFit(n int) int {
+	if n < 0 {
+		slog.Warn("hunt: notify_min_fit negative, clamping to 0 (gate open)", slog.Int("value", n))
+		return 0
+	}
+	if n > 100 {
+		slog.Warn("hunt: notify_min_fit >100, clamping to 100 (gate fully closed)", slog.Int("value", n))
+		return 100
+	}
+	return n
+}
+
 // defaultIngestQueries are generic role/skill strings used when the operator
 // has not set HUNT_INGEST_QUERIES.  No company names, no personal targets —
 // PUBLIC-repo-safe.
@@ -93,9 +197,7 @@ const perPlatformTimeout = 120 * time.Second
 type Worker struct {
 	store          *hunt.Store
 	notifier       hunt.Notifier
-	notifyMetric   func(outcome string) // wired to engine.IncrHuntNotify in production
-	interval       time.Duration
-	queries        []string
+	notifyMetric   func(outcome string)  // wired to engine.IncrHuntNotify in production
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
 	scorerDeps     score.ScorerDeps
 	// llmBreaker is the cross-cycle LLM circuit breaker (PF-2). When non-nil,
@@ -114,6 +216,11 @@ type Worker struct {
 	// runCycle is still executing → concurrent DB upserts, 2x ATS API calls,
 	// LLM budget confusion. CAS(false→true) on tick; store(false) on exit.
 	cycleRunning atomic.Bool
+	// settings holds the current hunt worker settings (DB + env merge).
+	// Reloaded at the start of each cycle so admin-UI changes apply without
+	// a redeploy. Interval is read once at Run() start (ticker is fixed);
+	// all other fields are read per-cycle.
+	settings atomic.Pointer[hunt.HuntSettings]
 }
 
 // NewWorker builds a Worker from env vars.  Returns nil if the store is nil
@@ -123,11 +230,8 @@ func NewWorker(store *hunt.Store) *Worker {
 	if store == nil {
 		return nil
 	}
-	queries := parseQueries(env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries))
 	w := &Worker{
 		store:        store,
-		interval:     env.MustDuration("HUNT_INGEST_INTERVAL", 6*time.Hour),
-		queries:      queries,
 		notifyMetric: engine.IncrHuntNotify,
 		// scoringProfile is loaded lazily on first Run (requires DB + context).
 		llmFn: engine.CallLLM,
@@ -181,27 +285,13 @@ func newLLMBreaker() *breaker.Breaker {
 // Must be called before Run(). Optional — if nil, no notifications are sent.
 func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
 
-// huntNotifyMinFit reads HUNT_NOTIFY_MIN_FIT from the environment.
-// Default 0 = gate fully open (all scored jobs pass through).
-// Set to e.g. 60 to drop jobs with fit_score < 60.
-//
-// Read PER CALL (not snapshotted at NewWorker) BY DESIGN: Phase 7 flips the gate
-// by raising this env var, and reading it each cycle lets the change take effect
-// without a redeploy (per the migration plan's "no deploy if read each cycle").
-// A non-numeric value panics (PF-8 fix: fail-fast on config errors).
-// Out-of-range values clamp to [0,100] with a warning (PF-14 fix: a malformed
-// knob must never silently open the gate or block all notifications).
-func huntNotifyMinFit() int {
-	n := env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)
-	if n < 0 {
-		slog.Warn("hunt: HUNT_NOTIFY_MIN_FIT negative, clamping to 0 (gate open)", slog.Int("value", n))
-		return 0
+// notifyMinFit returns the fit-gate threshold from the current settings
+// (DB + env merge). Read per-call so admin-UI changes apply on the next cycle.
+func (w *Worker) notifyMinFit() int {
+	if s := w.settings.Load(); s != nil {
+		return s.NotifyMinFit
 	}
-	if n > 100 {
-		slog.Warn("hunt: HUNT_NOTIFY_MIN_FIT >100, clamping to 100 (gate fully closed)", slog.Int("value", n))
-		return 100
-	}
-	return n
+	return 0
 }
 
 // maybeNotifyJob applies the fit gate and fires NotifyNewJob when the outcome
@@ -242,7 +332,7 @@ func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, score *hunt.Sc
 	// "low_fit" is emitted here exactly once (mutually exclusive with the
 	// notifier's stale/no_date/sent outcomes because we return).
 	if score != nil && score.FitBand != hunt.FitBandUnscored {
-		minFit := huntNotifyMinFit()
+		minFit := w.notifyMinFit()
 		if minFit > 0 && score.FitScore < minFit {
 			if w.notifyMetric != nil {
 				w.notifyMetric("low_fit")
@@ -285,9 +375,14 @@ func parseQueries(raw string) []string {
 // Each cycle recovers from panics so one bad platform cannot abort others.
 // Intended to run as a goroutine in main.go.
 func (w *Worker) Run(ctx context.Context) {
+	// Load settings from DB (primary) with env fallback. Interval is fixed
+	// for the ticker lifetime; all other fields are reloaded per-cycle.
+	settings := LoadSettings(ctx, w.store)
+	w.settings.Store(&settings)
+
 	slog.Info("hunt worker: starting",
-		slog.Duration("interval", w.interval),
-		slog.Int("queries", len(w.queries)),
+		slog.Duration("interval", settings.Interval),
+		slog.Int("queries", len(parseQueries(settings.Queries))),
 	)
 
 	// Load the scoring profile once at startup (requires context + DB).
@@ -317,7 +412,7 @@ func (w *Worker) Run(ctx context.Context) {
 	defer gaugeTicker.Stop()
 	slog.Info("hunt worker: gauge refresher started", slog.Duration("interval", gaugeRefreshInterval))
 
-	ticker := time.NewTicker(w.interval)
+	ticker := time.NewTicker(settings.Interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -347,7 +442,14 @@ func (w *Worker) Run(ctx context.Context) {
 // the three ATS platforms (greenhouse, lever, ashby).
 func (w *Worker) runCycle(ctx context.Context) {
 	start := time.Now()
-	slog.Info("hunt worker: cycle start", slog.Int("queries", len(w.queries)))
+
+	// Reload settings from DB so admin-UI changes apply on the next cycle
+	// without a redeploy. Interval is NOT reloaded (ticker is fixed at Run).
+	settings := LoadSettings(ctx, w.store)
+	w.settings.Store(&settings)
+	queries := parseQueries(settings.Queries)
+
+	slog.Info("hunt worker: cycle start", slog.Int("queries", len(queries)))
 
 	// ESC-2: reset scoring degradation flag at cycle start. Set to 1 during the
 	// cycle when the circuit breaker trips or the fail-open path is taken.
@@ -365,7 +467,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 	var totalCreated, totalMerged, totalError int
 	var llmCallsThisCycle atomic.Int64 // circuit-breaker counter, reset per cycle (BH-4)
 
-	for _, q := range w.queries {
+	for _, q := range queries {
 		for _, p := range platforms {
 			func() {
 				defer func() {
@@ -709,18 +811,15 @@ func refreshUnscoredGauges(ctx context.Context, store any) {
 	engine.SetHuntUnscoredJobsMaxAge(stats.OldestAge.Seconds())
 }
 
-// huntIngestEnabled reads the HUNT_INGEST_ENABLED env flag.
-func huntIngestEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUNT_INGEST_ENABLED")), "true")
-}
-
 // StartWorker starts the durable ingest worker in a background goroutine when
-// HUNT_INGEST_ENABLED=true and the store is available.  Noop otherwise.
+// hunt settings are enabled (DB or env HUNT_INGEST_ENABLED=true) and the store
+// is available.  Noop otherwise.
 // Must be called after engine.SetHuntStore.
 // notifier may be nil — if nil, no Telegram notifications are sent by the worker.
 func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier) {
-	if !huntIngestEnabled() {
-		slog.Debug("hunt worker: disabled (HUNT_INGEST_ENABLED not set)")
+	settings := LoadSettings(ctx, store)
+	if !settings.Enabled {
+		slog.Debug("hunt worker: disabled (settings.Enabled=false)")
 		return
 	}
 	w := NewWorker(store)

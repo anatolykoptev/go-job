@@ -104,12 +104,14 @@ func TestParseQueries_Empty_UsesDefault(t *testing.T) {
 func TestHuntIngestEnabled_DefaultFalse(t *testing.T) {
 	// HUNT_INGEST_ENABLED is not set in the test environment.
 	t.Setenv("HUNT_INGEST_ENABLED", "")
-	assert.False(t, huntIngestEnabled())
+	s := LoadSettings(context.Background(), nil)
+	assert.False(t, s.Enabled)
 }
 
 func TestHuntIngestEnabled_TrueWhenSet(t *testing.T) {
 	t.Setenv("HUNT_INGEST_ENABLED", "true")
-	assert.True(t, huntIngestEnabled())
+	s := LoadSettings(context.Background(), nil)
+	assert.True(t, s.Enabled)
 }
 
 func TestNewWorker_NilStore_ReturnsNil(t *testing.T) {
