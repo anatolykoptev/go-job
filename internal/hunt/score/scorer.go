@@ -71,9 +71,72 @@ var validOverUnder = map[string]bool{
 //     keywords and the job text. Use jobs.ScoreJobMatchCoverage in production.
 //   - LLM: sends a prompt and returns the raw string response.
 //     Use engine.CallLLM in production.
+//   - Settings: carries operator-tunable scoring thresholds from the DB
+//     (hunt_settings table). When non-nil, Score uses these instead of env
+//     vars. When nil, env fallback applies (backward compat).
 type ScorerDeps struct {
-	Jaccard func(profileKW, jobText string) float64
-	LLM     func(ctx context.Context, prompt string) (string, error)
+	Jaccard  func(profileKW, jobText string) float64
+	LLM      func(ctx context.Context, prompt string) (string, error)
+	Settings *ScoringSettings
+}
+
+// ScoringSettings carries the operator-tunable scoring thresholds that were
+// previously read from env vars. Loaded from the hunt_settings DB table (via
+// huntworker.LoadSettings) and threaded through ScorerDeps so admin-UI changes
+// apply on the next cycle without a redeploy.
+//
+// Zero-value fields fall back to env defaults (see scorerEnvFallback).
+type ScoringSettings struct {
+	NotifyMaxAge   time.Duration // 0 → env HUNT_NOTIFY_MAX_AGE (default 48h)
+	MinJaccard     float64       // 0 → env HUNT_SCORE_MIN_JACCARD (default 8)
+	MinQuality     int           // 0 → env HUNT_SCORE_MIN_QUALITY (default 30)
+	FailOpen       *bool         // nil → env HUNT_SCORE_FAIL_OPEN (default false)
+	MaxLLMPerCycle int           // 0 → env HUNT_SCORE_MAX_LLM_PER_CYCLE (default 50)
+}
+
+// scorerMaxAge returns the recency gate threshold: DB setting if non-zero,
+// else env fallback.
+func (s *ScoringSettings) maxAge() time.Duration {
+	if s != nil && s.NotifyMaxAge > 0 {
+		return s.NotifyMaxAge
+	}
+	return env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour)
+}
+
+// scorerMinJaccard returns the Jaccard pre-filter threshold: DB setting if
+// non-zero, else env fallback.
+func (s *ScoringSettings) minJaccard() float64 {
+	if s != nil && s.MinJaccard > 0 {
+		return s.MinJaccard
+	}
+	return env.MustFloat("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
+}
+
+// scorerMinQuality returns the quality pre-filter threshold: DB setting if
+// non-zero, else env fallback.
+func (s *ScoringSettings) minQuality() int {
+	if s != nil && s.MinQuality > 0 {
+		return s.MinQuality
+	}
+	return env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
+}
+
+// scorerFailOpen returns the fail-open flag: DB setting if non-nil, else env
+// fallback (default false per #167 fix).
+func (s *ScoringSettings) failOpen() bool {
+	if s != nil && s.FailOpen != nil {
+		return *s.FailOpen
+	}
+	return env.MustBool("HUNT_SCORE_FAIL_OPEN", false)
+}
+
+// scorerMaxLLMPerCycle returns the per-cycle LLM budget: DB setting if
+// non-zero, else env fallback.
+func (s *ScoringSettings) maxLLMPerCycle() int {
+	if s != nil && s.MaxLLMPerCycle > 0 {
+		return s.MaxLLMPerCycle
+	}
+	return env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
 }
 
 // llmScoreResponse is the JSON shape the LLM must return.
@@ -101,13 +164,13 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	}
 
 	// --- Stage 1: recency pre-gate ---
-	maxAge := env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour)
+	maxAge := deps.Settings.maxAge()
 	if job.PostedAt == nil || time.Since(*job.PostedAt) > maxAge {
 		return hunt.ScoreResult{FitBand: hunt.FitBandStale, ScoredAt: time.Now()}
 	}
 
 	// --- Stage 2: Jaccard pre-filter ---
-	minJaccard := env.MustFloat("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
+	minJaccard := deps.Settings.minJaccard()
 	profileKW := buildProfileKeywords(profile)
 	jobText := job.Title + " " + job.Description
 	jaccardScore := deps.Jaccard(profileKW, jobText)
@@ -125,7 +188,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	// short-circuits if it falls below HUNT_SCORE_MIN_QUALITY. This saves
 	// LLM calls on low-quality postings (no salary, agency, stub description)
 	// before the expensive Stage 4 LLM precision scorer runs.
-	minQuality := env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
+	minQuality := deps.Settings.minQuality()
 	qr := quality.Score(quality.FromHuntJob(quality.JobInput{
 		Title:       job.Title,
 		Company:     job.Company,
@@ -183,17 +246,17 @@ func runLLMStage(ctx context.Context, profile *ScoringProfile, job hunt.Job, dep
 			slog.Any("error", err),
 			slog.String("job_title", job.Title),
 		)
-		return failOpen(ctx, jaccardFallback, "llm_error")
+		return failOpen(ctx, deps.Settings, jaccardFallback, "llm_error")
 	}
 
-	result, parseErr := parseScoreResponse(raw, jaccardFallback)
+	result, parseErr := parseScoreResponse(raw, jaccardFallback, deps.Settings)
 	if parseErr != nil {
 		slog.WarnContext(ctx, "fit scoring: parse failed",
 			slog.Any("error", parseErr),
 			slog.String("job_title", job.Title),
 			slog.String("raw_truncated", truncate(raw, 200)),
 		)
-		return failOpen(ctx, jaccardFallback, "parse_fail")
+		return failOpen(ctx, deps.Settings, jaccardFallback, "parse_fail")
 	}
 	// parseScoreResponse may return a fail-open result (FitBandUnscored) without an
 	// error when HUNT_SCORE_FAIL_OPEN=true — the JSON was malformed but the caller
@@ -215,27 +278,13 @@ func runLLMStage(ctx context.Context, profile *ScoringProfile, job hunt.Job, dep
 // hunt_score_llm_total metric emitted by the worker after this call returns.
 // Called when the LLM fails or parse fails and HUNT_SCORE_FAIL_OPEN=true.
 // If HUNT_SCORE_FAIL_OPEN=false, the caller has already checked and handled.
-func failOpen(ctx context.Context, jaccardScore int, llmResult string) hunt.ScoreResult {
-	if !scoringFailOpen() {
+func failOpen(ctx context.Context, settings *ScoringSettings, jaccardScore int, llmResult string) hunt.ScoreResult {
+	if !settings.failOpen() {
 		// Should not be called when fail-closed; return unscored anyway (defensive).
 		return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now(), LLMResult: llmResult}
 	}
 	slog.WarnContext(ctx, "fit scoring: fail-open — returning unscored, job still eligible for notify")
 	return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardScore, ScoredAt: time.Now(), LLMResult: llmResult}
-}
-
-// scoringFailOpen reads HUNT_SCORE_FAIL_OPEN (default false).
-//
-// #167 fix: The default was true, which meant LLM failures silently downgraded
-// jobs to unscored without any error — the scoring pipeline appeared healthy
-// while producing no fit scores. Defaulting to false makes LLM failures
-// explicit: the caller gets an error and the job remains unscored, which is
-// the correct behavior for a scoring pipeline that depends on LLM output.
-//
-// Operators who want the old behavior (degrade silently to unscored on LLM
-// failure) can set HUNT_SCORE_FAIL_OPEN=true explicitly.
-func scoringFailOpen() bool {
-	return env.MustBool("HUNT_SCORE_FAIL_OPEN", false)
 }
 
 // buildProfileKeywords concatenates CoreSkills + AdjacentSkills + TargetDomains
@@ -253,16 +302,16 @@ func buildProfileKeywords(profile *ScoringProfile) string {
 // FitScore when fail-open is triggered.
 //
 // Returns (result, nil) on success.
-// Returns (unscored-result, nil) when HUNT_SCORE_FAIL_OPEN=true and parse fails.
+// Returns (unscored-result, nil) when fail-open is enabled and parse fails.
 // Returns (zero, error) when HUNT_SCORE_FAIL_OPEN=false and parse fails.
-func parseScoreResponse(raw string, jaccardFallback int) (hunt.ScoreResult, error) {
+func parseScoreResponse(raw string, jaccardFallback int, settings *ScoringSettings) (hunt.ScoreResult, error) {
 	// Strip markdown fences (```json ... ``` or ``` ... ```).
 	cleaned := stripMarkdownFences(raw)
 	cleaned = strings.TrimSpace(cleaned)
 
 	var resp llmScoreResponse
 	if err := json.Unmarshal([]byte(cleaned), &resp); err != nil {
-		if scoringFailOpen() {
+		if settings.failOpen() {
 			return hunt.ScoreResult{FitBand: hunt.FitBandUnscored, FitScore: jaccardFallback, LLMResult: "parse_fail"}, nil
 		}
 		return hunt.ScoreResult{}, fmt.Errorf("score: parse LLM response: %w", err)
@@ -538,8 +587,9 @@ func MinQuality() int {
 	return env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 }
 
-// MaxLLMPerCycle returns the HUNT_SCORE_MAX_LLM_PER_CYCLE circuit-breaker limit.
+// MaxLLMPerCycle returns the per-cycle LLM budget from settings if non-zero,
+// else env HUNT_SCORE_MAX_LLM_PER_CYCLE (default 50).
 // Exported for use in huntworker.runCycle.
-func MaxLLMPerCycle() int {
-	return env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
+func MaxLLMPerCycle(s *ScoringSettings) int {
+	return s.maxLLMPerCycle()
 }

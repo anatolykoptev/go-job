@@ -223,7 +223,7 @@ func (f *fakeScoreSetter) callCount() int {
 func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testing.T) {
 	store := &fakeScoreSetter{}
 	var llmCalls atomic.Int64
-	llmCalls.Store(int64(score.MaxLLMPerCycle())) // breaker tripped: at capacity
+	llmCalls.Store(int64(score.MaxLLMPerCycle(nil))) // breaker tripped: at capacity
 
 	job := hunt.Job{ID: 42}
 	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
@@ -275,7 +275,7 @@ func TestRunUnscoredSweep_SetsGauges(t *testing.T) {
 	}
 	var llmCalls atomic.Int64
 
-	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls, 50)
 
 	// Count gauge must reflect the number of jobs returned.
 	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
@@ -425,7 +425,7 @@ func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
 	}
 	var llmCalls atomic.Int64
 
-	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls)
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls, 50)
 
 	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
 	assert.Equal(t, float64(0), countVal,

@@ -39,6 +39,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
 )
 
@@ -455,6 +456,28 @@ func (w *Worker) runCycle(ctx context.Context) {
 	// cycle when the circuit breaker trips or the fail-open path is taken.
 	engine.SetHuntScoringDegraded(false, "cycle_reset")
 
+	// Wire DB-backed scoring settings into ScorerDeps so score.Score() uses
+	// them instead of env vars. Updated per-cycle from the admin UI.
+	failOpen := settings.ScoreFailOpen
+	w.scorerDeps.Settings = &score.ScoringSettings{
+		NotifyMaxAge:   settings.NotifyMaxAge,
+		MinJaccard:     float64(settings.ScoreMinJaccard),
+		FailOpen:       &failOpen,
+		MaxLLMPerCycle: settings.ScoreMaxLLMPerCycle,
+	}
+
+	// ScoreEnabled per-cycle: if disabled in DB, nil out the scoring profile
+	// so score.Score() returns unscored (no LLM calls).
+	if !settings.ScoreEnabled {
+		w.scoringProfile = nil
+	}
+
+	// Update the notifier's recency gate from DB settings (if the notifier
+	// supports runtime updates).
+	if u, ok := w.notifier.(notify.MaxAgeUpdater); ok && u != nil {
+		u.SetMaxAge(settings.NotifyMaxAge)
+	}
+
 	platforms := []struct {
 		name   string
 		search func(ctx context.Context, query, loc string, limit int) ([]engine.SearxngResult, error)
@@ -534,7 +557,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 	// the store satisfies the unscoredJobStore interface (production path).
 	if w.scoringProfile != nil {
 		if sweepStore, ok := interface{}(w.store).(unscoredJobStore); ok {
-			runUnscoredSweep(ctx, sweepStore, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle)
+			runUnscoredSweep(ctx, sweepStore, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle, settings.ScoreSweepLimit)
 		}
 	}
 
@@ -575,7 +598,7 @@ func scoreJobWithLimit(
 		return nil
 	}
 
-	maxLLM := score.MaxLLMPerCycle()
+	maxLLM := score.MaxLLMPerCycle(deps.Settings)
 	if llmCallsThisCycle.Load() >= int64(maxLLM) {
 		// Per-cycle LLM budget exhausted: return unscored result in-memory only.
 		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
@@ -707,16 +730,20 @@ func observeScore(sr hunt.ScoreResult) {
 // Jobs processed by the sweep are NOT notified — the sweep is a backfill
 // path for hunt_list/job_match consumption only.
 //
-// sweepLimit is read from HUNT_SCORE_SWEEP_LIMIT (default 50).
+// sweepLimit is the max unscored-open jobs to backfill per cycle (from DB
+// settings, default 50).
 func runUnscoredSweep(
 	ctx context.Context,
 	store unscoredJobStore,
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
 	llmCallsThisCycle *atomic.Int64,
+	sweepLimit int,
 ) {
 	rescoreAll := env.MustBool("HUNT_SCORE_RESCORE_ALL", false)
-	sweepLimit := env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50)
+	if sweepLimit <= 0 {
+		sweepLimit = 50
+	}
 
 	// MEDIUM-1 budget cap: only fetch as many jobs as there is remaining LLM
 	// budget. Jobs that would exceed the ceiling could end up with
@@ -729,7 +756,7 @@ func runUnscoredSweep(
 	// are at risk. The cap is conservative — it limits the fetch, not just
 	// the LLM call count. A larger sweep limit just under-utilizes, never
 	// permanently strands jobs.
-	maxLLM := score.MaxLLMPerCycle()
+	maxLLM := score.MaxLLMPerCycle(deps.Settings)
 	remaining := maxLLM - int(llmCallsThisCycle.Load())
 	if remaining <= 0 {
 		return

@@ -50,6 +50,23 @@ type ProductNotifier struct {
 // defaultMaxAge is the recency gate applied when HUNT_NOTIFY_MAX_AGE is not set.
 const defaultMaxAge = 48 * time.Hour
 
+// MaxAgeUpdater is the optional interface a Notifier may implement to allow
+// the hunt worker to update the recency gate at runtime (from DB settings).
+// ProductNotifier implements this; test fakes may too.
+type MaxAgeUpdater interface {
+	SetMaxAge(d time.Duration)
+}
+
+// SetMaxAge updates the recency gate threshold atomically. Called by the hunt
+// worker per-cycle so admin-UI changes to notify_max_age apply without restart.
+// A zero or negative value resets to the default (48h).
+func (n *ProductNotifier) SetMaxAge(d time.Duration) {
+	if d <= 0 {
+		d = defaultMaxAge
+	}
+	n.maxAge = d
+}
+
 // NewFromEnv constructs a ProductNotifier with a redacting HTTP client so the
 // bot token is never leaked in *url.Error messages (PF-6).
 //
@@ -67,9 +84,9 @@ const defaultMaxAge = 48 * time.Hour
 // This is an upstream limitation of the OvyFlash/telegram-bot-api library which
 // uses URL-path auth, not a Bearer header. Migrating to a header-based client
 // would require forking the vendor library. The risk is accepted because:
-//   1. go-job connects directly to api.telegram.org (no proxy in the path)
-//   2. The redacting transport covers the go-job-side leak vectors (logs/errors)
-//   3. The token has limited scope (send messages to specific chat IDs only)
+//  1. go-job connects directly to api.telegram.org (no proxy in the path)
+//  2. The redacting transport covers the go-job-side leak vectors (logs/errors)
+//  3. The token has limited scope (send messages to specific chat IDs only)
 //
 // Required env:
 //   - TELEGRAM_BOT_TOKEN    — bot token (env.Required; fatal if missing)

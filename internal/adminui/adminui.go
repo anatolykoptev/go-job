@@ -67,6 +67,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
 	// nav item — no manual p.AddNav call needed.
 	resource.Register(p, shortlistResource(store, adminUser, authority, []byte(csrfKey)))
+	resource.Register(p, huntSettingsResource(pool))
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
@@ -99,7 +100,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: grpHunt})
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
-	p.AddNav(shell.NavItem{ID: navIDSettings, Label: "Settings", URL: adminBasePath + "/settings"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
@@ -110,7 +110,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// GET /admin/jobs/{id} (natural 3-segment URL) is now served by go-panel.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser)))
-	mux.HandleFunc("GET "+adminBasePath+"/settings", a.Require(huntSettingsHandler(p, store, a, []byte(csrfKey))))
 	// POST action routes are mounted via p.MountAction, which wraps with the
 	// auth guard, parses the form body, and verifies CSRF before calling Handler.
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/rate", Handler: rateHandler(store, adminUser)})
@@ -135,7 +134,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	p.MountAction(resource.ActionSpec{Path: "upwork/catalog/reorder", Handler: upworkCatalogReorderHandler()})
 	p.MountAction(resource.ActionSpec{Path: "upwork/skill/reorder", Handler: upworkSkillReorderHandler()})
 	p.MountAction(resource.ActionSpec{Path: "upwork/categories", Handler: upworkCategoriesEditHandler()})
-	p.MountAction(resource.ActionSpec{Path: "settings/save", Handler: huntSettingsSaveHandler(store)})
 	// Wrap the go-panel catch-all with withSessionCookieContext so the
 	// jobsLister closure can generate per-request CSRF tokens for the
 	// star-toggle inline forms without needing the *http.Request.
