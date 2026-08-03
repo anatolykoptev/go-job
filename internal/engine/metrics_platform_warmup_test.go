@@ -87,3 +87,37 @@ func TestInit_WarmsPlatformResultsMatrix(t *testing.T) {
 		t.Errorf("Init() did not warm %q (present=%v value=%d) — warmAlertBoundedMetrics not wired into Init", key, ok, v)
 	}
 }
+
+// TestWarmAlertBoundedMetrics_PreRegistersESC2Gauges verifies that the three
+// ESC-2 scoring-degradation gauges are pre-registered at 0 by
+// warmAlertBoundedMetrics, so equality-based alerts
+// (gojob_hunt_scoring_degraded == 1) have a Prometheus series to evaluate
+// before the first real event.
+//
+// Without this pre-registration, SetHuntScoringDegraded's early-return on
+// prev==degraded (always true on the first cycle_reset call, since
+// scoringDegradedState initializes false) leaves the gauge absent from
+// Prometheus until a real 0→1 transition — the alert sees "no data", not 0.
+// The unscored-jobs gauges don't have the early-return bug but are
+// pre-registered too for defense-in-depth.
+//
+// RED-on-revert: remove any of the three reg.Gauge().Set(0) lines from
+// warmAlertBoundedMetrics → the corresponding key goes missing → RED.
+func TestWarmAlertBoundedMetrics_PreRegistersESC2Gauges(t *testing.T) {
+	orig := reg
+	t.Cleanup(func() { reg = orig })
+	reg = kitmetrics.NewRegistry()
+
+	warmAlertBoundedMetrics()
+
+	snap := reg.GaugeSnapshot()
+	for _, name := range []string{
+		MetricHuntScoringDegraded,
+		MetricHuntUnscoredJobsCount,
+		MetricHuntUnscoredJobsMaxAge,
+	} {
+		if v, ok := snap[name]; !ok || v != 0 {
+			t.Errorf("ESC-2 gauge %q missing/non-zero after warm-up (present=%v value=%v) — warmAlertBoundedMetrics does not pre-register it", name, ok, v)
+		}
+	}
+}

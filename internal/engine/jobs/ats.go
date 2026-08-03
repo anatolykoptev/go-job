@@ -575,7 +575,15 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) (jobs []greenhouseJob
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("greenhouse breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { greenhouseBreaker.Record(err == nil) }()
+	defer func() {
+		greenhouseBreaker.Record(err == nil)
+		if err != nil && !errors.Is(err, breaker.ErrOpen) {
+			slog.Warn("greenhouse: fetch failed (pre-breaker)",
+				slog.String("slug", slug),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
@@ -944,7 +952,15 @@ func fetchLeverPostings(ctx context.Context, slug string) (postings []leverPosti
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("lever breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { leverBreaker.Record(err == nil) }()
+	defer func() {
+		leverBreaker.Record(err == nil)
+		if err != nil && !errors.Is(err, breaker.ErrOpen) {
+			slog.Warn("lever: fetch failed (pre-breaker)",
+				slog.String("slug", slug),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
@@ -1183,7 +1199,15 @@ func fetchAshbyJobs(ctx context.Context, slug string) (jobs []ashbyJob, err erro
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("ashby breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { ashbyBreaker.Record(err == nil) }()
+	defer func() {
+		ashbyBreaker.Record(err == nil)
+		if err != nil && !errors.Is(err, breaker.ErrOpen) {
+			slog.Warn("ashby: fetch failed (pre-breaker)",
+				slog.String("slug", slug),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {

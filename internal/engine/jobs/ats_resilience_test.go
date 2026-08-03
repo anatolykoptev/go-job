@@ -1,11 +1,14 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -263,5 +266,64 @@ func TestAshbyFetcher_BreakerHalfOpensAfterDuration(t *testing.T) {
 
 	if httpCallCount.Load() <= beforeCount {
 		t.Fatal("half-open probe did not reach HTTP server — breaker did not transition to half-open")
+	}
+}
+
+// TestAshbyFetcher_LogsOriginalErrorBeforeBreakerTrip verifies that when the
+// fetcher fails (HTTP 500), the original error is logged with slog.Warn
+// inside the defer before breaker.Record. Without this, the caller only sees
+// the breaker-open error after the breaker trips — the original HTTP status
+// that CAUSED the trip is lost (#464).
+//
+// The log line must contain the "pre-breaker" marker, the slug, and the
+// original error text (HTTP 500 status), distinguishable from the caller's
+// "fetch error" log which only sees the wrapped breaker.ErrOpen.
+func TestAshbyFetcher_LogsOriginalErrorBeforeBreakerTrip(t *testing.T) {
+	origBreaker := ashbyBreaker
+	origLimiter := atsLimiter
+	t.Cleanup(func() {
+		ashbyBreaker = origBreaker
+		atsLimiter = origLimiter
+	})
+
+	testBreaker := breaker.New(breaker.Options{
+		Name:          "ashby-log-test",
+		FailThreshold: 3,
+		OpenDuration:  5 * time.Minute,
+	})
+	ashbyBreaker = testBreaker
+	atsLimiter = ratelimit.NewConcurrencyLimiter(10)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	origAPI := ashbyBoardAPI
+	ashbyBoardAPI = srv.URL + "/%s"
+	defer func() { ashbyBoardAPI = origAPI }()
+
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	ctx := context.Background()
+	_, err := fetchAshbyJobs(ctx, "slugLogTest")
+	if err == nil {
+		t.Fatal("expected error from 500 response")
+	}
+	if errors.Is(err, breaker.ErrOpen) {
+		t.Fatal("breaker opened on first call unexpectedly")
+	}
+
+	out := buf.String()
+	// Anchored regexp: the WARN line must contain the "pre-breaker" marker
+	// and the slug. A bare Contains("level=WARN") could be satisfied by a
+	// foreign test's log writing into the process-global slog sink.
+	re := regexp.MustCompile(`level=WARN[^\n]*ashby: fetch failed \(pre-breaker\)[^\n]*slugLogTest`)
+	if !re.MatchString(out) {
+		t.Errorf("expected a WARN log line matching %q, got:\n%s", re.String(), out)
 	}
 }
