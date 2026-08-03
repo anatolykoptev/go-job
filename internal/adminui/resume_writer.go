@@ -404,6 +404,183 @@ func skillsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) 
 	}
 }
 
+// --- Person resource ---
+// Multi-user-ready: regular resource (NOT SingleRow). With one person today it
+// behaves like single-row, but the code shape is ready for N persons when
+// tenant/user scoping is added. Upwork fields (headline, hourly_rate) are
+// merged into the same form — UpdateResumePerson + UpdatePersonUpworkFields
+// become one Writer.Save call, removing the coupling.
+
+var personsSpec = admintable.Spec{
+	Columns: []admintable.Column{
+		{Key: "name", Label: "Name", Sortable: true, SQLExpr: "p.name"},
+		{Key: "email", Label: "Email", Sortable: true, SQLExpr: "p.email"},
+		{Key: "location", Label: "Location", Sortable: false, SQLExpr: "p.location"},
+		{Key: "headline", Label: "Headline", Sortable: false, SQLExpr: "p.headline"},
+	},
+	DefaultKey: "name",
+	DefaultDir: admintable.Asc,
+}
+
+func personsResource(pool *pgxpool.Pool) resource.Resource {
+	return resource.Resource{
+		Name:   "persons",
+		Title:  "Profile",
+		Icon:   "👤",
+		Group:  grpResume,
+		Sort:   personsSpec,
+		Filter: admintable.FilterSpec{},
+		Lister: personsLister(pool),
+		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
+			pid, err := strconv.Atoi(id)
+			if err != nil {
+				return nil, resource.ErrDetailNotFound
+			}
+			db := jobs.GetResumeDB()
+			if db == nil {
+				return nil, resource.ErrDetailNotFound
+			}
+			p, err := db.GetPerson(ctx, pid)
+			if err != nil || p == nil {
+				return nil, resource.ErrDetailNotFound
+			}
+			return personToMap(p), nil
+		},
+		Writer: &resource.Writer{
+			Form: resource.FormSpec{Fields: []resource.Field{
+				{Key: "name", Label: "Name", Kind: resource.FieldText, Required: true},
+				{Key: "email", Label: "Email", Kind: resource.FieldText},
+				{Key: "phone", Label: "Phone", Kind: resource.FieldText},
+				{Key: "location", Label: "Location", Kind: resource.FieldText},
+				{Key: "summary", Label: "Summary", Kind: resource.FieldTextarea},
+				{Key: "headline", Label: "Headline (Upwork)", Kind: resource.FieldText, Help: "Upwork profile headline"},
+				{Key: "hourly_rate", Label: "Hourly Rate (USD)", Kind: resource.FieldText, Help: "e.g. 85, 120.50"},
+				{Key: "links", Label: "Links", Kind: resource.FieldJSON, Help: "JSON object, e.g. {\"github\":\"https://...\",\"linkedin\":\"https://...\"}"},
+			}},
+			Load: func(ctx context.Context, _ tenant.Tenant, id string) (map[string]string, error) {
+				pid, err := strconv.Atoi(id)
+				if err != nil {
+					return nil, resource.ErrDetailNotFound
+				}
+				db := jobs.GetResumeDB()
+				if db == nil {
+					return nil, resource.ErrDetailNotFound
+				}
+				p, err := db.GetPerson(ctx, pid)
+				if err != nil || p == nil {
+					return nil, resource.ErrDetailNotFound
+				}
+				return personToMap(p), nil
+			},
+			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
+				db := jobs.GetResumeDB()
+				if db == nil {
+					return resource.NewSaveError("name", "resume database not configured")
+				}
+				pid, err := strconv.Atoi(id)
+				if err != nil {
+					return resource.NewSaveError("name", "invalid person ID")
+				}
+				person, err := db.GetPerson(ctx, pid)
+				if err != nil || person == nil {
+					return resource.NewSaveError("name", "person not found")
+				}
+				hourlyRateCents, rateErr := parseDollarsToCents(v["hourly_rate"])
+				if rateErr != nil {
+					return resource.NewSaveError("hourly_rate", rateErr.Error())
+				}
+				links := person.Links
+				if v["links"] != "" && v["links"] != "{}" {
+					var parsed map[string]string
+					if err := json.Unmarshal([]byte(v["links"]), &parsed); err == nil {
+						links = parsed
+					}
+				}
+				updated := jobs.PersonRecord{
+					ID:              pid,
+					Name:            v["name"],
+					Email:           v["email"],
+					Phone:           v["phone"],
+					Location:        v["location"],
+					Links:           links,
+					Summary:         v["summary"],
+					Headline:        v["headline"],
+					HourlyRateCents: hourlyRateCents,
+				}
+				if err := db.UpdateResumePerson(ctx, pid, updated); err != nil {
+					return resource.NewSaveError("name", "update failed")
+				}
+				if err := db.UpdatePersonUpworkFields(ctx, pid, v["headline"], hourlyRateCents); err != nil {
+					slog.Warn("person resource: UpdatePersonUpworkFields failed", "err", err)
+				}
+				return nil
+			},
+			AfterSave: func(ctx context.Context, _ string, err error) {
+				if err != nil {
+					return
+				}
+				personID := getLatestPersonIDSafe(ctx)
+				if personID > 0 {
+					syncProfileVectorsBestEffortCtx(ctx, personID)
+				}
+			},
+			RedirectAfterSave: func(_ context.Context, _ string) string { return resumeEditURL },
+		},
+	}
+}
+
+//nolint:dupl // structurally identical to other resume listers
+func personsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
+		db := jobs.GetResumeDB()
+		if db == nil {
+			return nil, 0, nil
+		}
+		pid := db.GetLatestPersonID(ctx)
+		if pid == 0 {
+			return nil, 0, nil
+		}
+		p, err := db.GetPerson(ctx, pid)
+		if err != nil || p == nil {
+			return nil, 0, nil
+		}
+		rows := []resource.Row{{
+			ID: strconv.Itoa(p.ID),
+			Cells: []resource.Cell{
+				{Value: p.Name},
+				{Value: p.Email},
+				{Value: p.Location},
+				{Value: p.Headline},
+			},
+			Href: "/admin/persons/" + strconv.Itoa(p.ID),
+		}}
+		return rows, 1, nil
+	}
+}
+
+func personToMap(p *jobs.PersonRecord) map[string]string {
+	linksJSON := "{}"
+	if len(p.Links) > 0 {
+		if b, err := json.Marshal(p.Links); err == nil {
+			linksJSON = string(b)
+		}
+	}
+	hourlyRate := ""
+	if p.HourlyRateCents > 0 {
+		hourlyRate = formatCentsToDollars(p.HourlyRateCents)
+	}
+	return map[string]string{
+		"name":        p.Name,
+		"email":       p.Email,
+		"phone":       p.Phone,
+		"location":    p.Location,
+		"summary":     p.Summary,
+		"headline":    p.Headline,
+		"hourly_rate": hourlyRate,
+		"links":       linksJSON,
+	}
+}
+
 // --- Achievements resource ---
 
 var achievementsSpec = admintable.Spec{
