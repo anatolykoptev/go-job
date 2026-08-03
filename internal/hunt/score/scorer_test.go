@@ -174,7 +174,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "well-matched on seniority and stack",
   "over_under": "well_matched"
 }`
-		result, err := parseScoreResponse(raw, 30)
+		result, err := parseScoreResponse(raw, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 75, result.FitScore)
 		assert.Equal(t, "MODERATE", result.SuccessBand)
@@ -194,7 +194,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "amazing candidate",
   "over_under": "well_matched"
 }`
-		result, err := parseScoreResponse(raw, 30)
+		result, err := parseScoreResponse(raw, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "MODERATE", result.SuccessBand,
 			"unknown success_band must be clamped to MODERATE")
@@ -210,7 +210,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "good match",
   "over_under": "perfectly_matched"
 }`
-		result, err := parseScoreResponse(raw, 30)
+		result, err := parseScoreResponse(raw, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "well_matched", result.OverUnder,
 			"unknown over_under must be clamped to well_matched")
@@ -226,7 +226,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "not a match",
   "over_under": "under_qualified"
 }`
-		result, err := parseScoreResponse(raw, 30)
+		result, err := parseScoreResponse(raw, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 0, result.FitScore, "fit_score < 0 must clamp to 0")
 	})
@@ -241,7 +241,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "great",
   "over_under": "well_matched"
 }`
-		result, err := parseScoreResponse(raw, 30)
+		result, err := parseScoreResponse(raw, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 100, result.FitScore, "fit_score > 100 must clamp to 100")
 	})
@@ -264,7 +264,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "strong match, ~73% likely given the pool",
   "over_under": "well_matched"
 }`
-		result, err := parseScoreResponse(dirty, 30)
+		result, err := parseScoreResponse(dirty, 30, nil)
 		require.NoError(t, err)
 
 		// success_reasoning must have no "%" character.
@@ -299,7 +299,7 @@ func Test_Prompt_And_Parse_NoFakePrecision(t *testing.T) {
   "success_reasoning": "strong seniority and domain match; missing only a nice-to-have cert",
   "over_under": "well_matched"
 }`
-		result, err := parseScoreResponse(clean, 30)
+		result, err := parseScoreResponse(clean, 30, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "strong seniority and domain match; missing only a nice-to-have cert",
 			result.SuccessReasoning,
@@ -319,7 +319,7 @@ func Test_ParseScoreResponse(t *testing.T) {
 	// --- valid JSON → correct ScoreResult ---
 	t.Run("valid_json", func(t *testing.T) {
 		raw := `{"fit_score":85,"fit_reasons":["Go expert"],"fit_gaps":["k8s"],"success_band":"STRONG","success_reasoning":"strong seniority match","over_under":"well_matched"}`
-		result, err := parseScoreResponse(raw, 50)
+		result, err := parseScoreResponse(raw, 50, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 85, result.FitScore)
 		assert.Equal(t, "STRONG", result.SuccessBand)
@@ -330,7 +330,7 @@ func Test_ParseScoreResponse(t *testing.T) {
 	// RED-on-revert: remove StripMarkdownFences call → fenced JSON fails to parse.
 	t.Run("fenced_json_stripped_and_parsed", func(t *testing.T) {
 		raw := "```json\n" + `{"fit_score":72,"fit_reasons":[],"fit_gaps":["c++"],"success_band":"MODERATE","success_reasoning":"good but niche","over_under":"well_matched"}` + "\n```"
-		result, err := parseScoreResponse(raw, 40)
+		result, err := parseScoreResponse(raw, 40, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 72, result.FitScore)
 		assert.Equal(t, "MODERATE", result.SuccessBand)
@@ -341,7 +341,7 @@ func Test_ParseScoreResponse(t *testing.T) {
 	t.Run("junk_json_fail_open", func(t *testing.T) {
 		t.Setenv("HUNT_SCORE_FAIL_OPEN", "true")
 		raw := "I couldn't generate valid JSON sorry"
-		result, err := parseScoreResponse(raw, 10)
+		result, err := parseScoreResponse(raw, 10, nil)
 		// Fail-open: no error, but FitBand is "unscored" and FitScore is the jaccard fallback.
 		require.NoError(t, err)
 		assert.Equal(t, "unscored", result.FitBand)
@@ -352,7 +352,7 @@ func Test_ParseScoreResponse(t *testing.T) {
 	t.Run("junk_json_fail_closed_returns_error", func(t *testing.T) {
 		t.Setenv("HUNT_SCORE_FAIL_OPEN", "false")
 		raw := "not json at all"
-		_, err := parseScoreResponse(raw, 10)
+		_, err := parseScoreResponse(raw, 10, nil)
 		assert.Error(t, err, "fail-closed must return error on unparseable response")
 	})
 }

@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
@@ -42,13 +43,40 @@ import (
 type ProductNotifier struct {
 	sink    kitnotify.ProductSink
 	chatIDs []int64              // explicit recipient list; empty = use sink's defaultChatIDs
-	maxAge  time.Duration        // recency gate for NotifyNewJob; 0 means use default (48h)
+	maxAge  atomic.Int64         // recency gate for NotifyNewJob (nanoseconds); 0 means use default (48h)
 	token   string               // bot token for health checks (empty when constructed via NewFromSink)
 	OnSend  func(outcome string) // optional metric hook
 }
 
 // defaultMaxAge is the recency gate applied when HUNT_NOTIFY_MAX_AGE is not set.
 const defaultMaxAge = 48 * time.Hour
+
+// MaxAgeUpdater is the optional interface a Notifier may implement to allow
+// the hunt worker to update the recency gate at runtime (from DB settings).
+// ProductNotifier implements this; test fakes may too.
+type MaxAgeUpdater interface {
+	SetMaxAge(d time.Duration)
+}
+
+// SetMaxAge updates the recency gate threshold atomically. Called by the hunt
+// worker per-cycle so admin-UI changes to notify_max_age apply without restart.
+// A zero or negative value resets to the default (48h).
+func (n *ProductNotifier) SetMaxAge(d time.Duration) {
+	if d <= 0 {
+		d = defaultMaxAge
+	}
+	n.maxAge.Store(int64(d))
+}
+
+// maxAgeOrZero returns the current recency gate as a time.Duration.
+// Returns 0 if unset (caller should apply defaultMaxAge).
+func (n *ProductNotifier) maxAgeOrZero() time.Duration {
+	v := n.maxAge.Load()
+	if v == 0 {
+		return 0
+	}
+	return time.Duration(v)
+}
 
 // NewFromEnv constructs a ProductNotifier with a redacting HTTP client so the
 // bot token is never leaked in *url.Error messages (PF-6).
@@ -67,9 +95,9 @@ const defaultMaxAge = 48 * time.Hour
 // This is an upstream limitation of the OvyFlash/telegram-bot-api library which
 // uses URL-path auth, not a Bearer header. Migrating to a header-based client
 // would require forking the vendor library. The risk is accepted because:
-//   1. go-job connects directly to api.telegram.org (no proxy in the path)
-//   2. The redacting transport covers the go-job-side leak vectors (logs/errors)
-//   3. The token has limited scope (send messages to specific chat IDs only)
+//  1. go-job connects directly to api.telegram.org (no proxy in the path)
+//  2. The redacting transport covers the go-job-side leak vectors (logs/errors)
+//  3. The token has limited scope (send messages to specific chat IDs only)
 //
 // Required env:
 //   - TELEGRAM_BOT_TOKEN    — bot token (env.Required; fatal if missing)
@@ -115,7 +143,9 @@ func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
 	}
 
 	maxAge := env.MustDuration("HUNT_NOTIFY_MAX_AGE", defaultMaxAge)
-	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge, token: token}, nil
+	n := &ProductNotifier{sink: sink, chatIDs: chatIDs, token: token}
+	n.maxAge.Store(int64(maxAge))
+	return n, nil
 }
 
 // NewFromSink constructs a ProductNotifier from a pre-built ProductSink.
@@ -124,7 +154,9 @@ func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
 // in tests where the sink was built without a default chat ID.
 // The recency gate defaults to 48h (defaultMaxAge).
 func NewFromSink(sink kitnotify.ProductSink, chatIDs ...int64) *ProductNotifier {
-	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: defaultMaxAge}
+	n := &ProductNotifier{sink: sink, chatIDs: chatIDs}
+	n.maxAge.Store(int64(defaultMaxAge))
+	return n
 }
 
 // NewFromSinkWithMaxAge constructs a ProductNotifier from a pre-built ProductSink
@@ -132,7 +164,9 @@ func NewFromSink(sink kitnotify.ProductSink, chatIDs ...int64) *ProductNotifier 
 // Used in tests that need a specific maxAge without relying on the env var.
 // chatIDs, when non-empty, overrides the sink's default recipients.
 func NewFromSinkWithMaxAge(sink kitnotify.ProductSink, maxAge time.Duration, chatIDs ...int64) *ProductNotifier {
-	return &ProductNotifier{sink: sink, chatIDs: chatIDs, maxAge: maxAge}
+	n := &ProductNotifier{sink: sink, chatIDs: chatIDs}
+	n.maxAge.Store(int64(maxAge))
+	return n
 }
 
 // NotifyNewBounty sends a notification for a new bounty entry (fire-and-forget).
@@ -160,7 +194,11 @@ func (n *ProductNotifier) NotifyNewJob(j hunt.Job, score *hunt.ScoreResult) {
 		}
 		return
 	}
-	if time.Since(*j.PostedAt) > n.maxAge {
+	maxAge := n.maxAgeOrZero()
+	if maxAge == 0 {
+		maxAge = defaultMaxAge
+	}
+	if time.Since(*j.PostedAt) > maxAge {
 		if n.OnSend != nil {
 			n.OnSend("stale")
 		}

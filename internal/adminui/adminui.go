@@ -67,6 +67,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
 	// nav item — no manual p.AddNav call needed.
 	resource.Register(p, shortlistResource(store, adminUser, authority, []byte(csrfKey)))
+	resource.Register(p, huntSettingsResource(pool))
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
