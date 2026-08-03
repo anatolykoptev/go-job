@@ -72,26 +72,17 @@ func TestScoringSettings_MaxLLMPerCycle_DBWins(t *testing.T) {
 	assert.Equal(t, 10, s.maxLLMPerCycle(), "DB 10 overrides env 50")
 }
 
-// TestScoringSettings_MinQuality_DBWins verifies DB MinQuality overrides env.
-func TestScoringSettings_MinQuality_DBWins(t *testing.T) {
-	t.Setenv("HUNT_SCORE_MIN_QUALITY", "30")
-	s := &ScoringSettings{MinQuality: 50}
-	assert.Equal(t, 50, s.minQuality(), "DB 50 overrides env 30")
-}
-
 // TestScoringSettings_EnvUnset_UsesCodeDefaults verifies the code-level defaults
 // when both DB and env are unset.
 func TestScoringSettings_EnvUnset_UsesCodeDefaults(t *testing.T) {
 	// Ensure env vars are unset for this test.
 	t.Setenv("HUNT_NOTIFY_MAX_AGE", "")
 	t.Setenv("HUNT_SCORE_MIN_JACCARD", "")
-	t.Setenv("HUNT_SCORE_MIN_QUALITY", "")
 	t.Setenv("HUNT_SCORE_MAX_LLM_PER_CYCLE", "")
 	t.Setenv("HUNT_SCORE_FAIL_OPEN", "")
 	s := &ScoringSettings{}
 	assert.Equal(t, 48*time.Hour, s.maxAge(), "default maxAge 48h")
 	assert.InDelta(t, defaultMinJaccard, s.minJaccard(), 0.01, "default minJaccard")
-	assert.Equal(t, defaultMinQuality, s.minQuality(), "default minQuality")
 	assert.Equal(t, 50, s.maxLLMPerCycle(), "default maxLLM 50")
 	assert.False(t, s.failOpen(), "default failOpen false")
 }

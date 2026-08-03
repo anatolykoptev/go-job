@@ -85,11 +85,13 @@ type ScorerDeps struct {
 // huntworker.LoadSettings) and threaded through ScorerDeps so admin-UI changes
 // apply on the next cycle without a redeploy.
 //
-// Zero-value fields fall back to env defaults (see scorerEnvFallback).
+// Zero-value fields fall back to env defaults.
+//
+// MinQuality is NOT here — it stays env-only (HUNT_SCORE_MIN_QUALITY) because
+// it is a deterministic quality gate tuned infrequently, not an operator-knob.
 type ScoringSettings struct {
 	NotifyMaxAge   time.Duration // 0 → env HUNT_NOTIFY_MAX_AGE (default 48h)
 	MinJaccard     float64       // 0 → env HUNT_SCORE_MIN_JACCARD (default 8)
-	MinQuality     int           // 0 → env HUNT_SCORE_MIN_QUALITY (default 30)
 	FailOpen       *bool         // nil → env HUNT_SCORE_FAIL_OPEN (default false)
 	MaxLLMPerCycle int           // 0 → env HUNT_SCORE_MAX_LLM_PER_CYCLE (default 50)
 }
@@ -110,15 +112,6 @@ func (s *ScoringSettings) minJaccard() float64 {
 		return s.MinJaccard
 	}
 	return env.MustFloat("HUNT_SCORE_MIN_JACCARD", defaultMinJaccard)
-}
-
-// scorerMinQuality returns the quality pre-filter threshold: DB setting if
-// non-zero, else env fallback.
-func (s *ScoringSettings) minQuality() int {
-	if s != nil && s.MinQuality > 0 {
-		return s.MinQuality
-	}
-	return env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 }
 
 // scorerFailOpen returns the fail-open flag: DB setting if non-nil, else env
@@ -188,7 +181,7 @@ func Score(ctx context.Context, profile *ScoringProfile, job hunt.Job, deps Scor
 	// short-circuits if it falls below HUNT_SCORE_MIN_QUALITY. This saves
 	// LLM calls on low-quality postings (no salary, agency, stub description)
 	// before the expensive Stage 4 LLM precision scorer runs.
-	minQuality := deps.Settings.minQuality()
+	minQuality := env.MustInt("HUNT_SCORE_MIN_QUALITY", defaultMinQuality)
 	qr := quality.Score(quality.FromHuntJob(quality.JobInput{
 		Title:       job.Title,
 		Company:     job.Company,
