@@ -81,6 +81,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	resource.Register(p, oversizeResource(pool))
 
 	// Resume resources — Writer-enabled CRUD via go-panel framework.
+	resource.Register(p, personsResource(pool))
 	resource.Register(p, experiencesResource(pool))
 	resource.Register(p, skillsResource(pool))
 	resource.Register(p, achievementsResource(pool))
@@ -121,7 +122,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
 	// Resume editor routes (Part-D)
 	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey))))
-	p.MountAction(resource.ActionSpec{Path: "resume/person", Handler: resumePersonEditHandler()})
 	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler()})
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, authority.LegacyDir())))
 	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey))))
