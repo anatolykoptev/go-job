@@ -29,10 +29,12 @@ import (
 // SingleRow resources still need a Lister (to find the row ID for the redirect).
 var huntSettingsResourceSpec = admintable.Spec{
 	Columns: []admintable.Column{
-		{Key: "enabled", Label: "Enabled", Sortable: false, SQLExpr: "enabled::text", Width: "6rem"},
+		{Key: "enabled", Label: "Enabled", Sortable: true, SQLExpr: "enabled::text", Width: "6rem"},
 		{Key: "queries", Label: "Queries", Sortable: false, SQLExpr: "queries"},
 		{Key: "interval", Label: "Interval", Sortable: false, SQLExpr: "interval::text", Width: "8rem"},
 	},
+	DefaultKey: "enabled",
+	DefaultDir: admintable.Asc,
 }
 
 // huntSettingsResource returns a go-panel resource.Resource for the single-row
