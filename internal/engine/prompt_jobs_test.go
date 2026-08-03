@@ -32,3 +32,23 @@ func TestJobSearchInstruction_ATSSourcesEnumerated(t *testing.T) {
 		}
 	}
 }
+
+// TestJobSearchInstruction_SemanticMatchRule guards against the regression
+// where the prompt told the LLM to match "query keywords" literally against
+// title/skills/description, so a "Developer Relations" query dropped every
+// "Developer Advocate" / "DevRel" listing and a "Head of Growth" query
+// dropped every "Growth Lead" / "VP Growth" listing — the sources returned
+// results but the LLM returned an empty jobs array because the exact query
+// words were absent. The rule must instruct the LLM to match by role
+// family / meaning, explicitly naming synonyms and variant titles.
+func TestJobSearchInstruction_SemanticMatchRule(t *testing.T) {
+	for _, want := range []string{"MEANING", "role family", "synonyms"} {
+		if !strings.Contains(JobSearchInstruction, want) {
+			t.Errorf("JobSearchInstruction missing semantic-match concept %q", want)
+		}
+	}
+	// The old literal-keyword phrasing must be gone.
+	if strings.Contains(JobSearchInstruction, "query keywords (match against title") {
+		t.Error("JobSearchInstruction still uses literal-keyword matching phrasing")
+	}
+}

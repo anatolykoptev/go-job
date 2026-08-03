@@ -34,22 +34,9 @@ func TestResumeEditHandler_BadID_Numeric(t *testing.T) {
 }
 
 // TestResumeEditHandler_BadID_NonNumeric asserts that a non-numeric id returns 400.
-func TestResumeEditHandler_BadID_NonNumeric(t *testing.T) {
-	handler := resumeExperienceDeleteHandler()
-
-	form := url.Values{}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/admin/resume/experience/abc/delete", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "abc")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("want 400 for non-numeric id, got %d", rr.Code)
-	}
-}
+// NOTE: resumeExperienceDeleteHandler was migrated to go-panel Writer.Delete —
+// this test is now covered by go-panel's deleteHandler tests (resource/writer_test.go).
+// The bespoke handler no longer exists; the framework handles id validation.
 
 // TestResumeEditHandler_InvalidSkillLevel asserts that an invalid level returns 400.
 // Red-on-revert: remove IsValidSkillLevel check → any level accepted silently.

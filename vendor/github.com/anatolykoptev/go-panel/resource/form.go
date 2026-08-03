@@ -184,6 +184,34 @@ type Writer struct {
 	// out the shared columns it never received. Create (id=="") and Default-locale
 	// saves always carry the full field set.
 	Save func(ctx context.Context, t tenant.Tenant, id string, values map[string]string) error
+	// Delete removes the row. id is the row primary key (never empty).
+	// Nil = no delete route mounted (read-only resource).
+	// Soft-delete is the consumer's responsibility — set deleted_at instead of
+	// hard-deleting if needed.
+	Delete func(ctx context.Context, t tenant.Tenant, id string) error
+	// PresetValues returns values to inject on create (id==""). These are
+	// merged over form values before Save is called — preset takes precedence.
+	// Use for foreign keys (person_id, org_id) that come from context, not the
+	// form — prevents hidden-field tampering.
+	// Nil = no preset (all values come from the form).
+	// Only called on create; ignored on edit.
+	PresetValues func(ctx context.Context, t tenant.Tenant) (map[string]string, error)
+	// AfterSave is called after Save completes, regardless of error.
+	// id is the row ID passed to Save (empty for create). err is nil on success.
+	// Hook errors are logged at Warn level and do NOT affect the HTTP response —
+	// side-effects are best-effort. Use for cache invalidation, vector re-sync,
+	// notifications. Nil = no hook.
+	AfterSave func(ctx context.Context, id string, err error)
+	// AfterDelete is called after Delete completes, regardless of error.
+	// Same contract as AfterSave. Nil = no hook.
+	AfterDelete func(ctx context.Context, id string, err error)
+	// RedirectAfterSave returns the URL to redirect to after a successful save.
+	// nil = redirect to the resource list page (default behaviour).
+	// Only used on success — error paths (validation, 500) do not redirect.
+	RedirectAfterSave func(ctx context.Context, id string) string
+	// RedirectAfterDelete returns the URL to redirect to after a successful delete.
+	// nil = redirect to the resource list page (default behaviour).
+	RedirectAfterDelete func(ctx context.Context, id string) string
 }
 
 // formErrors holds per-field validation errors.
