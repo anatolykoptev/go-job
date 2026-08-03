@@ -1314,6 +1314,20 @@ func warmAlertBoundedMetrics() {
 	for oc := range validJobSearchExtractionOutcomes {
 		reg.Add(MetricJobSearchExtraction+"{outcome="+oc+"}", 0)
 	}
+	// ESC-2: pre-register the three scoring-degradation gauges at 0 so
+	// equality-based alerts (gojob_hunt_scoring_degraded == 1) have a series
+	// to evaluate before the first real event. SetHuntScoringDegraded
+	// early-returns when prev == degraded (always true on the first
+	// cycle_reset call since scoringDegradedState initializes false), so
+	// without this pre-registration the gauge is absent from Prometheus
+	// until a real 0→1 transition — the alert sees "no data", not 0.
+	// The unscored-jobs gauges don't have the early-return bug (their
+	// setters always call reg.Gauge().Set()), but pre-registering them
+	// too is defense-in-depth: if the sweep cycle is delayed or skipped,
+	// the gauges are still present at 0.
+	reg.Gauge(MetricHuntScoringDegraded).Set(0)
+	reg.Gauge(MetricHuntUnscoredJobsCount).Set(0)
+	reg.Gauge(MetricHuntUnscoredJobsMaxAge).Set(0)
 }
 
 // IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.

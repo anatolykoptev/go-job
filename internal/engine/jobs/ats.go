@@ -99,6 +99,25 @@ var (
 	})
 )
 
+// recordATSResult records the fetch outcome with the breaker and logs the
+// original error (before the breaker trips) so the root cause (403/429/
+// timeout) is visible in logs. The !errors.Is(err, breaker.ErrOpen) guard
+// prevents double-logging when the breaker is already open — in that case
+// the caller's "fetch error" log already carries the breaker-open error.
+//
+// errPtr is a pointer to the named return error so the deferred call sees
+// the final value.
+func recordATSResult(b *breaker.Breaker, platform, slug string, errPtr *error) {
+	err := *errPtr
+	b.Record(err == nil)
+	if err != nil && !errors.Is(err, breaker.ErrOpen) {
+		slog.Warn(platform+": fetch failed (pre-breaker)",
+			slog.String("slug", slug),
+			slog.Any("error", err),
+		)
+	}
+}
+
 // discoverJobURLs returns URL/title pairs for ATS slug extraction.
 //
 // When ATSDiscoverer is set (GO_SEARCH_URL configured at startup), it calls the
@@ -575,7 +594,7 @@ func fetchGreenhouseJobs(ctx context.Context, slug string) (jobs []greenhouseJob
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("greenhouse breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { greenhouseBreaker.Record(err == nil) }()
+	defer func() { recordATSResult(greenhouseBreaker, "greenhouse", slug, &err) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
@@ -944,7 +963,7 @@ func fetchLeverPostings(ctx context.Context, slug string) (postings []leverPosti
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("lever breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { leverBreaker.Record(err == nil) }()
+	defer func() { recordATSResult(leverBreaker, "lever", slug, &err) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
@@ -1183,7 +1202,7 @@ func fetchAshbyJobs(ctx context.Context, slug string) (jobs []ashbyJob, err erro
 		engine.IncrATSBreakerOpen()
 		return nil, fmt.Errorf("ashby breaker open: %w", breaker.ErrOpen)
 	}
-	defer func() { ashbyBreaker.Record(err == nil) }()
+	defer func() { recordATSResult(ashbyBreaker, "ashby", slug, &err) }()
 
 	release, err := atsLimiter.Acquire(ctx)
 	if err != nil {
