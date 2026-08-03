@@ -99,11 +99,19 @@ jobs:
           sudo tar -xzf /tmp/gremlins.tar.gz -C /usr/local/bin gremlins
           gremlins --version
 
+      - name: Configure Git for private modules
+        # gremlins v0.6.0 does NOT pass -mod=vendor to its internal `go test`
+        # invocation (it ignores GOFLAGS), so `go test` tries to download
+        # modules. github.com/anatolykoptev/go-linkedin is private — without
+        # git auth, `git ls-remote` fails with "could not read Username".
+        # Embed GITHUB_TOKEN in the URL so git can authenticate.
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
       - name: Run mutation testing (PR-diff scoped)
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
           GOWORK: off
-          GOFLAGS: -mod=vendor
           GOPRIVATE: github.com/anatolykoptev/*
         run: |
           set -uo pipefail
