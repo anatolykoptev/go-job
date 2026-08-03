@@ -2,6 +2,22 @@
 
 All notable changes to go_job are documented here.
 
+## [1.20.0](https://github.com/anatolykoptev/go-job/compare/v1.19.1...v1.20.0) (2026-08-03)
+
+
+### Features
+
+* **adminui:** migrate 6 resume entities to go-panel Writer ([#456](https://github.com/anatolykoptev/go-job/issues/456)) ([02826ee](https://github.com/anatolykoptev/go-job/commit/02826ee864d48d3354f60a5222caeb9020da225f))
+* **adminui:** migrate resume + upwork CRUD to go-panel Writer ([#456](https://github.com/anatolykoptev/go-job/issues/456), [#457](https://github.com/anatolykoptev/go-job/issues/457)) ([#462](https://github.com/anatolykoptev/go-job/issues/462)) ([9446006](https://github.com/anatolykoptev/go-job/commit/944600690fbb04a1a2edb82bd179185f04578ec0))
+* **adminui:** migrate resume experiences to go-panel Writer ([#456](https://github.com/anatolykoptev/go-job/issues/456)) ([4bee721](https://github.com/anatolykoptev/go-job/commit/4bee721cdcd8472a8dd5fca033f3df082934f474))
+* **adminui:** migrate resume person to go-panel Writer ([#456](https://github.com/anatolykoptev/go-job/issues/456)) ([686dcc7](https://github.com/anatolykoptev/go-job/commit/686dcc700e00dd65a8c847a57af0c29671d0fa96))
+* **adminui:** migrate upwork CRUD to go-panel Writer ([#457](https://github.com/anatolykoptev/go-job/issues/457)) ([3e157aa](https://github.com/anatolykoptev/go-job/commit/3e157aa362d8c54370909cc249822e3478e2294b))
+
+
+### Reverts
+
+* go-panel Writer migration (move to PR for review) ([2ba7206](https://github.com/anatolykoptev/go-job/commit/2ba72067078213c9e0a2cd3f917c0bf0be150803))
+
 ## [1.19.1](https://github.com/anatolykoptev/go-job/compare/v1.19.0...v1.19.1) (2026-08-02)
 
 
