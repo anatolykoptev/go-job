@@ -14,6 +14,7 @@ package huntworker
 //   Remove nil-score notify path → nil-score case does not call notifier, test fails.
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,14 +51,26 @@ func (f *fakeMetricSink) record(outcome string) {
 func freshJob() hunt.Job {
 	postedAt := time.Now().Add(-1 * time.Hour)
 	return hunt.Job{
-		ID:      99,
-		Title:   "Senior Go Engineer",
-		Company: "Acme",
-		URL:     "https://jobs.acme.io/1",
-		Source:  "greenhouse",
-		Status:  hunt.StatusOpen,
+		ID:       99,
+		Title:    "Senior Go Engineer",
+		Company:  "Acme",
+		URL:      "https://jobs.acme.io/1",
+		Source:   "greenhouse",
+		Status:   hunt.StatusOpen,
 		PostedAt: &postedAt,
 	}
+}
+
+// newGateWorker builds a Worker with settings loaded from env (no DB store)
+// so notifyMinFit() reads HUNT_NOTIFY_MIN_FIT via LoadSettings.
+func newGateWorker(metrics *fakeMetricSink, notifier *fakeFitNotifier) *Worker {
+	w := &Worker{
+		notifier:     notifier,
+		notifyMetric: metrics.record,
+	}
+	s := LoadSettings(context.Background(), nil)
+	w.settings.Store(&s)
+	return w
 }
 
 // Test_Gate_DropsLowFit covers all 4 gate outcomes.
@@ -72,10 +85,7 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := &Worker{
-			notifier:     notifier,
-			notifyMetric: metrics.record,
-		}
+		w := newGateWorker(metrics, notifier)
 
 		sr := &hunt.ScoreResult{FitScore: 40, FitBand: "medium"}
 		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
@@ -89,10 +99,7 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := &Worker{
-			notifier:     notifier,
-			notifyMetric: metrics.record,
-		}
+		w := newGateWorker(metrics, notifier)
 
 		sr := &hunt.ScoreResult{FitScore: 80, FitBand: "high"}
 		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
@@ -113,10 +120,7 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := &Worker{
-			notifier:     notifier,
-			notifyMetric: metrics.record,
-		}
+		w := newGateWorker(metrics, notifier)
 
 		sr := &hunt.ScoreResult{FitBand: "unscored"}
 		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
@@ -133,10 +137,7 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := &Worker{
-			notifier:     notifier,
-			notifyMetric: metrics.record,
-		}
+		w := newGateWorker(metrics, notifier)
 
 		// nil score = scoring disabled
 		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, nil)

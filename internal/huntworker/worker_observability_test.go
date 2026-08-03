@@ -223,7 +223,7 @@ func Test_Sweep_ScoresUnscoredOpen(t *testing.T) {
 	}
 
 	var llmCallsThisCycle atomic.Int64
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
+	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
 
 	assert.Equal(t, int64(1), store.setCount.Load(),
 		"sweep must call SetJobScore once for the unscored open job; RED-on-revert: remove sweep code")
@@ -274,10 +274,10 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 	}
 
 	// Budget already at max (0 allows 0 calls).
-	maxBudget := score.MaxLLMPerCycle() // = 0 from env
+	maxBudget := score.MaxLLMPerCycle(nil) // = 0 from env
 	var llmCallsThisCycle atomic.Int64
 	llmCallsThisCycle.Store(int64(maxBudget)) // budget exhausted
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
+	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
 
 	assert.Equal(t, int64(0), llmCalls.Load(),
 		"sweep must NOT call LLM when per-cycle budget exhausted")
@@ -314,10 +314,10 @@ func Test_Sweep_SkipsQueryWhenBudgetZero(t *testing.T) {
 	}
 
 	// Budget fully consumed by ingest path.
-	maxLLM := score.MaxLLMPerCycle() // 3 from env
+	maxLLM := score.MaxLLMPerCycle(nil) // 3 from env
 	var llmCallsThisCycle atomic.Int64
 	llmCallsThisCycle.Store(int64(maxLLM)) // already at ceiling
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle)
+	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
 
 	assert.Equal(t, int64(0), store.setCount.Load(),
 		"sweep must NOT call UnscoredOpenJobs / SetJobScore when remaining budget == 0; "+

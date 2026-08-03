@@ -540,6 +540,114 @@ func (s *Store) UnscoredOpenJobsStats(ctx context.Context) (UnscoredJobsStats, e
 	return stats, nil
 }
 
+// HuntSettings is the operator-tunable configuration for the hunt ingest worker.
+// Stored in the hunt_settings table (single-row, id=1) and edited via the admin
+// UI. Env vars remain as fallback defaults when the row is absent or a column
+// is zero/unset — see huntworker.LoadSettings for the merge logic.
+type HuntSettings struct {
+	Enabled             bool          `json:"enabled"`
+	Interval            time.Duration `json:"interval"`       // seconds in DB
+	Queries             string        `json:"queries"`        // comma-separated
+	NotifyChatID        int64         `json:"notify_chat_id"` // 0 = no Telegram
+	NotifyMinFit        int           `json:"notify_min_fit"` // 0-100
+	NotifyMaxAge        time.Duration `json:"notify_max_age"` // seconds in DB
+	ScoreEnabled        bool          `json:"score_enabled"`
+	ScoreMinJaccard     int           `json:"score_min_jaccard"`
+	ScoreMaxLLMPerCycle int           `json:"score_max_llm_per_cycle"`
+	ScoreSweepLimit     int           `json:"score_sweep_limit"`
+	ScoreFailOpen       bool          `json:"score_fail_open"`
+	UpdatedAt           time.Time     `json:"updated_at"`
+}
+
+// GetHuntSettings loads the single-row hunt_settings. Returns a zero-value
+// HuntSettings (all defaults) if the row does not exist — callers apply env
+// fallbacks on top.
+func (s *Store) GetHuntSettings(ctx context.Context) (HuntSettings, error) {
+	var (
+		enabled             bool
+		intervalSec         int
+		queries             string
+		notifyChatID        int64
+		notifyMinFit        int
+		notifyMaxAgeSec     int
+		scoreEnabled        bool
+		scoreMinJaccard     int
+		scoreMaxLLMPerCycle int
+		scoreSweepLimit     int
+		scoreFailOpen       bool
+		updatedAt           time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT enabled, interval_seconds, queries, notify_chat_id,
+		       notify_min_fit, notify_max_age_seconds,
+		       score_enabled, score_min_jaccard, score_max_llm_per_cycle,
+		       score_sweep_limit, score_fail_open, updated_at
+		FROM hunt_settings WHERE id = 1`).Scan(
+		&enabled, &intervalSec, &queries, &notifyChatID,
+		&notifyMinFit, &notifyMaxAgeSec,
+		&scoreEnabled, &scoreMinJaccard, &scoreMaxLLMPerCycle,
+		&scoreSweepLimit, &scoreFailOpen, &updatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return HuntSettings{}, nil // zero-value → env fallback
+		}
+		return HuntSettings{}, fmt.Errorf("hunt: get settings: %w", err)
+	}
+	return HuntSettings{
+		Enabled:             enabled,
+		Interval:            time.Duration(intervalSec) * time.Second,
+		Queries:             queries,
+		NotifyChatID:        notifyChatID,
+		NotifyMinFit:        notifyMinFit,
+		NotifyMaxAge:        time.Duration(notifyMaxAgeSec) * time.Second,
+		ScoreEnabled:        scoreEnabled,
+		ScoreMinJaccard:     scoreMinJaccard,
+		ScoreMaxLLMPerCycle: scoreMaxLLMPerCycle,
+		ScoreSweepLimit:     scoreSweepLimit,
+		ScoreFailOpen:       scoreFailOpen,
+		UpdatedAt:           updatedAt,
+	}, nil
+}
+
+// SaveHuntSettings upserts the single-row hunt_settings.
+func (s *Store) SaveHuntSettings(ctx context.Context, settings HuntSettings) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO hunt_settings (id, enabled, interval_seconds, queries,
+		       notify_chat_id, notify_min_fit, notify_max_age_seconds,
+		       score_enabled, score_min_jaccard, score_max_llm_per_cycle,
+		       score_sweep_limit, score_fail_open, updated_at)
+		VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+		ON CONFLICT (id) DO UPDATE SET
+			enabled = EXCLUDED.enabled,
+			interval_seconds = EXCLUDED.interval_seconds,
+			queries = EXCLUDED.queries,
+			notify_chat_id = EXCLUDED.notify_chat_id,
+			notify_min_fit = EXCLUDED.notify_min_fit,
+			notify_max_age_seconds = EXCLUDED.notify_max_age_seconds,
+			score_enabled = EXCLUDED.score_enabled,
+			score_min_jaccard = EXCLUDED.score_min_jaccard,
+			score_max_llm_per_cycle = EXCLUDED.score_max_llm_per_cycle,
+			score_sweep_limit = EXCLUDED.score_sweep_limit,
+			score_fail_open = EXCLUDED.score_fail_open,
+			updated_at = now()`,
+		settings.Enabled,
+		int(settings.Interval.Seconds()),
+		settings.Queries,
+		settings.NotifyChatID,
+		settings.NotifyMinFit,
+		int(settings.NotifyMaxAge.Seconds()),
+		settings.ScoreEnabled,
+		settings.ScoreMinJaccard,
+		settings.ScoreMaxLLMPerCycle,
+		settings.ScoreSweepLimit,
+		settings.ScoreFailOpen,
+	)
+	if err != nil {
+		return fmt.Errorf("hunt: save settings: %w", err)
+	}
+	return nil
+}
+
 // JobFilter narrows ListJobs results.
 type JobFilter struct {
 	Source        string
