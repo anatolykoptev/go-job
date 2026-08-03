@@ -15,23 +15,9 @@ import (
 
 // TestResumeEditHandler_BadID_Numeric asserts that id=0 returns 400
 // (before any DB call).
-// Red-on-revert: remove parseIDParam check → nil pointer on db.GetLatestPersonID.
-func TestResumeEditHandler_BadID_Numeric(t *testing.T) {
-	handler := resumeSkillDeleteHandler()
-
-	form := url.Values{}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/admin/resume/skill/0/delete", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "0")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("want 400 for id=0, got %d", rr.Code)
-	}
-}
+// NOTE: resumeSkillDeleteHandler was migrated to go-panel Writer.Delete —
+// id validation is now handled by the framework's deleteHandler.
+// The bespoke handler no longer exists.
 
 // TestResumeEditHandler_BadID_NonNumeric asserts that a non-numeric id returns 400.
 // NOTE: resumeExperienceDeleteHandler was migrated to go-panel Writer.Delete —
