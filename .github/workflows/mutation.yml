@@ -104,9 +104,17 @@ jobs:
         # invocation (it ignores GOFLAGS), so `go test` tries to download
         # modules. github.com/anatolykoptev/go-linkedin is private — without
         # git auth, `git ls-remote` fails with "could not read Username".
-        # Embed GITHUB_TOKEN in the URL so git can authenticate.
+        # Use krolik-release-bot App token (same as release-please) instead of
+        # GITHUB_TOKEN — the App has contents:read on all repos in the org.
+        uses: actions/create-github-app-token@v2
+        id: bot-token
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - name: Set git auth for private modules
         run: |
-          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://x-access-token:${{ steps.bot-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
 
       - name: Run mutation testing (PR-diff scoped)
         env:
