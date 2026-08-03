@@ -278,6 +278,11 @@ func TestAshbyFetcher_BreakerHalfOpensAfterDuration(t *testing.T) {
 // The log line must contain the "pre-breaker" marker, the slug, and the
 // original error text (HTTP 500 status), distinguishable from the caller's
 // "fetch error" log which only sees the wrapped breaker.ErrOpen.
+//
+// Deliberately NOT t.Parallel(): this test swaps the process-global slog
+// default to capture output into a local bytes.Buffer. Running it in the
+// parallel phase lets a sibling test's slog.Warn write into that buffer
+// while buf.String() reads it — bytes.Buffer is not concurrency-safe.
 func TestAshbyFetcher_LogsOriginalErrorBeforeBreakerTrip(t *testing.T) {
 	origBreaker := ashbyBreaker
 	origLimiter := atsLimiter
