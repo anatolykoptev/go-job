@@ -2,10 +2,11 @@ package resource
 
 // detailPageData holds all data needed to render a resource detail (Show) page.
 type detailPageData struct {
-	Resource Resource
-	ID       string
-	Sections []DetailSection
-	BasePath string
+	Resource  Resource
+	ID        string
+	Sections  []DetailSection
+	BasePath  string
+	CSRFToken string // empty when Writer.Delete is nil
 }
 
 // detailPageContent renders the full detail page content (back link + sections).
@@ -26,6 +27,19 @@ templ detailPageContent(d detailPageData) {
 		}
 		for _, section := range d.Sections {
 			@detailSection(section)
+		}
+		if d.CSRFToken != "" {
+			<form
+				method="POST"
+				action={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + d.ID + "/delete") }
+				style="margin-top:1.5rem"
+				onsubmit="return confirm('Delete this { d.Resource.Title }? This cannot be undone.')"
+			>
+				<input type="hidden" name="csrf_token" value={ d.CSRFToken }/>
+				<button type="submit" style="background:var(--danger,#dc2626);color:#fff;border:none;padding:.5rem 1rem;border-radius:.375rem;cursor:pointer;font-size:.8125rem">
+					Delete
+				</button>
+			</form>
 		}
 	</div>
 }

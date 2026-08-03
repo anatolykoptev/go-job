@@ -30,7 +30,7 @@ Respond with valid JSON only (no markdown wrapping):
 }
 
 Rules:
-- If the user query is non-empty, return ONLY jobs relevant to the query keywords (match against title, company, skills, description). If no jobs match, return an empty "jobs" array and a summary explaining that none of the listings are relevant to the query.
+- If the user query is non-empty, return jobs whose ROLE matches the query by MEANING, not by literal keyword match. A job is relevant when its title, skills, or description fall in the same role family as the query — including common synonyms, abbreviations, and variant titles the market uses for the same role (e.g. "Developer Advocate" / "DevRel" / "Developer Evangelist" / "Community Manager" for a "Developer Relations" query; "Growth Lead" / "VP Growth" / "Growth Marketing Manager" for a "Head of Growth" query; "Solutions Architect" / "Sales Engineer" / "Pre-sales Engineer" for a "Solutions Engineer" query). Do NOT drop a listing because the query's exact words are absent if the role is the same. If genuinely no listing shares the role family, return an empty "jobs" array and a summary explaining that none of the listings are relevant to the query.
 - Extract ALL jobs found in sources (up to 15)
 - Determine source from URL or content: boards.greenhouse.io or job-boards.greenhouse.io→greenhouse, jobs.lever.co→lever, jobs.ashbyhq.com→ashby, workatastartup.com→yc, news.ycombinator.com→hn, linkedin.com→linkedin, indeed.com→indeed, careers.un.org→inspira, estm.fa.em2.oraclecloud.com→undp
 - Extract salary from description or structured data. If not found, use "not specified" for salary string, omit salary_min/max/currency/interval

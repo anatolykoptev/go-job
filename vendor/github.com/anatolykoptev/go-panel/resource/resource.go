@@ -202,6 +202,15 @@ type Resource struct {
 	// Register-time validation is self-contained: each Relation.ForeignKey
 	// must match a Sort.Columns[].Key on THIS resource (ADR-6).
 	Relations []Relation
+
+	// SingleRow indicates a single-row resource (e.g. a profile, settings).
+	// When true:
+	//   - GET /{name} redirects to /{name}/{id}/edit for the first (only) row.
+	//   - GET /{name}/new is not mounted (no create — the row already exists).
+	//   - Lister is still required (used to find the row ID for the redirect).
+	//   - Writer.Load and Writer.Save are called with that row's ID.
+	// Requires Writer to be non-nil (Register panics otherwise).
+	SingleRow bool
 }
 
 // Panel is the minimal composition root go-panel provides.
@@ -533,6 +542,9 @@ func Register(p *Panel, r Resource) {
 	if r.Writer != nil {
 		validateWriterConfig(p, r)
 	}
+	if r.SingleRow && r.Writer == nil {
+		panic(fmt.Sprintf("resource.Register %q: SingleRow requires Writer to be non-nil", r.Name))
+	}
 	validateRoleConfig(p, r)
 	validateRelationsConfig(&r)
 	p.resources = append(p.resources, r)
@@ -569,17 +581,53 @@ func Register(p *Panel, r Resource) {
 	rowsPath := p.basePath + "/" + r.Name + "/rows"
 
 	listHandler := p.makeListHandler(r)
-	p.mux.HandleFunc("GET "+listPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
-		nav := p.activeNav(req.Context(), r.Name)
-		shell.SecurityHeaders(w)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		listHandler(w, req, nav, false)
-	}))
-	p.mux.HandleFunc("GET "+rowsPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
-		shell.SecurityHeaders(w)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		listHandler(w, req, nil, true)
-	}))
+	if r.SingleRow {
+		// Single-row resource: GET /{name} redirects to /{name}/{id}/edit
+		// for the first (only) row. The "new" route is not mounted.
+		p.mux.HandleFunc("GET "+listPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
+			ctx := req.Context()
+			t := tenant.From(ctx)
+			rows, _, err := r.Lister(ctx, ListQuery{Tenant: t, Limit: 1})
+			if err != nil {
+				slog.Error("resource: single-row lister failed", "resource", r.Name, "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if len(rows) == 0 {
+				// No row yet — render a message. The consumer should seed the row.
+				nav := p.activeNav(ctx, r.Name)
+				shell.SecurityHeaders(w)
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				listHandler(w, req, nav, false)
+				return
+			}
+			editURL := p.basePath + "/" + r.Name + "/" + rows[0].ID + "/edit"
+			if render.IsHTMX(req) {
+				w.Header().Set("HX-Redirect", editURL)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Redirect(w, req, editURL, http.StatusSeeOther)
+		}))
+		// /rows still works for htmx fragments if needed.
+		p.mux.HandleFunc("GET "+rowsPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
+			shell.SecurityHeaders(w)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			listHandler(w, req, nil, true)
+		}))
+	} else {
+		p.mux.HandleFunc("GET "+listPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
+			nav := p.activeNav(req.Context(), r.Name)
+			shell.SecurityHeaders(w)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			listHandler(w, req, nav, false)
+		}))
+		p.mux.HandleFunc("GET "+rowsPath, p.guard(r.RequiredRole, func(w http.ResponseWriter, req *http.Request) {
+			shell.SecurityHeaders(w)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			listHandler(w, req, nil, true)
+		}))
+	}
 
 	// Detailer route — mounted when Detailer OR FetchRow is configured.
 	// If Detailer is nil but FetchRow is non-nil, synthesize an auto-Detailer
@@ -798,6 +846,11 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 			Sections: sections,
 			BasePath: p.basePath,
 		}
+		// Issue CSRF token for the delete button when Writer.Delete is configured.
+		if r.Writer != nil && r.Writer.Delete != nil {
+			sessVal := p.sessionValue(req)
+			d.CSRFToken = csrf.Issue(p.csrfKey, sessVal, csrf.DefaultTTL)
+		}
 		content := detailPageContent(d)
 		layoutComp := shell.Layout(p.title, nav, content)
 		renderCtx := shell.ContextWithChrome(req.Context(), p.chromeStateFrom(req))
@@ -811,13 +864,21 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 // mountWriterRoutes mounts the create/edit/save handler triplet for a Writer-enabled resource.
 // Called only when r.Writer != nil and all pre-conditions (key, session binding) have been verified.
 func mountWriterRoutes(p *Panel, r Resource) {
-	newPath := p.basePath + "/" + r.Name + "/new"
 	editPath := p.basePath + "/" + r.Name + "/{id}/edit"
 	savePath := p.basePath + "/" + r.Name + "/{id}/save"
 
-	p.mux.HandleFunc("GET "+newPath, p.guard(r.RequiredRole, newFormHandler(p, r)))
+	// Single-row resources don't have a "new" route — the row already exists.
+	if !r.SingleRow {
+		newPath := p.basePath + "/" + r.Name + "/new"
+		p.mux.HandleFunc("GET "+newPath, p.guard(r.RequiredRole, newFormHandler(p, r)))
+	}
 	p.mux.HandleFunc("GET "+editPath, p.guard(r.RequiredRole, editFormHandler(p, r)))
 	p.mux.HandleFunc("POST "+savePath, p.guard(r.RequiredRole, saveHandler(p, r)))
+
+	if r.Writer.Delete != nil {
+		deletePath := p.basePath + "/" + r.Name + "/{id}/delete"
+		p.mux.HandleFunc("POST "+deletePath, p.guard(r.RequiredRole, deleteHandler(p, r)))
+	}
 }
 
 // withResolvedForm returns a shallow copy of r whose Writer.Form has all
@@ -977,6 +1038,21 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 		fields := rr.Writer.Form.localeFields(loc, p.locales.Default, multi)
 		values := collectFormValues(req, fields)
 
+		// On create, merge preset values (foreign keys from context, not the
+		// form). Preset takes precedence over form values — prevents
+		// hidden-field tampering. PresetValues is nil = no preset.
+		if creating && rr.Writer.PresetValues != nil {
+			preset, err := rr.Writer.PresetValues(ctx, t)
+			if err != nil {
+				slog.Error("resource: preset values failed", "resource", r.Name, "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			for k, v := range preset {
+				values[k] = v
+			}
+		}
+
 		// Server-side validation over the active locale's field set.
 		errs := validateFields(fields, values)
 		if errs.hasErrors() {
@@ -990,24 +1066,96 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 		// validation above. Any other error is a genuine internal failure —
 		// generic 500 body, detail logged server-side, never masked as a
 		// user error.
-		if err := rr.Writer.Save(ctx, t, id, values); err != nil {
+		saveErr := rr.Writer.Save(ctx, t, id, values)
+		if saveErr != nil {
 			var se *SaveError
-			if errors.As(err, &se) {
+			if errors.As(saveErr, &se) {
+				if rr.Writer.AfterSave != nil {
+					rr.Writer.AfterSave(ctx, id, saveErr)
+				}
 				renderValidationErrors(w, req, p, rr, id, loc, values, formErrors{se.Field: se.Message})
 				return
 			}
-			slog.Error("resource: save failed", "resource", r.Name, "err", err)
+			slog.Error("resource: save failed", "resource", r.Name, "err", saveErr)
+			if rr.Writer.AfterSave != nil {
+				rr.Writer.AfterSave(ctx, id, saveErr)
+			}
 			http.Error(w, "save failed", http.StatusInternalServerError)
 			return
 		}
+		if rr.Writer.AfterSave != nil {
+			rr.Writer.AfterSave(ctx, id, nil)
+		}
 
-		// Redirect to list (PRG pattern).
+		// Redirect (PRG pattern). Custom redirect URL via RedirectAfterSave,
+		// or default to the resource list page.
+		redirectURL := p.basePath + "/" + r.Name
+		if rr.Writer.RedirectAfterSave != nil {
+			if custom := rr.Writer.RedirectAfterSave(ctx, id); custom != "" {
+				redirectURL = custom
+			}
+		}
 		if render.IsHTMX(req) {
-			w.Header().Set("HX-Redirect", p.basePath+"/"+r.Name)
+			w.Header().Set("HX-Redirect", redirectURL)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		http.Redirect(w, req, p.basePath+"/"+r.Name, http.StatusSeeOther)
+		http.Redirect(w, req, redirectURL, http.StatusSeeOther)
+	}
+}
+
+// deleteHandler returns the handler for POST /{name}/{id}/delete.
+// Only mounted when Writer.Delete is non-nil.
+func deleteHandler(p *Panel, r Resource) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		shell.SecurityHeaders(w)
+		const maxFormBytes = 1 << 20 // 1 MB
+		req.Body = http.MaxBytesReader(w, req.Body, maxFormBytes)
+		if err := req.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		if !p.verifyCSRFToken(w, req, "resource: CSRF verification failed on delete", "resource", r.Name) {
+			return
+		}
+
+		id := req.PathValue("id")
+		if id == "" || id == idNew {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+
+		ctx := req.Context()
+		t := tenant.From(ctx)
+
+		deleteErr := r.Writer.Delete(ctx, t, id)
+		if deleteErr != nil {
+			slog.Error("resource: delete failed", "resource", r.Name, "id", id, "err", deleteErr)
+			if r.Writer.AfterDelete != nil {
+				r.Writer.AfterDelete(ctx, id, deleteErr)
+			}
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		if r.Writer.AfterDelete != nil {
+			r.Writer.AfterDelete(ctx, id, nil)
+		}
+
+		// Redirect (PRG pattern). Custom redirect URL via RedirectAfterDelete,
+		// or default to the resource list page.
+		redirectURL := p.basePath + "/" + r.Name
+		if r.Writer.RedirectAfterDelete != nil {
+			if custom := r.Writer.RedirectAfterDelete(ctx, id); custom != "" {
+				redirectURL = custom
+			}
+		}
+		if render.IsHTMX(req) {
+			w.Header().Set("HX-Redirect", redirectURL)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, req, redirectURL, http.StatusSeeOther)
 	}
 }
 

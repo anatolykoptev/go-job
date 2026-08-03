@@ -81,6 +81,30 @@ func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]Exper
 	return results, rows.Err()
 }
 
+// GetExperienceByID fetches a single experience row by primary key.
+func (db *ResumeDB) GetExperienceByID(ctx context.Context, expID int) (ExperienceRecord, error) {
+	var r ExperienceRecord
+	err := db.conn(ctx).QueryRow(ctx,
+		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
+		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
+		        COALESCE(domain, '')
+		 FROM resume_experiences WHERE id = $1`, expID).
+		Scan(&r.ID, &r.PersonID, &r.Title, &r.Company, &r.Location,
+			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain)
+	return r, err
+}
+
+// UpdateExperience updates the editable columns of an experience row.
+func (db *ResumeDB) UpdateExperience(ctx context.Context, expID int, e ExperienceRecord) error {
+	_, err := db.conn(ctx).Exec(ctx,
+		`UPDATE resume_experiences
+		 SET title = $2, company = $3, location = $4, start_date = $5, end_date = $6, description = $7,
+		     highlights = $8, updated_at = now()
+		 WHERE id = $1`,
+		expID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights)
+	return err
+}
+
 // --- Skill CRUD ---
 
 type SkillRecord struct {

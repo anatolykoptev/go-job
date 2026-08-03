@@ -3,21 +3,17 @@ package adminui
 // resume_profile_sync_handler_test.go — handler-level test proving the admin
 // resume edit mutation paths actually invoke the profile vector sync.
 //
-// Falsification: remove the syncProfileVectorsBestEffort call from
-// resumeExperienceCreateHandler → no source='profile' derived row appears after
-// the POST → RED.
+// Falsification: remove the AfterSave hook from the experiences Writer →
+// no source='profile' derived row appears after the Save → RED.
 //
 // Requires DATABASE_URL pointing at a *_test Postgres; skips otherwise.
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
-	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,29 +70,32 @@ func openResumeSyncTestDB(t *testing.T) (personID int) {
 	return pid
 }
 
-// TestResumeExperienceCreateHandler_SyncsVectors proves the experience-create
-// POST handler invokes the profile vector sync: after the POST, a
+// TestResumeExperienceWriterSave_SyncsVectors proves the experiences Writer's
+// Save + AfterSave hook invokes the profile vector sync: after Save, a
 // source='profile' derived row carrying the new experience id as ref_id must
 // exist in resume_vectors.
 //
-// Mutant — remove the syncProfileVectorsBestEffort(r, personID) call from
-// resumeExperienceCreateHandler → no derived row → RED.
-func TestResumeExperienceCreateHandler_SyncsVectors(t *testing.T) {
+// Mutant — remove the AfterSave hook from the Writer → no derived row → RED.
+func TestResumeExperienceWriterSave_SyncsVectors(t *testing.T) {
 	pid := openResumeSyncTestDB(t)
 
-	form := url.Values{}
-	form.Set("title", "Principal Engineer")
-	form.Set("company", "SyncCo")
+	// Build the experiences resource and extract its Writer Save + AfterSave.
+	res := experiencesResource(nil) // pool not needed — Lister uses GetResumeDB
+	if res.Writer == nil || res.Writer.Save == nil {
+		t.Fatal("experiences resource Writer or Save is nil")
+	}
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/admin/resume/experience", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rr := httptest.NewRecorder()
-	resumeExperienceCreateHandler()(rr, req)
-
-	if rr.Code != http.StatusSeeOther {
-		t.Fatalf("handler status = %d, want 303 (redirect); body=%s", rr.Code, rr.Body.String())
+	ctx := context.Background()
+	values := map[string]string{
+		"title":   "Principal Engineer",
+		"company": "SyncCo",
+	}
+	if err := res.Writer.Save(ctx, tenant.Tenant{}, "", values); err != nil {
+		t.Fatalf("Writer.Save failed: %v", err)
+	}
+	// Manually invoke AfterSave as the saveHandler would.
+	if res.Writer.AfterSave != nil {
+		res.Writer.AfterSave(ctx, "", nil)
 	}
 
 	dsn := os.Getenv("DATABASE_URL")
@@ -117,8 +116,8 @@ func TestResumeExperienceCreateHandler_SyncsVectors(t *testing.T) {
 		 LIMIT 1`,
 		jobs.ResumeVectorUser(), jobs.SourceProfile(), "resume_experience",
 	).Scan(&source, &refID); err != nil {
-		t.Fatalf("no source='profile' derived row found after experience-create POST — "+
-			"the handler must invoke the profile vector sync (mutation→sync): %v", err)
+		t.Fatalf("no source='profile' derived row found after Writer.Save + AfterSave — "+
+			"the hook must invoke the profile vector sync (mutation→sync): %v", err)
 	}
 	if source != jobs.SourceProfile() {
 		t.Errorf("derived row source = %q, want %q", source, jobs.SourceProfile())

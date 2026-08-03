@@ -80,6 +80,9 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	resource.Register(p, contestsResource(pool))
 	resource.Register(p, oversizeResource(pool))
 
+	// Resume resources — Writer-enabled CRUD via go-panel framework.
+	resource.Register(p, experiencesResource(pool))
+
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: grpHunt})
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
@@ -112,8 +115,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// Resume editor routes (Part-D)
 	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey))))
 	p.MountAction(resource.ActionSpec{Path: "resume/person", Handler: resumePersonEditHandler()})
-	p.MountAction(resource.ActionSpec{Path: "resume/experience", Handler: resumeExperienceCreateHandler()})
-	p.MountAction(resource.ActionSpec{Path: "resume/experience/{id}/delete", Handler: resumeExperienceDeleteHandler()})
 	p.MountAction(resource.ActionSpec{Path: "resume/skill", Handler: resumeSkillCreateHandler()})
 	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/delete", Handler: resumeSkillDeleteHandler()})
 	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler()})

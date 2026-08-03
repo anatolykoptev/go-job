@@ -158,61 +158,6 @@ func resumePersonEditHandler() http.HandlerFunc {
 	}
 }
 
-// resumeExperienceCreateHandler handles POST /admin/resume/experience.
-func resumeExperienceCreateHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
-		if !ok {
-			return
-		}
-		title := r.FormValue("title")
-		company := r.FormValue(colCompany)
-		if title == "" || company == "" {
-			http.Error(w, "title and company are required", http.StatusBadRequest)
-			return
-		}
-		e := jobs.ExperienceRecord{
-			Title:       title,
-			Company:     company,
-			Location:    r.FormValue("location"),
-			StartDate:   r.FormValue("start_date"),
-			EndDate:     r.FormValue("end_date"),
-			Description: r.FormValue("description"),
-		}
-		if _, err := db.InsertExperience(r.Context(), personID, e); err != nil {
-			slog.Error("resumeExperienceCreateHandler: InsertExperience", "err", err)
-			http.Error(w, "insert failed", http.StatusInternalServerError)
-			return
-		}
-		syncProfileVectorsBestEffort(r, personID)
-		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
-	}
-}
-
-// resumeExperienceDeleteHandler handles POST /admin/resume/experience/{id}/delete.
-// parseIDParam runs BEFORE requireResumeDB so a bad id returns 400 regardless of DB state.
-func resumeExperienceDeleteHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		id, ok := parseIDParam(w, r)
-		if !ok {
-			return
-		}
-		db, personID, ok2 := requireResumeDB(w, r)
-		if !ok2 {
-			return
-		}
-		if err := db.DeleteExperience(r.Context(), id); err != nil {
-			slog.Error("resumeExperienceDeleteHandler: DeleteExperience", "id", id, "err", err)
-			http.Error(w, "delete failed", http.StatusInternalServerError)
-			return
-		}
-		syncProfileVectorsBestEffort(r, personID)
-		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
-	}
-}
-
 // resumeSkillCreateHandler handles POST /admin/resume/skill.
 func resumeSkillCreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
