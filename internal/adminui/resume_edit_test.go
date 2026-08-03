@@ -10,28 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 )
 
 // TestResumeEditHandler_BadID_Numeric asserts that id=0 returns 400
 // (before any DB call).
-// Red-on-revert: remove parseIDParam check → nil pointer on db.GetLatestPersonID.
-func TestResumeEditHandler_BadID_Numeric(t *testing.T) {
-	handler := resumeSkillDeleteHandler()
-
-	form := url.Values{}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/admin/resume/skill/0/delete", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetPathValue("id", "0")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("want 400 for id=0, got %d", rr.Code)
-	}
-}
+// NOTE: resumeSkillDeleteHandler was migrated to go-panel Writer.Delete —
+// id validation is now handled by the framework's deleteHandler.
+// The bespoke handler no longer exists.
 
 // TestResumeEditHandler_BadID_NonNumeric asserts that a non-numeric id returns 400.
 // NOTE: resumeExperienceDeleteHandler was migrated to go-panel Writer.Delete —
@@ -208,25 +195,20 @@ func TestResumeEditTmpl_RendersWithData(t *testing.T) {
 	}
 }
 
-// TestResumePersonEditHandler_BadHourlyRate asserts that a non-empty, non-numeric
-// hourly_rate returns HTTP 400 rather than silently writing 0.
-// Red-on-revert: remove the parseErr != nil check → returns 303 (redirect) and writes 0.
-func TestResumePersonEditHandler_BadHourlyRate(t *testing.T) {
-	handler := resumePersonEditHandler()
-
-	form := url.Values{}
-	form.Set("name", "Alice")        // required field
-	form.Set("hourly_rate", "not-a-number")
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
-		"/admin/resume/person", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rr := httptest.NewRecorder()
-	handler(rr, req)
-
-	// name present, but hourly_rate is garbage → must 400 before any DB call.
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("want 400 for invalid hourly_rate, got %d: %s", rr.Code, rr.Body.String())
+// TestResumePersonWriter_BadHourlyRate asserts that a non-empty, non-numeric
+// hourly_rate returns a SaveError rather than silently writing 0.
+// Red-on-revert: remove the parseDollarsToCents error check in Writer.Save →
+// returns nil and writes 0.
+func TestResumePersonWriter_BadHourlyRate(t *testing.T) {
+	res := personsResource(nil)
+	if res.Writer == nil || res.Writer.Save == nil {
+		t.Fatal("persons resource Writer or Save is nil")
+	}
+	err := res.Writer.Save(context.Background(), tenant.Tenant{}, "1", map[string]string{
+		"name":        "Alice",
+		"hourly_rate": "not-a-number",
+	})
+	if err == nil {
+		t.Error("expected SaveError for invalid hourly_rate, got nil")
 	}
 }

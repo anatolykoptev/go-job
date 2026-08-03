@@ -175,6 +175,22 @@ func (db *ResumeDB) DeleteUpworkSkill(ctx context.Context, personID, id int) err
 	return err
 }
 
+// GetUpworkSkillByID fetches a single upwork_skills row by primary key.
+func (db *ResumeDB) GetUpworkSkillByID(ctx context.Context, skillID int) (UpworkSkillRecord, error) {
+	var s UpworkSkillRecord
+	err := db.conn(ctx).QueryRow(ctx,
+		`SELECT id, name, position FROM upwork_skills WHERE id = $1`, skillID).
+		Scan(&s.ID, &s.Name, &s.Position)
+	return s, err
+}
+
+// UpdateUpworkSkill updates the name of an upwork_skills row.
+func (db *ResumeDB) UpdateUpworkSkill(ctx context.Context, skillID int, name string) error {
+	_, err := db.conn(ctx).Exec(ctx,
+		`UPDATE upwork_skills SET name = $2 WHERE id = $1`, skillID, name)
+	return err
+}
+
 // UpworkPasteBlock is a labeled block of text destined for a <textarea readonly>.
 type UpworkPasteBlock struct {
 	Label   string
@@ -258,6 +274,23 @@ func (db *ResumeDB) InsertUpworkCatalogItem(ctx context.Context, personID int, t
 // WHERE clause includes person_id to prevent cross-person deletion.
 func (db *ResumeDB) DeleteUpworkCatalogItem(ctx context.Context, personID, id int) error {
 	_, err := db.pool.Exec(ctx, deleteUpworkCatalogItemSQL, id, personID)
+	return err
+}
+
+// GetUpworkCatalogItemByID fetches a single upwork_catalog_items row by primary key.
+func (db *ResumeDB) GetUpworkCatalogItemByID(ctx context.Context, itemID int) (UpworkCatalogItem, error) {
+	var c UpworkCatalogItem
+	err := db.conn(ctx).QueryRow(ctx,
+		`SELECT id, title, COALESCE(description,''), position FROM upwork_catalog_items WHERE id = $1`, itemID).
+		Scan(&c.ID, &c.Title, &c.Description, &c.Position)
+	return c, err
+}
+
+// UpdateUpworkCatalogItem updates the title and description of a catalog item.
+func (db *ResumeDB) UpdateUpworkCatalogItem(ctx context.Context, itemID int, title, description string) error {
+	_, err := db.conn(ctx).Exec(ctx,
+		`UPDATE upwork_catalog_items SET title = $2, description = $3 WHERE id = $1`,
+		itemID, title, description)
 	return err
 }
 

@@ -45,3 +45,21 @@ preflight:
 	GOWORK=off go vet ./internal/...
 	@echo "==> go test -p $(GO_TEST_PARALLEL) ./internal/..."
 	GOWORK=off go test -p $(GO_TEST_PARALLEL) ./internal/...
+
+# mutation: run gremlins mutation testing on PR-diff changes.
+# Requires gremlins installed (https://gremlins.dev/latest/install/).
+# Usage:
+#   make mutation                      # diff against origin/main
+#   make mutation DIFF=abc123          # diff against specific commit
+#   make mutation DIFF=origin/main DRY_RUN=1  # dry-run (list candidates, no test)
+mutation:
+	@echo "==> gremlins mutation testing (diff: $(or $(DIFF),origin/main))"
+	GOWORK=off gremlins unleash \
+		--diff "$(or $(DIFF),origin/main)" \
+		--exclude-files "^vendor/" \
+		--exclude-files "^cmd/" \
+		--exclude-files "_test\.go$$" \
+		--exclude-files "_gen\.go$$" \
+		$(if $(DRY_RUN),--dry-run) \
+		--output-statuses "lc"
+	@echo "==> mutation testing complete"
