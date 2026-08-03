@@ -667,6 +667,24 @@ func achievementsResource(pool *pgxpool.Pool) resource.Resource {
 				}
 				return db.DeleteAchievement(ctx, aid)
 			},
+			AfterSave: func(ctx context.Context, _ string, err error) {
+				if err != nil {
+					return
+				}
+				personID := getLatestPersonIDSafe(ctx)
+				if personID > 0 {
+					syncProfileVectorsBestEffortCtx(ctx, personID)
+				}
+			},
+			AfterDelete: func(ctx context.Context, _ string, err error) {
+				if err != nil {
+					return
+				}
+				personID := getLatestPersonIDSafe(ctx)
+				if personID > 0 {
+					syncProfileVectorsBestEffortCtx(ctx, personID)
+				}
+			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
 		},
@@ -793,6 +811,24 @@ func projectsResource(pool *pgxpool.Pool) resource.Resource {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				return db.DeleteProject(ctx, pid)
+			},
+			AfterSave: func(ctx context.Context, _ string, err error) {
+				if err != nil {
+					return
+				}
+				personID := getLatestPersonIDSafe(ctx)
+				if personID > 0 {
+					syncProfileVectorsBestEffortCtx(ctx, personID)
+				}
+			},
+			AfterDelete: func(ctx context.Context, _ string, err error) {
+				if err != nil {
+					return
+				}
+				personID := getLatestPersonIDSafe(ctx)
+				if personID > 0 {
+					syncProfileVectorsBestEffortCtx(ctx, personID)
+				}
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },

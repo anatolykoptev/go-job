@@ -321,7 +321,7 @@ const upworkTmplSrc = `<style>
 <div class="uw-section">
   <h3>Upwork Profile Edit <span style="font-size:.8rem;color:var(--text-secondary,#94a3b8);font-weight:400">(stored in upwork_profile table)</span></h3>
   {{if .UWMissing}}<div class="uw-empty" style="margin-bottom:.75rem">No Upwork profile entry yet — fill in the form below to create one.</div>{{end}}
-  <form method="POST" action="/admin/upwork/overview" style="margin-bottom:1rem">
+  <form method="POST" action="/admin/upwork_overview/new" style="margin-bottom:1rem">
     <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
     <div style="margin-bottom:.5rem">
       <label class="uw-label">Title (max 70 chars)</label>
@@ -373,7 +373,7 @@ const upworkTmplSrc = `<style>
     {{range .UWSkills}}
     <li class="gd-sortable-item re-row" data-id="{{.ID}}">
       <div class="name">&#9776; {{.Name}}</div>
-      <form method="POST" action="/admin/upwork/skill/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/upwork_skills/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button type="submit" class="uw-btn uw-btn-danger" style="padding:.2rem .5rem;font-size:.75rem">Del</button>
       </form>
@@ -382,7 +382,7 @@ const upworkTmplSrc = `<style>
   </ul>
   {{else}}<div class="uw-empty" style="margin-bottom:.75rem">no Upwork skills yet</div>{{end}}
   <div class="re-add-form">
-    <form method="POST" action="/admin/upwork/skill">
+    <form method="POST" action="/admin/upwork_skills/new">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div class="uw-form-row">
         <input type="text" name="name" class="uw-input re-input" placeholder="Skill name (e.g. Go)">
@@ -400,7 +400,7 @@ const upworkTmplSrc = `<style>
     <li class="gd-sortable-item re-row" data-id="{{.ID}}">
       <div class="name">&#9776; {{.Title}}</div>
       {{if .Description}}<div class="meta">{{.Description}}</div>{{end}}
-      <form method="POST" action="/admin/upwork/catalog/{{.ID}}/delete" style="display:inline">
+      <form method="POST" action="/admin/upwork_catalog/{{.ID}}/delete" style="display:inline">
         <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
         <button type="submit" class="uw-btn uw-btn-danger" style="padding:.2rem .5rem;font-size:.75rem">Del</button>
       </form>
@@ -410,7 +410,7 @@ const upworkTmplSrc = `<style>
   {{else}}<div class="uw-empty" style="margin-bottom:.75rem">no catalog items yet</div>{{end}}
   <div class="re-add-form">
     <h4 style="font-size:.8rem;color:var(--text-muted,#64748b);margin:0 0 .5rem;font-weight:600">Add catalog item</h4>
-    <form method="POST" action="/admin/upwork/catalog">
+    <form method="POST" action="/admin/upwork_catalog/new">
       <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
       <div style="margin-bottom:.35rem">
         <label class="uw-label">Title <abbr title="required">*</abbr></label>
