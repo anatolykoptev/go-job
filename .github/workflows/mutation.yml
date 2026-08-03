@@ -1,0 +1,162 @@
+name: mutation
+
+# Mutation testing with gremlins (go-gremlins/gremlins).
+# Runs on PRs, scoped to PR-diff only (--diff "origin/$GITHUB_BASE_REF").
+# Non-blocking initially: reports LIVED mutants as annotations, does not fail
+# the PR. Raise threshold-efficacy in .gremlins.yml once the baseline stabilizes.
+#
+# Needs the same postgres service container as preflight — DB-dependent tests
+# must run for mutants they cover, otherwise those mutants show as NOT_COVERED
+# and the efficacy score is artificially low.
+
+on:
+  pull_request:
+    paths:
+      # Only run when Go source or test files change — no point running
+      # mutation testing on docs/config-only PRs.
+      - "**/*.go"
+      - ".gremlins.yml"
+      - ".github/workflows/mutation.yml"
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  mutation:
+    runs-on: ubuntu-24.04-arm
+    # Mutation testing is slow even on PR-diff; cap at 30m to avoid queue
+    # starvation on the free ARM runner pool.
+    timeout-minutes: 30
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gojob_test
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+        ports:
+          - 5432
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history needed for --diff against the base branch.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Install postgres client
+        run: |
+          if ! command -v psql >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          fi
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
+        run: |
+          set -uo pipefail
+          hard_files=""
+          fail=0
+          for f in $(ls internal/engine/jobs/schema/*.sql internal/hunt/schema/*.sql | sort); do
+            if head -1 "$f" | grep -q "^-- soft"; then
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1 \
+                || echo "soft migration skipped (extension absent): $f"
+            else
+              hard_files="$hard_files $f"
+            fi
+          done
+          if [ -n "$hard_files" ]; then
+            for f in $hard_files; do
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" \
+                || { echo "::error::hard migration failed: $f"; fail=1; }
+            done
+          fi
+          [ "$fail" -eq 0 ] || { echo "::error::one or more hard migrations failed"; exit 1; }
+
+      - name: Install gremlins
+        run: |
+          # Pin gremlins version for reproducible CI runs.
+          # Update manually after testing a new release locally.
+          GREMLINS_VERSION=v0.6.0
+          curl -fsSL -o /tmp/gremlins.tar.gz \
+            "https://github.com/go-gremlins/gremlins/releases/download/${GREMLINS_VERSION}/gremlins_0.6.0_linux_arm64.tar.gz"
+          sudo tar -xzf /tmp/gremlins.tar.gz -C /usr/local/bin gremlins
+          gremlins --version
+
+      - name: Run mutation testing (PR-diff scoped)
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
+          GOWORK: off
+        run: |
+          set -uo pipefail
+
+          # --diff scopes mutants to PR-changed files only.
+          # --output writes JSON results for the upload step.
+          # Exclude vendor/, cmd/, test files, and generated code from mutation
+          # analysis — they either aren't ours or aren't mutation targets.
+          gremlins unleash \
+            --diff "origin/$GITHUB_BASE_REF" \
+            --exclude-files "^vendor/" \
+            --exclude-files "^cmd/" \
+            --exclude-files "_test\.go$" \
+            --exclude-files "_gen\.go$" \
+            --output /tmp/gremlins-results.json \
+            --output-statuses "lc" \
+            2>&1 | tee /tmp/gremlins-output.txt
+
+          # Parse and emit GitHub annotations for LIVED mutants (tests missed them).
+          # These are the actionable findings — KILLED mutants are good, NOT_COVERED
+          # is informational, LIVED means a mutation survived the test suite.
+          if [ -f /tmp/gremlins-results.json ]; then
+            python3 - <<'PY'
+          import json, sys
+          with open("/tmp/gremlins-results.json") as f:
+              data = json.load(f)
+          killed = data.get("mutants_killed", 0)
+          lived = data.get("mutants_lived", 0)
+          not_covered = data.get("mutants_not_covered", 0)
+          efficacy = data.get("test_efficacy", 0)
+          mcover = data.get("mutations_coverage", 0)
+          total = killed + lived + not_covered
+          print(f"::group::Gremlins results")
+          print(f"  Total mutants: {total}")
+          print(f"  Killed: {killed}  Lived: {lived}  Not covered: {not_covered}")
+          print(f"  Test efficacy: {efficacy:.1f}%  Mutant coverage: {mcover:.1f}%")
+          print(f"::endgroup::")
+
+          # Emit annotations for LIVED mutants (the ones that got past the test suite).
+          for f in data.get("files", []):
+              fname = f["file_name"]
+              for m in f.get("mutations", []):
+                  if m["status"] == "LIVED":
+                      print(f"::warning file={fname},line={m['line']}::"
+                            f"LIVED mutant: {m['type']} at {fname}:{m['line']}:{m['column']} "
+                            f"— test suite did not catch this mutation")
+          PY
+          fi
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gremlins-results
+          path: |
+            /tmp/gremlins-results.json
+            /tmp/gremlins-output.txt
+          retention-days: 14
