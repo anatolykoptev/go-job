@@ -91,6 +91,11 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	resource.Register(p, domainsResource(pool))
 	resource.Register(p, methodologiesResource(pool))
 
+	// Upwork resources — Writer-enabled CRUD via go-panel framework.
+	resource.Register(p, upworkOverviewResource(pool))
+	resource.Register(p, upworkSkillsResource(pool))
+	resource.Register(p, upworkCatalogResource(pool))
+
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: grpHunt})
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
@@ -125,11 +130,6 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler()})
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, authority.LegacyDir())))
 	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey))))
-	p.MountAction(resource.ActionSpec{Path: "upwork/overview", Handler: upworkOverviewEditHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/skill", Handler: upworkSkillCreateHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/skill/{id}/delete", Handler: upworkSkillDeleteHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/catalog", Handler: upworkCatalogCreateHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/catalog/{id}/delete", Handler: upworkCatalogDeleteHandler()})
 	p.MountAction(resource.ActionSpec{Path: "upwork/catalog/reorder", Handler: upworkCatalogReorderHandler()})
 	p.MountAction(resource.ActionSpec{Path: "upwork/skill/reorder", Handler: upworkSkillReorderHandler()})
 	p.MountAction(resource.ActionSpec{Path: "upwork/categories", Handler: upworkCategoriesEditHandler()})

@@ -227,82 +227,6 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 // resume_persons.headline/hourly_rate remain the general resume fields.
 // Categories are read-modify-write: existing values are preserved unless
 // a future categories editor is added.
-func upworkOverviewEditHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
-		if !ok {
-			return
-		}
-		title := r.FormValue("title")
-		overview := r.FormValue("overview")
-		availability := r.FormValue("availability")
-		rateCents, rateErr := parseDollarsToCents(r.FormValue("hourly_rate"))
-		if rateErr != nil {
-			http.Error(w, rateErr.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Read-modify-write: preserve existing categories so a re-save of
-		// title/overview/rate does not wipe categories set by a future editor.
-		var categories []string
-		existing, getErr := db.GetUpworkProfile(r.Context(), personID)
-		if getErr == nil && !existing.Missing {
-			categories = existing.Profile.Categories
-		}
-
-		if err := db.UpsertUpworkProfile(r.Context(), personID, title, overview, rateCents, categories, availability); err != nil {
-			slog.Error("upworkOverviewEditHandler: UpsertUpworkProfile", "err", err)
-			http.Error(w, "update failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
-	}
-}
-
-// upworkSkillCreateHandler handles POST /admin/upwork/skill.
-func upworkSkillCreateHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
-		if !ok {
-			return
-		}
-		name := r.FormValue("name")
-		if name == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
-			return
-		}
-		if _, err := db.InsertUpworkSkill(r.Context(), personID, name); err != nil {
-			slog.Error("upworkSkillCreateHandler: InsertUpworkSkill", "err", err)
-			http.Error(w, "insert failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
-	}
-}
-
-// upworkSkillDeleteHandler handles POST /admin/upwork/skill/{id}/delete.
-func upworkSkillDeleteHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		id, ok := parseIDParam(w, r)
-		if !ok {
-			return
-		}
-		db, personID, ok2 := requireResumeDB(w, r)
-		if !ok2 {
-			return
-		}
-		if err := db.DeleteUpworkSkill(r.Context(), personID, id); err != nil {
-			slog.Error("upworkSkillDeleteHandler: DeleteUpworkSkill", "id", id, "err", err)
-			http.Error(w, "delete failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
-	}
-}
-
 //nolint:gosec // upworkTmplSrc is an HTML/CSS template, not a credential
 const upworkTmplSrc = `<style>
   .uw-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
@@ -500,52 +424,6 @@ const upworkTmplSrc = `<style>
     </form>
   </div>
 </div>`
-
-// upworkCatalogCreateHandler handles POST /admin/upwork/catalog.
-// Inserts a new catalog item for the current person (person-scoped).
-func upworkCatalogCreateHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
-		if !ok {
-			return
-		}
-		title := strings.TrimSpace(r.FormValue("title"))
-		if title == "" {
-			http.Error(w, "title is required", http.StatusBadRequest)
-			return
-		}
-		description := r.FormValue("description")
-		if _, err := db.InsertUpworkCatalogItem(r.Context(), personID, title, description); err != nil {
-			slog.Error("upworkCatalogCreateHandler: InsertUpworkCatalogItem", "err", err)
-			http.Error(w, "insert failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
-	}
-}
-
-// upworkCatalogDeleteHandler handles POST /admin/upwork/catalog/{id}/delete.
-// Deletes the catalog item identified by {id}, scoped to the current person.
-func upworkCatalogDeleteHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		id, ok := parseIDParam(w, r)
-		if !ok {
-			return
-		}
-		db, personID, ok2 := requireResumeDB(w, r)
-		if !ok2 {
-			return
-		}
-		if err := db.DeleteUpworkCatalogItem(r.Context(), personID, id); err != nil {
-			slog.Error("upworkCatalogDeleteHandler: DeleteUpworkCatalogItem", "id", id, "err", err)
-			http.Error(w, "delete failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
-	}
-}
 
 // upworkCatalogReorderHandler handles POST /admin/upwork/catalog/reorder.
 // Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
