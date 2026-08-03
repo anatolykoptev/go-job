@@ -55,6 +55,14 @@ type unscoredJobStore interface {
 	UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]hunt.Job, error)
 }
 
+// unscoredJobStatsStore is the narrow store interface used by the periodic
+// gauge refresher (refreshUnscoredGauges). It returns count + oldest age
+// without fetching full job rows — a single SELECT COUNT(*), MIN(first_seen_at).
+// Implemented by *hunt.Store; tests inject a fake.
+type unscoredJobStatsStore interface {
+	UnscoredOpenJobsStats(ctx context.Context) (hunt.UnscoredJobsStats, error)
+}
+
 // defaultIngestQueries are generic role/skill strings used when the operator
 // has not set HUNT_INGEST_QUERIES.  No company names, no personal targets —
 // PUBLIC-repo-safe.
@@ -296,6 +304,19 @@ func (w *Worker) Run(ctx context.Context) {
 	// Run one cycle immediately so the table is populated before the first tick.
 	w.runCycle(ctx)
 
+	// Periodic gauge refresher: update gojob_hunt_unscored_jobs_count and
+	// gojob_hunt_unscored_jobs_max_age_seconds between hunt cycles so the
+	// alert gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the
+	// LIVE state, not a value frozen at the end of the last 6h cycle. The
+	// refresher runs on its own ticker (default 10m, configurable via
+	// HUNT_SCORE_GAUGE_REFRESH_INTERVAL) and does a single COUNT+MIN query —
+	// no row fetch, no LLM call, no scoring. It is safe to run concurrently
+	// with an in-progress cycle (read-only query, gauges are atomic).
+	gaugeRefreshInterval := env.MustDuration("HUNT_SCORE_GAUGE_REFRESH_INTERVAL", 10*time.Minute)
+	gaugeTicker := time.NewTicker(gaugeRefreshInterval)
+	defer gaugeTicker.Stop()
+	slog.Info("hunt worker: gauge refresher started", slog.Duration("interval", gaugeRefreshInterval))
+
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
@@ -303,6 +324,8 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Info("hunt worker: stopping")
 			return
+		case <-gaugeTicker.C:
+			refreshUnscoredGauges(ctx, w.store)
 		case <-ticker.C:
 			// BH-7: Skip tick if previous cycle is still running. A slow cycle
 			// (e.g., ATS APIs hanging) can exceed HUNT_INGEST_INTERVAL; without
@@ -653,6 +676,37 @@ func runUnscoredSweep(
 		slog.Int("swept", len(jobs)),
 		slog.Int("scored", scored),
 	)
+}
+
+// refreshUnscoredGauges updates gojob_hunt_unscored_jobs_count and
+// gojob_hunt_unscored_jobs_max_age_seconds from a lightweight SQL query
+// (COUNT + MIN(first_seen_at), no row fetch). Called by the periodic gauge
+// refresher ticker between hunt cycles so the alert
+// gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the LIVE state,
+// not a value frozen at the end of the last 6h cycle.
+//
+// Without this refresher, the gauge is set only inside runUnscoredSweep (once
+// per 6h cycle) and stays frozen between cycles — a pipeline that stalls
+// between cycles is invisible, and conversely a healthy pipeline with a
+// 4h-old unscored job (ingested near the end of a cycle, not yet swept)
+// triggers a false positive because the gauge hasn't been refreshed.
+//
+// No-op if the store doesn't satisfy unscoredJobStatsStore (test fake) or if
+// the query fails (logged at WARN, gauges left at their last value — a query
+// failure is not a pipeline stall).
+func refreshUnscoredGauges(ctx context.Context, store any) {
+	statsStore, ok := store.(unscoredJobStatsStore)
+	if !ok {
+		return
+	}
+	stats, err := statsStore.UnscoredOpenJobsStats(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "hunt worker: gauge refresh UnscoredOpenJobsStats failed",
+			slog.Any("error", err))
+		return
+	}
+	engine.SetHuntUnscoredJobsCount(float64(stats.Count))
+	engine.SetHuntUnscoredJobsMaxAge(stats.OldestAge.Seconds())
 }
 
 // huntIngestEnabled reads the HUNT_INGEST_ENABLED env flag.

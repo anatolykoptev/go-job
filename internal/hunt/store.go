@@ -506,6 +506,40 @@ func (s *Store) UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool
 	return result, nil
 }
 
+// UnscoredJobsStats holds the aggregate stats for the unscored-open pool.
+// Used by the periodic gauge refresher to update gojob_hunt_unscored_jobs_count
+// and gojob_hunt_unscored_jobs_max_age_seconds between hunt cycles without
+// fetching full job rows.
+type UnscoredJobsStats struct {
+	Count     int
+	OldestAge time.Duration // zero if Count == 0
+}
+
+// UnscoredOpenJobsStats returns the count and oldest first_seen_at age of open
+// jobs that have never been scored (scored_at IS NULL). Uses the same
+// idx_hunt_jobs_unscored partial index as UnscoredOpenJobs but returns only
+// two scalars (COUNT + MIN(first_seen_at)) — no row fetch, no scan, no
+// allocation. Designed for the periodic gauge refresher that runs between
+// hunt cycles (every HUNT_SCORE_GAUGE_REFRESH_INTERVAL, default 10m) so the
+// alert gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the LIVE
+// state, not a value frozen at the end of the last 6h cycle.
+func (s *Store) UnscoredOpenJobsStats(ctx context.Context) (UnscoredJobsStats, error) {
+	var count int
+	var oldest *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*), MIN(first_seen_at)
+		FROM hunt_jobs
+		WHERE status = 'open' AND scored_at IS NULL`).Scan(&count, &oldest)
+	if err != nil {
+		return UnscoredJobsStats{}, fmt.Errorf("hunt: unscored open jobs stats: %w", err)
+	}
+	stats := UnscoredJobsStats{Count: count}
+	if oldest != nil {
+		stats.OldestAge = time.Since(*oldest)
+	}
+	return stats, nil
+}
+
 // JobFilter narrows ListJobs results.
 type JobFilter struct {
 	Source        string

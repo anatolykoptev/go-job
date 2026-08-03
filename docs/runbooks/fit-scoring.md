@@ -23,6 +23,7 @@ and consumed by the `hunt_list` / `job_match` MCP tools.
 | `HUNT_SCORE_FAIL_OPEN` | `true` | On LLM error: `true` → notify with degraded card; `false` → drop |
 | `HUNT_NOTIFY_MAX_AGE` | `48h` | Recency gate; jobs posted older than this → `stale` without LLM |
 | `HUNT_SCORE_RESCORE_ALL` | `false` | One-shot: sweep re-scores ALL open jobs, not just unscored ones |
+| `HUNT_SCORE_GAUGE_REFRESH_INTERVAL` | `10m` | Periodic gauge refresher interval — updates `gojob_hunt_unscored_jobs_*` gauges between hunt cycles so the freeze-stall alert reflects live state |
 
 All knobs are read **per-cycle** (no redeploy needed to change them at runtime).
 
