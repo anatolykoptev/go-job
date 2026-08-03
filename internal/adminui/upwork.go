@@ -124,6 +124,14 @@ func parseDollarsToCents(s string) (int64, error) {
 	return int64(math.Round(rate * 100)), nil
 }
 
+// formatCentsToDollars converts cents to a dollar string (e.g. 8500 -> "85").
+func formatCentsToDollars(cents int64) string {
+	if cents%100 == 0 {
+		return strconv.FormatInt(cents/100, 10)
+	}
+	return strconv.FormatFloat(float64(cents)/100, 'f', 2, 64)
+}
+
 // upworkHandler renders the Upwork profile page.
 // It accepts auth + csrfKey so it can issue a CSRF token for the edit sub-forms.
 func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {

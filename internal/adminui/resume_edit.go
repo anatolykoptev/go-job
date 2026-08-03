@@ -109,55 +109,6 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 	}
 }
 
-// resumePersonEditHandler handles POST /admin/resume/person.
-func resumePersonEditHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		// Validate form inputs before any DB call.
-		if r.FormValue("name") == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
-			return
-		}
-		headline := r.FormValue("headline")
-		hourlyRateCents, rateErr := parseDollarsToCents(r.FormValue("hourly_rate"))
-		if rateErr != nil {
-			http.Error(w, rateErr.Error(), http.StatusBadRequest)
-			return
-		}
-		db, personID, ok := requireResumeDB(w, r)
-		if !ok {
-			return
-		}
-
-		person, err := db.GetPerson(r.Context(), personID)
-		if err != nil || person == nil {
-			http.Error(w, "person not found", http.StatusNotFound)
-			return
-		}
-		updated := jobs.PersonRecord{
-			ID:       person.ID,
-			Name:     r.FormValue("name"),
-			Email:    r.FormValue("email"),
-			Phone:    r.FormValue("phone"),
-			Location: r.FormValue("location"),
-			Links:    person.Links,
-			Summary:  r.FormValue("summary"),
-		}
-		if err := db.UpdateResumePerson(r.Context(), personID, updated); err != nil {
-			slog.Error("resumePersonEditHandler: UpdateResumePerson", "err", err)
-			http.Error(w, "update failed", http.StatusInternalServerError)
-			return
-		}
-		// Update Upwork-specific fields.
-		if err := db.UpdatePersonUpworkFields(r.Context(), personID, headline, hourlyRateCents); err != nil {
-			slog.Error("resumePersonEditHandler: UpdatePersonUpworkFields", "err", err)
-			http.Error(w, "update failed", http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, "/admin/resume/edit", http.StatusSeeOther)
-	}
-}
-
 // resumeSkillLevelHandler handles POST /admin/resume/skill/{id}/level.
 // parseIDParam + level validation run BEFORE requireResumeDB for early rejection.
 func resumeSkillLevelHandler() http.HandlerFunc {
