@@ -104,6 +104,7 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
           GOWORK: off
           GOFLAGS: -mod=vendor
+          GOPRIVATE: github.com/anatolykoptev/*
         run: |
           set -uo pipefail
 
