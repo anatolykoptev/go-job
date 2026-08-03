@@ -106,11 +106,16 @@ jobs:
         # git auth, `git ls-remote` fails with "could not read Username".
         # Use krolik-release-bot App token (same as release-please) instead of
         # GITHUB_TOKEN — the App has contents:read on all repos in the org.
+        # Must request access to ALL private deps, not just the current repo.
         uses: actions/create-github-app-token@v2
         id: bot-token
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: anatolykoptev
+          repositories: |
+            go-job
+            go-linkedin
 
       - name: Set git auth for private modules
         run: |
