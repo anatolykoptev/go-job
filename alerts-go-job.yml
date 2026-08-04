@@ -351,7 +351,7 @@ groups:
               docker logs go-job --since 30m | grep -E "notifier|telegram.*init"
               Check TELEGRAM_BOT_TOKEN and HUNT_NOTIFY_CHAT_ID in container env.
 
-  # freshness_dark = a scheduled ingest source has not yielded any rows in 48h.
+  # freeze_stall = a scheduled ingest source has not yielded any rows in 48h.
   # This is the PRIMARY signal for silently-dead sources: freshness catches every
   # failure mode (HTTP 200 empty, source dropped from fan-out, parser yields zero)
   # including modes nobody predicted — an error counter can only count anticipated
@@ -380,7 +380,7 @@ groups:
       severity: warning
       service: go-job
       receiver: dozor
-      failure_class: freshness_dark
+      failure_class: freeze_stall
     annotations:
       summary: "go-job: source {{ $labels.kind }}/{{ $labels.source }} has not delivered rows in 48h"
       description: |
