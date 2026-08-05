@@ -206,7 +206,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 		if r.Content != "" {
 			doc = doc + " " + engine.TruncateRunes(r.Content, maxSnippetRunes, "")
 		}
-		passages[i] = "passage: " + doc
+		passages[i] = kitembed.E5PassagePrefix + doc
 		// Text carries the prefixed passage so the doc is self-describing;
 		// MathReranker scores via EmbedVector, not Text, but keeping them
 		// consistent avoids a misleading asymmetry (minor).
@@ -214,7 +214,7 @@ func applyRelevanceGate(ctx context.Context, query string, results []engine.Sear
 	}
 
 	// Embed query once.
-	qvec, err := ec.EmbedQuery(gateCtx, "query: "+query)
+	qvec, err := ec.EmbedQuery(gateCtx, kitembed.E5QueryPrefix+query)
 	if err != nil {
 		reason := classifyEmbedError(err, gateCtx)
 		engine.IncrJobSearchRelevanceDegraded(reason)
