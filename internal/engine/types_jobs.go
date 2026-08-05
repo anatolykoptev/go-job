@@ -277,6 +277,26 @@ type ResumeGenerateInput struct {
 	Format         string `json:"format,omitempty" jsonschema:"Output format: markdown (default), text, json"`
 }
 
+// ResumeScaffoldInput is the input for resume_scaffold.
+type ResumeScaffoldInput struct {
+	// Headline is the per-job headline line (role title plus specialisations).
+	// When empty, the headline text line is omitted from the header entirely
+	// rather than emitting an empty bracket — the caller asked for no headline.
+	Headline string `json:"headline,omitempty" jsonschema:"Per-job headline (role title plus specialisations). Empty omits the headline line entirely."`
+}
+
+// ResumeLintInput is the input for resume_lint.
+type ResumeLintInput struct {
+	ResumeMD string `json:"resume_md" jsonschema:"Caller-authored resume markdown to validate against the shape contract."`
+}
+
+// ResumeRenderInput is the input for resume_render.
+type ResumeRenderInput struct {
+	ResumeMD string `json:"resume_md" jsonschema:"Required. Caller-authored resume markdown (header from resume_scaffold + body)."`
+	CoverMD  string `json:"cover_md,omitempty" jsonschema:"Optional cover letter markdown. When empty, no cover artifact is written."`
+	Name     string `json:"name" jsonschema:"Required. Draft name — lands in the filesystem path under the drafts area. Must not escape the drafts base (no ../)."`
+}
+
 // ResumeProfileInput is the input for resume_profile.
 type ResumeProfileInput struct {
 	Section string `json:"section,omitempty" jsonschema:"Optional: filter by section (experiences, skills, projects, achievements, educations, certifications, domains, methodologies, summary). Empty = return all."`

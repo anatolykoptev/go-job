@@ -88,6 +88,13 @@ func New(renderer Renderer, legacyDir string) *Authority {
 // Used by adminui for the LinkedIn page which reads LINKEDIN-UPDATE.md from it.
 func (a *Authority) LegacyDir() string { return a.legacyDir }
 
+// Renderer returns the configured PDF renderer, or nil when PDF rendering is
+// degraded to md-only (no renderer wired at composition). Sibling tools that
+// render to a non-application area (resume_render writes to a drafts area)
+// reuse the same renderer instance through this accessor rather than
+// constructing a second one — one renderer, one binary-availability probe.
+func (a *Authority) Renderer() Renderer { return a.renderer }
+
 // ─── Path helpers (single spelling site) ─────────────────────────────────────
 
 // Path returns the canonical uploads path for an application PDF.
