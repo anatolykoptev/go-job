@@ -520,7 +520,12 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			jobs.SetEmbedClient(clients.Shared)
 			slog.Info("shared embed client initialized (library defaults)",
 				slog.String("url", c.EmbedURL))
-			checkEmbedCorpus(clients.Shared)
+			// Off the startup path on purpose: this runs before the MCP
+			// listener binds, and the deploy canary gives /health 30s. A
+			// wedged embed backend would burn that whole budget here and the
+			// deploy would roll back silently — the 2026-05-07 class. The
+			// check reports, it does not gate.
+			go checkEmbedCorpus(clients.Shared)
 		}
 	}
 
@@ -556,6 +561,10 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 // Both are advisory. A drifted corpus degrades vector search; it does not make
 // the service wrong to run, so refusing to start would trade a partial
 // degradation for a total outage.
+//
+// Runs in its own goroutine (see the call site) and owns a Background context,
+// so neither the embed round-trip nor a wedged backend can delay the listener.
+// The timeout only bounds how long a stuck probe stays alive.
 func checkEmbedCorpus(ec kitembed.Embedder) {
 	rdb := jobs.GetResumeDB()
 	if rdb == nil || ec == nil {
