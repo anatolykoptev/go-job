@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+
+	kitembed "github.com/anatolykoptev/go-kit/embed"
 )
 
 // BountyWithVector holds a bounty and its precomputed embedding vector.
@@ -49,10 +51,10 @@ func SearchAlgoraWithEmbeddings(ctx context.Context, limit int) ([]BountyWithVec
 	}
 
 	// Build passage-prefixed texts for embedding: org + title.
-	// "passage: " prefix is required for e5-large retrieval mode.
+	// E5PassagePrefix is required for e5-large retrieval mode.
 	texts := make([]string, len(bounties))
 	for i, b := range bounties {
-		texts[i] = "passage: " + b.Org + ": " + b.Title
+		texts[i] = kitembed.E5PassagePrefix + b.Org + ": " + b.Title
 	}
 
 	vecs, err := client.Embed(ctx, texts)
@@ -145,10 +147,10 @@ func SearchAlgoraEnriched(ctx context.Context, limit int) ([]BountyWithVector, e
 	}
 
 	// Build passage-prefixed texts for embedding: org + title + skills.
-	// "passage: " prefix is required for e5-large retrieval mode.
+	// E5PassagePrefix is required for e5-large retrieval mode.
 	texts := make([]string, len(enriched))
 	for i, b := range enriched {
-		t := "passage: " + b.Org + ": " + b.Title
+		t := kitembed.E5PassagePrefix + b.Org + ": " + b.Title
 		if len(b.Skills) > 0 {
 			t += " [" + strings.Join(b.Skills, ", ") + "]"
 		}

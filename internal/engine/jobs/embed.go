@@ -45,18 +45,18 @@ type embedData struct {
 	Index     int       `json:"index"`
 }
 
-// EmbedPassages sends passage texts (prefixed with "passage: " for e5-large retrieval mode).
+// EmbedPassages sends passage texts (prefixed with kitembed.E5PassagePrefix for e5-large retrieval mode).
 func (c *EmbedClient) EmbedPassages(ctx context.Context, texts []string) ([][]float32, error) {
 	prefixed := make([]string, len(texts))
 	for i, t := range texts {
-		prefixed[i] = "passage: " + t
+		prefixed[i] = kitembed.E5PassagePrefix + t
 	}
 	return c.embedRaw(ctx, prefixed)
 }
 
-// EmbedQuery sends a single query text (prefixed with "query: " for e5-large retrieval mode).
+// EmbedQuery sends a single query text (prefixed with kitembed.E5QueryPrefix for e5-large retrieval mode).
 func (c *EmbedClient) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
-	vecs, err := c.embedRaw(ctx, []string{"query: " + query})
+	vecs, err := c.embedRaw(ctx, []string{kitembed.E5QueryPrefix + query})
 	if err != nil {
 		return nil, err
 	}
