@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+
+	kitembed "github.com/anatolykoptev/go-kit/embed"
 )
 
 const (
@@ -210,7 +212,7 @@ func embedOrFTS(
 ) ([]VectorRow, string, error) {
 	ec := GetEmbedClient()
 	if ec != nil && db.HasEmbedding() {
-		qvec, err := ec.EmbedQuery(ctx, "query: "+query)
+		qvec, err := ec.EmbedQuery(ctx, kitembed.E5QueryPrefix+query)
 		switch {
 		case err != nil:
 			slog.Warn(op+": embed query failed, using FTS", slog.Any("error", err))
@@ -267,7 +269,7 @@ func embedPassage(ctx context.Context, db *ResumeDB, content, op string) ([]floa
 		return nil, backendFTS
 	}
 
-	vecs, err := ec.Embed(ctx, []string{"passage: " + content})
+	vecs, err := ec.Embed(ctx, []string{kitembed.E5PassagePrefix + content})
 	switch {
 	case err != nil:
 		slog.Warn(op+": embed failed, storing FTS-only", slog.Any("error", err))
