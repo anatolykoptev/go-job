@@ -2,6 +2,23 @@
 
 All notable changes to go_job are documented here.
 
+## [1.21.0](https://github.com/anatolykoptev/go-job/compare/v1.20.0...v1.21.0) (2026-08-05)
+
+
+### Features
+
+* DB-backed hunt worker settings with admin UI page ([#469](https://github.com/anatolykoptev/go-job/issues/469)) ([dc2095b](https://github.com/anatolykoptev/go-job/commit/dc2095bb200ad87d9068abb7e7f118c36d75a92b))
+* **embed:** startup guards that the active client matches the stored corpus ([#474](https://github.com/anatolykoptev/go-job/issues/474)) ([e0b28b7](https://github.com/anatolykoptev/go-job/commit/e0b28b789f93bd3647c209e411314a51488810b8))
+
+
+### Bug Fixes
+
+* **embed:** run the startup corpus check off the startup path ([#475](https://github.com/anatolykoptev/go-job/issues/475)) ([fbe0b50](https://github.com/anatolykoptev/go-job/commit/fbe0b50549080ab6f0657e216102372572116cf5))
+* huntSettingsResource needs a Sortable column (register-time panic) ([866cdd9](https://github.com/anatolykoptev/go-job/commit/866cdd9da280e5cae3a581485033df73aab61dd0))
+* **monitoring:** rename freshness_dark→freeze_stall in documentation copy ([#471](https://github.com/anatolykoptev/go-job/issues/471)) ([30680b5](https://github.com/anatolykoptev/go-job/commit/30680b5fe7be725a30b27b40d95e3c97cf616dec))
+* periodic gauge refresher eliminates false-positive scoring-freeze alert ([#467](https://github.com/anatolykoptev/go-job/issues/467)) ([10218e7](https://github.com/anatolykoptev/go-job/commit/10218e7bd840a91d87783483c0a3bee3fb6e5266))
+* pre-register ESC-2 gauges + log ATS breaker original errors ([#463](https://github.com/anatolykoptev/go-job/issues/463), [#464](https://github.com/anatolykoptev/go-job/issues/464)) ([#465](https://github.com/anatolykoptev/go-job/issues/465)) ([d4fb962](https://github.com/anatolykoptev/go-job/commit/d4fb9620b73c8700605ac230111b60b986c3e679))
+
 ## [1.20.0](https://github.com/anatolykoptev/go-job/compare/v1.19.1...v1.20.0) (2026-08-03)
 
 
