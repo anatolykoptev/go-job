@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -519,6 +520,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 			jobs.SetEmbedClient(clients.Shared)
 			slog.Info("shared embed client initialized (library defaults)",
 				slog.String("url", c.EmbedURL))
+			checkEmbedCorpus(clients.Shared)
 		}
 	}
 
@@ -538,6 +540,56 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
 	return huntNotifier
+}
+
+// checkEmbedCorpus verifies at startup that the active embed client is the one
+// that built the corpus it is about to write into.
+//
+// Two checks, cheapest first. CheckCorpusDim compares dimensions — on
+// resume_vectors the vector(1024) column already rejects a mismatch at write
+// time, so this only moves the signal earlier. CheckCorpusConvention is the one
+// that catches what nothing else does: a client at the right dimension that
+// still produces different vectors, because the prefix convention, the model
+// version or the backend changed. That failure is silent everywhere else —
+// the write succeeds, the row count rises, and retrieval degrades quietly.
+//
+// Both are advisory. A drifted corpus degrades vector search; it does not make
+// the service wrong to run, so refusing to start would trade a partial
+// degradation for a total outage.
+func checkEmbedCorpus(ec kitembed.Embedder) {
+	rdb := jobs.GetResumeDB()
+	if rdb == nil || ec == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := kitembed.CheckCorpusDim(ctx, ec, rdb); err != nil {
+		var dimErr *kitembed.ErrCorpusDimMismatch
+		if errors.As(err, &dimErr) {
+			slog.Error("embed corpus dimension drift — new vectors will not match the existing corpus; re-embed before writing",
+				slog.Int("embedder_dim", dimErr.EmbedderDim),
+				slog.Int("corpus_dim", dimErr.CorpusDim))
+		} else {
+			slog.Warn("embed corpus dimension check did not complete", slog.Any("error", err))
+		}
+		return
+	}
+
+	if err := jobs.CheckCorpusConvention(ctx, rdb, ec); err != nil {
+		var convErr *jobs.ErrCorpusConvention
+		if errors.As(err, &convErr) {
+			slog.Error("embed corpus convention drift — the active client does not reproduce the stored corpus; new vectors will not be comparable with existing ones",
+				slog.Float64("cosine", convErr.Cosine),
+				slog.Float64("floor", convErr.Min),
+				slog.Int64("probe_vector_id", convErr.VectorID))
+		} else {
+			slog.Warn("embed corpus convention check did not complete", slog.Any("error", err))
+		}
+		return
+	}
+
+	slog.Info("embed corpus checks passed (dimension + convention)")
 }
 
 // initCrossEncoderShadow wires the cross-encoder (gte-multi-rerank) shadow
