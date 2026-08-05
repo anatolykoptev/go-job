@@ -9,6 +9,13 @@ and consumed by the `hunt_list` / `job_match` MCP tools.
 
 **Metrics endpoint:** `curl http://localhost:9891/metrics | grep hunt_fit\|hunt_score`
 
+> **Direction.** The LLM half of this cascade is a decision that cannot be asserted on,
+> and it is scheduled to be replaced by a computed ranking pass plus a model pass fed the
+> operator's own history — [principles.md §5](../architecture/principles.md#5-the-search-architecture),
+> roadmap Phase 12. The Jaccard pre-filter and the histogram-driven threshold tuning below
+> are already the right shape and survive that change; treat this runbook as current
+> operations, not as the target design.
+
 ---
 
 ## Env-knob reference

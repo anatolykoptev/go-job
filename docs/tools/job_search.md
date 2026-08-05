@@ -1,8 +1,18 @@
 # Tool: `job_search`
 
-> **Category:** Search | **Source:** `internal/engine/jobs/` (linkedin, ats, hnjobs, ycjobs, indeed, habr)
+> **Category:** Search | **Source:** `internal/engine/jobs/` (linkedin, ats, hnjobs, ycjobs, indeed, habr, remotejobs, craigslist, undp, …)
 
-Search for job listings across 10+ sources: LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр Карьера.
+Search for job listings across 17 source connectors: LinkedIn, Greenhouse, Lever, Ashby,
+YC, HN, Indeed, Хабр Карьера, RemoteOK, WeWorkRemotely, Remotive, Freelancer, Craigslist,
+Twitter/X, Google Jobs, Inspira (UN) and UNDP. `freelance_search`, `remote_work_search` and
+`twitter_job_search` were folded into this tool — select with `platform=`.
+
+> **Ranking is being rebuilt.** Today relevance is decided inside the LLM prompt, which is
+> why a query can return zero jobs while every source returned results. The replacement — a
+> mechanical BM25+RRF pass that shows its arithmetic, then a model pass fed the operator's
+> own history — is specified in
+> [principles.md §5](../architecture/principles.md#5-the-search-architecture) and roadmap
+> Phase 12. Treat `summary` as commentary, not as a verdict.
 
 ---
 

@@ -1,6 +1,11 @@
 # go_job MCP — Documentation
 
-**go_job** is a standalone Go MCP server exposing **28 tools** for job search, resume optimization, career research, and application tracking.
+**go_job** is a standalone Go MCP server exposing **32 tools** for job search, resume optimization, career research, and application tracking.
+
+> **Read first:** [architecture/principles.md](architecture/principles.md) — what this
+> service is for, which decisions are computed rather than judged, and where the durable
+> difference from a chat window actually lives. It is the tie-breaker on any conflict with
+> the pages below.
 
 - **MCP endpoint:** `http://localhost:8891/mcp`
 - **Health:** `http://localhost:8891/health`
@@ -16,7 +21,9 @@
 | Tool | Description | Doc |
 |------|-------------|-----|
 | `job_search` | LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Remotive, Twitter/X, Google Jobs (15+ sources). Supports `limit` (default 15, max 50), `offset` (pagination), `platform` filter, `blacklist`. | [→ tools/job_search.md](tools/job_search.md) |
-| `job_match_score` | Score job listings against a resume (Jaccard 0–100) | [→ tools/job_match_score.md](tools/job_match_score.md) |
+| `job_match_score` | Score job listings against a resume (Jaccard 0–100). Deterministic. | [→ tools/job_match_score.md](tools/job_match_score.md) |
+| `job_quality_score` | 0–100 posting-quality score, **no LLM**: salary presence, direct-apply URL, freshness, description length, agency detection, source quality | — |
+| `linkedin` | LinkedIn operations (`op=jobs\|profile\|…`) against the Guest API | — |
 | `opportunity_search` | Cross-type opportunity search (jobs + freelance + bounty) | — |
 | `opportunity_analyze` | Deep-analyze a single opportunity URL | — |
 | `opportunity_claim` | Initiate a claim on a matched opportunity | — |
@@ -33,13 +40,14 @@
 | `resume_generate` | Generate a targeted resume from the master profile | — |
 | `resume_enrich` | Enrich master profile via Q&A | — |
 | `resume_profile` | View the stored master profile | — |
+| `resume_profile_sync` | Re-derive `resume_vectors` from current profile entities; update changed rows, drop orphans, backfill NULL embeddings | — |
 | `resume_memory` | Semantic search/add/update over resume memory store | — |
 
 ### Research
 
 | Tool | Description | Doc |
 |------|-------------|-----|
-| `research` | Research salary, company, or person. `subject=salary\|company\|person` | [→ tools/salary_research.md](tools/salary_research.md) (salary), [→ tools/company_research.md](tools/company_research.md) (company) |
+| `research` | Research salary, company, or person. `subject=salary\|company\|person` | [→ tools/research.md](tools/research.md) |
 
 ### Interview & Career Prep
 
@@ -57,16 +65,17 @@
 | `application_prep` | One-call combo: analyze + cover letter + interview prep + company research | — |
 | `offer_compare` | Side-by-side offer comparison with scoring (0–100) | — |
 | `negotiation_prep` | Salary negotiation playbook: scripts, counters, BATNA | — |
-| `linkedin` | LinkedIn profile operations | — |
-| `linkedin_profile_ingest` | Ingest a LinkedIn profile for local analysis | — |
+| `application_persist` | Persist a prepared resume + cover letter to the uploads store, keyed by `job_id`; PDF via Typst when available | — |
+| `linkedin_profile_ingest` | Ingest a LinkedIn profile into the go-nerv intelligence graph | — |
 | `algora_job_ingest` | Ingest Algora bounty/job listings into the hunt store | — |
 
 ### Tracker & Utilities
 
 | Tool | Description | Doc |
 |------|-------------|-----|
-| `job_tracker` | Track applications. `action=add` (title+company required) \| `action=list` \| `action=update` (id required) | [→ tools/job_tracker_add.md](tools/job_tracker_add.md) |
-| `hunt_list` | List hunt entries from the local store (triggers lazy enrichment) | — |
+| `job_tracker` | Track applications. `action=add` (title+company required) \| `action=list` \| `action=update` (id required) | [→ tools/job_tracker.md](tools/job_tracker.md) |
+| `vacancy_ingest` | Fetch one posting URL via stealth render, extract structured details, optionally persist to the hunt store | — |
+| `hunt_list` | List hunt entries from the hunt store (triggers lazy enrichment) | — |
 | `oversize` | Retrieve / list / purge oversized MCP responses from the spillover store | — |
 
 ---
@@ -97,7 +106,7 @@ go_job/
 │   │   │   ├── habr.go              # Хабр Карьера public JSON API
 │   │   │   ├── resume.go            # resume_analyze, cover_letter_generate, resume_tailor
 │   │   │   ├── research.go          # research tool (salary / company / person)
-│   │   │   ├── tracker.go           # job_tracker (SQLite, UPLOADS_ROOT)
+│   │   │   ├── tracker.go           # job_tracker (Postgres hunt tables, ADR-002)
 │   │   │   └── profile.go           # user profile (UPLOADS_ROOT)
 │   │   └── sources/                 # Pluggable source connectors
 │   │       ├── freelancer.go        # Freelancer.com REST API
@@ -105,7 +114,7 @@ go_job/
 │   │       ├── hackernews.go        # HN source
 │   │       └── ...
 │   ├── jobserver/
-│   │   ├── register.go              # MCP tool registrations (28 tools)
+│   │   ├── register.go              # MCP tool registrations (32 tools)
 │   │   └── tool_*.go                # Per-tool handler files
 │   └── hunt/                        # Hunt store + notifications
 │       ├── notify/
@@ -113,6 +122,11 @@ go_job/
 │       └── ...
 ├── docs/
 │   ├── README.md                    # This file — index + architecture
+│   ├── architecture/
+│   │   ├── principles.md            # What is computed vs judged; where the moat is
+│   │   └── README.md                # Data/admin-UI principles + ADR index
+│   ├── adr/                         # Accepted decision records
+│   ├── runbooks/                    # fit-scoring, source-health
 │   ├── compare.md                   # Comparison with competitors
 │   ├── roadmap.md                   # Feature roadmap
 │   └── tools/                       # Per-tool documentation
@@ -121,9 +135,8 @@ go_job/
 │       ├── resume_analyze.md
 │       ├── cover_letter_generate.md
 │       ├── resume_tailor.md
-│       ├── salary_research.md
-│       ├── company_research.md
-│       └── job_tracker_add.md
+│       ├── research.md
+│       └── job_tracker.md
 └── deploy/
     └── go_job.service               # systemd unit (MCP :8891, metrics :9891)
 ```
@@ -132,7 +145,7 @@ go_job/
 
 | Store | Location | Purpose |
 |-------|----------|---------|
-| Job tracker | `$UPLOADS_ROOT/go-job/tracker/tracker.db` (default `$HOME/uploads/go-job/tracker/tracker.db`) | SQLite, table `jobs`, persists across restarts |
+| Job tracker | Postgres `hunt_jobs` + `hunt_ratings` via `DATABASE_URL` | Single source of truth for tracked jobs ([ADR-002](adr/ADR-go-job-002-retire-sqlite-tracker.md)) |
 | User profile | `$UPLOADS_ROOT/go-job/profile/profile.json` (default `$HOME/uploads/go-job/profile/profile.json`) | Default platform, limit, location, remote, blacklist |
 | L1 cache | in-memory (`sync.Map`) | Fast, lost on restart |
 | L2 cache | Redis (optional) | Persistent, shared across instances |
@@ -172,7 +185,7 @@ Results are cached at two levels:
 
 Cache key format: `sha256(tool_name + "|" + param1 + "|" + param2 + ...)`.
 
-**Not cached:** `resume_analyze`, `cover_letter_generate`, `resume_tailor`, `research` (LLM-generated, context-dependent). Job tracker operations use SQLite directly.
+**Not cached:** `resume_analyze`, `cover_letter_generate`, `resume_tailor`, `research` (LLM-generated, context-dependent). Job tracker operations hit Postgres directly.
 
 ## Rate Limiting & Anti-bot
 
