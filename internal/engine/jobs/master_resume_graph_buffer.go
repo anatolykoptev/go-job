@@ -48,17 +48,23 @@ func (b *graphBuffer) addEdge(fromLabel string, fromID int, edgeLabel, toLabel s
 func (b *graphBuffer) nodeCount() int { return len(b.nodes) }
 func (b *graphBuffer) edgeCount() int { return len(b.edges) }
 
-// guardLatestPersonID is the destructive-consent guard's read. It wraps
-// GetLatestPersonIDChecked with the test-injection seam (masterResumeGuardHook,
+// guardMasterPersonID is the destructive-consent guard's read. It wraps
+// GetMasterPersonIDChecked with the test-injection seam (masterResumeGuardHook,
 // nil in production) so F4 can force the guard's error path. On a destructive
 // surface the zero value is the safe one: an error REFUSES the build.
-func (db *ResumeDB) guardLatestPersonID(ctx context.Context) (exists bool, id int, err error) {
+//
+// Uses the master person ID (not the latest by id) because a variant may have a
+// higher id than the master — the consent guard must verify the caller named the
+// master they are about to destroy, not a variant that happens to be newest.
+//
+// accountID scopes the guard: nil = global (expand phase); non-nil = scoped.
+func (db *ResumeDB) guardMasterPersonID(ctx context.Context, accountID *string) (exists bool, id int, err error) {
 	if h := masterResumeGuardHook; h != nil {
 		if e := h(); e != nil {
 			return false, 0, e
 		}
 	}
-	return db.GetLatestPersonIDChecked(ctx)
+	return db.GetMasterPersonIDChecked(ctx, accountID)
 }
 
 // replayGraphAfterCommit runs the rebuild-then-swap graph phase AFTER the
