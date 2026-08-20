@@ -34,6 +34,11 @@ RUN mkdir -p /out && \
     fi
 
 FROM golang:alpine AS builder
+# git is what makes the version stamp below resolve. Without it `git describe`
+# fails, the `|| echo "dev"` fallback wins silently, and every deployed
+# container reports version "dev" — which is what /health returned in prod
+# while the module was at v1.21.0.
+RUN apk add --no-cache git
 WORKDIR /build
 
 COPY go.mod go.sum ./
