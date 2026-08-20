@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,10 @@ const (
 	// request. It is rejected with 404 on detail/edit routes (which require an
 	// existing record) and treated as a create signal by the save handler.
 	idNew = "new"
+	// maxLogIDLen caps the length of an attacker-controlled id value emitted
+	// in a structured log attribute. Without a cap, one request can write an
+	// arbitrarily large log line (the id arrives from the URL path verbatim).
+	maxLogIDLen = 256
 	// tenantAuthzDefaultWarning is the stable, greppable message New logs
 	// once at construction when Config.TenantAuthorizer is left nil
 	// (defaulting to tenant.GlobalOnlyAuthorizer) — the only runtime signal
@@ -549,25 +554,47 @@ func Register(p *Panel, r Resource) {
 	validateRelationsConfig(&r)
 	p.resources = append(p.resources, r)
 
-	// Add nav entry.
-	if r.Group != "" {
-		// Insert group header if not already present.
-		groupKey := "group:" + r.Group
-		found := false
-		for _, n := range p.nav {
-			if n.Group == r.Group && n.ID == groupKey {
-				found = true
-				break
-			}
-		}
-		if !found {
-			p.nav = append(p.nav, shell.NavItem{
-				ID:    groupKey,
-				Group: r.Group,
-			})
-		}
+	addNavEntry(p, r)
+
+	listHandler := p.makeListHandler(r)
+	mountListRoutes(p, r, listHandler)
+
+	// Detailer route — mounted when Detailer OR FetchRow is configured.
+	// If Detailer is nil but FetchRow is non-nil, synthesize an auto-Detailer
+	// from Sort.Columns + FetchRow (see autoDetailer).
+	if r.Detailer != nil {
+		mountDetailRoute(p, r)
+	} else if r.FetchRow != nil {
+		mountDetailRoute(p, withAutoDetailer(r))
 	}
-	p.nav = append(p.nav, shell.NavItem{
+
+	// Writer routes — only mounted when Writer is configured.
+	if r.Writer != nil {
+		mountWriterRoutes(p, r)
+	}
+}
+
+// addNavEntry inserts a group-header NavItem (if r.Group is set and not already
+// present) followed by the resource's own nav item. Called from Register only.
+//
+// The link item is placed NEXT TO its group header, not appended at the end of
+// p.nav. When the header already exists, the link is inserted after the run of
+// items already belonging to that group (the consecutive Group=="" items
+// following the header). This makes sidebar grouping independent of
+// registration order: an interleaved or out-of-order registration produces the
+// same grouping as a contiguous one.
+//
+// Boundaries:
+//   - Empty Group: append at end (preserves the anonymous pre-group bucket
+//     and today's behaviour for group-less resources).
+//   - Group header not yet present: append header then link at end — identical
+//     to today's behaviour for a new group, so contiguous consumers see
+//     byte-identical nav output.
+//   - Group header present (created by Register or by a manual AddNav): insert
+//     the link after the group's existing members, preserving registration
+//     order within the group.
+func addNavEntry(p *Panel, r Resource) {
+	link := shell.NavItem{
 		ID:           r.Name,
 		Label:        r.Title,
 		Icon:         r.Icon,
@@ -575,12 +602,41 @@ func Register(p *Panel, r Resource) {
 		Badge:        r.Badge,
 		Visible:      r.Visible,
 		RequiredRole: r.RequiredRole,
-	})
+	}
+	if r.Group == "" {
+		p.nav = append(p.nav, link)
+		return
+	}
+	groupKey := "group:" + r.Group
+	headerIdx := -1
+	for i, n := range p.nav {
+		if n.Group == r.Group && n.ID == groupKey {
+			headerIdx = i
+			break
+		}
+	}
+	if headerIdx < 0 {
+		// New group: append header then link at end — same as today.
+		p.nav = append(p.nav, shell.NavItem{ID: groupKey, Group: r.Group}, link)
+		return
+	}
+	// Header exists: insert the link after the group's existing members.
+	// Scan forward past consecutive Group=="" items following the header.
+	insertAt := headerIdx + 1
+	for insertAt < len(p.nav) && p.nav[insertAt].Group == "" {
+		insertAt++
+	}
+	p.nav = slices.Insert(p.nav, insertAt, link)
+}
 
+// mountListRoutes mounts the GET list and rows routes for r. Single-row
+// resources get a redirect-to-edit handler at the list path; regular resources
+// get the full list page. The rows fragment route is mounted identically in
+// both cases.
+func mountListRoutes(p *Panel, r Resource, listHandler func(http.ResponseWriter, *http.Request, []shell.NavItem, bool)) {
 	listPath := p.basePath + "/" + r.Name
 	rowsPath := p.basePath + "/" + r.Name + "/rows"
 
-	listHandler := p.makeListHandler(r)
 	if r.SingleRow {
 		// Single-row resource: GET /{name} redirects to /{name}/{id}/edit
 		// for the first (only) row. The "new" route is not mounted.
@@ -627,20 +683,6 @@ func Register(p *Panel, r Resource) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			listHandler(w, req, nil, true)
 		}))
-	}
-
-	// Detailer route — mounted when Detailer OR FetchRow is configured.
-	// If Detailer is nil but FetchRow is non-nil, synthesize an auto-Detailer
-	// from Sort.Columns + FetchRow (see autoDetailer).
-	if r.Detailer != nil {
-		mountDetailRoute(p, r)
-	} else if r.FetchRow != nil {
-		mountDetailRoute(p, withAutoDetailer(r))
-	}
-
-	// Writer routes — only mounted when Writer is configured.
-	if r.Writer != nil {
-		mountWriterRoutes(p, r)
 	}
 }
 
@@ -855,7 +897,7 @@ func detailHandler(p *Panel, r Resource) http.HandlerFunc {
 		layoutComp := shell.Layout(p.title, nav, content)
 		renderCtx := shell.ContextWithChrome(req.Context(), p.chromeStateFrom(req))
 		if err := layoutComp.Render(renderCtx, w); err != nil {
-			slog.Error("resource: render detail page", "resource", r.Name, "id", strconv.Quote(id), "err", err)
+			slog.Error("resource: render detail page", "resource", r.Name, "id", strconv.Quote(sanitizeForLog(id)), "err", err)
 			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 	}
@@ -1018,12 +1060,7 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 		// form); edit honours ?locale=. The locale-filtered field set drives
 		// collection AND validation so that shared fields, absent on a secondary
 		// locale, are not spuriously "required".
-		loc := p.locales.Default
-		multi := false
-		if !creating {
-			loc = p.activeLocale(req)
-			multi = p.multiLocale()
-		}
+		loc, multi := resolveSaveLocale(p, req, creating)
 		ctx := locale.WithLocale(req.Context(), loc)
 
 		// Resolve dynamic options fresh for this POST — whitelist must be live.
@@ -1041,16 +1078,10 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 		// On create, merge preset values (foreign keys from context, not the
 		// form). Preset takes precedence over form values — prevents
 		// hidden-field tampering. PresetValues is nil = no preset.
-		if creating && rr.Writer.PresetValues != nil {
-			preset, err := rr.Writer.PresetValues(ctx, t)
-			if err != nil {
-				slog.Error("resource: preset values failed", "resource", r.Name, "err", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			for k, v := range preset {
-				values[k] = v
-			}
+		if err := mergePresetValues(rr, ctx, t, creating, values); err != nil {
+			slog.Error("resource: preset values failed", "resource", r.Name, "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
 		}
 
 		// Server-side validation over the active locale's field set.
@@ -1067,20 +1098,7 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 		// generic 500 body, detail logged server-side, never masked as a
 		// user error.
 		saveErr := rr.Writer.Save(ctx, t, id, values)
-		if saveErr != nil {
-			var se *SaveError
-			if errors.As(saveErr, &se) {
-				if rr.Writer.AfterSave != nil {
-					rr.Writer.AfterSave(ctx, id, saveErr)
-				}
-				renderValidationErrors(w, req, p, rr, id, loc, values, formErrors{se.Field: se.Message})
-				return
-			}
-			slog.Error("resource: save failed", "resource", r.Name, "err", saveErr)
-			if rr.Writer.AfterSave != nil {
-				rr.Writer.AfterSave(ctx, id, saveErr)
-			}
-			http.Error(w, "save failed", http.StatusInternalServerError)
+		if handleSaveError(w, req, p, rr, ctx, id, loc, values, saveErr) {
 			return
 		}
 		if rr.Writer.AfterSave != nil {
@@ -1089,19 +1107,81 @@ func saveHandler(p *Panel, r Resource) http.HandlerFunc {
 
 		// Redirect (PRG pattern). Custom redirect URL via RedirectAfterSave,
 		// or default to the resource list page.
-		redirectURL := p.basePath + "/" + r.Name
-		if rr.Writer.RedirectAfterSave != nil {
-			if custom := rr.Writer.RedirectAfterSave(ctx, id); custom != "" {
-				redirectURL = custom
-			}
-		}
-		if render.IsHTMX(req) {
-			w.Header().Set("HX-Redirect", redirectURL)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.Redirect(w, req, redirectURL, http.StatusSeeOther)
+		postWriteRedirect(w, req, p, rr, ctx, id, rr.Writer.RedirectAfterSave)
 	}
+}
+
+// resolveSaveLocale determines the active locale and multi-locale flag for a
+// save request. Create always lands in Default (symmetric with the new form);
+// edit honours ?locale=.
+func resolveSaveLocale(p *Panel, req *http.Request, creating bool) (locale.Locale, bool) {
+	if creating {
+		return p.locales.Default, false
+	}
+	return p.activeLocale(req), p.multiLocale()
+}
+
+// mergePresetValues merges preset values (foreign keys from context, not the
+// form) into values on create. Preset takes precedence over form values —
+// prevents hidden-field tampering. PresetValues is nil = no preset. Returns
+// an error if the PresetValues closure fails; the caller is responsible for
+// the 500 response.
+func mergePresetValues(r Resource, ctx context.Context, t tenant.Tenant, creating bool, values map[string]string) error {
+	if !creating || r.Writer.PresetValues == nil {
+		return nil
+	}
+	preset, err := r.Writer.PresetValues(ctx, t)
+	if err != nil {
+		return err
+	}
+	for k, v := range preset {
+		values[k] = v
+	}
+	return nil
+}
+
+// handleSaveError processes a save error: a *SaveError is a domain validation
+// failure that re-renders the form at 422 with the message on its field; any
+// other error is a genuine internal failure (500, detail logged server-side).
+// AfterSave is called with the error in both cases. Returns true when saveErr
+// is non-nil (caller must return); false when there is no error.
+func handleSaveError(w http.ResponseWriter, req *http.Request, p *Panel, r Resource, ctx context.Context, id string, loc locale.Locale, values map[string]string, saveErr error) bool {
+	if saveErr == nil {
+		return false
+	}
+	var se *SaveError
+	if errors.As(saveErr, &se) {
+		if r.Writer.AfterSave != nil {
+			r.Writer.AfterSave(ctx, id, saveErr)
+		}
+		renderValidationErrors(w, req, p, r, id, loc, values, formErrors{se.Field: se.Message})
+		return true
+	}
+	slog.Error("resource: save failed", "resource", r.Name, "err", saveErr)
+	if r.Writer.AfterSave != nil {
+		r.Writer.AfterSave(ctx, id, saveErr)
+	}
+	http.Error(w, "save failed", http.StatusInternalServerError)
+	return true
+}
+
+// postWriteRedirect sends the PRG redirect after a successful write (save or
+// delete). If redirectFn is non-nil and returns a non-empty string, that URL
+// is used; otherwise the default is the resource list page. HTMX requests get
+// an HX-Redirect header instead of an HTTP redirect.
+func postWriteRedirect(w http.ResponseWriter, req *http.Request, p *Panel, r Resource, ctx context.Context, id string, redirectFn func(context.Context, string) string) {
+	redirectURL := p.basePath + "/" + r.Name
+	if redirectFn != nil {
+		if custom := redirectFn(ctx, id); custom != "" {
+			redirectURL = custom
+		}
+	}
+	if render.IsHTMX(req) {
+		w.Header().Set("HX-Redirect", redirectURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, req, redirectURL, http.StatusSeeOther)
 }
 
 // deleteHandler returns the handler for POST /{name}/{id}/delete.
@@ -1130,12 +1210,7 @@ func deleteHandler(p *Panel, r Resource) http.HandlerFunc {
 		t := tenant.From(ctx)
 
 		deleteErr := r.Writer.Delete(ctx, t, id)
-		if deleteErr != nil {
-			slog.Error("resource: delete failed", "resource", r.Name, "id", id, "err", deleteErr)
-			if r.Writer.AfterDelete != nil {
-				r.Writer.AfterDelete(ctx, id, deleteErr)
-			}
-			http.Error(w, "delete failed", http.StatusInternalServerError)
+		if handleDeleteError(w, r, ctx, id, deleteErr) {
 			return
 		}
 		if r.Writer.AfterDelete != nil {
@@ -1144,19 +1219,23 @@ func deleteHandler(p *Panel, r Resource) http.HandlerFunc {
 
 		// Redirect (PRG pattern). Custom redirect URL via RedirectAfterDelete,
 		// or default to the resource list page.
-		redirectURL := p.basePath + "/" + r.Name
-		if r.Writer.RedirectAfterDelete != nil {
-			if custom := r.Writer.RedirectAfterDelete(ctx, id); custom != "" {
-				redirectURL = custom
-			}
-		}
-		if render.IsHTMX(req) {
-			w.Header().Set("HX-Redirect", redirectURL)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.Redirect(w, req, redirectURL, http.StatusSeeOther)
+		postWriteRedirect(w, req, p, r, ctx, id, r.Writer.RedirectAfterDelete)
 	}
+}
+
+// handleDeleteError logs a delete failure, calls AfterDelete with the error,
+// and writes a 500 response. Returns true when deleteErr is non-nil (caller
+// must return); false when there is no error.
+func handleDeleteError(w http.ResponseWriter, r Resource, ctx context.Context, id string, deleteErr error) bool {
+	if deleteErr == nil {
+		return false
+	}
+	slog.Error("resource: delete failed", "resource", r.Name, "id", sanitizeForLog(id), "err", deleteErr)
+	if r.Writer.AfterDelete != nil {
+		r.Writer.AfterDelete(ctx, id, deleteErr)
+	}
+	http.Error(w, "delete failed", http.StatusInternalServerError)
+	return true
 }
 
 // collectFormValues reads submitted form values for the given fields (the
@@ -1447,4 +1526,40 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// sanitizeForLog strips control characters from s and caps its length so an
+// attacker-controlled value (e.g. an id from the URL path) can be safely
+// included in a structured log attribute without dropping it entirely.
+//
+// Two properties, both required for log injection defence (gosec G706):
+//
+//  1. No control characters — newlines and carriage returns let a caller forge
+//     additional log records; ANSI escapes (ESC, C1 controls) can act on an
+//     operator's terminal when they tail the log. All C0 controls except tab
+//     (0x00-0x08, 0x0A-0x1F), DEL (0x7F), and C1 controls (0x80-0x9F) are
+//     removed. Tab is kept because it is harmless in log output.
+//
+//  2. Bounded length — an unbounded id lets one request write an arbitrarily
+//     large log line. The value is capped at maxLogIDLen runes.
+//
+// No existing in-house sanitiser covers both: go-kit strutil.Scrub only
+// validates UTF-8 (replaces invalid bytes, keeps control chars); strutil.Truncate
+// only caps length (keeps control chars). This function does both in one pass.
+func sanitizeForLog(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		// Keep tab (0x09) — harmless in log output.
+		// Drop all other C0 controls (0x00-0x08, 0x0A-0x1F), DEL (0x7F),
+		// and C1 controls (0x80-0x9F).
+		if r == '\t' || (r >= 0x20 && r != 0x7f && (r < 0x80 || r > 0x9f)) {
+			b.WriteRune(r)
+			n++
+			if n >= maxLogIDLen {
+				break
+			}
+		}
+	}
+	return b.String()
 }

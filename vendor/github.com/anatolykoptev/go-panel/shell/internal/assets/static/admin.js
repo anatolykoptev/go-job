@@ -454,6 +454,57 @@
 
 ;(function(){
   // ---------------------------------------------------------------------------
+  // theme-toggle — light/dark switch persisted in cookie sb-t (server-readable,
+  // same recipe as sb-c/sb-g/sb-s: path=/;max-age=604800;samesite=Lax). Flips
+  // the dark class on <html> immediately (no reload); the SSR reads the cookie
+  // on the next page load so there is no flash-of-wrong-theme.
+  // ADDITIVE ONLY: delegated document listener early-returns when the click is
+  // not on #theme-toggle, so pages without the markup are unaffected.
+  // CSP-clean: no inline handlers (script-src 'self' 'unsafe-eval' — no
+  // 'unsafe-inline'). Survives htmx:afterSwap because the listener is on
+  // document, not on the button element.
+  // ---------------------------------------------------------------------------
+  var THEME_COOKIE='sb-t';
+
+  function currentTheme(){
+    return document.documentElement.classList.contains('dark')?'dark':'light';
+  }
+
+  function setTheme(theme){
+    var dark=theme!=='light';
+    document.documentElement.classList.toggle('dark',dark);
+    document.documentElement.classList.toggle('light',!dark);
+    document.cookie=THEME_COOKIE+'='+(dark?'dark':'light')+';path=/;max-age=604800;samesite=Lax';
+    var btn=document.getElementById('theme-toggle');
+    if(btn){
+      btn.setAttribute('aria-label',dark?'Switch to light theme':'Switch to dark theme');
+      btn.setAttribute('aria-pressed',dark?'false':'true');
+    }
+  }
+
+  // Delegated click — survives htmx swaps (listener on document, not button).
+  document.addEventListener('click',function(e){
+    if(!e.target.closest('#theme-toggle')) return;
+    e.preventDefault();
+    setTheme(currentTheme()==='dark'?'light':'dark');
+  });
+
+  // Re-sync aria-label and aria-pressed after htmx swap (button may be
+  // re-rendered by SSR with values derived from the cookie, which should match
+  // — this reconciles any cross-tab cookie drift, mirroring groupsApply/
+  // subsApply pattern). Missing the aria-pressed re-sync here is how the
+  // attribute goes stale after the first swap.
+  document.addEventListener('htmx:afterSwap',function(){
+    var btn=document.getElementById('theme-toggle');
+    if(!btn) return;
+    var dark=currentTheme()==='dark';
+    btn.setAttribute('aria-label',dark?'Switch to light theme':'Switch to dark theme');
+    btn.setAttribute('aria-pressed',dark?'false':'true');
+  });
+})();
+
+;(function(){
+  // ---------------------------------------------------------------------------
   // Mobile off-canvas drawer — hamburger open / backdrop-click or Esc close.
   // Keyboard pattern borrowed from pm7 setupKeyboardNavigation, re-namespaced.
   // ADDITIVE ONLY: all listeners guard on element presence and .sidebar--open

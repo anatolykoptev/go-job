@@ -6,7 +6,141 @@ package shell
 // and component overrides not present in pm7.css.
 templ layoutStyles() {
 	<style>
+		/* ── Light palette (default, bare :root) ────────────────────────────
+		   WCAG AA contrast ratios (4.5:1 threshold for normal text).
+		   Ratios measured against the backgrounds each token actually sits
+		   on, not just --bg-base. --text-muted and --badge-gray-fg are used
+		   on --bg-surface (#f1f5f9) and --bg-elevated (#e2e8f0) — tables,
+		   cards, detail sections, badges — so they must clear 4.5:1 on
+		   --bg-elevated (the darkest). --accent-link is a separate token
+		   for link/foreground use; --accent (the fill behind white text in
+		   .filter-chip.active, .login-submit) is NOT darkened — darkening
+		   the fill changes a different pair.
+
+		     --text-primary  #0f172a  17.9/16.2/14.7  ✓ (base/surface/elevated)
+		     --text-secondary #475569  7.6/6.9/6.2    ✓
+		     --text-muted    #4f5b6b   6.9/6.3/5.6    ✓
+		     --text-label    #334155  10.4/9.4/8.5    ✓
+		     --accent-link   #2563eb   5.2/4.7        ✓ (base/surface)
+		   pm7 token overrides are re-valued (not deleted) because pm7.css
+		   ships its own @media (prefers-color-scheme: dark) :root block that
+		   would override the cookie choice when the OS is in dark mode.
+		   Keeping explicit light values here ensures the cookie wins over
+		   the OS preference — the inline <style> renders after the pm7.css
+		   <link>, so same-specificity :root here beats pm7's media-query :root. */
 		:root{
+			--bg-deep:#f8fafc;
+			--bg-base:#ffffff;
+			--bg-surface:#f1f5f9;
+			--bg-elevated:#e2e8f0;
+			--border:#cbd5e1;
+			--border-subtle:#e2e8f0;
+			--text-primary:#0f172a;
+			--text-secondary:#475569;
+			--text-muted:#4f5b6b;
+			--text-label:#334155;
+			--accent:#3b82f6;
+			--accent-link:#2563eb;
+			--accent-glow:rgba(59,130,246,.12);
+			--accent-dim:#dbeafe;
+			--green:#10b981;
+			--green-dim:#d1fae5;
+			--yellow:#f59e0b;
+			--yellow-dim:#fef3c7;
+			--red:#ef4444;
+			--red-dim:#fee2e2;
+			--purple:#8b5cf6;
+			--purple-dim:#ede9fe;
+			--teal:#0ea5e9;
+			--teal-dim:#cffafe;
+			--orange:#f97316;
+			--orange-dim:#ffedd5;
+			--font-sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+			--font-mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
+			--radius:.5rem;
+			--radius-lg:.75rem;
+			--pm7-primary:#3b82f6;
+			--pm7-primary-hover:#2563eb;
+			--pm7-primary-active:#1d4ed8;
+			--pm7-primary-foreground:#fff;
+			--pm7-background:#ffffff;
+			--pm7-foreground:#0f172a;
+			--pm7-muted:#f1f5f9;
+			--pm7-muted-foreground:#475569;
+			--pm7-border:#cbd5e1;
+			--pm7-border-hover:#94a3b8;
+			--pm7-success:#10b981;
+			--pm7-warning:#f59e0b;
+			--pm7-error:#ef4444;
+			--pm7-radius:.625rem;
+			--pm7-surface:var(--bg-surface);
+			--pm7-surface-hover:var(--bg-elevated);
+			--pm7-surface-active:var(--bg-elevated);
+			/* pm7 tokens redefined in pm7.css @media (prefers-color-scheme: dark) :root
+			   that were NOT in the original 17 overrides. Light values copied from
+			   pm7.css bare :root so the cookie wins over the OS dark preference.
+			   Without these, a viewer whose OS is dark but cookie is light gets
+			   dark-tuned shadows, dark tooltips, dark scrollbars, etc. on light
+			   surfaces. Dark-only tokens (no bare-:root value) are excluded — they
+			   are undefined in light mode by design. */
+			--pm7-text-primary:var(--pm7-foreground);
+			--pm7-text-secondary:var(--pm7-muted-foreground);
+			--pm7-menu-bg:var(--pm7-surface);
+			--pm7-ring-offset:#ffffff;
+			--pm7-input:#ffffff;
+			--pm7-card-footer-bg:#f7fafc;
+			--pm7-sidebar-bg:#F3F4F6;
+			--pm7-sidebar-item-hover:#ffffff;
+			--pm7-header-bg:var(--pm7-surface);
+			--pm7-footer-bg:#f5f5f5;
+			--pm7-footer-text:var(--pm7-text-secondary);
+			--pm7-tooltip-bg:#1a1a1a;
+			--pm7-tooltip-color:#ffffff;
+			--pm7-success-light:#dcfce7;
+			--pm7-success-dark:#166534;
+			--pm7-warning-light:#fef3c7;
+			--pm7-warning-dark:#92400e;
+			--pm7-info-light:#dbeafe;
+			--pm7-info-dark:#1e40af;
+			--pm7-theme-switch-bg:var(--pm7-background);
+			--pm7-theme-switch-thumb-bg-light:#FFD43B;
+			--pm7-theme-switch-thumb-bg-dark:#6E6E6E;
+			--pm7-theme-switch-icon-light:var(--pm7-foreground);
+			--pm7-theme-switch-icon-dark:var(--pm7-background);
+			--pm7-theme-switch-sun-color:#FFB800;
+			--pm7-theme-switch-moon-color:#4A5568;
+			--pm7-menu-hover-shadow:rgba(0,0,0,.08) 0px 5px 15px 0px,rgba(25,28,33,.2) 0px 15px 35px -5px;
+			--pm7-focus-shadow:0 0 0 3px rgb(28 134 239 / 0.2);
+			--pm7-shadow-sm:0 1px 2px 0 rgb(0 0 0 / 0.05);
+			--pm7-shadow:0 1px 3px 0 rgb(0 0 0 / 0.1),0 1px 2px -1px rgb(0 0 0 / 0.1);
+			--pm7-shadow-md:0 4px 6px -1px rgb(0 0 0 / 0.1),0 2px 4px -2px rgb(0 0 0 / 0.1);
+			--pm7-shadow-lg:0 10px 15px -3px rgb(0 0 0 / 0.1),0 4px 6px -4px rgb(0 0 0 / 0.1);
+			--pm7-shadow-xl:0 20px 25px -5px rgb(0 0 0 / 0.1),0 8px 10px -6px rgb(0 0 0 / 0.1);
+			--pm7-shadow-2xl:0 25px 50px -12px rgb(0 0 0 / 0.25);
+			--accent-light:#1e40af;
+			--green-light:#065f46;
+			--red-light:#991b1b;
+			--badge-gray-fg:#4f5b6b;
+			--row-hover-bg:rgba(59,130,246,.07);
+			--overlay-bg:rgba(0,0,0,.4);
+			--fit-strong-bg:#d1fae5;--fit-strong-fg:#065f46;
+			--fit-moderate-bg:#fef3c7;--fit-moderate-fg:#92400e;
+			--fit-weak-bg:#ffedd5;--fit-weak-fg:#9a3412;
+			--fit-low-bg:#fee2e2;--fit-low-fg:#991b1b;
+			--fit-reject-bg:#f1f5f9;--fit-reject-fg:var(--text-muted);
+			--fit-unscored-bg:#e2e8f0;--fit-unscored-fg:var(--text-muted);
+			--suc-strong-bg:#ede9fe;--suc-strong-fg:#5b21b6;
+			--suc-moderate-bg:#f1f5f9;--suc-moderate-fg:#475569;
+			--suc-longshot-bg:#fae8ff;--suc-longshot-fg:#86198f;
+			--ou-over-fg:#c2410c;
+			--ou-under-fg:#dc2626;
+		}
+		/* ── Dark palette (selected by .dark class on <html>) ──────────────
+		   Values are the pre-theme dark palette, unchanged — moved from bare
+		   :root to :root.dark so the dark class selects them. The light
+		   palette above is the bare-:root default. No media query: the choice
+		   is the cookie, not the OS. */
+		:root.dark{
 			--bg-deep:#060b18;
 			--bg-base:#0c1222;
 			--bg-surface:#131c31;
@@ -18,6 +152,7 @@ templ layoutStyles() {
 			--text-muted:#4a5b78;
 			--text-label:#5d6f90;
 			--accent:#3b82f6;
+			--accent-link:var(--accent);
 			--accent-glow:rgba(59,130,246,.15);
 			--accent-dim:#1e3a6e;
 			--green:#10b981;
@@ -32,10 +167,6 @@ templ layoutStyles() {
 			--teal-dim:#0c3a53;
 			--orange:#f97316;
 			--orange-dim:#7c2d12;
-			--font-sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-			--font-mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
-			--radius:.5rem;
-			--radius-lg:.75rem;
 			--pm7-primary:#3b82f6;
 			--pm7-primary-hover:#2563eb;
 			--pm7-primary-active:#1d4ed8;
@@ -56,10 +187,24 @@ templ layoutStyles() {
 			--accent-light:#93c5fd;
 			--green-light:#6ee7b7;
 			--red-light:#fca5a5;
+			--badge-gray-fg:#9dafc8;
+			--row-hover-bg:rgba(59,130,246,.06);
+			--overlay-bg:rgba(0,0,0,.5);
+			--fit-strong-bg:#0d3a26;--fit-strong-fg:var(--green-light);
+			--fit-moderate-bg:#2c2308;--fit-moderate-fg:#fcd34d;
+			--fit-weak-bg:#2a1a08;--fit-weak-fg:#fb923c;
+			--fit-low-bg:#1f1215;--fit-low-fg:#f87171;
+			--fit-reject-bg:#18181e;--fit-reject-fg:var(--text-muted);
+			--fit-unscored-bg:#141b2d;--fit-unscored-fg:var(--text-muted);
+			--suc-strong-bg:#1a1a3d;--suc-strong-fg:#a78bfa;
+			--suc-moderate-bg:#1a2030;--suc-moderate-fg:#94a3b8;
+			--suc-longshot-bg:#2a1a2a;--suc-longshot-fg:#c084fc;
+			--ou-over-fg:#f97316;
+			--ou-under-fg:#f87171;
 		}
 		*{margin:0;padding:0;box-sizing:border-box}
 		body{background:var(--bg-deep);color:var(--text-primary);font-family:var(--font-sans);min-height:100vh;font-size:.875rem;line-height:1.5}
-		a{color:var(--accent);text-decoration:none}
+		a{color:var(--accent-link);text-decoration:none}
 		a:hover{opacity:.85}
 		.app{display:flex;min-height:100vh}
 		.main{flex:1;overflow-x:auto;background:var(--bg-base)}
@@ -68,6 +213,15 @@ templ layoutStyles() {
 		.sidebar-header h1{font-family:var(--font-mono);font-size:.8125rem;font-weight:600;color:var(--accent);letter-spacing:.02em;white-space:nowrap;overflow:hidden}
 		.sidebar-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.125rem;padding:.25rem;line-height:1;flex-shrink:0;transition:color .15s}
 		.sidebar-toggle:hover{color:var(--text-primary)}
+		.sidebar-header-actions{display:flex;align-items:center;gap:.25rem;flex-shrink:0}
+		.theme-toggle{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1rem;padding:.25rem;line-height:1;flex-shrink:0;transition:color .15s}
+		.theme-toggle:hover{color:var(--text-primary)}
+		.theme-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:.25rem}
+		.theme-icon-sun{display:none}
+		.theme-icon-moon{display:inline}
+		:root.dark .theme-icon-sun{display:inline}
+		:root.dark .theme-icon-moon{display:none}
+		.sidebar.collapsed .sidebar-header{padding:.5rem;justify-content:center;gap:.25rem}
 		.sidebar-nav{flex:1;padding:.25rem 0;overflow-y:auto}
 		.sidebar-group{margin-top:.75rem}
 		/* button reset + existing visual styles; cursor:pointer for toggle affordance */
@@ -137,12 +291,12 @@ templ layoutStyles() {
 		.badge-blue{background:var(--accent-dim);color:var(--accent-light)}
 		.badge-green{background:var(--green-dim);color:var(--green-light)}
 		.badge-red{background:var(--red-dim);color:var(--red-light)}
-		.badge-gray{background:var(--bg-elevated);color:#9dafc8;border:1px solid var(--border-subtle)}
+		.badge-gray{background:var(--bg-elevated);color:var(--badge-gray-fg);border:1px solid var(--border-subtle)}
 		.crm-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
 		.crm-table thead th{text-align:left;padding:.5rem 1rem;color:var(--text-muted);font-family:var(--font-mono);font-size:.625rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border);background:var(--bg-deep);white-space:nowrap}
 		.crm-table thead th:first-child{padding-left:1.25rem}
 		.crm-table tbody tr{cursor:pointer;transition:background .08s}
-		.crm-table tbody tr:hover>td{background:rgba(59,130,246,.06)}
+		.crm-table tbody tr:hover>td{background:var(--row-hover-bg)}
 		.crm-table td{padding:.625rem 1rem;border-bottom:1px solid var(--border-subtle);vertical-align:middle}
 		.crm-table td:first-child{padding-left:1.25rem}
 		.crm-table tbody tr:last-child td{border-bottom:none}
@@ -179,25 +333,25 @@ templ layoutStyles() {
 		.fit-chip{display:inline-flex;align-items:center;gap:.3125rem;padding:.1875rem .4375rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:600;white-space:nowrap;line-height:1}
 		.fit-num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 		.fit-label{font-weight:400;font-size:.625rem;letter-spacing:.03em}
-		.fit-strong{background:#0d3a26;color:var(--green-light)}
-		.fit-moderate{background:#2c2308;color:#fcd34d}
-		.fit-weak{background:#2a1a08;color:#fb923c}
-		.fit-low{background:#1f1215;color:#f87171}
-		.fit-reject{background:#18181e;color:var(--text-muted)}
-		.fit-unscored{background:#141b2d;color:var(--text-muted);font-style:italic}
+		.fit-strong{background:var(--fit-strong-bg);color:var(--fit-strong-fg)}
+		.fit-moderate{background:var(--fit-moderate-bg);color:var(--fit-moderate-fg)}
+		.fit-weak{background:var(--fit-weak-bg);color:var(--fit-weak-fg)}
+		.fit-low{background:var(--fit-low-bg);color:var(--fit-low-fg)}
+		.fit-reject{background:var(--fit-reject-bg);color:var(--fit-reject-fg)}
+		.fit-unscored{background:var(--fit-unscored-bg);color:var(--fit-unscored-fg);font-style:italic}
 		/* ── Success / Market Read chips ──────────────────────────────────── */
 		/* Purple diamond family — deliberately orthogonal to fit-* green/amber/red.
 		   Shape (◆/◇/◈) communicates band without color dependency (a11y). */
 		.suc-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.1875rem .4375rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:500;white-space:nowrap;line-height:1}
-		.suc-strong{background:#1a1a3d;color:#a78bfa}
-		.suc-moderate{background:#1a2030;color:#94a3b8}
-		.suc-longshot{background:#2a1a2a;color:#c084fc;opacity:.75}
+		.suc-strong{background:var(--suc-strong-bg);color:var(--suc-strong-fg)}
+		.suc-moderate{background:var(--suc-moderate-bg);color:var(--suc-moderate-fg)}
+		.suc-longshot{background:var(--suc-longshot-bg);color:var(--suc-longshot-fg);opacity:.75}
 		.suc-none{color:var(--text-muted)}
 		/* ── Over/under qualification glyphs ──────────────────────────────── */
 		.ou-glyph{font-family:var(--font-mono);font-size:.75rem;font-weight:700}
-		.ou-over{color:#f97316}
+		.ou-over{color:var(--ou-over-fg)}
 		.ou-match{color:var(--text-muted)}
-		.ou-under{color:#f87171}
+		.ou-under{color:var(--ou-under-fg)}
 		/* ── Detail page layout ────────────────────────────────────────────── */
 		.detail-page{display:flex;flex-direction:column;gap:.75rem}
 		.detail-section{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1rem 1.25rem}
@@ -225,14 +379,14 @@ templ layoutStyles() {
 		.job-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.25rem}
 		.job-detail-title{font-size:1.0625rem;font-weight:700;color:var(--text-primary);line-height:1.3}
 		.job-detail-meta{font-family:var(--font-mono);font-size:.6875rem;color:var(--text-muted);margin-bottom:1rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
-		.job-detail-meta a{color:var(--accent);text-decoration:none}
+		.job-detail-meta a{color:var(--accent-link);text-decoration:none}
 		.job-detail-meta a:hover{opacity:.8}
 		/* ── Mobile off-canvas drawer (Phase 6, pm7-borrowed overlay) ─────────
 		   Overlay backdrop: pm7.css:4668-4681 (.pm7-sidebar-overlay), re-namespaced.
 		   Responsive transform: pm7.css:4731-4748 (.pm7-sidebar--static), inverted to
 		   max-width:767px and re-namespaced to .sidebar / .sidebar-overlay.
 		   Desktop (≥768px) unchanged — sidebar retains normal flow positioning. */
-		.sidebar-overlay{position:fixed;inset:0;background-color:rgba(0,0,0,.5);opacity:0;visibility:hidden;transition:opacity .3s ease-in-out;z-index:999}
+		.sidebar-overlay{position:fixed;inset:0;background-color:var(--overlay-bg);opacity:0;visibility:hidden;transition:opacity .3s ease-in-out;z-index:999}
 		.sidebar-overlay--visible{opacity:1;visibility:visible}
 		.sidebar-mobile-toggle{display:none;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.25rem;padding:.5rem .75rem;line-height:1;transition:color .15s}
 		.sidebar-mobile-toggle:hover{color:var(--text-primary)}

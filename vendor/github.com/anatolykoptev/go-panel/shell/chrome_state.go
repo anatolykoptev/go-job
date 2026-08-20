@@ -11,6 +11,18 @@ import "context"
 // chrome layer owns.
 const GroupsCookie = "sb-g"
 
+// ThemeCookie persists the operator's light/dark theme choice.
+// Value is "light" or "dark"; absent or unrecognised = dark (backward-compat).
+// Server-readable (vs localStorage) so Layout emits the theme class at SSR time —
+// no flash-of-wrong-theme on first load. Mirrors SidebarCookie/GroupsCookie pattern.
+const ThemeCookie = "sb-t"
+
+// Recognised ChromeState.Theme values.
+const (
+	ThemeDark  = "dark"
+	ThemeLight = "light"
+)
+
 // ChromeState carries per-request shell (chrome) configuration threaded into
 // Layout via context.  It is the single context seam for all per-request
 // state the layout renders, replacing the narrower SidebarState.
@@ -24,6 +36,50 @@ type ChromeState struct {
 	Collapsed       bool
 	CollapsedGroups map[string]bool
 	Profile         ProfileConfig
+
+	// Theme is the operator's light/dark choice, read from the sb-t cookie by
+	// chromeStateFrom. Zero value ("") means dark — a consumer that never sets
+	// Theme renders byte-identically to the pre-theme dark-only admin, which is
+	// the load-bearing backward-compat invariant for downstream consumers
+	// (go-grad, go-nerv, oxpulse-admin) that pick this up on a version bump.
+	// Use ThemeClass() to resolve to the HTML class value.
+	Theme string
+}
+
+// ThemeClass returns the HTML class value for <html> given ChromeState.Theme.
+// Returns "dark" for empty or unrecognised values, "light" only for ThemeLight.
+// This is the single resolution point — Layout, LoginPage, and MFAPage all call
+// it, and the falsification tests (F1/F2) mutate this function to verify the
+// backward-compat invariant: an absent or garbage cookie MUST render dark.
+func (s ChromeState) ThemeClass() string {
+	return themeClass(s.Theme)
+}
+
+// themeClass resolves a raw theme string to the HTML class value.
+// Returns "dark" for the zero value ("") so a consumer that never sets Theme
+// renders dark (backward-compat). Returns "dark" for any value that is not
+// ThemeLight — this makes the function TOTAL: no reachable path (cookie,
+// direct ContextWithChrome, or a future caller) can emit a third class that
+// matches neither :root.dark nor :root.light, which would fall through to the
+// bare :root light palette and silently render light for an unrecognised value.
+//
+// The cookie validation in chromeStateFrom (resource layer) is a SEPARATE
+// guard: it stops junk from being STORED in ChromeState.Theme. Both layers
+// exist because each alone fails to catch a different case:
+//   - themeClass alone (without chromeStateFrom validation) would still render
+//     dark for junk, but ChromeState.Theme would carry the junk value — a
+//     consumer inspecting state.Theme directly (not via ThemeClass) would see
+//     it, and any logic branching on Theme == ThemeLight would miss it.
+//   - chromeStateFrom validation alone (without total themeClass) would reject
+//     junk from the cookie path, but a downstream consumer calling
+//     ContextWithChrome directly with ChromeState{Theme: "purple"} would bypass
+//     chromeStateFrom entirely — themeClass would return "purple" verbatim,
+//     rendering an unrecognised class and falling through to light.
+func themeClass(theme string) string {
+	if theme == ThemeLight {
+		return ThemeLight
+	}
+	return ThemeDark
 }
 
 // ProfileConfig carries the per-operator identity shown in the sticky-bottom
