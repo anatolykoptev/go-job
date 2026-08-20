@@ -191,7 +191,11 @@ make restart  # restart only
 
 ```bash
 curl http://localhost:8891/health
-# {"status":"ok","service":"go_job","version":"1.0.0"}
+# {"status":"ok","service":"go_job","version":"v1.21.0"}
+#
+# `version` is `git describe --tags` taken at build time — the release tag that
+# release-please cut, never a number maintained by hand here. A build that
+# cannot reach git reports "dev".
 ```
 
 ## Metrics
