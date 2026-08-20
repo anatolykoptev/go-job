@@ -35,6 +35,7 @@ func (p *Panel) RenderPage(w http.ResponseWriter, r *http.Request, title, active
 // Cookie contracts:
 //   - "sb-c"="1"  → Collapsed=true
 //   - "sb-g"=<url-encoded comma-separated names> → CollapsedGroups map
+//   - "sb-t"="light"|"dark" → Theme (absent/unrecognised = dark, backward-compat)
 //
 // Encoding: the whole sb-g value is URL-encoded (encodeURIComponent on the
 // joined string); the server URL-unescapes before splitting on ','. Group names
@@ -51,34 +52,84 @@ func (p *Panel) chromeStateFrom(r *http.Request) shell.ChromeState {
 	if c, err := r.Cookie(shell.SidebarCookie); err == nil && c.Value == "1" {
 		state.Collapsed = true
 	}
-	if c, err := r.Cookie(shell.GroupsCookie); err == nil && c.Value != "" {
-		raw, decErr := url.QueryUnescape(c.Value)
-		if decErr != nil {
-			raw = c.Value // use verbatim if decode fails
-		}
-		for _, name := range strings.Split(raw, ",") {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			if state.CollapsedGroups == nil {
-				state.CollapsedGroups = make(map[string]bool)
-			}
-			state.CollapsedGroups[name] = true
-		}
-	}
-
-	// Profile: start from static defaults; overlay live session fields.
-	state.Profile = p.profileCfg
-	if s, ok := auth.SessionFrom(r.Context()); ok {
-		if state.Profile.Name == "" {
-			state.Profile.Name = s.UserID
-		}
-		if state.Profile.Role == "" {
-			state.Profile.Role = s.Role
-		}
-	}
+	state.Theme = themeFromCookie(r)
+	state.CollapsedGroups = collapsedGroupsFromCookie(r)
+	state.Profile = p.profileFor(r)
 	return state
+}
+
+// themeFromCookie reads sb-t and accepts ONLY a recognised value; anything else
+// — absent, empty, garbage — returns "", which themeClass renders as dark.
+//
+// This is the load-bearing backward-compat invariant, and it is deliberately
+// the ONLY place a cookie value becomes a Theme: three downstream admins pick
+// this library up on a version bump without asking for a light theme, and none
+// of them may change appearance until an operator clicks the toggle.
+//
+// Note this is not the last line of defence — themeClass is total, so an
+// unrecognised value reaching ChromeState by any other route still renders
+// dark. That redundancy is intentional: this gate stops junk being STORED,
+// themeClass stops it being RENDERED, and they fail independently.
+func themeFromCookie(r *http.Request) string {
+	c, err := r.Cookie(shell.ThemeCookie)
+	if err != nil {
+		return ""
+	}
+	if c.Value == shell.ThemeLight || c.Value == shell.ThemeDark {
+		return c.Value
+	}
+	return ""
+}
+
+// collapsedGroupsFromCookie reads sb-g: the whole value is URL-encoded
+// (encodeURIComponent over the joined string), so it is unescaped before the
+// split on ','. Group names must therefore not contain a literal comma — see
+// the matching note in admin.js readGroups.
+//
+// A decode failure falls back to the verbatim value rather than dropping the
+// state: a mangled cookie should cost the operator one wrong group, not every
+// group they had collapsed. Returns nil when nothing is collapsed, which is the
+// zero value Layout already handles.
+func collapsedGroupsFromCookie(r *http.Request) map[string]bool {
+	c, err := r.Cookie(shell.GroupsCookie)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	raw, decErr := url.QueryUnescape(c.Value)
+	if decErr != nil {
+		raw = c.Value // use verbatim if decode fails
+	}
+	var out map[string]bool
+	for _, name := range strings.Split(raw, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]bool)
+		}
+		out[name] = true
+	}
+	return out
+}
+
+// profileFor starts from the static defaults SetProfile supplied and overlays
+// the live session's Name/Role when they are blank. For HMACAuth consumers
+// SessionFrom returns false, the profile stays zero, and Layout renders the
+// bare Logout footer — the backward-compatible path.
+func (p *Panel) profileFor(r *http.Request) shell.ProfileConfig {
+	prof := p.profileCfg
+	s, ok := auth.SessionFrom(r.Context())
+	if !ok {
+		return prof
+	}
+	if prof.Name == "" {
+		prof.Name = s.UserID
+	}
+	if prof.Role == "" {
+		prof.Role = s.Role
+	}
+	return prof
 }
 
 // RenderPageHTML is RenderPage for callers holding already-rendered,

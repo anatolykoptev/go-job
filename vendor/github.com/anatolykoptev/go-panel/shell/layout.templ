@@ -80,6 +80,26 @@ func profileLogoutURL(p ProfileConfig) string {
 	return "/admin/logout"
 }
 
+// themeToggleLabel returns the aria-label for the theme toggle button,
+// naming the action (switch to the other theme) per the a11y requirement.
+func themeToggleLabel(theme string) string {
+	if themeClass(theme) == ThemeLight {
+		return "Switch to dark theme"
+	}
+	return "Switch to light theme"
+}
+
+// themeTogglePressed returns the aria-pressed value for the theme toggle
+// button, reflecting the current theme state: "true" when light is active,
+// "false" when dark is active. aria-label names the action; aria-pressed
+// names the state — a screen-reader user hears both.
+func themeTogglePressed(theme string) string {
+	if themeClass(theme) == ThemeLight {
+		return "true"
+	}
+	return "false"
+}
+
 // hasActiveChild reports whether any direct child of item is active.
 // Used server-side to emit data-has-active-child on parent submenu wrappers,
 // so JS always keeps parents of the current-page item expanded regardless of
@@ -140,7 +160,7 @@ func toNavGroups(nav []NavItem, collapsedGroups map[string]bool) []navGrouped {
 // signature stays frozen: use shell.ContextWithChrome before calling Render.
 templ Layout(title string, nav []NavItem, content templ.Component) {
 	<!DOCTYPE html>
-	<html lang="en" class="dark">
+	<html lang="en" class={ ChromeFromContext(ctx).ThemeClass() }>
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -154,7 +174,13 @@ templ Layout(title string, nav []NavItem, content templ.Component) {
 				<aside class={ "sidebar", templ.KV("collapsed", ChromeFromContext(ctx).Collapsed) } id="sidebar">
 					<div class="sidebar-header">
 						<h1>{ title }</h1>
-						<button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
+						<div class="sidebar-header-actions">
+							<button type="button" class="theme-toggle" id="theme-toggle" aria-label={ themeToggleLabel(ChromeFromContext(ctx).Theme) } aria-pressed={ themeTogglePressed(ChromeFromContext(ctx).Theme) }>
+								<span class="theme-icon-moon" aria-hidden="true">&#9790;</span>
+								<span class="theme-icon-sun" aria-hidden="true">&#9728;</span>
+							</button>
+							<button type="button" class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
+						</div>
 					</div>
 					<nav class="sidebar-nav">
 						for _, group := range toNavGroups(nav, ChromeFromContext(ctx).CollapsedGroups) {
@@ -310,7 +336,7 @@ type LoginIdentifier struct {
 // the static-asset and form-action URLs, e.g. "/admin".
 templ LoginPage(basePath string, ident LoginIdentifier, errMsg string) {
 	<!DOCTYPE html>
-	<html lang="en" class="dark">
+	<html lang="en" class={ themeClass("") }>
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
