@@ -9,7 +9,7 @@ require (
 	github.com/anatolykoptev/go-kit v0.97.12
 	github.com/anatolykoptev/go-linkedin v0.4.13
 	github.com/anatolykoptev/go-mcpserver v0.18.0
-	github.com/anatolykoptev/go-panel v0.23.0
+	github.com/anatolykoptev/go-panel v0.22.2
 	github.com/anatolykoptev/go-stealth v1.22.0
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/jackc/pgx/v5 v5.10.0
