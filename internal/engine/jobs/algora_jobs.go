@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -127,7 +126,7 @@ func fetchAlgoraJobRaw(ctx context.Context, client *http.Client, jobURL string) 
 	if resp.StatusCode != http.StatusOK {
 		return "", errAlgoraJobGone
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	raw, err := readLimitedBody(resp.Body, 2*1024*1024)
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +162,7 @@ func DiscoverAlgoraOrgJobs(ctx context.Context, org string) ([]engine.JobListing
 		return nil, fmt.Errorf("algora-jobs: board status %d for %s", resp.StatusCode, boardURL)
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	raw, err := readLimitedBody(resp.Body, 4*1024*1024)
 	if err != nil {
 		return nil, err
 	}
