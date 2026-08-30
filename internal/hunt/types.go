@@ -12,8 +12,8 @@ import (
 // Stage values for hunt_ratings. Validated in Go, not via SQL CHECK constraint.
 //
 // hunt_ratings has TWO orthogonal axes (ADR-go-job-003 addendum, migration 012):
-//   - triage column: operator's interest signal ('' = untriaged)
-//   - stage  column: application-pipeline position ('' = not in pipeline)
+//   - triage column: operator's interest signal (” = untriaged)
+//   - stage  column: application-pipeline position (” = not in pipeline)
 //
 // Triage-axis constants (hunt_ratings.triage):
 const (
@@ -32,15 +32,15 @@ const (
 )
 
 // StageNew is a legacy constant retained for migration 012 backfill only.
-// No new rows are written with this value after migration 012. '' replaces it
+// No new rows are written with this value after migration 012. ” replaces it
 // on both axes (untriaged + not-in-pipeline).
 const StageNew = "new"
 
-// TriageStages are the valid values for hunt_ratings.triage ('' = untriaged, not listed).
+// TriageStages are the valid values for hunt_ratings.triage (” = untriaged, not listed).
 // Ordered: best signal first.
 var TriageStages = []string{StageInteresting, StageSaved, StageDiscarded}
 
-// PipelineStages are the valid values for hunt_ratings.stage ('' = not in pipeline, not listed).
+// PipelineStages are the valid values for hunt_ratings.stage (” = not in pipeline, not listed).
 // Ordered: earliest pipeline step first.
 var PipelineStages = []string{StageClaimed, StageApplied, StageInterview, StageOffer, StageRejected}
 
@@ -48,7 +48,7 @@ var PipelineStages = []string{StageClaimed, StageApplied, StageInterview, StageO
 // Adding a stage: edit TriageStages or PipelineStages — AllStages derives automatically.
 var AllStages = append(append([]string{}, TriageStages...), PipelineStages...)
 
-// StarSoftTriageValues are the triage values a star click can demote to '' (untriaged).
+// StarSoftTriageValues are the triage values a star click can demote to ” (untriaged).
 // Discarded is excluded: it is a deliberate negative triage decision and should not
 // be silently cleared by a star click. Any triage value ∉ StarSoftTriageValues is
 // protected by ToggleShortlistStar's triage-protection guard (NO-OP on star click).
@@ -264,15 +264,15 @@ type scoreRationale struct {
 
 // Rating is a per-user rating for any hunt entry.
 // After migration 012 the rating carries two orthogonal axes:
-//   - Triage: operator's interest signal ('' = untriaged)
-//   - Stage:  application-pipeline position ('' = not in pipeline)
+//   - Triage: operator's interest signal (” = untriaged)
+//   - Stage:  application-pipeline position (” = not in pipeline)
 type Rating struct {
 	ID        int64     `json:"id"`
 	EntryKind string    `json:"entry_kind"`
 	EntryID   int64     `json:"entry_id"`
 	UserName  string    `json:"user_name"`
-	Triage    string    `json:"triage"`            // '' = untriaged
-	Stage     string    `json:"stage"`             // '' = not in pipeline
+	Triage    string    `json:"triage"` // '' = untriaged
+	Stage     string    `json:"stage"`  // '' = not in pipeline
 	Note      string    `json:"note,omitempty"`
 	RatedAt   time.Time `json:"rated_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -13,20 +13,20 @@ import (
 )
 
 const (
-	lightningAPIURL        = "https://app.lightningbounties.com/api/issues/?distinct_issues=true&skip=0&limit=100"
+	lightningAPIURL         = "https://app.lightningbounties.com/api/issues/?distinct_issues=true&skip=0&limit=100"
 	lightningScrapeCacheKey = "lightning_scrape"
-	btcUSDRate             = 80000
-	satsPerBTC             = 100_000_000
+	btcUSDRate              = 80000
+	satsPerBTC              = 100_000_000
 )
 
 type lightningIssue struct {
-	ID             string  `json:"id"`
-	Title          string  `json:"title"`
-	HTMLURL        string  `json:"html_url"`
-	IsClosed       bool    `json:"is_closed"`
-	WinnerID       *string `json:"winner_id"`
-	TotalRewardSats int    `json:"total_reward_sats"`
-	RepositoryData struct {
+	ID              string  `json:"id"`
+	Title           string  `json:"title"`
+	HTMLURL         string  `json:"html_url"`
+	IsClosed        bool    `json:"is_closed"`
+	WinnerID        *string `json:"winner_id"`
+	TotalRewardSats int     `json:"total_reward_sats"`
+	RepositoryData  struct {
 		FullName string `json:"full_name"`
 	} `json:"repository_data"`
 	CreatedAt string `json:"created_at"`

@@ -67,11 +67,11 @@ func parseHackerOneData(data []byte) ([]engine.SecurityProgram, error) {
 // --- Bugcrowd ---
 
 type bcProgram struct {
-	Name             string `json:"name"`
-	URL              string `json:"url"`
-	ManagedByBugcrowd bool  `json:"managed_by_bugcrowd"`
-	MaxPayout        int    `json:"max_payout"`
-	Targets          struct {
+	Name              string `json:"name"`
+	URL               string `json:"url"`
+	ManagedByBugcrowd bool   `json:"managed_by_bugcrowd"`
+	MaxPayout         int    `json:"max_payout"`
+	Targets           struct {
 		InScope []struct {
 			Target string `json:"target"`
 		} `json:"in_scope"`

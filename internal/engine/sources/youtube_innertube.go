@@ -1,11 +1,11 @@
 package sources
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"io"
 	"math/rand"
 	"net/http"

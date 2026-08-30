@@ -73,19 +73,19 @@ func freelanceToOpportunity(f engine.FreelanceJob) engine.Opportunity {
 // skillAliases maps common search terms to their canonical forms and vice versa.
 // When a user searches for "golang", we also match "go"; when they search "js", we match "javascript".
 var skillAliases = map[string][]string{
-	langAliasGolang:     {"go"},
-	"go":         {langAliasGolang},
-	"javascript": {"js", "node", "nodejs"},
-	"js":         {"javascript"},
-	"typescript": {"ts"},
-	"ts":         {"typescript"},
-	"python":     {"py"},
-	"py":         {"python"},
-	langAliasRust:       {"rs"},
-	"csharp":     {"c#", ".net"},
-	"c#":         {"csharp", ".net"},
-	"cpp":        {"c++"},
-	"c++":        {"cpp"},
+	langAliasGolang: {"go"},
+	"go":            {langAliasGolang},
+	"javascript":    {"js", "node", "nodejs"},
+	"js":            {"javascript"},
+	"typescript":    {"ts"},
+	"ts":            {"typescript"},
+	"python":        {"py"},
+	"py":            {"python"},
+	langAliasRust:   {"rs"},
+	"csharp":        {"c#", ".net"},
+	"c#":            {"csharp", ".net"},
+	"cpp":           {"c++"},
+	"c++":           {"cpp"},
 }
 
 func filterOpportunities(opps []engine.Opportunity, query string) []engine.Opportunity {

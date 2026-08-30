@@ -23,9 +23,9 @@ var algoraJobRe = regexp.MustCompile(`algora\.io/([^/?#]+)/job/([^/?#]+)`)
 // algoraJobSource is the source label for Algora job postings in hunt_jobs.
 const algoraJobSource = "algora-jobs"
 
-
 // algoraRemoteRow is the row key for remote/work-type field in Tier-2 row-walk.
 const algoraRemoteRow = "remote"
+
 // algoraJobsBreaker is a per-source circuit breaker for Algora jobs (mirrors ats.go breakers).
 //
 //nolint:gochecknoglobals // package-level breaker, init-once, never mutated

@@ -185,7 +185,9 @@ func SummarizeHNResults(ctx context.Context, query string, results []engine.HNRe
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		for _, ts := range topStories {
-			if results[ts.idx].ObjectID == "" { continue }
+			if results[ts.idx].ObjectID == "" {
+				continue
+			}
 			wg.Add(1)
 			go func(idx int, objectID string) {
 				defer wg.Done()

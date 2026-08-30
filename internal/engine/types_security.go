@@ -3,7 +3,7 @@ package engine
 // SecurityProgram represents a bug bounty program from platforms like HackerOne, Bugcrowd, etc.
 type SecurityProgram struct {
 	Name      string   `json:"name"`
-	Platform  string   `json:"platform"`   // hackerone, bugcrowd, intigriti, yeswehack, immunefi
+	Platform  string   `json:"platform"` // hackerone, bugcrowd, intigriti, yeswehack, immunefi
 	URL       string   `json:"url"`
 	MaxBounty string   `json:"max_bounty"` // e.g. "$50,000"
 	MinBounty string   `json:"min_bounty"` // e.g. "$100"

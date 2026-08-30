@@ -140,11 +140,11 @@ func upworkOverviewToMap(p *jobs.UpworkProfile) map[string]string {
 		hourlyRate = formatCentsToDollars(p.HourlyRate)
 	}
 	return map[string]string{
-		"title":         p.Title,
-		"overview":      p.Overview,
-		"hourly_rate":   hourlyRate,
-		"categories":    categoriesJSON,
-		"availability":  p.Availability,
+		"title":        p.Title,
+		"overview":     p.Overview,
+		"hourly_rate":  hourlyRate,
+		"categories":   categoriesJSON,
+		"availability": p.Availability,
 	}
 }
 

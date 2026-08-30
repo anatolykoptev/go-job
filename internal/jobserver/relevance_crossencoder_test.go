@@ -198,9 +198,13 @@ func resultURLs(rs []engine.SearxngResult) []string {
 //
 // Falsification: let the cross-encoder score reach the decision. Mutate
 // observeCrossEncoderShadow to overwrite the cosine score:
-//   engine.ObserveJobSearchCrossEncoderScore(xeScore)  →  r.Score = xeScore
+//
+//	engine.ObserveJobSearchCrossEncoderScore(xeScore)  →  r.Score = xeScore
+//
 // AND move the observeCrossEncoderShadow call before
-//   filtered := engine.FilterByScore(sorted, jobSearchMinRelevance, jobSearchMinKeep)
+//
+//	filtered := engine.FilterByScore(sorted, jobSearchMinRelevance, jobSearchMinKeep)
+//
 // The filter then runs on cross-encoder scores → the flip run returns off-topic
 // listings (cross-encoder keeps them) while the nil run returns on-topic → RED.
 func TestCrossEncoderShadow_T1_Invariant_ReturnsUnchanged(t *testing.T) {
@@ -253,7 +257,9 @@ func TestCrossEncoderShadow_T1_Invariant_ReturnsUnchanged(t *testing.T) {
 // degraded counter.
 //
 // Falsification: remove the degraded counter bump in observeCrossEncoderShadow:
-//   engine.IncrJobSearchCrossEncoderDegraded(classifyCrossEncoderError(err))  →  (deleted)
+//
+//	engine.IncrJobSearchCrossEncoderDegraded(classifyCrossEncoderError(err))  →  (deleted)
+//
 // The degraded delta is 0 → RED.
 func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 	engine.InitTestRegistry()
@@ -344,18 +350,20 @@ func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 //
 // Falsification: collapse both disagreement directions into one label. Mutate
 // agreementOutcome so the two disagree branches return the same label:
-//   case cosineKept && !xeWouldKeep: return engine.DisagreeCosineKeptXEReject
-//   default:                          return engine.DisagreeCosineRejXEKeeps
+//
+//	case cosineKept && !xeWouldKeep: return engine.DisagreeCosineKeptXEReject
+//	default:                          return engine.DisagreeCosineRejXEKeeps
+//
 // → change the default to also return engine.DisagreeCosineKeptXEReject.
 // Then disagree_cosine_rejected_xe_keeps delta is 0 → RED.
 func TestCrossEncoderShadow_T3_AgreementDistinguishesDirections(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},  // on-topic
-		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},             // off-topic
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},     // on-topic
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},                // off-topic
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic
-		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                   // off-topic
+		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                      // off-topic
 	}
 
 	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
@@ -388,7 +396,9 @@ func TestCrossEncoderShadow_T3_AgreementDistinguishesDirections(t *testing.T) {
 //
 // Falsification: remove the ObserveJobSearchCrossEncoderScore call in
 // observeCrossEncoderShadow:
-//   engine.ObserveJobSearchCrossEncoderScore(xeScore)  →  (deleted)
+//
+//	engine.ObserveJobSearchCrossEncoderScore(xeScore)  →  (deleted)
+//
 // The histogram Count is 0 → RED.
 func TestCrossEncoderShadow_T4_HistogramsRecorded(t *testing.T) {
 	engine.InitTestRegistry()
@@ -483,7 +493,9 @@ func partialRerankHandler(w http.ResponseWriter, r *http.Request) {
 // separately under job_search_crossencoder_missing_scores_total.
 //
 // Falsification: remove the Score==0 skip in the map build:
-//   if s.Score == 0 { continue }  →  (deleted)
+//
+//	if s.Score == 0 { continue }  →  (deleted)
+//
 // Then xeScores contains all URLs (including unseen ones with Score=0), the
 // !ok check never fires, and all 4 docs enter the histogram → Count=4, want 2
 // → RED.
@@ -491,10 +503,10 @@ func TestCrossEncoderShadow_T6_MissingScoreExcludedFromHistogram(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},   // on-topic
-		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},              // off-topic
+		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},     // on-topic
+		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},                // off-topic
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic
-		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                    // off-topic
+		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                      // off-topic
 	}
 
 	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
@@ -538,7 +550,9 @@ func TestCrossEncoderShadow_T6_MissingScoreExcludedFromHistogram(t *testing.T) {
 // dropped and the shadow_dropped counter is incremented.
 //
 // Falsification: remove the counter bump in the default case:
-//   engine.IncrJobSearchCrossEncoderDegraded(engine.CrossEncoderReasonShadowDropped)  →  (deleted)
+//
+//	engine.IncrJobSearchCrossEncoderDegraded(engine.CrossEncoderReasonShadowDropped)  →  (deleted)
+//
 // The shadow_dropped delta is 0 → RED.
 func TestCrossEncoderShadow_T7_DropWhenBoundHit(t *testing.T) {
 	engine.InitTestRegistry()
@@ -586,7 +600,9 @@ func TestCrossEncoderShadow_T7_DropWhenBoundHit(t *testing.T) {
 // is broken (synchronous), which would hang the gate on the blocked handler.
 //
 // Falsification: replace the production scheduler with a synchronous one:
-//   var shadowScheduler = func(work func()) { work() }
+//
+//	var shadowScheduler = func(work func()) { work() }
+//
 // The gate blocks on the handler (which waits on blockCh) → done never fires
 // → the 3s deadlock detector fires → RED.
 func TestCrossEncoderShadow_T8_DispatchDoesNotBlock(t *testing.T) {

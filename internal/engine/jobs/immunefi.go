@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	immunefiAPIURL  = "https://immunefi.com/public-api/bounties.json"
+	immunefiAPIURL   = "https://immunefi.com/public-api/bounties.json"
 	immunefiCacheKey = "immunefi_programs"
 )
 

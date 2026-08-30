@@ -72,15 +72,15 @@ type JobInput struct {
 // Positive fields are >= 0; SpamPenalty is <= 0. The total is the sum of all
 // fields (positives + SpamPenalty), clamped to [0, 100].
 type Breakdown struct {
-	Salary            int `json:"salary"`
-	DirectApply       int `json:"direct_apply"`
-	Freshness         int `json:"freshness"`
-	DescriptionLength int `json:"description_length"`
+	Salary             int `json:"salary"`
+	DirectApply        int `json:"direct_apply"`
+	Freshness          int `json:"freshness"`
+	DescriptionLength  int `json:"description_length"`
 	StructuredSections int `json:"structured_sections"`
-	NotAgency         int `json:"not_agency"`
-	SourceQuality     int `json:"source_quality"`
-	HasDescription    int `json:"has_description"`
-	SpamPenalty       int `json:"spam_penalty"` // <= 0, negative
+	NotAgency          int `json:"not_agency"`
+	SourceQuality      int `json:"source_quality"`
+	HasDescription     int `json:"has_description"`
+	SpamPenalty        int `json:"spam_penalty"` // <= 0, negative
 }
 
 // Result is the output of Score: a 0-100 total, a per-factor breakdown, and a

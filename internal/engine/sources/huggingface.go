@@ -1,14 +1,14 @@
 package sources
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,54 +68,54 @@ func hfSortParam(s string) string {
 
 // hfTaskKeywords maps query keywords to HuggingFace pipeline tags.
 var hfTaskKeywords = map[string]string{
-	hfTaskTextToSpeech:      hfTaskTextToSpeech,
-	"text to speech":      hfTaskTextToSpeech,
-	"tts":                 hfTaskTextToSpeech,
-	"speech synthesis":    hfTaskTextToSpeech,
-	"voice synthesis":     hfTaskTextToSpeech,
-	"asr":                 hfTaskAutomaticSpeechRecognition,
-	"speech recognition":  hfTaskAutomaticSpeechRecognition,
-	"speech to text":      hfTaskAutomaticSpeechRecognition,
-	"whisper":             hfTaskAutomaticSpeechRecognition,
-	"transcription":       hfTaskAutomaticSpeechRecognition,
-	"image generation":    hfTaskTextToImage,
-	"text to image":       hfTaskTextToImage,
-	hfTaskTextToImage:       hfTaskTextToImage,
-	"image synthesis":     hfTaskTextToImage,
-	"stable diffusion":    hfTaskTextToImage,
-	"diffusion model":     hfTaskTextToImage,
-	"image classification": "image-classification",
-	"object detection":    "object-detection",
-	"sentiment analysis":  "text-classification",
-	"text classification": "text-classification",
-	"named entity":        "token-classification",
-	"ner":                 "token-classification",
-	"translation":         "translation",
-	"summarization":       "summarization",
-	"summarize":           "summarization",
-	"question answering":  "question-answering",
-	"qa model":            "question-answering",
-	"fill mask":           "fill-mask",
-	"masked language":     "fill-mask",
-	"embedding":           hfTaskFeatureExtraction,
-	"sentence embedding":  hfTaskFeatureExtraction,
-	"text embedding":      hfTaskFeatureExtraction,
-	"semantic search":     hfTaskFeatureExtraction,
-	"image segmentation":  "image-segmentation",
-	"depth estimation":    "depth-estimation",
-	"image to text":       "image-to-text",
-	"image captioning":    "image-to-text",
-	"visual question":     "visual-question-answering",
-	"vqa":                 "visual-question-answering",
-	"zero-shot":           "zero-shot-classification",
-	"zero shot":           "zero-shot-classification",
+	hfTaskTextToSpeech:       hfTaskTextToSpeech,
+	"text to speech":         hfTaskTextToSpeech,
+	"tts":                    hfTaskTextToSpeech,
+	"speech synthesis":       hfTaskTextToSpeech,
+	"voice synthesis":        hfTaskTextToSpeech,
+	"asr":                    hfTaskAutomaticSpeechRecognition,
+	"speech recognition":     hfTaskAutomaticSpeechRecognition,
+	"speech to text":         hfTaskAutomaticSpeechRecognition,
+	"whisper":                hfTaskAutomaticSpeechRecognition,
+	"transcription":          hfTaskAutomaticSpeechRecognition,
+	"image generation":       hfTaskTextToImage,
+	"text to image":          hfTaskTextToImage,
+	hfTaskTextToImage:        hfTaskTextToImage,
+	"image synthesis":        hfTaskTextToImage,
+	"stable diffusion":       hfTaskTextToImage,
+	"diffusion model":        hfTaskTextToImage,
+	"image classification":   "image-classification",
+	"object detection":       "object-detection",
+	"sentiment analysis":     "text-classification",
+	"text classification":    "text-classification",
+	"named entity":           "token-classification",
+	"ner":                    "token-classification",
+	"translation":            "translation",
+	"summarization":          "summarization",
+	"summarize":              "summarization",
+	"question answering":     "question-answering",
+	"qa model":               "question-answering",
+	"fill mask":              "fill-mask",
+	"masked language":        "fill-mask",
+	"embedding":              hfTaskFeatureExtraction,
+	"sentence embedding":     hfTaskFeatureExtraction,
+	"text embedding":         hfTaskFeatureExtraction,
+	"semantic search":        hfTaskFeatureExtraction,
+	"image segmentation":     "image-segmentation",
+	"depth estimation":       "depth-estimation",
+	"image to text":          "image-to-text",
+	"image captioning":       "image-to-text",
+	"visual question":        "visual-question-answering",
+	"vqa":                    "visual-question-answering",
+	"zero-shot":              "zero-shot-classification",
+	"zero shot":              "zero-shot-classification",
 	"reinforcement learning": "reinforcement-learning",
-	"rl model":            "reinforcement-learning",
-	"video classification": "video-classification",
-	"audio classification": "audio-classification",
-	"music generation":    "text-to-audio",
-	"audio generation":    "text-to-audio",
-	"sound generation":    "text-to-audio",
+	"rl model":               "reinforcement-learning",
+	"video classification":   "video-classification",
+	"audio classification":   "audio-classification",
+	"music generation":       "text-to-audio",
+	"audio generation":       "text-to-audio",
+	"sound generation":       "text-to-audio",
 }
 
 // detectHFPipelineTag tries to infer a HuggingFace pipeline_tag from a free-text query.

@@ -365,8 +365,8 @@ func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRati
 		Rating:     rating,
 		HasResume:  hasResume,
 		HasCover:   hasCover,
-		TriageOpts: template.HTML(triageSelectOptionsHTML(curTriage)),    //nolint:gosec // G203: triageSelectOptionsHTML produces only author-constant triage strings; no user text.
-		StageOpts:  template.HTML(pipelineOptgroupHTML(curStage)),        //nolint:gosec // G203: pipelineOptgroupHTML produces only author-constant stage strings; no user text.
+		TriageOpts: template.HTML(triageSelectOptionsHTML(curTriage)), //nolint:gosec // G203: triageSelectOptionsHTML produces only author-constant triage strings; no user text.
+		StageOpts:  template.HTML(pipelineOptgroupHTML(curStage)),     //nolint:gosec // G203: pipelineOptgroupHTML produces only author-constant stage strings; no user text.
 	}
 	var buf bytes.Buffer
 	if err := applicationSectionTmpl.Execute(&buf, data); err != nil {

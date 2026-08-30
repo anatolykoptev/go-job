@@ -1,16 +1,16 @@
 package sources
 
 import (
-	"github.com/anatolykoptev/go_job/internal/engine"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/anatolykoptev/go_job/internal/engine"
 	"io"
 	"log/slog"
-	"strconv"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"

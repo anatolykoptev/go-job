@@ -39,10 +39,10 @@ func TestMapStatus(t *testing.T) {
 // Red-on-revert: break parseSalary → min==0, assertions fail.
 func TestParseSalary(t *testing.T) {
 	cases := []struct {
-		comp        string
-		wantMin     int
-		wantMax     int
-		wantCurr    string
+		comp         string
+		wantMin      int
+		wantMax      int
+		wantCurr     string
 		wantInterval string
 	}{
 		{"$190K – $270K • Offers Equity", 190_000, 270_000, "USD", "year"},

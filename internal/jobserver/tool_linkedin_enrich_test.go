@@ -22,7 +22,7 @@ func newNervStub(t *testing.T) *httptest.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "go-nerv-stub", Version: "1.0"}, nil)
 
 	type ingestArgs struct {
-		TenantID string          `json:"tenant_id"`
+		TenantID string            `json:"tenant_id"`
 		Profile  *linkedin.Profile `json:"profile"`
 	}
 	mcpserver.AddTool(srv, &mcp.Tool{

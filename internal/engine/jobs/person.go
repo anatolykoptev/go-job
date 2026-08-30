@@ -91,8 +91,9 @@ Return a JSON object with this exact structure:
 
 Return ONLY the JSON object, no markdown, no explanation.`
 
-//nolint:funlen // orchestration function
 // ResearchPerson gathers and synthesizes public information about a person for interview prep.
+//
+//nolint:funlen // orchestration function
 func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*PersonProfile, error) {
 	subject := name
 	if company != "" {

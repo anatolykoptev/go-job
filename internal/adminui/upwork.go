@@ -32,15 +32,15 @@ type upworkPageData struct {
 	Employment  []upworkEmploymentItem
 	Portfolio   []upworkPortfolioItem
 	// Edit-form data (Upwork-specific tables).
-	CSRFToken     string
-	UWSkills      []jobs.UpworkSkillRecord
-	UWCatalog     []jobs.UpworkCatalogItem // catalog items from upwork_catalog_items
-	UWPasteBlocks []jobs.UpworkPasteBlock
-	UWMissing     bool
-	UWRate        string   // pre-formatted for edit form: "150.00" or ""
-	UWAvailability string  // pre-filled availability from upwork_profile
-	UWCategories  []string // current categories from upwork_profile (read-only display)
-	UWCopyBlocks  []CopyBlockVM // Phase 3: paste blocks rendered via shared copyBlock partial
+	CSRFToken      string
+	UWSkills       []jobs.UpworkSkillRecord
+	UWCatalog      []jobs.UpworkCatalogItem // catalog items from upwork_catalog_items
+	UWPasteBlocks  []jobs.UpworkPasteBlock
+	UWMissing      bool
+	UWRate         string        // pre-formatted for edit form: "150.00" or ""
+	UWAvailability string        // pre-filled availability from upwork_profile
+	UWCategories   []string      // current categories from upwork_profile (read-only display)
+	UWCopyBlocks   []CopyBlockVM // Phase 3: paste blocks rendered via shared copyBlock partial
 }
 
 type upworkEmploymentItem struct {
@@ -227,6 +227,7 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 // resume_persons.headline/hourly_rate remain the general resume fields.
 // Categories are read-modify-write: existing values are preserved unless
 // a future categories editor is added.
+//
 //nolint:gosec // upworkTmplSrc is an HTML/CSS template, not a credential
 const upworkTmplSrc = `<style>
   .uw-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}

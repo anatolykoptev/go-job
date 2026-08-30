@@ -56,15 +56,15 @@ func fanOutSearchWeb(ctx context.Context, queries []string) [][]engine.SearxngRe
 
 // SalaryResearchResult is the structured output of salary_research.
 type SalaryResearchResult struct {
-	Role       string   `json:"role"`
-	Location   string   `json:"location"`
-	Currency   string   `json:"currency"`
-	P25        int      `json:"p25"`
-	Median     int      `json:"median"`
-	P75        int      `json:"p75"`
-	Sources    []string `json:"sources"`
-	Notes      string   `json:"notes"`
-	UpdatedAt  string   `json:"updated_at"`
+	Role      string   `json:"role"`
+	Location  string   `json:"location"`
+	Currency  string   `json:"currency"`
+	P25       int      `json:"p25"`
+	Median    int      `json:"median"`
+	P75       int      `json:"p75"`
+	Sources   []string `json:"sources"`
+	Notes     string   `json:"notes"`
+	UpdatedAt string   `json:"updated_at"`
 }
 
 const salaryResearchPrompt = `You are a compensation research expert. Based on the search results below, provide salary data for the role.
@@ -174,17 +174,17 @@ func isRussianLocation(location string) bool {
 
 // CompanyResearchResult is the structured output of company_research.
 type CompanyResearchResult struct {
-	Name        string   `json:"name"`
-	Size        string   `json:"size"`
-	Founded     string   `json:"founded"`
-	Industry    string   `json:"industry"`
-	Funding     string   `json:"funding"`
-	TechStack   []string `json:"tech_stack"`
-	CultureNotes string  `json:"culture_notes"`
-	RecentNews  []string `json:"recent_news"`
-	GlassdoorRating float64 `json:"glassdoor_rating"`
-	Website     string   `json:"website"`
-	Summary     string   `json:"summary"`
+	Name            string   `json:"name"`
+	Size            string   `json:"size"`
+	Founded         string   `json:"founded"`
+	Industry        string   `json:"industry"`
+	Funding         string   `json:"funding"`
+	TechStack       []string `json:"tech_stack"`
+	CultureNotes    string   `json:"culture_notes"`
+	RecentNews      []string `json:"recent_news"`
+	GlassdoorRating float64  `json:"glassdoor_rating"`
+	Website         string   `json:"website"`
+	Summary         string   `json:"summary"`
 }
 
 const companyResearchPrompt = `You are a company research analyst. Based on the search results below, provide a comprehensive company overview.

@@ -58,9 +58,9 @@ func (e *habrEmployment) UnmarshalJSON(b []byte) error {
 
 // habrVacancy is a single vacancy from the Habr Career API.
 type habrVacancy struct {
-	ID    int    `json:"id"`
-	Title string `json:"title"`
-	Href  string `json:"href"`
+	ID      int    `json:"id"`
+	Title   string `json:"title"`
+	Href    string `json:"href"`
 	Company struct {
 		Title string `json:"title"`
 		Href  string `json:"href"`

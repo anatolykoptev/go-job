@@ -53,15 +53,15 @@ func scoreFor(fitScore int, fitBand, successBand, successReasoning string, fitRe
 func jobWith(title, company, location, remote string, salaryMin, salaryMax int) hunt.Job {
 	postedAt := time.Now().Add(-1 * time.Hour)
 	return hunt.Job{
-		Title:    title,
-		Company:  company,
-		Location: location,
-		Remote:   remote,
+		Title:     title,
+		Company:   company,
+		Location:  location,
+		Remote:    remote,
 		SalaryMin: salaryMin,
 		SalaryMax: salaryMax,
-		URL:      "https://jobs.acme.io/apply",
-		Source:   "greenhouse",
-		PostedAt: &postedAt,
+		URL:       "https://jobs.acme.io/apply",
+		Source:    "greenhouse",
+		PostedAt:  &postedAt,
 	}
 }
 

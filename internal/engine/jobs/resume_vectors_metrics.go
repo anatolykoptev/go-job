@@ -17,4 +17,3 @@ var resumeEmbedFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "gojob_resume_embed_failures_total",
 	Help: "Total embed failures that caused FTS-only storage in resume_vectors.",
 })
-

@@ -17,11 +17,11 @@ var code4renaCacheKey = "code4rena_audits"
 // recently-live audits. "Completed" is excluded as it represents finished contests.
 // Statuses observed 2026-05-20: LiveJudging, Judging, Reporting, Judging Complete, Completed.
 var code4renaActiveStatuses = map[string]bool{
-	"Open":          true,
-	"Live":          true,
-	"LiveJudging":   true,
-	"Judging":       true,
-	"Reporting":     true,
+	"Open":             true,
+	"Live":             true,
+	"LiveJudging":      true,
+	"Judging":          true,
+	"Reporting":        true,
 	"Judging Complete": true,
 }
 

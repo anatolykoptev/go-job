@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	linkedinClientTTL    = 10 * time.Minute
-	linkedinMaxStaleAge  = 30 * time.Minute // PF-10: refuse stale client beyond this age
+	linkedinClientTTL   = 10 * time.Minute
+	linkedinMaxStaleAge = 30 * time.Minute // PF-10: refuse stale client beyond this age
 )
 
 var errLinkedInNotConfigured = errors.New("linkedin not configured")
@@ -35,10 +35,10 @@ var errLinkedInStaleExpired = errors.New("linkedin: stale client exceeded max ag
 var linkedinPool = &liPool{}
 
 type liPool struct {
-	mu        sync.Mutex // serializes refresh attempts (single-flight)
-	client    atomic.Pointer[linkedin.Client]
-	accountID string
-	expiresAt time.Time
+	mu          sync.Mutex // serializes refresh attempts (single-flight)
+	client      atomic.Pointer[linkedin.Client]
+	accountID   string
+	expiresAt   time.Time
 	refreshedAt time.Time // when the client was last successfully refreshed
 }
 

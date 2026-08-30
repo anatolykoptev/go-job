@@ -182,7 +182,7 @@ func undpRequisitionToResult(j undpRequisition) engine.SearxngResult {
 		URL:     fmt.Sprintf(undpJobURLFormat, j.ID),
 		Score:   0.9,
 		Metadata: map[string]string{
-			keySource:            sourceUNDP,
+			keySource:      sourceUNDP,
 			"org":          firstNonEmpty(j.Organization, j.BusinessUnit, "UNDP"),
 			"location":     loc, //nolint:goconst
 			"country":      j.PrimaryLocationCountry,

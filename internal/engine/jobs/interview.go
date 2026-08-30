@@ -13,7 +13,7 @@ import (
 
 // InterviewQuestion is a single Q&A item for interview prep.
 type InterviewQuestion struct {
-	Category    string `json:"category"`     // behavioral, technical, system_design
+	Category    string `json:"category"` // behavioral, technical, system_design
 	Question    string `json:"question"`
 	WhyAsked    string `json:"why_asked"`    // why this is relevant for the role
 	ModelAnswer string `json:"model_answer"` // answer using candidate's actual projects/experience

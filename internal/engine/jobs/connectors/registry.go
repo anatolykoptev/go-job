@@ -30,8 +30,8 @@ type Source interface {
 // Query holds all search parameters passed to a connector.
 type Query struct {
 	Query, Location, Experience, JobType, Remote, TimeRange, Salary, Language string
-	Limit, Offset                                                              int
-	EasyApply                                                                  bool
+	Limit, Offset                                                             int
+	EasyApply                                                                 bool
 }
 
 // groupAll is the sentinel group name matched by platform=all fan-out.

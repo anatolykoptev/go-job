@@ -31,6 +31,9 @@ clean:
 # t.Skip'd DB round-trip tests run live. Without it they skip cleanly.
 # go vet and go test run on ./internal/... (all internal packages).
 preflight:
+	@echo "==> gofmt -l internal/"
+	@test -z "$$(gofmt -l internal/)" || (echo "FAIL: unformatted files found by gofmt -l internal/:" && gofmt -l internal/ && exit 1)
+	@echo "OK: gofmt clean"
 	@echo "==> fitness: no inline math.Round*100 clone in resume_edit.go (use parseDollarsToCents)"
 	@! grep -n 'math\.Round.*\*[[:space:]]*100' internal/adminui/resume_edit.go || (echo "FAIL: inline math.Round*100 cents parse found in resume_edit.go -- use parseDollarsToCents" && exit 1)
 	@echo "==> fitness: no inline Sprintf dollar-display+/hr in upwork.go (use centsToDollars)"

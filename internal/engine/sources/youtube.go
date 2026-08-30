@@ -5,10 +5,3 @@ package sources
 //   youtube_transcript.go — transcript fetching (engagement panel + ANDROID player fallback)
 //   youtube_search.go     — video search (Data API v3 + ytInitialData scraping), parallel
 //                           transcript fetching, and LLM summarization
-
-
-
-
-
-
-

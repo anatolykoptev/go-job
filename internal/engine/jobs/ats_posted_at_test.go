@@ -137,9 +137,9 @@ func TestSearxngResultToHuntJob_PostedAt(t *testing.T) {
 // SearxngResultToHuntJob and this test fails (Company == "" for ATS rows).
 func TestSearxngResultToHuntJob_ExtractsATSCompany(t *testing.T) {
 	cases := []struct {
-		name    string
-		url     string
-		want    string
+		name     string
+		url      string
+		want     string
 		platform string
 	}{
 		{

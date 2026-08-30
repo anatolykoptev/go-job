@@ -72,9 +72,11 @@ func TestDiscoverJobURLs_GoSearchError_FallsBackToLocal(t *testing.T) {
 // call.  Under the NEW behaviour (trusted-empty, no fallback):
 //   - "go-search" counter increments by exactly 1.
 //   - "local-fallback" counter does NOT increment.
+//
 // Under the OLD behaviour (empty → fall through to local):
 //   - "local-fallback" counter increments (SearchDirect + SearXNG fire even if
 //     they return nothing in this env) and "go-search" does NOT increment.
+//
 // So the test goes RED on a revert of the `else { return deduplicateByURL }` branch
 // regardless of whether local scrapers happen to return results in this env.
 //

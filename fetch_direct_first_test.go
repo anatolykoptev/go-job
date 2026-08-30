@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/anatolykoptev/go_job/internal/engine"
 	twitterpkg "github.com/anatolykoptev/go-twitter"
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // TestResolveFetchMode validates resolveFetchMode against all documented and
