@@ -41,6 +41,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // jobScoreSetter is the narrow store interface used by scoring helpers.
@@ -148,6 +149,14 @@ func LoadSettings(ctx context.Context, store huntSettingsStore) hunt.HuntSetting
 	return s
 }
 
+// loadSettingsFromAny safely extracts settings if the store implements huntSettingsStore.
+func loadSettingsFromAny(ctx context.Context, store any) hunt.HuntSettings {
+	if hs, ok := store.(huntSettingsStore); ok && hs != nil {
+		return LoadSettings(ctx, hs)
+	}
+	return LoadSettings(ctx, nil)
+}
+
 // envEqualFold reads an env var and compares case-insensitively to val.
 func envEqualFold(key, val string) bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(key)), val)
@@ -196,7 +205,7 @@ const perPlatformTimeout = 120 * time.Second
 
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
-	store          *hunt.Store
+	store          any
 	notifier       hunt.Notifier
 	notifyMetric   func(outcome string)  // wired to engine.IncrHuntNotify in production
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
@@ -378,7 +387,7 @@ func parseQueries(raw string) []string {
 func (w *Worker) Run(ctx context.Context) {
 	// Load settings from DB (primary) with env fallback. Interval is fixed
 	// for the ticker lifetime; all other fields are reloaded per-cycle.
-	settings := LoadSettings(ctx, w.store)
+	settings := loadSettingsFromAny(ctx, w.store)
 	w.settings.Store(&settings)
 
 	slog.Info("hunt worker: starting",
@@ -388,12 +397,14 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Load the scoring profile once at startup (requires context + DB).
 	if score.ScoringEnabled() && w.store != nil {
-		prof, err := score.LoadProfile(ctx, w.store.Pool())
-		if err != nil {
-			slog.WarnContext(ctx, "hunt worker: scoring profile load error — scoring disabled",
-				slog.Any("error", err))
-		} else {
-			w.scoringProfile = prof // nil = disabled (LoadProfile logs its own WARN)
+		if ps, ok := w.store.(interface{ Pool() *pgxpool.Pool }); ok && ps.Pool() != nil {
+			prof, err := score.LoadProfile(ctx, ps.Pool())
+			if err != nil {
+				slog.WarnContext(ctx, "hunt worker: scoring profile load error — scoring disabled",
+					slog.Any("error", err))
+			} else {
+				w.scoringProfile = prof // nil = disabled (LoadProfile logs its own WARN)
+			}
 		}
 	}
 
@@ -446,7 +457,7 @@ func (w *Worker) runCycle(ctx context.Context) {
 
 	// Reload settings from DB so admin-UI changes apply on the next cycle
 	// without a redeploy. Interval is NOT reloaded (ticker is fixed at Run).
-	settings := LoadSettings(ctx, w.store)
+	settings := loadSettingsFromAny(ctx, w.store)
 	w.settings.Store(&settings)
 	queries := parseQueries(settings.Queries)
 
@@ -523,7 +534,14 @@ func (w *Worker) runCycle(ctx context.Context) {
 					}
 					j := jobs.SearxngResultToHuntJob(r, p.name)
 					engine.IncrHuntPostedAt(p.name, j.PostedAt != nil)
-					id, outcome, uErr := w.store.UpsertJob(ctx, j)
+					var id int64
+					var outcome hunt.Outcome
+					var uErr error
+					if s, ok := w.store.(interface {
+						UpsertJob(ctx context.Context, j hunt.Job) (int64, hunt.Outcome, error)
+					}); ok {
+						id, outcome, uErr = s.UpsertJob(ctx, j)
+					}
 					engine.IncrHuntIngest(hunt.KindJob, outcome.String())
 					switch {
 					case uErr != nil:
@@ -538,12 +556,14 @@ func (w *Worker) runCycle(ctx context.Context) {
 						j.ID = id
 						// Score first (persist fit data), then notify — both fire on
 						// OutcomeCreated; scoring is orthogonal to notification.
-						sr := scoreJobWithLimit(ctx, outcome, j,
-							w.scoringProfile, w.scorerDeps, w.store, &llmCallsThisCycle)
-						if sr != nil {
-							observeScore(*sr)
+						if scoreStore, ok := w.store.(jobScoreSetter); ok {
+							sr := scoreJobWithLimit(ctx, outcome, j,
+								w.scoringProfile, w.scorerDeps, scoreStore, &llmCallsThisCycle)
+							if sr != nil {
+								observeScore(*sr)
+							}
+							w.maybeNotifyJob(j, outcome, sr)
 						}
-						w.maybeNotifyJob(j, outcome, sr)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
 					}

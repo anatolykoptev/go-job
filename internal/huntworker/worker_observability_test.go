@@ -382,6 +382,13 @@ type fakeUnscoredStatsStore struct {
 	calls atomic.Int64
 }
 
+func (f *fakeUnscoredStatsStore) GetHuntSettings(_ context.Context) (hunt.HuntSettings, error) {
+	return hunt.HuntSettings{
+		Enabled:  true,
+		Interval: 1 * time.Hour,
+	}, nil
+}
+
 func (f *fakeUnscoredStatsStore) UnscoredOpenJobsStats(_ context.Context) (hunt.UnscoredJobsStats, error) {
 	f.calls.Add(1)
 	if f.err != nil {
@@ -473,4 +480,48 @@ func Test_RefreshUnscoredGauges_NilSafeStore(t *testing.T) {
 	assert.NotPanics(t, func() {
 		refreshUnscoredGauges(context.Background(), store)
 	})
+}
+
+// Test_WorkerRun_GaugeRefresherTickerIntegration verifies that Worker.Run
+// updates gojob_hunt_unscored_jobs_count and gojob_hunt_unscored_jobs_max_age_seconds
+// when gaugeTicker fires in its select loop. (Fixes #468)
+func Test_WorkerRun_GaugeRefresherTickerIntegration(t *testing.T) {
+	engine.InitTestRegistry()
+
+	t.Setenv("HUNT_SCORE_GAUGE_REFRESH_INTERVAL", "20ms")
+	t.Setenv("HUNT_INGEST_INTERVAL", "1h")
+
+	store := &fakeUnscoredStatsStore{
+		stats: hunt.UnscoredJobsStats{
+			Count:     12,
+			OldestAge: 3 * time.Hour,
+		},
+	}
+
+	w := &Worker{
+		store: store,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Run(ctx)
+	}()
+
+	// Wait for the gauge ticker to fire at least once and update metrics
+	assert.Eventually(t, func() bool {
+		return store.calls.Load() > 0 &&
+			engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount) == 12 &&
+			engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge) == 10800
+	}, 2*time.Second, 10*time.Millisecond, "gauge refresher ticker in Worker.Run must fire and update metrics")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Worker.Run did not exit on context cancellation")
+	}
 }
