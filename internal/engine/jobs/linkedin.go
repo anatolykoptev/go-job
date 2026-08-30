@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/ratelimit"
+	linkedin "github.com/anatolykoptev/go-linkedin"
 	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go_job/internal/engine"
 
@@ -80,8 +80,8 @@ var jobTypeMap = map[string]string{
 
 // remoteMap maps remote/onsite to LinkedIn workplace type codes.
 var remoteMap = map[string]string{
-	"onsite": "1",
-	"hybrid": "2",
+	"onsite":      "1",
+	"hybrid":      "2",
 	jobTypeRemote: "3",
 }
 
@@ -127,11 +127,11 @@ type LinkedInJob struct {
 	// jobDetailToFields from a go-linkedin JobDetail returned by VoyagerJobDetail.
 	// All omitempty so the guest list path (which does not set them) serializes
 	// the same as before.
-	ApplicantCount int                 `json:"applicant_count,omitempty"`
-	SeniorityLevel string              `json:"seniority_level,omitempty"`
-	JobFunction    string              `json:"job_function,omitempty"`
-	EmploymentType string              `json:"employment_type,omitempty"`
-	HiringTeam     []HiringTeamMember  `json:"hiring_team,omitempty"`
+	ApplicantCount int                `json:"applicant_count,omitempty"`
+	SeniorityLevel string             `json:"seniority_level,omitempty"`
+	JobFunction    string             `json:"job_function,omitempty"`
+	EmploymentType string             `json:"employment_type,omitempty"`
+	HiringTeam     []HiringTeamMember `json:"hiring_team,omitempty"`
 }
 
 // HiringTeamMember is a single recruiter/hiring-contact listed on a LinkedIn
@@ -170,11 +170,11 @@ func jobDetailToFields(d *linkedin.JobDetail) jobDetailFields {
 		return jobDetailFields{}
 	}
 	f := jobDetailFields{
-		EasyApply:       d.EasyApply,
-		ApplicantCount:  d.ApplicantCount,
-		SeniorityLevel:  d.SeniorityLevel,
-		JobFunction:     d.JobFunction,
-		EmploymentType:  d.EmploymentType,
+		EasyApply:      d.EasyApply,
+		ApplicantCount: d.ApplicantCount,
+		SeniorityLevel: d.SeniorityLevel,
+		JobFunction:    d.JobFunction,
+		EmploymentType: d.EmploymentType,
 	}
 	if d.EasyApply {
 		f.ApplyMethod = applyMethodEasyApply
@@ -262,7 +262,7 @@ var linkedInGeoIDs = map[string]string{
 	"sydney":         "104769905",
 	"bangalore":      "105214831",
 	"tel aviv":       "101822562",
-	jobTypeRemote:         "91000001",
+	jobTypeRemote:    "91000001",
 }
 
 // SearchLinkedInJobs queries the LinkedIn Guest API and returns parsed job cards.

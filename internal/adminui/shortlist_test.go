@@ -219,13 +219,13 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 // Red-on-revert: removing stageBadgeClass map → wrong/missing CSS class → fails.
 func TestStageBadgeHTML(t *testing.T) {
 	cases := []struct {
-		value   string
-		want    string // expected substring in output
+		value    string
+		want     string // expected substring in output
 		nonEmpty bool   // if true, output must be non-empty
 	}{
 		// Triage-axis badges.
 		{hunt.StageInteresting, "badge-blue", true},
-		{hunt.StageSaved, `class="badge"`, true},               // saved → plain badge (no extra modifier)
+		{hunt.StageSaved, `class="badge"`, true},                // saved → plain badge (no extra modifier)
 		{hunt.StageDiscarded, `class="badge badge-gray"`, true}, // discarded → gray (MEDIUM-1 fix; visually distinct)
 		// Pipeline-axis badges.
 		{hunt.StageClaimed, "badge-blue", true},
@@ -233,9 +233,9 @@ func TestStageBadgeHTML(t *testing.T) {
 		{hunt.StageInterview, "badge-green", true},
 		{hunt.StageOffer, "badge-green", true},
 		// Unknown / empty.
-		{"unknown-stage", `class="badge"`, true},          // unknown → plain badge
-		{"<script>xss</script>", "&lt;script&gt;", true},  // must escape user-visible text
-		{"", "", false},                                    // empty → no output
+		{"unknown-stage", `class="badge"`, true},         // unknown → plain badge
+		{"<script>xss</script>", "&lt;script&gt;", true}, // must escape user-visible text
+		{"", "", false}, // empty → no output
 	}
 	for _, tc := range cases {
 		got := stageBadgeHTML(tc.value)

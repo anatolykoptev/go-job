@@ -16,15 +16,15 @@ import (
 )
 
 const (
-	opireHomeURL       = "https://app.opire.dev/home"
+	opireHomeURL        = "https://app.opire.dev/home"
 	opireScrapeCacheKey = "opire_scrape"
 )
 
 // opireReward matches the reward objects inside "initialRewards" from the Opire RSC response.
 type opireReward struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	URL   string `json:"url"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	URL          string `json:"url"`
 	PendingPrice struct {
 		Value int    `json:"value"`
 		Unit  string `json:"unit"`

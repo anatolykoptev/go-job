@@ -108,18 +108,18 @@ const (
 
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
-	outcomeOK          = "ok"
-	outcomeEmpty       = "empty"
-	outcomeTimeout     = "timeout"
-	outcomeError       = "error"
-	outcomeNoKey       = "no_key"
-	outcomeParseFail   = "parse_fail"
-	outcomeUnparseable = "unparseable"
+	outcomeOK             = "ok"
+	outcomeEmpty          = "empty"
+	outcomeTimeout        = "timeout"
+	outcomeError          = "error"
+	outcomeNoKey          = "no_key"
+	outcomeParseFail      = "parse_fail"
+	outcomeUnparseable    = "unparseable"
 	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable — unavailable path taken (listings may or may not have survived)
-	kindJobs           = "jobs"
-	kindBounties       = "bounties"
-	kindFreelance      = "freelance"
-	kindSecurity       = "security"
+	kindJobs              = "jobs"
+	kindBounties          = "bounties"
+	kindFreelance         = "freelance"
+	kindSecurity          = "security"
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
@@ -558,30 +558,30 @@ var validRelevanceOutcomes = map[string]bool{
 // indistinguishable under the single "timeout" label (#452). canceled is a
 // client disconnect (context.Canceled), distinct from any deadline expiring.
 const (
-	RelevanceReasonNotConfigured  = "not_configured"
-	RelevanceReasonEmbedError     = "embed_error"
-	RelevanceReasonCircuitOpen    = "circuit_open"
-	RelevanceReasonTimeoutGate    = "timeout_gate"
-	RelevanceReasonTimeoutParent  = "timeout_parent"
-	RelevanceReasonTimeoutClient  = "timeout_client"
-	RelevanceReasonCanceled       = "canceled"
-	RelevanceReasonEmptyVectors   = "empty_vectors"
-	RelevanceReasonTruncated      = "truncated"
+	RelevanceReasonNotConfigured = "not_configured"
+	RelevanceReasonEmbedError    = "embed_error"
+	RelevanceReasonCircuitOpen   = "circuit_open"
+	RelevanceReasonTimeoutGate   = "timeout_gate"
+	RelevanceReasonTimeoutParent = "timeout_parent"
+	RelevanceReasonTimeoutClient = "timeout_client"
+	RelevanceReasonCanceled      = "canceled"
+	RelevanceReasonEmptyVectors  = "empty_vectors"
+	RelevanceReasonTruncated     = "truncated"
 )
 
 // validRelevanceDegradedReasons bounds the reason label for
 // job_search_relevance_degraded_total. Unrecognised values are dropped silently
 // (cardinality guard — no free-form strings, no query text).
 var validRelevanceDegradedReasons = map[string]bool{
-	RelevanceReasonNotConfigured:  true,
-	RelevanceReasonEmbedError:     true,
-	RelevanceReasonCircuitOpen:    true,
-	RelevanceReasonTimeoutGate:    true,
-	RelevanceReasonTimeoutParent:  true,
-	RelevanceReasonTimeoutClient:  true,
-	RelevanceReasonCanceled:       true,
-	RelevanceReasonEmptyVectors:   true,
-	RelevanceReasonTruncated:      true,
+	RelevanceReasonNotConfigured: true,
+	RelevanceReasonEmbedError:    true,
+	RelevanceReasonCircuitOpen:   true,
+	RelevanceReasonTimeoutGate:   true,
+	RelevanceReasonTimeoutParent: true,
+	RelevanceReasonTimeoutClient: true,
+	RelevanceReasonCanceled:      true,
+	RelevanceReasonEmptyVectors:  true,
+	RelevanceReasonTruncated:     true,
 }
 
 // Cross-encoder shadow agreement outcome label values

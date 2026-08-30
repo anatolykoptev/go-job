@@ -11,11 +11,11 @@ import (
 type linkedInBlockKind int
 
 const (
-	liOK            linkedInBlockKind = iota // 200 clean — no block markers
-	liRateLimited                            // 429 — transient, retry after backoff
-	liHardBlock                              // 403/999/401 — account/IP banned
-	liChallenge                              // 302 authwall/checkpoint or 200 challenge body
-	liNetworkError                           // transport error (no HTTP response) — cascade-level only
+	liOK           linkedInBlockKind = iota // 200 clean — no block markers
+	liRateLimited                           // 429 — transient, retry after backoff
+	liHardBlock                             // 403/999/401 — account/IP banned
+	liChallenge                             // 302 authwall/checkpoint or 200 challenge body
+	liNetworkError                          // transport error (no HTTP response) — cascade-level only
 )
 
 // String renders the kind for logs/alerting (distinguishes rate-limit vs

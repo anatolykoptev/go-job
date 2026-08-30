@@ -21,8 +21,8 @@ const hnFirebaseBase = "https://hacker-news.firebaseio.com/v0"
 
 // hnWhoIsHiringCache caches the thread ID so we don't re-search every call.
 var hnWhoIsHiringCache struct {
-	mu       sync.Mutex
-	threadID int64
+	mu        sync.Mutex
+	threadID  int64
 	fetchedAt time.Time
 }
 
@@ -39,7 +39,7 @@ const hnWhoIsHiringCacheTTL = 6 * time.Hour
 //   - searchHNThreadComments (Algolia, with FetchTimeout 10s): ~15s worst case
 //   - hnFanoutBudget (Firebase fan-out): 30s
 //   - LLM post-processing: ~15s
-//   Total worst case: 75s << 3m server-side deadline.
+//     Total worst case: 75s << 3m server-side deadline.
 //
 // Previously 45s (P0 fix). Reduced to 30s so the full HN path stays well under
 // even a conservative 90s client-side per-request deadline (some MCP clients
@@ -59,14 +59,14 @@ const hnFanoutBudgetMax = 90 * time.Second
 
 // hnItemResponse is the Firebase HN API item shape (story or comment).
 type hnItemResponse struct {
-	ID    int64   `json:"id"`
-	Type  string  `json:"type"`
-	By    string  `json:"by"`
-	Text  string  `json:"text"`
-	Kids  []int64 `json:"kids"`
-	Time  int64   `json:"time"`
-	Dead  bool    `json:"dead"`
-	Deleted bool  `json:"deleted"`
+	ID      int64   `json:"id"`
+	Type    string  `json:"type"`
+	By      string  `json:"by"`
+	Text    string  `json:"text"`
+	Kids    []int64 `json:"kids"`
+	Time    int64   `json:"time"`
+	Dead    bool    `json:"dead"`
+	Deleted bool    `json:"deleted"`
 }
 
 // FindWhoIsHiringThread finds the most recent "Who is hiring?" HN thread ID.

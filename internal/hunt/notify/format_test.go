@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 	"context"
+	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"

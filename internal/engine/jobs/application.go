@@ -15,7 +15,7 @@ type ApplicationPrepResult struct {
 	Analysis      *ResumeAnalysisResult  `json:"analysis"`
 	CoverLetter   *CoverLetterResult     `json:"cover_letter"`
 	InterviewPrep *InterviewPrepResult   `json:"interview_prep"`
-	CompanyInfo   *CompanyResearchResult  `json:"company_info,omitempty"`
+	CompanyInfo   *CompanyResearchResult `json:"company_info,omitempty"`
 	Summary       string                 `json:"summary"`
 }
 

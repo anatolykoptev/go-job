@@ -152,7 +152,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close() //nolint:errcheck
+		out.Close()    //nolint:errcheck
 		os.Remove(tmp) //nolint:errcheck
 		return err
 	}

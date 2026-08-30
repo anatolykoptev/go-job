@@ -27,16 +27,16 @@ type freelancerAPIResponse struct {
 
 // freelancerAPIProject is a single project from the Freelancer API.
 type freelancerAPIProject struct {
-	ID           int64                `json:"id"`
-	Title        string               `json:"title"`
-	SEOUrl       string               `json:"seo_url"`
-	Description  string               `json:"preview_description"`
-	Budget       freelancerBudget     `json:"budget"`
-	Currency     freelancerCurrency   `json:"currency"`
-	BidStats     freelancerBidStats   `json:"bid_stats"`
-	Jobs         []freelancerJob      `json:"jobs"`
-	Type         string               `json:"type"`
-	TimeSubmitted float64             `json:"time_submitted"`
+	ID            int64              `json:"id"`
+	Title         string             `json:"title"`
+	SEOUrl        string             `json:"seo_url"`
+	Description   string             `json:"preview_description"`
+	Budget        freelancerBudget   `json:"budget"`
+	Currency      freelancerCurrency `json:"currency"`
+	BidStats      freelancerBidStats `json:"bid_stats"`
+	Jobs          []freelancerJob    `json:"jobs"`
+	Type          string             `json:"type"`
+	TimeSubmitted float64            `json:"time_submitted"`
 }
 
 type freelancerBudget struct {
@@ -50,7 +50,7 @@ type freelancerCurrency struct {
 }
 
 type freelancerBidStats struct {
-	BidCount int `json:"bid_count"`
+	BidCount int     `json:"bid_count"`
 	BidAvg   float64 `json:"bid_avg"`
 }
 

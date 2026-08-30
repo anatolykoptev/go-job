@@ -34,7 +34,7 @@ type IssueItem struct {
 	Number    int      `json:"number"`
 	Title     string   `json:"title"`
 	URL       string   `json:"url"`
-	State     string   `json:"state"`             // "open", "closed"
+	State     string   `json:"state"` // "open", "closed"
 	Author    string   `json:"author"`
 	Labels    []string `json:"labels,omitempty"`
 	Body      string   `json:"body,omitempty"`

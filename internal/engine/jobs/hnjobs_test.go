@@ -64,10 +64,10 @@ func TestFilterHNJobComments(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		query    string
-		wantLen  int
-		wantIn   string
+		name    string
+		query   string
+		wantLen int
+		wantIn  string
 	}{
 		{
 			name:    "filter by golang",

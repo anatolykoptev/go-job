@@ -2,11 +2,11 @@ package engine
 
 // Opportunity is the unified type returned by opportunity_search.
 type Opportunity struct {
-	Type    string   `json:"type"`    // "bounty", "security", "freelance"
+	Type    string   `json:"type"` // "bounty", "security", "freelance"
 	Title   string   `json:"title"`
 	URL     string   `json:"url"`
-	Reward  string   `json:"reward"`  // "$500", "Up to $50,000", "$80k-120k/yr"
-	Source  string   `json:"source"`  // "algora", "hackerone", "remoteok", etc.
+	Reward  string   `json:"reward"` // "$500", "Up to $50,000", "$80k-120k/yr"
+	Source  string   `json:"source"` // "algora", "hackerone", "remoteok", etc.
 	Skills  []string `json:"skills"`
 	Posted  string   `json:"posted,omitempty"`
 	Summary string   `json:"summary,omitempty"`
@@ -32,7 +32,7 @@ type OpportunityAnalyzeInput struct {
 
 // OpportunityAnalysis is the unified analysis output.
 type OpportunityAnalysis struct {
-	Type    string `json:"type"`    // "bounty", "security", "freelance"
+	Type    string `json:"type"` // "bounty", "security", "freelance"
 	Title   string `json:"title"`
 	URL     string `json:"url"`
 	Reward  string `json:"reward"`

@@ -185,7 +185,7 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 }
 
 // TestStore_ToggleShortlistStar_SoftDemote tests star-off from each of the two
-// soft (demotable) triage values → should clear triage to '', return starred=false.
+// soft (demotable) triage values → should clear triage to ”, return starred=false.
 //
 // After migration 012: star-off clears the triage column (NOT stage). The pipeline
 // stage is never touched. The legacy 'claimed' value is now a pipeline stage and is

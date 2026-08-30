@@ -526,7 +526,7 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 // llmRemoteWorkOutput is the JSON structure expected from the LLM for remote work search.
 type llmRemoteWorkOutput struct {
 	Jobs    []engine.RemoteJobListing `json:"jobs"`
-	Summary string                   `json:"summary"`
+	Summary string                    `json:"summary"`
 }
 
 // SummarizeRemoteWorkResults calls the LLM with remote-work-specific prompt and parses structured jobs.

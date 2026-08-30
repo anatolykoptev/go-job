@@ -48,12 +48,12 @@ type trackerFile struct {
 
 // trackerJob is one entry in _tracker.json.jobs.
 type trackerJob struct {
-	Score      int    `json:"score"`      // stale 0–16 — NEVER written to fit_score
+	Score      int    `json:"score"` // stale 0–16 — NEVER written to fit_score
 	Company    string `json:"company"`
 	Title      string `json:"title"`
 	Location   string `json:"location"`
 	URL        string `json:"url"`
-	Comp       string `json:"comp"`       // free-text salary, e.g. "$190K – $270K • Offers Equity"
+	Comp       string `json:"comp"` // free-text salary, e.g. "$190K – $270K • Offers Equity"
 	Department string `json:"department"`
 	Team       string `json:"team"`
 	Status     string `json:"status"` // "saved" | "pack-ready"

@@ -372,6 +372,7 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 // skillsLister returns a Lister closure for the skills resource.
+//
 //nolint:dupl // structurally identical to other resume listers
 func skillsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {

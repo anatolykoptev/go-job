@@ -442,8 +442,8 @@ func extractIndeedStructured(body string) string {
 
 	// Indeed uses data-testid attributes for key fields.
 	testIDs := map[string]string{
-		"jobsearch-JobInfoHeader-title":          "**Title:**",
-		"inlineHeader-companyName":               "**Company:**",
+		"jobsearch-JobInfoHeader-title":           "**Title:**",
+		"inlineHeader-companyName":                "**Company:**",
 		"jobsearch-JobInfoHeader-companyLocation": "**Location:**",
 	}
 	for testID, label := range testIDs {

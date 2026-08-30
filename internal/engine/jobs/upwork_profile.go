@@ -34,7 +34,6 @@ const (
 		ON CONFLICT (person_id, name) DO NOTHING
 		RETURNING id`
 
-
 	getUpworkSkillsSQL = `
 		SELECT id, name, position FROM upwork_skills
 		WHERE person_id = $1 ORDER BY position, id`
@@ -71,10 +70,10 @@ type UpworkCatalogItem struct {
 
 // UpworkProfileResult is the composed view returned by GetUpworkProfile.
 type UpworkProfileResult struct {
-	Profile  *UpworkProfile
-	Skills   []UpworkSkillRecord
-	Catalog  []UpworkCatalogItem
-	Missing  bool // true when no upwork_profile row exists yet
+	Profile *UpworkProfile
+	Skills  []UpworkSkillRecord
+	Catalog []UpworkCatalogItem
+	Missing bool // true when no upwork_profile row exists yet
 }
 
 // GetUpworkProfile loads the full Upwork profile from the upwork_* tables.
@@ -241,7 +240,9 @@ func FormatUpworkPasteBlocks(r *UpworkProfileResult) []UpworkPasteBlock {
 
 	return blocks
 }
+
 // New SQL constants for catalog CRUD + reorder (all person-scoped per ADR #7)
+//
 //nolint:gosec // these are SQL statements, not credentials
 const (
 	insertUpworkCatalogItemSQL = `

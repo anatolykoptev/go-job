@@ -16,7 +16,7 @@ const attrSelected = ` selected`
 // pipelineOptgroupHTML returns inner HTML for a pipeline-only <select> element.
 // Used in the jobs-table inline dropdown (migration 012: triage managed separately).
 //
-// currentStage is the hunt_ratings.stage value ('' = not in pipeline).
+// currentStage is the hunt_ratings.stage value (” = not in pipeline).
 func pipelineOptgroupHTML(currentStage string) string {
 	var sb strings.Builder
 
@@ -41,7 +41,7 @@ func pipelineOptgroupHTML(currentStage string) string {
 // triageSelectOptionsHTML returns inner HTML for a triage-only <select> element.
 // Used in the detail-page Triage form (migration 012).
 //
-// currentTriage is the hunt_ratings.triage value ('' = untriaged).
+// currentTriage is the hunt_ratings.triage value (” = untriaged).
 // A blank option labelled "— none —" is always prepended so the operator can
 // clear the triage signal.
 func triageSelectOptionsHTML(currentTriage string) string {

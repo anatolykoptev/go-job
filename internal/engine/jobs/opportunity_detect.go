@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	oppTypeBounty   = "bounty"
-	oppTypeSecurity = "security"
+	oppTypeBounty    = "bounty"
+	oppTypeSecurity  = "security"
 	oppTypeFreelance = "freelance"
 )
 

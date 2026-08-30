@@ -1,7 +1,8 @@
 // cmd/migrate-tracker migrates the legacy SQLite tracker.db rows into postgres
 // hunt_jobs + hunt_ratings. Idempotent — safe to re-run.
 // Usage: go run ./cmd/migrate-tracker -db <path> -dsn <DATABASE_URL>
-//        go run ./cmd/migrate-tracker -dry-run -db <path> -dsn <DATABASE_URL>
+//
+//	go run ./cmd/migrate-tracker -dry-run -db <path> -dsn <DATABASE_URL>
 package main
 
 import (

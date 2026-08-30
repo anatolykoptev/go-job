@@ -13,8 +13,8 @@ const (
 
 // HuggingFace task type strings.
 const (
-	hfTaskTextToSpeech              = "text-to-speech"
+	hfTaskTextToSpeech               = "text-to-speech"
 	hfTaskAutomaticSpeechRecognition = "automatic-speech-recognition"
-	hfTaskTextToImage               = "text-to-image"
-	hfTaskFeatureExtraction         = "feature-extraction"
+	hfTaskTextToImage                = "text-to-image"
+	hfTaskFeatureExtraction          = "feature-extraction"
 )

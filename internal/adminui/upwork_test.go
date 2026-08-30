@@ -208,7 +208,6 @@ func TestUpworkTmpl_TemplateSourceSafety(t *testing.T) {
 	}
 }
 
-
 // TestUpworkTmpl_CopyBlocks asserts that paste blocks are rendered via the shared
 // copyBlock partial, emitting .gd-copy-btn markup with data-copy-pre / data-copy-field
 // attributes and that sharedCSS is included. Content must be HTML-escaped (never raw HTML).

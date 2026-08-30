@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	sherlockBaseURL = "https://api.github.com/orgs/sherlock-audit/repos"
+	sherlockBaseURL  = "https://api.github.com/orgs/sherlock-audit/repos"
 	sherlockCacheKey = "sherlock_audits"
 )
 
