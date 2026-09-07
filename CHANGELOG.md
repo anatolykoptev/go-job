@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.21.1](https://github.com/anatolykoptev/go-job/compare/v1.21.0...v1.21.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **build:** make the version stamp resolve instead of falling back to "dev" ([#479](https://github.com/anatolykoptev/go-job/issues/479)) ([764b414](https://github.com/anatolykoptev/go-job/commit/764b4148980dcb20f5e71bb5957454ade737d4ad))
+
 ## [1.21.0](https://github.com/anatolykoptev/go-job/compare/v1.20.0...v1.21.0) (2026-08-05)
 
 
