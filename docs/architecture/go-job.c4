@@ -9,9 +9,12 @@ model {
 
   go_job = system "go-job" {
     description '''
-      Job, Remote & Freelance Search MCP server. Exposes 4 MCP tools for structured job discovery across major platforms.
+      Job, remote and freelance search MCP server. Exposes 32 MCP tools across
+      17 source connectors, plus a persistent hunt store (Postgres) that keeps the
+      longitudinal record — what was seen, rejected, applied to, and how it went.
 
-      **TODO**: расширить описание. Добавить containers + components.
+      TODO: expand into containers + components (engine, jobserver, hunt, adminui,
+      pdfrender). See docs/architecture/principles.md for the decision model.
     '''
 
     main = container "go-job" {
