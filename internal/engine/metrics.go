@@ -1565,13 +1565,16 @@ var validSecurityPlatforms = map[string]bool{
 }
 
 // validSecurityFetchErrorReasons bounds the reason label for
-// security_fetch_errors_total. reason ∈ {truncated}.
+// security_fetch_errors_total. reason ∈ {transport,status,truncated,parse}.
 var validSecurityFetchErrorReasons = map[string]bool{
+	"transport": true,
+	"status":    true,
 	"truncated": true,
+	"parse":     true,
 }
 
 // IncrSecurityFetchErrors bumps gojob_security_fetch_errors_total{platform=<p>,reason=<r>}.
-// platform ∈ {hackerone,bugcrowd,intigriti,yeswehack,federacy}, reason ∈ {truncated}.
+// platform ∈ {hackerone,bugcrowd,intigriti,yeswehack,federacy}, reason ∈ {transport,status,truncated,parse}.
 // Unrecognised label values are silently dropped (cardinality guard).
 // Same shape as IncrATSFetchErrors — makes a truncation that was previously
 // only slog.Warn'd (and swallowed when a sibling source succeeded) visible in
