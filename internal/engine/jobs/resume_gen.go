@@ -119,13 +119,22 @@ const contactSeparator = "  ·  "
 //
 // name and headline are inserted verbatim into typst content brackets; contacts
 // is the pre-joined, email-escaped contact line from buildResumeContacts.
+//
+// When headline is empty, the headline text line (and its #v(2.4mm) gap +
+// #linebreak) is omitted entirely rather than emitting an empty bracket — an
+// empty #text(...)[\n] line is a broken line on the page. resume_scaffold
+// relies on this for its optional headline input; resume_generate always
+// passes a non-empty headline (role title plus matched specialisations), so
+// its output is unchanged.
 func assembleResumeHeader(name, headline, contacts string) string {
 	var b strings.Builder
 	b.WriteString("```{=typst}\n")
 	fmt.Fprintf(&b, "#text(size: 26pt, weight: \"bold\", fill: rgb(\"#0f172a\"), tracking: -0.4pt)[%s]\n", name)
-	b.WriteString("#v(2.4mm)\n")
-	fmt.Fprintf(&b, "#text(size: 11pt, weight: \"semibold\", fill: rgb(\"#1e293b\"))[%s]\n", headline)
-	b.WriteString("#linebreak()\n")
+	if headline != "" {
+		b.WriteString("#v(2.4mm)\n")
+		fmt.Fprintf(&b, "#text(size: 11pt, weight: \"semibold\", fill: rgb(\"#1e293b\"))[%s]\n", headline)
+		b.WriteString("#linebreak()\n")
+	}
 	b.WriteString("#v(0.8mm)\n")
 	fmt.Fprintf(&b, "#text(size: 10pt, fill: rgb(\"#64748b\"))[%s]\n", contacts)
 	b.WriteString("#v(1.8mm)\n")
