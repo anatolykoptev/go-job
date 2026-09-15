@@ -40,7 +40,6 @@ type JobListing struct {
 	Posted         string   `json:"posted"`
 	QualityScore    int      `json:"quality_score,omitempty"`    // 0-100 deterministic posting-quality score (no LLM)
 	Relevance       float64  `json:"relevance,omitempty"`        // gate cosine [0,1]; 0 when the gate did not run
-	RelevanceSource string   `json:"relevance_source,omitempty"` // "gate" when scored by cosine gate; "none" (or omitted) otherwise
 }
 
 // Per-source outcome vocabulary reported in JobSearchOutput.Sources[].Outcome.
