@@ -119,7 +119,7 @@ func testResumeDBClean(t *testing.T) *ResumeDB {
 func seedProfile(t *testing.T, db *ResumeDB) int {
 	t.Helper()
 	ctx := context.Background()
-	pid, err := db.InsertPerson(ctx, PersonRecord{Name: "Seeded Person"})
+	pid, err := db.InsertPerson(ctx, PersonRecord{Name: "Seeded Person", IsMaster: true})
 	if err != nil {
 		t.Fatalf("seed InsertPerson: %v", err)
 	}

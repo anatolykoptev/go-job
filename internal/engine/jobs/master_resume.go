@@ -388,7 +388,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	// The consent is re-checked inside the transaction under an advisory lock
 	// (step 5) to close the TOCTOU; this pre-tx check only avoids opening a
 	// transaction when consent is clearly missing.
-	exists, existingID, err := db.guardLatestPersonID(ctx)
+	exists, existingID, err := db.guardMasterPersonID(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("master_resume_build: destructive-consent guard failed (refusing to touch the profile): %w", err)
 	}
@@ -438,10 +438,16 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	// here changed the id; the caller's consent named the pre-tx id, which no
 	// longer matches → refuse (rollback releases the lock). This is the
 	// authoritative check; the pre-tx check was only an early refuse.
+	// inTxExists/inTxID are hoisted out of the consent block so the orphan
+	// capture below can reuse them (the children to re-parent are the old
+	// master's, whose id is inTxID).
+	var inTxExists bool
+	var inTxID int
 	{
-		inTxExists, inTxID, err := db.guardLatestPersonID(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("master_resume_build: in-tx consent re-check failed (refusing): %w", err)
+		var gErr error
+		inTxExists, inTxID, gErr = db.guardMasterPersonID(ctx, nil)
+		if gErr != nil {
+			return nil, fmt.Errorf("master_resume_build: in-tx consent re-check failed (refusing): %w", gErr)
 		}
 		if inTxExists && inTxID != replacePersonID {
 			return nil, fmt.Errorf("master_resume_build: profile id changed under the rebuild lock (consented id=%d, present id=%d) — "+
@@ -450,8 +456,24 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		}
 	}
 
-	if err := db.ClearAllPersons(ctx); err != nil {
-		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
+	// Capture the old master's variant children BEFORE the delete. The re-parent
+	// must adopt ONLY the deleted master's children — not any unrelated parentless
+	// non-master row (the old unbounded predicate `WHERE parent_id IS NULL AND
+	// is_master = false` adopted every such row on the next rebuild). Capturing
+	// by parent_id = old master id before the delete gives an explicit list;
+	// after ClearMasterPerson the FK ON DELETE SET NULL would lose the link.
+	// Runs inside the rebuild transaction (conn(ctx) is tx-aware). nil account =
+	// global (expand phase).
+	var orphanIDs []int
+	if inTxExists {
+		orphanIDs, err = db.captureVariantChildren(ctx, inTxID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("capture variant children before re-parent: %w", err)
+		}
+	}
+
+	if err := db.ClearMasterPerson(ctx, nil); err != nil {
+		return nil, fmt.Errorf("clear master person failed before rebuild: %w", err)
 	}
 
 	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
@@ -461,7 +483,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 	}
 
-	// 6. Insert person
+	// 6. Insert person as the new master.
 	personID, err := db.InsertPerson(ctx, PersonRecord{
 		Name:     parsed.Person.Name,
 		Email:    parsed.Person.Email,
@@ -469,9 +491,23 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		Location: parsed.Person.Location,
 		Links:    parsed.Person.Links,
 		Summary:  parsed.Person.Summary,
+		IsMaster: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert person: %w", err)
+	}
+
+	// Re-parent the captured children to the new master. The explicit id list
+	// (captured before the delete) bounds the update to the deleted master's
+	// children only — no unrelated parentless non-master row is adopted. Runs
+	// inside the rebuild transaction (conn(ctx) is tx-aware).
+	if len(orphanIDs) > 0 {
+		if _, err := db.conn(ctx).Exec(ctx,
+			`UPDATE resume_persons SET parent_id = $1 WHERE id = ANY($2)`,
+			personID, orphanIDs,
+		); err != nil {
+			return nil, fmt.Errorf("re-parent orphaned variants: %w", err)
+		}
 	}
 
 	result := &MasterResumeBuildResult{PersonID: personID}
