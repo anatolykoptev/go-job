@@ -138,6 +138,9 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
           GOWORK: off
           GOPRIVATE: github.com/anatolykoptev/*
+          # Serialize package tests: fixtures share one gojob_test DB and
+          # -p N raced destructive helpers (DropAccountTables) across packages.
+          GOFLAGS: -p=1
         run: |
           set -uo pipefail
 
