@@ -9,6 +9,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -217,4 +218,36 @@ func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
 		"Bootstrap must not live inside startAdminServer — the account schema must exist even when the admin UI never starts")
 	require.NotContains(t, admin, "bootstrapAccounts(",
 		"bootstrapAccounts must not be called from the admin path — initEngine's DB block is the only legal call site")
+}
+
+// TestSetNotifyChatID_Upsert proves --notify-chat-id upserts: a pre-existing
+// settings row takes the new chat id and keeps its enabled flag (the former
+// ON CONFLICT DO NOTHING silently dropped updates to existing rows).
+func TestSetNotifyChatID_Upsert(t *testing.T) {
+	pool := openTestPool(t)
+	dbtest.DropAccountTables(t, pool)
+	ctx := context.Background()
+
+	_, op, err := accounts.Bootstrap(ctx, pool,
+		accounts.OperatorSeed{Email: "op-upsert@t.dev", Password: "pw-pw-pw-pw", Name: "Op"})
+	require.NoError(t, err)
+	require.NotNil(t, op)
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO account_hunt_settings (account_id, enabled, notify_chat_id) VALUES ($1, true, 111)
+		 ON CONFLICT (account_id) DO UPDATE SET enabled = true, notify_chat_id = 111`,
+		op.ID)
+	require.NoError(t, err)
+
+	stored, err := accounts.SetNotifyChatID(ctx, pool, uuid.MustParse(op.ID), -222)
+	require.NoError(t, err)
+	require.True(t, stored)
+
+	var chatID int64
+	var enabled bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT notify_chat_id, enabled FROM account_hunt_settings WHERE account_id = $1`,
+		op.ID).Scan(&chatID, &enabled))
+	require.Equal(t, int64(-222), chatID, "existing row must take the new chat id")
+	require.True(t, enabled, "upsert must preserve the enabled flag")
 }
