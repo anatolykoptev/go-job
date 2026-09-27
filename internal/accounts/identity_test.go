@@ -217,6 +217,15 @@ func TestMCPEdgeWiring_SourceGate(t *testing.T) {
 	require.Equal(t, 2, strings.Count(s, "keyStore.Verifier()"),
 		"the DB verifier must be mounted on BOTH listeners — :8891 edge and :8897 panelmcp")
 
+	main := body("main")
+	require.Contains(t, main, "accounts.DenyAllVerifier()",
+		"DB-configured-but-down must mount the deny-all verifier — post-Caddy-exemption a nil BearerAuth is a PUBLIC unauthenticated /job/mcp edge")
+	deny := strings.Index(main, "accounts.DenyAllVerifier()")
+	static := strings.Index(main, "StaticTokenVerifier(")
+	require.Positive(t, static, "StaticTokenVerifier leg missing from main")
+	require.Less(t, deny, static,
+		"the deny-all leg must precede the env-token leg — reordering would re-enable MCP_BEARER_TOKEN in degraded state")
+
 	admin := body("startAdminServer")
 	require.Contains(t, admin, "accounts.MCPTenantResolver",
 		"panelmcp must wire the fail-closed TenantResolver unconditionally")
