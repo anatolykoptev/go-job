@@ -194,16 +194,26 @@ func TestAccount_CreateOwnerRoleRejected(t *testing.T) {
 	require.NotContains(t, out, "boss@t.dev", "a rejected role must not leave a created row")
 }
 
-// TestAccount_CreateNotifyChatIDWarns: with account_hunt_settings absent (it
-// lands in P3), --notify-chat-id must warn on stderr but still create the
-// account — the flag is accepted today, stored once the table exists.
-func TestAccount_CreateNotifyChatIDWarns(t *testing.T) {
-	openPool(t)
+// TestAccount_CreateNotifyChatIDStored: since P3 Bootstrap creates
+// account_hunt_settings, --notify-chat-id writes the new account's settings
+// row directly — enabled=false (provisioning never silently arms a hunt,
+// ADR-7/ADR-12). The post-P3 warn path stays for a deployment where the table
+// was dropped out from under Bootstrap.
+func TestAccount_CreateNotifyChatIDStored(t *testing.T) {
+	pool := openPool(t)
 
 	out, errOut, err := runCLI(t, "account", "create",
 		"--email", "notify@t.dev", "--name", "N", "--notify-chat-id", "-1001234")
 	require.NoError(t, err)
-	require.Contains(t, errOut, "hunt settings table not yet present",
-		"stderr must warn that account_hunt_settings is missing")
-	fieldLine(t, out, "id") // account was still created and printed
+	require.NotContains(t, errOut, "hunt settings table not yet present",
+		"the table exists post-P3 — the flag stores, no warn")
+	id := fieldLine(t, out, "id")
+
+	var chatID int64
+	var enabled bool
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT notify_chat_id, enabled FROM account_hunt_settings WHERE account_id = $1::uuid`,
+		id).Scan(&chatID, &enabled))
+	require.Equal(t, int64(-1001234), chatID, "notify_chat_id stored on the account row")
+	require.False(t, enabled, "provisioned settings row must stay disabled")
 }
