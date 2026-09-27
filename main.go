@@ -123,10 +123,19 @@ func main() {
 	// on the very next call. MCP_BEARER_TOKEN survives only as the no-DB
 	// fallback lever: a static verifier mints a UserID-less TokenInfo that
 	// accounts.AccountFrom denies once tools resolve identity — the ADR-17
-	// "auth-only, no data plane" shape. LoopbackBypass is NEVER set: behind
+	// "auth-only, no data plane" shape. DATABASE_URL-configured-but-DB-down
+	// is a THIRD state: a deny-all verifier rides instead of failing open.
+	// LoopbackBypass is NEVER set: behind
 	// Caddy every RemoteAddr is loopback, and bypass there means auth
 	// disabled on all external traffic (regression-gated by
 	// accounts.TestLoopbackBypass_NeverEnabled_SourceGate).
+	// Misconfiguration, loudly: the ADR-4 legacy-token seed needs a live DB to
+	// land on — with DATABASE_URL unset it sits inert forever while the
+	// operator believes the edge cutover is armed.
+	dbConfigured := env.Str("DATABASE_URL", "") != ""
+	if !dbConfigured && env.Str("MCP_LEGACY_TOKEN_SEED", "") != "" {
+		slog.Error("MCP_LEGACY_TOKEN_SEED set but DATABASE_URL unset — the seed can never land; set DATABASE_URL or drop the seed")
+	}
 	var bearerAuth *mcpserver.BearerAuth
 	switch {
 	case keyStore != nil:
@@ -138,6 +147,19 @@ func main() {
 			LoopbackBypass: false,
 		}
 		slog.Info("MCP BearerAuth enabled (mcp_api_keys DB verifier; loopback bypass OFF)")
+	case dbConfigured:
+		// Fail-closed-degraded: DATABASE_URL is configured but no KeyStore
+		// exists — ConnectResumeDB failed at boot (a live pool always yields
+		// one). Deny EVERY token: an unauthenticated /mcp becomes publicly
+		// exploitable for the whole process lifetime once the Caddy
+		// /job/mcp* exemption ships. MCP_BEARER_TOKEN is NOT honored here —
+		// with the accounts DB down its UserID-less TokenInfo would still
+		// unlock every identity-free tool.
+		bearerAuth = &mcpserver.BearerAuth{
+			Verifier:       accounts.DenyAllVerifier(),
+			LoopbackBypass: false,
+		}
+		slog.Error("MCP bearer auth fail-closed-degraded: DATABASE_URL configured but the resume DB never connected — :8891 /mcp denies ALL tokens until restart (see 'resume DB init failed' above)")
 	case env.Str("MCP_BEARER_TOKEN", "") != "":
 		bearerAuth = &mcpserver.BearerAuth{
 			Verifier:       mcpserver.StaticTokenVerifier(env.Str("MCP_BEARER_TOKEN", "")),
@@ -279,7 +301,8 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 // it to StartWorker for ingest Telegram notifications) plus the
 // bootstrapAccounts products (account store + operator ID; zero-valued
 // without DATABASE_URL or on failure) for startAdminServer — ADR-6 below —
-// and the mcp_api_keys KeyStore (nil without DATABASE_URL) backing both MCP
+// and the mcp_api_keys KeyStore (nil without a live pool — DATABASE_URL unset
+// or the connect failed) backing both MCP
 // bearer verifiers and the ADR-4 legacy edge-token seed.
 func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *accounts.KeyStore, string) {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
@@ -398,9 +421,10 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 
 	// bootstrapAccounts products for startAdminServer; zero values (no DB /
 	// failed) mean bcrypt self-disables while AUTH_DRIVER=hmac still works.
-	// keyStore (ADR-3) follows the same lifecycle: nil without a live pool,
-	// so a no-DB deploy gets the env-token fallback rather than a verifier
-	// against tables that do not exist.
+	// keyStore (ADR-3) follows the same lifecycle: nil without a live pool.
+	// The :8891 switch reads that as deny-all when DATABASE_URL is
+	// configured (fail-closed-degraded) and as the env-token/open fallback
+	// only on a genuinely DB-less deploy.
 	var acctStore *auth.PgxAccountStore
 	var operatorID string
 	var keyStore *accounts.KeyStore
@@ -487,9 +511,9 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 			// ADR-4 zero-window seed: fold the live Caddy edge token
 			// (MCP_LEGACY_TOKEN_SEED) into mcp_api_keys under the operator
 			// account, so the DB verifier accepts it from the very first
-			// request — the Caddy /job/* map-gate exemption lands only AFTER
-			// this is live. Runs strictly AFTER hStore.Migrate (migration
-			// 014 owns the table) — never move it above the runner.
+			// request — the Caddy /job/mcp* map-gate exemption lands only
+			// AFTER this is live. Runs after bootstrapAccounts, which owns
+			// the mcp_api_keys DDL — the ordering is source-gated.
 			seedLegacyEdgeToken(sigCtx, keyStore, acctStore, operatorID)
 		}
 	}
@@ -789,8 +813,9 @@ func bootstrapAccounts(ctx context.Context, pool *pgxpool.Pool) (*auth.PgxAccoun
 // (ON CONFLICT DO NOTHING) across restarts. The plaintext is never logged —
 // only accounts.KeyPrefix.
 //
-// Ordered AFTER the hunt migration runner (migration 014 owns mcp_api_keys);
-// caller guarantees the DB path is live. No env → no-op.
+// Ordered after bootstrapAccounts on the DB-ready path — Bootstrap applies
+// the accounts-owned mcp_api_keys DDL; caller guarantees the DB path is live.
+// No env → no-op.
 func seedLegacyEdgeToken(ctx context.Context, ks *accounts.KeyStore, acctStore *auth.PgxAccountStore, operatorID string) {
 	raw := env.Str("MCP_LEGACY_TOKEN_SEED", "")
 	if raw == "" {
@@ -802,7 +827,7 @@ func seedLegacyEdgeToken(ctx context.Context, ks *accounts.KeyStore, acctStore *
 	}
 	owner, ok := seedOwner(ctx, acctStore, operatorID)
 	if !ok {
-		slog.Error("MCP_LEGACY_TOKEN_SEED set but no operator account resolves — edge token NOT seeded; do NOT deploy the Caddy /job/* exemption until a seed lands")
+		slog.Error("MCP_LEGACY_TOKEN_SEED set but no operator account resolves — edge token NOT seeded; do NOT deploy the Caddy /job/mcp* exemption until a seed lands")
 		return
 	}
 	inserted, err := ks.SeedEdgeToken(ctx, owner, raw, "legacy-edge-token")
@@ -844,8 +869,8 @@ func seedOwner(ctx context.Context, acctStore *auth.PgxAccountStore, operatorID 
 
 // acctStore/keyStore/operatorID are the accounts products from initEngine —
 // Bootstrap runs there, on the DB-ready path BEFORE hStore.Migrate and before
-// this listener exists (ADR-6 — the ordering is load-bearing): the P1
-// mcp_api_keys migration REFERENCES panel_accounts, and P1's MCP bearer
+// this listener exists (ADR-6 — the ordering is load-bearing): Bootstrap
+// applies the accounts-owned mcp_api_keys DDL there, and P1's MCP bearer
 // verifier reads the account tables whether or not the admin UI initializes.
 // acctStore nil (no DATABASE_URL or a failed Bootstrap) degrades to the
 // bcrypt driver self-disabling (fail-closed) while AUTH_DRIVER=hmac still

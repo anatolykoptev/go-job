@@ -23,28 +23,6 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// dropAccountTables resets the account-schema state this suite owns. The
-// tables are dropped (not truncated) so each test exercises EnsureSchema from
-// the absent-table state — the same state Bootstrap faces on a fresh deploy.
-// mcp_api_keys goes with them, and its schema_migrations tracking row is
-// cleared: pgutil skips already-recorded files, so without the delete the
-// next Migrate would leave mcp_api_keys dropped forever — a FK-less table a
-// later test could silently verify against.
-func dropAccountTables(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	_, err := pool.Exec(context.Background(),
-		`DROP TABLE IF EXISTS mcp_api_keys;
-		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
-		 DROP TABLE IF EXISTS panel_accounts;
-		 DO $$
-		 BEGIN
-		     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
-		         DELETE FROM schema_migrations WHERE name = '014_mcp_api_keys.sql';
-		     END IF;
-		 END $$`)
-	require.NoError(t, err)
-}
-
 // TestBootstrap_RoleConstraint proves the ADR-2 contract on a real database:
 // a role-omitting INSERT fails (default dropped — every account is provisioned
 // deliberately), an 'owner' INSERT fails (the CHECK keeps RequireRole's
@@ -52,7 +30,7 @@ func dropAccountTables(t *testing.T, pool *pgxpool.Pool) {
 // is a no-op.
 func TestBootstrap_RoleConstraint(t *testing.T) {
 	pool := openTestPool(t)
-	dropAccountTables(t, pool)
+	dbtest.DropAccountTables(t, pool)
 	ctx := context.Background()
 
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
@@ -97,7 +75,7 @@ func TestBootstrap_RoleConstraint(t *testing.T) {
 // schema, inserting an owner row, then re-running Bootstrap.
 func TestBootstrap_OwnerRowNormalized(t *testing.T) {
 	pool := openTestPool(t)
-	dropAccountTables(t, pool)
+	dbtest.DropAccountTables(t, pool)
 	ctx := context.Background()
 
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
@@ -124,7 +102,7 @@ func TestBootstrap_OwnerRowNormalized(t *testing.T) {
 // rotation (UpdatePasswordHash re-syncs the hash every boot).
 func TestBootstrap_SeedOperator(t *testing.T) {
 	pool := openTestPool(t)
-	dropAccountTables(t, pool)
+	dbtest.DropAccountTables(t, pool)
 	ctx := context.Background()
 	seed := accounts.OperatorSeed{Email: "op@t.example", Password: "pw-one-pw-one", Name: "Op"}
 
@@ -153,10 +131,11 @@ func TestBootstrap_SeedOperator(t *testing.T) {
 }
 
 // TestBootstrap_Order_SourceGate is the ADR-6 boot-order gate: in Bootstrap's
-// body, EnsureSchema must precede the role-migration Exec, which must precede
-// seedOperator — the ALTER touches a table EnsureSchema creates, and the seed
-// writes through the constraint. A reorder that compiles is still broken; this
-// test is the load-bearing-order witness.
+// body, EnsureSchema must precede the role-migration Exec, which precedes the
+// accounts-owned mcp_api_keys DDL, which precedes seedOperator — the ALTER and
+// the FK both touch tables EnsureSchema creates, and the seed writes through
+// the constraint. A reorder that compiles is still broken; this test is the
+// load-bearing-order witness.
 func TestBootstrap_Order_SourceGate(t *testing.T) {
 	src, err := os.ReadFile("accounts.go")
 	require.NoError(t, err)
@@ -164,23 +143,28 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 
 	ensure := strings.Index(s, "store.EnsureSchema(ctx)")
 	migrate := strings.Index(s, "pool.Exec(ctx, roleMigrationSQL)")
+	keys := strings.Index(s, "pool.Exec(ctx, mcpAPIKeysSchema)")
 	seed := strings.Index(s, "seedOperator(ctx")
 	require.Positive(t, ensure, "EnsureSchema call site missing from Bootstrap")
 	require.Positive(t, migrate, "roleMigrationSQL Exec missing from Bootstrap")
+	require.Positive(t, keys, "mcpAPIKeysSchema Exec missing from Bootstrap")
 	require.Positive(t, seed, "seedOperator call missing from Bootstrap")
 	require.Less(t, ensure, migrate, "ADR-6: EnsureSchema must precede the role migration")
-	require.Less(t, migrate, seed, "seed runs after the role constraint exists")
+	require.Less(t, migrate, keys, "accounts-owned mcp_api_keys DDL applies after the role migration")
+	require.Less(t, keys, seed, "all schema lands before the operator seed")
 }
 
 // TestBootstrap_PrecedesHuntMigrate_SourceGate is the main.go half of the
 // ADR-6 ordering contract: the bootstrapAccounts wrapper (the single
 // accounts.Bootstrap call site) must be invoked on initEngine's DB-ready
-// path BEFORE the hStore.Migrate runner — a P1 standard-roots migration
-// adding REFERENCES panel_accounts must find the table EnsureSchema
-// created — and must not live inside startAdminServer: the MCP bearer
-// verifier needs the account schema whether or not the admin UI ever
-// initializes. A Bootstrap call moved back into the admin path (post-
-// migrate, admin-only) or a second call site both fail this gate.
+// path BEFORE the hStore.Migrate runner — the accounts substrate lands ahead
+// of every other schema consumer — and must not live inside
+// startAdminServer: the MCP bearer verifier needs the account schema whether
+// or not the admin UI ever initializes. (The account-FK mcp_api_keys table
+// itself now migrates INSIDE Bootstrap — internal/accounts/mcp_api_keys.sql —
+// so no standard-roots file may reference panel_accounts again.) A Bootstrap
+// call moved back into the admin path (post-migrate, admin-only) or a second
+// call site both fail this gate.
 func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
 	src, err := os.ReadFile("../../main.go")
 	require.NoError(t, err)
@@ -208,7 +192,7 @@ func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
 	migrate := strings.Index(init, "hStore.Migrate(")
 	require.Positive(t, migrate, "hStore.Migrate call missing from initEngine")
 	require.Less(t, boot, migrate,
-		"ADR-6: bootstrapAccounts must precede the hunt migration runner (P1 migrations may REFERENCES panel_accounts)")
+		"ADR-6: bootstrapAccounts must precede the hunt migration runner — the accounts substrate precedes all schema consumers")
 
 	admin := body("startAdminServer")
 	require.NotContains(t, admin, "accounts.Bootstrap(",

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/dbtest"
-	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
@@ -25,23 +24,9 @@ func openInternalKeyStore(t *testing.T) (*KeyStore, *pgxpool.Pool, uuid.UUID) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
-	// Drop the identity tables AND clear 014's schema_migrations row —
-	// pgutil skips already-recorded files, so without the delete Migrate
-	// would never recreate mcp_api_keys after the drop.
-	_, err = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS mcp_api_keys;
-		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
-		 DROP TABLE IF EXISTS panel_accounts;
-		 DO $$
-		 BEGIN
-		     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
-		         DELETE FROM schema_migrations WHERE name = '014_mcp_api_keys.sql';
-		     END IF;
-		 END $$`)
-	require.NoError(t, err)
+	dbtest.DropAccountTables(t, pool)
 	_, op, err := Bootstrap(ctx, pool, OperatorSeed{Email: "throttle@t.example", Password: "pw-123456"})
 	require.NoError(t, err)
-	require.NoError(t, hunt.NewStore(pool).Migrate(ctx))
 	opID, err := uuid.Parse(op.ID)
 	require.NoError(t, err)
 	return NewKeyStore(pool), pool, opID

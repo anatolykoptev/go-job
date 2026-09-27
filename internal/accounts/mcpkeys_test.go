@@ -9,26 +9,25 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
-	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/stretchr/testify/require"
 )
 
-// openKeyStore builds the full P1 substrate on a real ephemeral database in
-// the same order initEngine does — accounts.Bootstrap (panel_accounts)
-// BEFORE the standard hunt migration runner whose 014 file owns mcp_api_keys
-// and REFERENCES panel_accounts (ADR-6 ordering, mirrored deliberately).
+// openKeyStore builds the full P1 substrate on a real ephemeral database the
+// same way initEngine does — accounts.Bootstrap provisions panel_accounts AND
+// the accounts-owned mcp_api_keys DDL in one ordered pass (ADR-6
+// self-contained: the table migrates with the schema it references, not via
+// the standard migration roots).
 func openKeyStore(t *testing.T, seed accounts.OperatorSeed) (*accounts.KeyStore, *auth.PgxAccountStore, *auth.Account, *pgxpool.Pool) {
 	t.Helper()
 	pool := openTestPool(t)
 	ctx := context.Background()
-	dropAccountTables(t, pool)
+	dbtest.DropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool, seed)
 	require.NoError(t, err)
-	require.NoError(t, hunt.NewStore(pool).Migrate(ctx),
-		"standard migration roots must apply cleanly — migration 014 owns mcp_api_keys")
 	return accounts.NewKeyStore(pool), acctStore, op, pool
 }
 
@@ -138,8 +137,49 @@ func TestKeyStore_SeedEdgeToken(t *testing.T) {
 	require.Equal(t, edgeToken[:8], prefix)
 	require.NotEqual(t, edgeToken, prefix)
 
+	// Boundary: at/under keyPrefixLen the seed refuses — key_prefix would
+	// persist the whole token. One char above the floor lands fine.
+	_, err = ks.SeedEdgeToken(ctx, opID, "tiny", "x")
+	require.Error(t, err, "len <= keyPrefixLen must be rejected")
+	_, err = ks.SeedEdgeToken(ctx, opID, "123456789", "boundary-9")
+	require.NoError(t, err, "9 chars passes the floor")
+
 	// The seeded token authenticates and resolves to the operator account.
 	ti, err := verifyToken(t, ks, edgeToken)
 	require.NoError(t, err)
 	require.Equal(t, op.ID, ti.UserID)
+}
+
+// TestDenyAllVerifier_FailClosed is the HIGH-1 DB-down leg: when DATABASE_URL
+// is configured but ConnectResumeDB failed at boot, :8891 mounts
+// DenyAllVerifier instead of serving /mcp unauthenticated. Proven through the
+// REAL go-sdk RequireBearerToken middleware — a bearer token gets 401, and no
+// token gets 401 too (the middleware short-circuits before the verifier).
+func TestDenyAllVerifier_FailClosed(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := sdkauth.RequireBearerToken(accounts.DenyAllVerifier(), nil)(next)
+
+	for _, tok := range []string{"gj_legitlookingtokenvalue", "x"} {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusUnauthorized, rr.Code,
+			"deny-all verifier must 401 every token while the accounts DB is down")
+	}
+}
+
+// TestKeyStore_SeedEdgeToken_ShortRejected pins the key_prefix floor: a token
+// at or under keyPrefixLen would persist the WHOLE credential in the
+// key_prefix column — the seed refuses before touching the DB, so a nil pool
+// exercises the gate without a database.
+func TestKeyStore_SeedEdgeToken_ShortRejected(t *testing.T) {
+	ks := accounts.NewKeyStore(nil)
+	ctx := context.Background()
+	for _, tok := range []string{"", "short", "12345678"} {
+		_, err := ks.SeedEdgeToken(ctx, uuid.New(), tok, "x")
+		require.Error(t, err, "token len %d must be rejected — key_prefix would hold the whole token", len(tok))
+	}
 }

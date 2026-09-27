@@ -4,15 +4,16 @@
 // auth-driver wiring in internal/adminui consumes.
 //
 // panel_accounts backs BOTH the admin UI's bcrypt+TOTP sessions
-// (auth.BcryptTOTPAuth) and the per-account MCP bearer path (mcp_api_keys,
-// landing in P1). Schema authority for the table itself stays upstream in
-// go-panel (auth.PgxAccountStore.EnsureSchema); the role-constraint ALTER and
-// the operator seed are owned HERE because they encode go-job policy, not
-// framework shape.
+// (auth.BcryptTOTPAuth) and the per-account MCP bearer path (mcp_api_keys).
+// Schema authority for the table itself stays upstream in go-panel
+// (auth.PgxAccountStore.EnsureSchema); the role-constraint ALTER, the
+// accounts-owned mcp_api_keys DDL (mcp_api_keys.sql), and the operator seed
+// are owned HERE because they encode go-job policy, not framework shape.
 package accounts
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
@@ -80,10 +81,24 @@ BEGIN
     END IF;
 END $$;`
 
+// mcpAPIKeysSchema is the accounts-owned DDL for mcp_api_keys (plan ADR-3) —
+// the per-account MCP bearer substrate KeyStore serves. It lives in this
+// package (NOT under any */schema/ dir) and executes inside Bootstrap because
+// it REFERENCES panel_accounts: an account-FK table migrates with the schema
+// it references, never via a migration runner that could be applied without
+// EnsureSchema — CI's standalone psql loop sweeps the schema dirs, which is
+// exactly why this file must stay unreachable by any migration glob. Moved
+// out of hunt's standard roots (formerly 014_mcp_api_keys.sql): ADR-6 made
+// self-contained — every future account-FK table lands here, same rule.
+//
+//go:embed mcp_api_keys.sql
+var mcpAPIKeysSchema string
+
 // Bootstrap runs the boot-time panel_accounts sequence IN ORDER (the ordering
-// is load-bearing, ADR-6): EnsureSchema creates the table + TOTP columns before
-// any account-consuming migration may FK-reference them; the role-constraint
-// migration follows; the env-seeded operator admin runs last.
+// is load-bearing, ADR-6): EnsureSchema creates the table + TOTP columns
+// before any account-owned DDL may FK-reference them; the role-constraint
+// migration follows; the mcp_api_keys schema applies next; the env-seeded
+// operator admin runs last.
 //
 // A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
 // skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.
@@ -104,6 +119,9 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	}
 	if _, err := pool.Exec(ctx, roleMigrationSQL); err != nil {
 		return nil, nil, fmt.Errorf("accounts: role constraint migration: %w", err)
+	}
+	if _, err := pool.Exec(ctx, mcpAPIKeysSchema); err != nil {
+		return nil, nil, fmt.Errorf("accounts: mcp_api_keys schema: %w", err)
 	}
 	op, err := seedOperator(ctx, pool, store, seed)
 	if err != nil {

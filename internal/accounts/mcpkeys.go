@@ -1,5 +1,6 @@
-// mcpkeys.go — mcp_api_keys (migration 014): the per-account MCP bearer
-// substrate (plan ADR-3). KeyStore is the single seam for everything that
+// mcpkeys.go — mcp_api_keys (accounts-owned DDL, applied by Bootstrap from
+// mcp_api_keys.sql): the per-account MCP bearer substrate (plan ADR-3).
+// KeyStore is the single seam for everything that
 // touches the table: the edge verifier mounted on both MCP listeners today,
 // plus the mint/revoke/seed surface the gojob-admin CLI drives
 // (p1-gojob-admin-cli) — the CLI gets real store methods, never raw SQL.
@@ -40,11 +41,26 @@ const keyPrefixLen = 8
 
 // KeyPrefix returns the public identifier fragment of a raw bearer token —
 // the only part of a token that may appear in logs or the key_prefix column.
+// Callers MUST reject tokens of len <= keyPrefixLen before persisting
+// (SeedEdgeToken does): at that length the prefix is the whole credential.
 func KeyPrefix(token string) string {
 	if len(token) > keyPrefixLen {
 		return token[:keyPrefixLen]
 	}
 	return token
+}
+
+// DenyAllVerifier is the fail-closed degraded-mode verifier: every token gets
+// ErrInvalidToken (401). Mounted on :8891 when DATABASE_URL is configured but
+// the accounts substrate never came up (ConnectResumeDB failed at boot → no
+// KeyStore) — the alternative is an unauthenticated /mcp, publicly
+// exploitable once the Caddy /job/mcp* exemption ships. A genuinely DB-less
+// deploy (DATABASE_URL unset) never reaches it: the open loopback listener is
+// legal only there.
+func DenyAllVerifier() sdkauth.TokenVerifier {
+	return func(context.Context, string, *http.Request) (*sdkauth.TokenInfo, error) {
+		return nil, sdkauth.ErrInvalidToken
+	}
 }
 
 // lastUsedMinInterval throttles last_used_at writes: a key's timestamp is
@@ -86,8 +102,11 @@ WHERE k.key_hash = $1
 // indexed SELECT — revocation and deactivation apply on the next request.
 //
 // Failure semantics: an unknown/revoked/inactive key maps to
-// sdkauth.ErrInvalidToken (→ 401); a store error propagates as-is (→ 500, and
-// still denies). Only the token's KeyPrefix is ever logged — never the token.
+// sdkauth.ErrInvalidToken (→ 401); a store error maps to a GENERIC 500 — the
+// go-sdk puts err.Error() in the response body to the unauthenticated caller,
+// so pgx internals stay in slog and never cross the wire. Either way the
+// request is denied. Only the token's KeyPrefix is ever logged — never the
+// token.
 func (k *KeyStore) Verifier() sdkauth.TokenVerifier {
 	return func(ctx context.Context, token string, _ *http.Request) (*sdkauth.TokenInfo, error) {
 		return k.verify(ctx, token)
@@ -110,7 +129,10 @@ func (k *KeyStore) verify(ctx context.Context, token string) (*sdkauth.TokenInfo
 	if err != nil {
 		slog.Error("mcp bearer: key lookup failed",
 			slog.String("key_prefix", KeyPrefix(token)), slog.Any("error", err))
-		return nil, fmt.Errorf("mcp key lookup: %w", err)
+		// Generic error to the SDK: non-ErrInvalidToken becomes a 500 whose
+		// body is err.Error() — a wrapped pgx error would leak internals to an
+		// unauthenticated caller. Detail stays in the log line above.
+		return nil, errors.New("mcp bearer: key lookup unavailable")
 	}
 	// Non-empty, valid UserID is a hard contract (ADR-3): TokenInfo with an
 	// empty/unparseable UserID would authenticate the request but fail
@@ -153,7 +175,10 @@ func (k *KeyStore) touchLastUsed(keyID uuid.UUID) {
 // Mint generates a fresh bearer token for accountID and stores its sha256 —
 // the plaintext return value is shown to the operator ONCE (by the CLI) and
 // is unrecoverable afterwards. The gj_ marker makes a leaked key grep-able
-// without colliding with other secrets in the same file.
+// without colliding with other secrets in the same file. Minted tokens are
+// ~46 chars ("gj_" + 32 bytes base64url) — always well above keyPrefixLen, so
+// key_prefix can never hold the whole credential (the floor SeedEdgeToken
+// enforces for caller-supplied tokens).
 func (k *KeyStore) Mint(ctx context.Context, accountID uuid.UUID, label string) (string, error) {
 	var raw [mintTokenLen]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -193,11 +218,18 @@ func (k *KeyStore) Revoke(ctx context.Context, keyID uuid.UUID) error {
 // an auth gap. ON CONFLICT DO NOTHING makes it idempotent across restarts and
 // against a CLI-minted row for the same token.
 //
+// Tokens of len <= keyPrefixLen are rejected outright: key_prefix would
+// persist the WHOLE credential at that length, defeating the sha256-only
+// storage shape.
+//
 // Returns inserted=false when the key_hash already exists — the existing row
 // (any owner/label) is authoritative and left untouched.
 func (k *KeyStore) SeedEdgeToken(ctx context.Context, accountID uuid.UUID, rawToken, label string) (inserted bool, err error) {
 	if rawToken == "" {
 		return false, errors.New("mcp key seed: empty token")
+	}
+	if len(rawToken) <= keyPrefixLen {
+		return false, fmt.Errorf("mcp key seed: token too short (%d chars <= keyPrefixLen) — key_prefix would persist the whole token", len(rawToken))
 	}
 	sum := sha256.Sum256([]byte(rawToken))
 	ct, err := k.pool.Exec(ctx, `
