@@ -150,6 +150,51 @@ func (s *PgxAccountStore) CreateAccount(ctx context.Context, email, name, passwo
 	return id, true, nil
 }
 
+const listAccountsSQL = `
+SELECT id, email, name, role, active, totp_enabled
+FROM panel_accounts
+ORDER BY created_at, email`
+
+// ListAccounts returns every account row — active AND inactive — oldest first.
+// It is deliberately NOT on AccountStore: the interface stays minimal for
+// external implementers, while admin/CLI callers hold the concrete
+// *PgxAccountStore (the gojob-admin account list/deactivate commands).
+// PasswordHash is never selected: a listing must not lift credential material.
+func (s *PgxAccountStore) ListAccounts(ctx context.Context) ([]Account, error) {
+	rows, err := s.pool.Query(ctx, listAccountsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list accounts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Account
+	for rows.Next() {
+		var a Account
+		if err := rows.Scan(&a.ID, &a.Email, &a.Name, &a.Role, &a.Active, &a.TOTPEnabled); err != nil {
+			return nil, fmt.Errorf("auth: list accounts scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: list accounts rows: %w", err)
+	}
+	return out, nil
+}
+
+// SetActive flips panel_accounts.active — the deactivate/reactivate lever for
+// account lifecycle. A deactivated account loses access on the next request via
+// liveSession's Active re-check. ErrAccountNotFound when no row matches id.
+func (s *PgxAccountStore) SetActive(ctx context.Context, id string, active bool) error {
+	ct, err := s.pool.Exec(ctx, "UPDATE panel_accounts SET active = $1 WHERE id = $2", active, id)
+	if err != nil {
+		return fmt.Errorf("auth: set active: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
+}
+
 // SetPendingTOTPSecret implements TOTPStore. Resets totp_enabled and
 // totp_enrolled_at so a re-enrollment attempt can never leave the row
 // claiming a confirmed 2FA state for a secret that was never verified.
