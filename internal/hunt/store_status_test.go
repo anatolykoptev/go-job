@@ -142,7 +142,7 @@ func TestListBounties_DefaultExcludesClosed(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	result, err := s.ListBounties(ctx, hunt.BountyFilter{Limit: 10})
+	result, err := s.ForAccount(newScoreAccount(t, pool)).ListBounties(ctx, hunt.BountyFilter{Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, result, 2, "default list must exclude closed/merged bounties")
 	for _, b := range result {
@@ -170,7 +170,7 @@ func TestListBounties_IncludeClosedTrue(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	result, err := s.ListBounties(ctx, hunt.BountyFilter{Limit: 10, IncludeClosed: true})
+	result, err := s.ForAccount(newScoreAccount(t, pool)).ListBounties(ctx, hunt.BountyFilter{Limit: 10, IncludeClosed: true})
 	require.NoError(t, err)
 	assert.Len(t, result, 3, "IncludeClosed=true must return all statuses")
 }

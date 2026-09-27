@@ -54,6 +54,13 @@ preflight:
 	@! grep -rln 'account_job_scores' internal/hunt/schema/ 2>/dev/null || (echo "FAIL: account_job_scores DDL under internal/hunt/schema -- the table is accounts-owned and Bootstrap-applied (go:embed), never a migration-root file" && exit 1)
 	@grep -q "accountJobScoresSchema" internal/accounts/accounts.go && grep -q "account_job_scores" internal/accounts/account_job_scores.sql && echo "OK: account_job_scores is accounts-owned and Bootstrap-applied" || (echo "FAIL: account_job_scores embed/Bootstrap wiring missing"; exit 1)
 
+	@echo "==> account-scope fitness: no hard-coded account literals in scoped paths (ADR-9/ADR-15; identity binds via acctOf/accounts.AccountFrom -> store.ForAccount)"
+	@! grep -rnE '\btrackerUser\b|\bkrolik\b|"gojob"' internal/hunt internal/huntworker internal/adminui internal/jobserver internal/engine/jobs/tracker.go main.go --include='*.go' | grep -v '_test\.go' || (echo "FAIL: hard-coded account literal in an account-scoped path -- resolve the acting account and bind ForAccount; the hmac operator pin resolves via auth_driver, never a literal" && exit 1)
+	@! grep -rnE '\badminUser\b' internal/adminui internal/hunt internal/huntworker internal/jobserver internal/engine/jobs/tracker.go --include='*.go' | grep -v '_test\.go' | grep -v 'auth_driver\.go' | grep -v 'adminui/adminui\.go' || (echo "FAIL: adminUser plumbed into an account-scoped handler -- the acting account comes from acctOf, not the login username" && exit 1)
+	@! grep -rn 'user_name' internal/hunt internal/huntworker internal/adminui internal/jobserver internal/engine/jobs/tracker.go --include='*.go' | grep -v '_test\.go' | grep -vE 'COALESCE\(user_name|json:"user_name"|:[0-9]+:[[:space:]]*//' || (echo "FAIL: user_name used outside a read-projection in an account-scoped path -- hunt_ratings scopes by account_id; the column is dead until the post-soak drop (ADR-13)" && exit 1)
+	@! grep -rln 'account_hunt_settings' internal/hunt/schema/ 2>/dev/null || (echo "FAIL: account_hunt_settings DDL under internal/hunt/schema -- the table is accounts-owned and Bootstrap-applied (go:embed), never a migration-root file" && exit 1)
+	@grep -q "accountHuntSettingsSchema" internal/accounts/accounts.go && grep -q "account_hunt_settings" internal/accounts/account_hunt_settings.sql && echo "OK: account_hunt_settings is accounts-owned and Bootstrap-applied" || (echo "FAIL: account_hunt_settings embed/Bootstrap wiring missing"; exit 1)
+
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...
 	@echo "==> go test -p $(GO_TEST_PARALLEL) ./internal/..."

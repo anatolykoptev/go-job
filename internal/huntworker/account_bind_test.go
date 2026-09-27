@@ -98,7 +98,7 @@ func TestSweep_WritesUnderBoundAccount(t *testing.T) {
 	t.Setenv("HUNT_SCORE_ENABLED", "true")
 
 	var llmCalls atomic.Int64
-	runUnscoredSweep(ctx, s.ForAccount(aidA), prof, deps, &llmCalls, 50)
+	runUnscoredSweep(ctx, s.ForAccount(aidA), prof, deps, testBudget(&llmCalls), 50, aidA.String())
 
 	// The score row landed under A — keyed to A, never globally. (The fake LLM
 	// may produce an unscored mark; the deny property is WHERE the row lands
@@ -133,12 +133,29 @@ func TestSweep_WritesUnderBoundAccount(t *testing.T) {
 	assert.Nil(t, legacyFit)
 }
 
-// TestSweep_NoBoundAccount_IsInert pins the nil-score-store shape: with no
-// account bound the worker ingests the shared corpus but persists no scores —
-// runCycle guards on w.scores != nil and the sweep never runs. The facade
-// itself is only obtainable through ForAccount, so the inert path is simply
-// "scores == nil"; this test asserts the Worker zero-value wiring holds.
-func TestSweep_NoBoundAccount_IsInert(t *testing.T) {
+// TestLoadAccountPlans_SkipsUnarmed pins the ADR-7 enumeration contract:
+// accounts with no account_hunt_settings row (HasRow=false) or enabled=false
+// produce NO plan — the worker never scores, sweeps, or notifies for them.
+//
+// RED-on-revert: dropping the HasRow/Enabled guard → a disabled or unarmed
+// account appears in plans → length assertions fail.
+func TestLoadAccountPlans_SkipsUnarmed(t *testing.T) {
+	aidEnabled := uuid.New()
+	aidDisabled := uuid.New()
+	aidNoRow := uuid.New()
+
 	w := &Worker{}
-	assert.Nil(t, w.scores, "unbound worker must carry a nil score facade")
+	w.listAccounts = func(context.Context) ([]accounts.AccountHuntSettings, error) {
+		return []accounts.AccountHuntSettings{
+			{AccountID: aidEnabled, HasRow: true, Enabled: true},
+			{AccountID: aidDisabled, HasRow: true, Enabled: false},
+			{AccountID: aidNoRow, HasRow: false}, // missing row = disabled
+		}, nil
+	}
+	w.forAccount = func(aid uuid.UUID) accountScoreStore { return nil }
+
+	var fleet atomic.Int64
+	plans := w.loadAccountPlans(context.Background(), &fleet)
+	require.Len(t, plans, 1, "only the enabled account with a row gets a plan")
+	assert.Equal(t, aidEnabled, plans[0].aid)
 }

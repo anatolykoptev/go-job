@@ -13,11 +13,12 @@ func TestStore_SetStage_SetsStage(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 
-	if err := s.SetStage(context.Background(), "job", id, starTestUser, hunt.StageApplied); err != nil {
+	if err := acct.SetStage(context.Background(), "job", id, hunt.StageApplied); err != nil {
 		t.Fatalf("SetStage: %v", err)
 	}
-	if got := readStage(t, s, id); got != hunt.StageApplied {
+	if got := readStage(t, s, acct, id); got != hunt.StageApplied {
 		t.Errorf("SetStage: want stage=%q, got %q", hunt.StageApplied, got)
 	}
 }
@@ -29,27 +30,28 @@ func TestStore_SetStage_PreservesNote(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 	const wantNote = "this note must survive stage change"
 
 	// Seed a row with a note via Rate (the detail-page write path).
 	// StageInteresting is a triage-axis value; stage="".
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageInteresting, "", wantNote); err != nil {
+	if err := acct.Rate(context.Background(), "job", id, hunt.StageInteresting, "", wantNote); err != nil {
 		t.Fatalf("Rate (seed): %v", err)
 	}
 	// Now change stage via SetStage (the inline-dropdown write path).
-	if err := s.SetStage(context.Background(), "job", id, starTestUser, hunt.StageApplied); err != nil {
+	if err := acct.SetStage(context.Background(), "job", id, hunt.StageApplied); err != nil {
 		t.Fatalf("SetStage: %v", err)
 	}
 	// Stage must have changed.
-	if got := readStage(t, s, id); got != hunt.StageApplied {
+	if got := readStage(t, s, acct, id); got != hunt.StageApplied {
 		t.Errorf("SetStage: want stage=%q, got %q", hunt.StageApplied, got)
 	}
 	// Note must be preserved — read it directly.
 	pool := s.Pool()
 	var note *string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2`,
-		id, starTestUser,
+		`SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2`,
+		id, acct.AccountID(),
 	).Scan(&note); err != nil {
 		t.Fatalf("read note: %v", err)
 	}
@@ -65,14 +67,15 @@ func TestStore_SetStage_UpdatesStage(t *testing.T) {
 	s, close := migratedStore(t)
 	defer close()
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 
-	if err := s.SetStage(context.Background(), "job", id, starTestUser, hunt.StageApplied); err != nil {
+	if err := acct.SetStage(context.Background(), "job", id, hunt.StageApplied); err != nil {
 		t.Fatalf("SetStage first: %v", err)
 	}
-	if err := s.SetStage(context.Background(), "job", id, starTestUser, hunt.StageInterview); err != nil {
+	if err := acct.SetStage(context.Background(), "job", id, hunt.StageInterview); err != nil {
 		t.Fatalf("SetStage second: %v", err)
 	}
-	if got := readStage(t, s, id); got != hunt.StageInterview {
+	if got := readStage(t, s, acct, id); got != hunt.StageInterview {
 		t.Errorf("SetStage second update: want stage=%q, got %q", hunt.StageInterview, got)
 	}
 }

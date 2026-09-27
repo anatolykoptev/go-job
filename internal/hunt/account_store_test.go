@@ -52,15 +52,16 @@ func TestAccountStore_DenyMatrix(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, hunt.OutcomeCreated, outcome)
 
-	// A rating puts the job on the shortlist (ratings still key on user_name —
-	// the P3 seam). Both accounts' listers see the membership row; only the
-	// SCORE is account-isolated.
-	require.NoError(t, s.Rate(ctx, "job", jobID, "dm_user", hunt.StageSaved, "", ""))
+	// P3: ratings are per-account (hunt_ratings.account_id). BOTH accounts
+	// rate the shared job so each sees its own membership row; the score read
+	// stays account-isolated below. B's independent rating on the same job is
+	// itself a deny-matrix assertion (A's row must not leak).
+	require.NoError(t, a.Rate(ctx, "job", jobID, hunt.StageSaved, "", ""))
+	require.NoError(t, b.Rate(ctx, "job", jobID, hunt.StageSaved, "", "b note"))
 
 	shortlist := func(as *hunt.AccountStore) []hunt.ShortlistRow {
 		t.Helper()
 		rows, _, err := as.ListShortlist(ctx, hunt.ShortlistQuery{
-			User:         "dm_user",
 			TriageValues: []string{hunt.StageSaved},
 			StageValues:  []string{},
 		})
@@ -85,9 +86,10 @@ func TestAccountStore_DenyMatrix(t *testing.T) {
 	assert.Equal(t, "STRONG", rowsA[0].SuccessBand)
 
 	rowsB := shortlist(b)
-	require.Len(t, rowsB, 1, "B still sees the membership row — only the score is isolated")
+	require.Len(t, rowsB, 1, "B sees its own rating row — only the score is isolated")
 	assert.Nil(t, rowsB[0].FitScore, "B must never read A's score")
 	assert.Empty(t, rowsB[0].FitBand)
+	assert.Equal(t, "b note", rowsB[0].Note, "B reads its own rating note, never A's")
 
 	// ── 2. CountScored is per-account ──
 	assert.Equal(t, 1, a.CountScored(ctx))
@@ -160,8 +162,7 @@ func TestAccountStore_DenyMatrix(t *testing.T) {
 	// ── 7. Nil account: reads match nothing, writes die on the FK ──
 	nilStore := s.ForAccount(uuid.Nil)
 	rowsNil := shortlist(nilStore)
-	require.Len(t, rowsNil, 1)
-	assert.Nil(t, rowsNil[0].FitScore, "uuid.Nil binds no account row")
+	require.Empty(t, rowsNil, "uuid.Nil binds no account — its shortlist is fail-closed empty")
 	assert.Equal(t, 0, nilStore.CountScored(ctx))
 	err = nilStore.SetJobScore(ctx, jobID, hunt.ScoreResult{ScoredAt: time.Now()})
 	require.Error(t, err, "uuid.Nil write must fail at the account_id FK")

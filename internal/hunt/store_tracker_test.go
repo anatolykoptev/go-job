@@ -46,30 +46,30 @@ func TestStore_RateExact_TrackerTransition(t *testing.T) {
 	const (
 		testKind = hunt.KindJob
 		testID   = int64(99990001)
-		testUser = "tracker_transition_test"
 	)
+	acct := s.ForAccount(newScoreAccount(t, s.Pool()))
 	// Clean up any leftover row from a prior failed run.
-	_, _ = s.Pool().Exec(ctx, "DELETE FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND user_name=$3",
-		testKind, testID, testUser)
+	_, _ = s.Pool().Exec(ctx, "DELETE FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND account_id=$3",
+		testKind, testID, acct.AccountID())
 	t.Cleanup(func() {
-		_, _ = s.Pool().Exec(ctx, "DELETE FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND user_name=$3",
-			testKind, testID, testUser)
+		_, _ = s.Pool().Exec(ctx, "DELETE FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND account_id=$3",
+			testKind, testID, acct.AccountID())
 	})
 
-	if err := s.RateExact(ctx, testKind, testID, testUser, hunt.StageSaved, "", "initial note"); err != nil {
+	if err := acct.RateExact(ctx, testKind, testID, hunt.StageSaved, "", "initial note"); err != nil {
 		t.Fatalf("RateExact(saved): %v", err)
 	}
 
 	// Step 2: RateExact(applied) — simulates tracker Update(applied). Must clear triage.
-	if err := s.RateExact(ctx, testKind, testID, testUser, "", hunt.StageApplied, "applied note"); err != nil {
+	if err := acct.RateExact(ctx, testKind, testID, "", hunt.StageApplied, "applied note"); err != nil {
 		t.Fatalf("RateExact(applied): %v", err)
 	}
 
 	// Step 3: read both axes directly — triage must be '', stage must be 'applied'.
 	var triage, stage, note string
 	if err := s.Pool().QueryRow(ctx,
-		"SELECT triage, stage, COALESCE(note,'') FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND user_name=$3",
-		testKind, testID, testUser,
+		"SELECT triage, stage, COALESCE(note,'') FROM hunt_ratings WHERE entry_kind=$1 AND entry_id=$2 AND account_id=$3",
+		testKind, testID, acct.AccountID(),
 	).Scan(&triage, &stage, &note); err != nil {
 		t.Fatalf("read after Update: %v", err)
 	}
@@ -88,8 +88,7 @@ func TestStore_ListTrackedJobs_Empty(t *testing.T) {
 	store := setupTestStore(t)
 	ctx := context.Background()
 
-	rows, total, err := store.ListTrackedJobs(ctx, hunt.TrackedFilter{
-		User:  "nonexistent-user-xyz-test",
+	rows, total, err := store.ForAccount(newScoreAccount(t, store.Pool())).ListTrackedJobs(ctx, hunt.TrackedFilter{
 		Limit: 10,
 	})
 	if err != nil {

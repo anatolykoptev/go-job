@@ -80,15 +80,15 @@ func main() {
 		go startNotifyHealthCheck(sigCtx, n)
 	}
 
-	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED is false or
+	// Start durable ATS ingest worker (noop when HUNT_INGEST_ENABLED=false or
 	// the hunt store is unavailable).  Must run after initEngine wired the store.
 	// huntNotifier is the same Telegram notifier wired to the store so the worker
 	// fires on OutcomeCreated without going back through the store's unexported field.
-	// P2 TRANSITIONAL: scores persist per-account (account_job_scores) — the
-	// worker binds the single operator account until P3 wires enumeration.
-	// seedOwner resolves operatorID → ADMIN_EMAIL account; Nil → ingest-only.
-	scoreAcct, _ := seedOwner(sigCtx, acctStore, operatorID)
-	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier, scoreAcct)
+	// P3: the worker enumerates ACTIVE panel_accounts LEFT JOIN
+	// account_hunt_settings itself every cycle — no account is pinned here
+	// (ADR-7). seedOwner still resolves the operator for the legacy edge token
+	// seed below; it is no longer a scoring input.
+	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier)
 	huntworker.StartOpportunityWorker(sigCtx, engine.GetHuntStore())
 
 	startPrometheusScrape(sigCtx, slog.Default())

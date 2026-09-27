@@ -78,9 +78,9 @@ func TestSetHuntUnscoredJobsCount_SetsGauge(t *testing.T) {
 	t.Cleanup(func() { reg = orig })
 	reg = kitmetrics.NewRegistry()
 
-	SetHuntUnscoredJobsCount(42)
+	SetHuntUnscoredJobsCount("acct", 42)
 	snap := reg.GaugeSnapshot()
-	if v := snap[MetricHuntUnscoredJobsCount]; v != 42 {
+	if v := snap[MetricHuntUnscoredJobsCount+"{account=acct}"]; v != 42 {
 		t.Errorf("%s = %v, want 42", MetricHuntUnscoredJobsCount, v)
 	}
 }
@@ -91,9 +91,9 @@ func TestSetHuntUnscoredJobsMaxAge_SetsGauge(t *testing.T) {
 	t.Cleanup(func() { reg = orig })
 	reg = kitmetrics.NewRegistry()
 
-	SetHuntUnscoredJobsMaxAge(3600.5)
+	SetHuntUnscoredJobsMaxAge("acct", 3600.5)
 	snap := reg.GaugeSnapshot()
-	if v := snap[MetricHuntUnscoredJobsMaxAge]; v != 3600.5 {
+	if v := snap[MetricHuntUnscoredJobsMaxAge+"{account=acct}"]; v != 3600.5 {
 		t.Errorf("%s = %v, want 3600.5", MetricHuntUnscoredJobsMaxAge, v)
 	}
 }

@@ -171,7 +171,7 @@ var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
-func jobsResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
+func jobsResource(store *hunt.Store, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
 	pool := store.Pool()
 	return resource.Resource{
 		Name:   "jobs",
@@ -187,7 +187,7 @@ func jobsResource(store *hunt.Store, adminUser string, authority *applications.A
 			}
 			return strconv.Itoa(n)
 		}),
-		Lister: jobsLister(pool, adminUser, authority, csrfKey, acctOf),
+		Lister: jobsLister(pool, authority, csrfKey, acctOf),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
@@ -196,33 +196,36 @@ func jobsResource(store *hunt.Store, adminUser string, authority *applications.A
 // (account_job_scores s). A miss binds uuid.Nil — the LEFT JOIN then matches
 // nothing and every row renders unscored; a foreign account's score is
 // unreachable by construction.
-func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func jobsLister(pool *pgxpool.Pool, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		where := "TRUE"
 		if strings.TrimSpace(q.WhereConds) != "" {
 			where = q.WhereConds
 		}
+		// The ratings join is account-scoped (hunt_ratings.account_id). A
+		// missing account identity yields uuid.Nil → the join matches nothing
+		// (fail-closed; matches the per-account score join below).
+		aid, _ := acctOf(ctx)
 		// Count also uses the LEFT JOIN so that stage filter (on r.stage) works correctly.
-		// Args layout for count: [...whereArgs, adminUser]
+		// Args layout for count: [...whereArgs, accountID]
 		n := len(q.WhereArgs)
-		countArgs := append(append([]any{}, q.WhereArgs...), adminUser)
+		countArgs := append(append([]any{}, q.WhereArgs...), aid)
 		var total int
 		if err := pool.QueryRow(ctx,
 			fmt.Sprintf(`SELECT count(*) FROM hunt_jobs j
-				LEFT JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
+				LEFT JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.account_id = $%d
 				WHERE %s`, n+1, where),
 			countArgs...,
 		).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("adminui: count jobs: %w", err)
 		}
 
-		// Args layout: [...whereArgs, adminUser, triageValues[], stageValues[], limit, offset, accountID]
-		// $n+1 = adminUser, $n+2 = shortlistTriageValues, $n+3 = shortlistPipelineValues,
-		// $n+4 = limit, $n+5 = offset, $n+6 = account id (score join).
-		// The LEFT JOIN computes starred (bool), triage, and stage per-row from hunt_ratings.
-		// All three reuse the same single LEFT JOIN — no second join.
-		aid, _ := acctOf(ctx)
-		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistTriageValues, shortlistPipelineValues, q.Limit, q.Offset, aid)
+		// Args layout: [...whereArgs, accountID, triageValues[], stageValues[], limit, offset]
+		// $n+1 = account id (ratings + score join share it), $n+2 = shortlistTriageValues,
+		// $n+3 = shortlistPipelineValues, $n+4 = limit, $n+5 = offset.
+		// The LEFT JOIN computes starred (bool), triage, and stage per-row from
+		// hunt_ratings FOR THIS ACCOUNT — all three reuse the same single join.
+		args := append(append([]any{}, q.WhereArgs...), aid, shortlistTriageValues, shortlistPipelineValues, q.Limit, q.Offset)
 		query := fmt.Sprintf(`
 			SELECT j.id, COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.status,''),
 			       s.fit_score, COALESCE(s.fit_band,''), COALESCE(s.success_band,''), COALESCE(s.over_under,''),
@@ -233,11 +236,11 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 			       COALESCE(r.stage, '') AS stage
 			  FROM hunt_jobs j
 			  LEFT JOIN hunt_ratings r
-			         ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
+			         ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.account_id = $%d
 			  LEFT JOIN account_job_scores s
 			         ON s.job_id = j.id AND s.account_id = $%d
 			 WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d`,
-			n+2, n+3, n+1, n+6, where, jobsSpec.OrderBy(q.Sort), n+4, n+5)
+			n+2, n+3, n+1, n+1, where, jobsSpec.OrderBy(q.Sort), n+4, n+5)
 		rows, err := pool.Query(ctx, query, args...)
 		if err != nil {
 			return nil, 0, fmt.Errorf("adminui: list jobs: %w", err)
