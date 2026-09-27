@@ -24,19 +24,44 @@ func (e *totpEnrollment) verifyCSRF(w http.ResponseWriter, r *http.Request) bool
 	return e.panel.verifyCSRFToken(w, r, "resource: totp CSRF verification failed")
 }
 
-// enrollStart serves GET {prefix}/enroll: generates (once) or redisplays the
-// pending TOTP secret and renders the enrollment page (secret text,
-// otpauth:// URI, QR <img>, and the code-confirmation form). An
+// enrollStart serves GET {prefix}/enroll (renders the password re-auth gate)
+// and POST {prefix}/enroll (verifies the password, then generates once or
+// redisplays the pending TOTP secret and renders the enrollment page: secret
+// text, otpauth:// URI, QR <img>, and the code-confirmation form). An
 // already-enabled account is routed to a "2FA is on, disable first" page
-// instead of ever minting a new secret over an active enrollment.
+// instead — no password demanded for a guaranteed no-op.
+//
+// The re-auth step is the same gate disable/regenerate enforce: enrollment
+// mints a durable TOTP seed and displays it in plaintext, so a bare live
+// session (a stolen cookie) must never reach it. VerifyAccountPassword runs
+// inside StartTOTPEnrollmentWithReauth — password failure never touches the
+// pending-secret state.
 func (e *totpEnrollment) enrollStart(w http.ResponseWriter, r *http.Request) {
 	shell.SecurityHeaders(w)
 	acct, ok := e.currentAccount(w, r)
 	if !ok {
 		return
 	}
-	secret, uri, err := auth.StartTOTPEnrollment(r.Context(), e.totpStore, e.encKey, e.issuer, acct)
+	if acct.TOTPEnabled {
+		e.renderAlreadyEnabled(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		e.renderReauthForm(w, r, "enroll", "Set Up Two-Factor Authentication", "Continue", "")
+		return
+	}
+	if !e.verifyCSRF(w, r) {
+		return
+	}
+	pw := r.FormValue("current_password") //nolint:gosec // G120 false positive: verifyCSRF (above) already ran parseForm's http.MaxBytesReader cap before any FormValue read
+	secret, uri, err := auth.StartTOTPEnrollmentWithReauth(r.Context(), e.accountStore, e.totpStore, e.encKey, e.issuer, acct, pw)
+	if errors.Is(err, auth.ErrReauthFailed) {
+		e.renderReauthForm(w, r, "enroll", "Set Up Two-Factor Authentication", "Continue", "Incorrect password.")
+		return
+	}
 	if errors.Is(err, auth.ErrTOTPAlreadyEnabled) {
+		// Enabled between the form render and this POST — same destination as
+		// the GET guard above.
 		e.renderAlreadyEnabled(w, r)
 		return
 	}
@@ -50,12 +75,19 @@ func (e *totpEnrollment) enrollStart(w http.ResponseWriter, r *http.Request) {
 
 // qrImage serves GET {prefix}/qr.png: the same-origin PNG an enrollment
 // page's <img> tag points at. Re-derives the QR from the CURRENT account's
-// OWN pending/confirmed secret (auth.SessionFrom-scoped, see
-// currentAccount) -- never any other account's.
+// OWN pending secret (auth.SessionFrom-scoped, see currentAccount) -- never
+// any other account's. Served ONLY while enrollment is pending: once
+// confirmed the seed has no legitimate reason to be displayed again (a
+// re-enroll goes through disable → fresh pending secret), and a live session
+// — e.g. a stolen cookie — must not be enough to re-extract it.
 func (e *totpEnrollment) qrImage(w http.ResponseWriter, r *http.Request) {
 	shell.SecurityHeaders(w)
 	acct, ok := e.currentAccount(w, r)
 	if !ok {
+		return
+	}
+	if acct.TOTPEnabled {
+		http.NotFound(w, r)
 		return
 	}
 	png, err := auth.BuildTOTPQRPNG(r.Context(), e.totpStore, e.encKey, e.issuer, acct, totpQRPixels, totpQRPixels)
@@ -73,10 +105,13 @@ func (e *totpEnrollment) qrImage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(png) //nolint:gosec // G705 false positive: png is auth.GenerateQRPNG's binary PNG output served with an explicit Content-Type: image/png above -- not HTML/JS a browser would execute
 }
 
-// confirm serves POST {prefix}/confirm: the code submitted from
-// enrollStart's form. Success flips the enrollment on and shows the
-// operator their recovery codes exactly once; failure (wrong code,
-// malformed code, or a code whose step was already consumed -- see
+// confirm serves POST {prefix}/confirm: the code AND current password
+// submitted from enrollStart's form. Success flips the enrollment on and
+// shows the operator their recovery codes exactly once. Password re-auth
+// runs before code validation (ConfirmTOTPEnrollmentWithReauth): a wrong
+// password returns ErrReauthFailed — enrollment state untouched, the
+// operator routed BACK through the enroll re-auth gate — and failure (wrong
+// code, malformed code, or a code whose step was already consumed -- see
 // auth.ErrTOTPCodeInvalid) re-renders the SAME enrollment page with a
 // generic error, never flipping totp_enabled.
 func (e *totpEnrollment) confirm(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +123,16 @@ func (e *totpEnrollment) confirm(w http.ResponseWriter, r *http.Request) {
 	if !e.verifyCSRF(w, r) {
 		return
 	}
-	code := r.FormValue("code") //nolint:gosec // G120 false positive: verifyCSRF (above) already ran parseForm's http.MaxBytesReader cap before any FormValue read
-	codes, err := auth.ConfirmTOTPEnrollment(r.Context(), e.totpStore, e.encKey, acct, code, time.Now())
+	code := r.FormValue("code")           //nolint:gosec // G120 false positive: verifyCSRF (above) already ran parseForm's http.MaxBytesReader cap before any FormValue read
+	pw := r.FormValue("current_password") //nolint:gosec // same G120 false positive
+	codes, err := auth.ConfirmTOTPEnrollmentWithReauth(r.Context(), e.accountStore, e.totpStore, e.encKey, acct, code, pw, time.Now())
+	if errors.Is(err, auth.ErrReauthFailed) {
+		// Never re-render the secret on a failed re-auth — the pending seed
+		// must stay invisible until the password verifies (enrollStart's
+		// gate is the single page that discloses it).
+		e.renderReauthForm(w, r, "enroll", "Set Up Two-Factor Authentication", "Continue", "Incorrect password.")
+		return
+	}
 	if errors.Is(err, auth.ErrTOTPAlreadyEnabled) {
 		e.renderAlreadyEnabled(w, r)
 		return

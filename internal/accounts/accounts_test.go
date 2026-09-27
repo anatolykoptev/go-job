@@ -159,3 +159,48 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	require.Less(t, ensure, migrate, "ADR-6: EnsureSchema must precede the role migration")
 	require.Less(t, migrate, seed, "seed runs after the role constraint exists")
 }
+
+// TestBootstrap_PrecedesHuntMigrate_SourceGate is the main.go half of the
+// ADR-6 ordering contract: the bootstrapAccounts wrapper (the single
+// accounts.Bootstrap call site) must be invoked on initEngine's DB-ready
+// path BEFORE the hStore.Migrate runner — a P1 standard-roots migration
+// adding REFERENCES panel_accounts must find the table EnsureSchema
+// created — and must not live inside startAdminServer: the MCP bearer
+// verifier needs the account schema whether or not the admin UI ever
+// initializes. A Bootstrap call moved back into the admin path (post-
+// migrate, admin-only) or a second call site both fail this gate.
+func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
+	src, err := os.ReadFile("../../main.go")
+	require.NoError(t, err)
+	s := string(src)
+
+	require.Equal(t, 1, strings.Count(s, "accounts.Bootstrap("),
+		"exactly one accounts.Bootstrap call site must exist in main.go")
+	require.Equal(t, 2, strings.Count(s, "bootstrapAccounts("),
+		"bootstrapAccounts must have exactly one definition and one call site")
+
+	body := func(name string) string {
+		i := strings.Index(s, "func "+name+"(")
+		require.Positive(t, i, name+" definition missing from main.go")
+		rest := s[i:]
+		if j := strings.Index(rest[1:], "\nfunc "); j >= 0 {
+			return rest[:j+1]
+		}
+		return rest
+	}
+
+	init := body("initEngine")
+	require.Contains(t, init, "bootstrapAccounts(",
+		"initEngine must invoke bootstrapAccounts on its DB-ready path")
+	boot := strings.Index(init, "bootstrapAccounts(")
+	migrate := strings.Index(init, "hStore.Migrate(")
+	require.Positive(t, migrate, "hStore.Migrate call missing from initEngine")
+	require.Less(t, boot, migrate,
+		"ADR-6: bootstrapAccounts must precede the hunt migration runner (P1 migrations may REFERENCES panel_accounts)")
+
+	admin := body("startAdminServer")
+	require.NotContains(t, admin, "accounts.Bootstrap(",
+		"Bootstrap must not live inside startAdminServer — the account schema must exist even when the admin UI never starts")
+	require.NotContains(t, admin, "bootstrapAccounts(",
+		"bootstrapAccounts must not be called from the admin path — initEngine's DB block is the only legal call site")
+}

@@ -25,9 +25,10 @@ var ErrTOTPAlreadyEnabled = errors.New("auth: totp already enabled for this acco
 // valid, on a fail-closed 2FA confirm path.
 var ErrTOTPCodeInvalid = errors.New("auth: totp code invalid or already used")
 
-// ErrReauthFailed is returned by DisableTOTPWithReauth and
-// RegenerateRecoveryCodesWithReauth when the supplied current-password
-// re-authentication does not match the account.
+// ErrReauthFailed is returned by the WithReauth family —
+// StartTOTPEnrollmentWithReauth, ConfirmTOTPEnrollmentWithReauth,
+// DisableTOTPWithReauth and RegenerateRecoveryCodesWithReauth — when the
+// supplied current-password re-authentication does not match the account.
 var ErrReauthFailed = errors.New("auth: re-authentication failed")
 
 // StartTOTPEnrollment ensures a PENDING (unconfirmed) TOTP secret exists for
@@ -60,6 +61,28 @@ func StartTOTPEnrollment(ctx context.Context, store TOTPStore, encKey []byte, is
 	default:
 		return rebuildPendingTOTPSecret(encrypted, encKey, issuer, acct)
 	}
+}
+
+// StartTOTPEnrollmentWithReauth is StartTOTPEnrollment behind the same
+// password re-authentication DisableTOTPWithReauth requires (see
+// VerifyAccountPassword for why password, not a live TOTP code, is the
+// re-auth factor). A live session alone — e.g. a stolen cookie — must never
+// mint or disclose a TOTP seed: the pending secret IS the seed, displayed in
+// plaintext on the enrollment page.
+//
+// Returns ErrReauthFailed with account state untouched on a wrong password.
+// ErrTOTPAlreadyEnabled still short-circuits BEFORE the password check — a
+// confirmed enrollment needs no re-auth to be told "disable first", and the
+// early return lets callers route to that page without demanding a password
+// for a guaranteed no-op.
+func StartTOTPEnrollmentWithReauth(ctx context.Context, accountStore AccountStore, totpStore TOTPStore, encKey []byte, issuer string, acct *Account, password string) (secret, otpauthURI string, err error) {
+	if acct.TOTPEnabled {
+		return "", "", ErrTOTPAlreadyEnabled
+	}
+	if !VerifyAccountPassword(ctx, accountStore, acct.Email, password) {
+		return "", "", ErrReauthFailed
+	}
+	return StartTOTPEnrollment(ctx, totpStore, encKey, issuer, acct)
 }
 
 // mintPendingTOTPSecret generates a brand-new secret and persists it as the
@@ -177,6 +200,28 @@ func ConfirmTOTPEnrollment(ctx context.Context, store TOTPStore, encKey []byte, 
 		return nil, ErrTOTPCodeInvalid // replay: same generic error, no oracle
 	}
 	return confirmWithFreshRecoveryCodes(ctx, store, acct)
+}
+
+// ConfirmTOTPEnrollmentWithReauth is ConfirmTOTPEnrollment behind password
+// re-authentication — the same step-up DisableTOTPWithReauth and
+// RegenerateRecoveryCodesWithReauth require before mutating an account's 2FA
+// state. Enrollment confirm IS a 2FA mutation: it flips totp_enabled and
+// mints the recovery-code set, so a bare live session (a stolen cookie) must
+// not be enough to complete it.
+//
+// Password is verified BEFORE the code: ErrReauthFailed returns without
+// touching enrollment state — the pending secret stays pending and the TOTP
+// step is NOT consumed (a mistyped password must not burn the operator's
+// current code). ErrTOTPAlreadyEnabled short-circuits first, matching both
+// the underlying Confirm and StartTOTPEnrollmentWithReauth.
+func ConfirmTOTPEnrollmentWithReauth(ctx context.Context, accountStore AccountStore, totpStore TOTPStore, encKey []byte, acct *Account, code, password string, now time.Time) ([]string, error) {
+	if acct.TOTPEnabled {
+		return nil, ErrTOTPAlreadyEnabled
+	}
+	if !VerifyAccountPassword(ctx, accountStore, acct.Email, password) {
+		return nil, ErrReauthFailed
+	}
+	return ConfirmTOTPEnrollment(ctx, totpStore, encKey, acct, code, now)
 }
 
 // confirmWithFreshRecoveryCodes atomically confirms enrollment and stores the

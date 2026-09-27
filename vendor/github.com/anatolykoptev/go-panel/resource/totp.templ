@@ -39,6 +39,10 @@ templ totpEnrollContent(d totpEnrollPageData) {
 			<label for="totp-code" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Enter the 6-digit code from your app</label>
 			<input id="totp-code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" required autofocus class="pm7-input"/>
 		</div>
+		<div style="margin-bottom:1rem">
+			<label for="totp-confirm-password" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Confirm your current password</label>
+			<input id="totp-confirm-password" name="current_password" type="password" autocomplete="current-password" required class="pm7-input"/>
+		</div>
 		<button type="submit" class="pm7-button pm7-button--primary">Verify &amp; Enable</button>
 	</form>
 }

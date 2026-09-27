@@ -21,12 +21,14 @@ package adminui
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
@@ -73,7 +75,7 @@ func selectDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey, password
 		slog.Warn("adminui: AUTH_DRIVER=hmac — single-operator rollback mode (ADR-17); bcrypt+TOTP sessions and per-account identity are OFF")
 		return hmacDriver(hmacKey, password, adminUser, operatorID), true
 	}
-	return bcryptDriver(acctStore, hmacKey)
+	return bcryptDriver(acctStore, operatorID, hmacKey)
 }
 
 // bcryptDriver builds the default multi-account driver. Requires the account
@@ -81,7 +83,7 @@ func selectDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey, password
 // ADMIN_TOTP_ENC_KEY for secret-at-rest encryption (independent of the session
 // HMAC key — see BcryptConfig.TOTPEncryptionKey: rotating one must never
 // destroy the other).
-func bcryptDriver(acctStore *auth.PgxAccountStore, hmacKey string) (*driver, bool) {
+func bcryptDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey string) (*driver, bool) {
 	if acctStore == nil {
 		slog.Error("adminui: bcrypt driver requires panel_accounts — DATABASE_URL must be set and accounts.Bootstrap must have run; admin disabled")
 		return nil, false
@@ -90,6 +92,28 @@ func bcryptDriver(acctStore *auth.PgxAccountStore, hmacKey string) (*driver, boo
 	if err != nil {
 		slog.Error("adminui: " + err.Error() + "; admin disabled")
 		return nil, false
+	}
+	// The session-signing key and the TOTP-at-rest key protect different
+	// secrets and rotate on different triggers; an operator reusing one value
+	// for both must be told (constant-time compare on both the raw and the
+	// hex form — ADMIN_TOTP_ENC_KEY accepts either encoding).
+	if subtle.ConstantTimeCompare(encKey, []byte(hmacKey)) == 1 ||
+		subtle.ConstantTimeCompare([]byte(hex.EncodeToString(encKey)), []byte(hmacKey)) == 1 {
+		slog.Warn("adminui: ADMIN_TOTP_ENC_KEY equals ADMIN_HMAC_KEY — the session-signing key and TOTP-at-rest key must be distinct; a session-key leak would expose stored TOTP seeds")
+	}
+	// Zero-loginable-account trap: under bcrypt a live admin UI with no
+	// seeded operator means NOBODY can log in (ADMIN_PASSWORD alone seeds
+	// nothing — seedOperator skips when the identifier is absent), and a
+	// non-email-shaped identifier (the ADMIN_USERNAME fallback, e.g. "admin")
+	// is unloginable through the login form's <input type=email>. Loud
+	// errors, not a disable: accounts provisioned out-of-band (CLI) may
+	// still log in. The seed env is the same source Bootstrap just used —
+	// operatorID non-empty implies the seed identifier was set.
+	if operatorID == "" {
+		slog.Error("adminui: bcrypt driver selected but no operator account was seeded — nobody can log in; set ADMIN_EMAIL (recommended) or ADMIN_USERNAME together with ADMIN_PASSWORD")
+	} else if seed := accounts.OperatorSeedFromEnv(); !strings.Contains(seed.Email, "@") {
+		slog.Error("adminui: seeded operator identifier is not email-shaped — the login form posts <input type=email>, so this account cannot log in via the UI; set ADMIN_EMAIL to a real email address",
+			slog.String("seed_identifier", seed.Email))
 	}
 	a := auth.NewBcryptTOTPAuth(auth.BcryptConfig{
 		Store:             acctStore,
@@ -214,31 +238,38 @@ func totpEncryptionKey() ([]byte, error) {
 }
 
 // proxiedClientIP extracts the client IP for login throttling
-// (BcryptConfig.ClientIP). The admin listener is only reachable behind Caddy
-// (compose publishes 127.0.0.1:8896), which appends the real peer to
-// X-Forwarded-For — the LAST hop is the trustworthy one under a single trusted
-// proxy (a client-controlled spoof would be an earlier hop). Direct local
-// requests (no XFF) fall back to RemoteAddr's host.
+// (BcryptConfig.ClientIP). X-Forwarded-For is honoured ONLY when the immediate
+// peer (RemoteAddr) is trusted infrastructure — loopback or a private/ULA
+// address: the compose-published 127.0.0.1:8896 mapping means the peer the
+// process sees is the docker bridge gateway or an in-network Caddy container
+// (both private), never the public client. A direct connection from a routable
+// address means the listener escaped the proxy — XFF there is
+// client-controllable and must be ignored, else a remote caller could spoof
+// unlimited IPs to reset the login throttle.
+// The LAST XFF hop is the trustworthy one under a single trusted proxy (a
+// client-controlled spoof would be an earlier hop).
 func proxiedClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		var last string
-		for start := 0; start <= len(xff); {
-			end := start
-			for end < len(xff) && xff[end] != ',' {
-				end++
-			}
-			if hop := trimSpace(xff[start:end]); hop != "" {
-				last = hop
-			}
-			start = end + 1
-		}
-		if last != "" {
-			return last
-		}
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			var last string
+			for start := 0; start <= len(xff); {
+				end := start
+				for end < len(xff) && xff[end] != ',' {
+					end++
+				}
+				if hop := trimSpace(xff[start:end]); hop != "" {
+					last = hop
+				}
+				start = end + 1
+			}
+			if last != "" {
+				return last
+			}
+		}
 	}
 	return host
 }
