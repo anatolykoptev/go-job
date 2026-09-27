@@ -370,3 +370,27 @@ func TestNew_WiresSessionTenantGate(t *testing.T) {
 	require.Contains(t, w.Body.String(), `name="current_password"`,
 		"the enroll gate renders the re-auth form (MED-4 step-up present)")
 }
+
+// TestTenantGateFields_SourceGate closes the mutation hole TestNew_WiresSessionTenantGate
+// cannot: deleting EITHER Config field alone flips the round-trip test RED, but
+// deleting BOTH Resolver and TenantAuthorizer collapses resource.New to the
+// pre-multi-account defaults (PathResolver -> global "spb" tenant +
+// GlobalOnlyAuthorizer allow) and the suite stays green — the exact silent
+// regression this gate exists to catch. Assert the Config literal carries both
+// fields under both AUTH_DRIVER modes.
+func TestTenantGateFields_SourceGate(t *testing.T) {
+	src, err := os.ReadFile("adminui.go")
+	require.NoError(t, err)
+	s := string(src)
+
+	i := strings.Index(s, "resource.New(resource.Config{")
+	require.Positive(t, i, "resource.New Config literal missing from adminui.go")
+	cfg := s[i:]
+	j := strings.Index(cfg, "})")
+	require.Positive(t, j, "resource.New Config literal unterminated")
+	cfg = cfg[:j]
+	require.Contains(t, cfg, "Resolver:",
+		"resource.Config must wire Resolver — deleting it falls back to the global-tenant PathResolver")
+	require.Contains(t, cfg, "TenantAuthorizer:",
+		"resource.Config must wire TenantAuthorizer — deleting it falls back to GlobalOnlyAuthorizer")
+}
