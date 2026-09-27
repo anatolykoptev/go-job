@@ -34,7 +34,7 @@ var validTriageStages = func() map[string]bool {
 // hunt_ratings row (hunt_ratings.stage + note). The triage axis is untouched
 // (passed as "" to Store.Rate, which preserves the existing DB value).
 // CSRF-protected. Mount via p.MountAction (auth guard + CSRF verify + form parse).
-func rateHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
+func rateHandler(store *hunt.Store, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -53,8 +53,14 @@ func rateHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 			return
 		}
 
-		// Pass triage="" so Store.Rate preserves the existing triage value.
-		if err := store.Rate(r.Context(), "job", id64, adminUser, "", stage, note); err != nil {
+		aid, ok := acctOf(r.Context())
+		if !ok {
+			http.Error(w, "account identity required", http.StatusForbidden)
+			return
+		}
+
+		// Pass triage="" so AccountStore.Rate preserves the existing triage value.
+		if err := store.ForAccount(aid).Rate(r.Context(), "job", id64, "", stage, note); err != nil {
 			slog.Error("rateHandler: upsert hunt_ratings", "id", id64, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
@@ -68,7 +74,7 @@ func rateHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 // hunt_ratings row (hunt_ratings.triage). The pipeline stage and note are preserved
 // (Store.SetTriage does not touch them). CSRF-protected.
 // POSTs to /admin/jobs/{id}/triage. Mount via p.MountAction.
-func triageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
+func triageHandler(store *hunt.Store, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -85,7 +91,13 @@ func triageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 			return
 		}
 
-		if err := store.SetTriage(r.Context(), "job", id64, adminUser, triage); err != nil {
+		aid, ok := acctOf(r.Context())
+		if !ok {
+			http.Error(w, "account identity required", http.StatusForbidden)
+			return
+		}
+
+		if err := store.ForAccount(aid).SetTriage(r.Context(), "job", id64, triage); err != nil {
 			slog.Error("triageHandler: set triage", "id", id64, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return

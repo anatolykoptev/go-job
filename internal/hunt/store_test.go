@@ -145,11 +145,11 @@ func TestStore_ListBounties_FilterBySource(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	algora, err := s.ListBounties(ctx, hunt.BountyFilter{Source: "algora", Limit: 10})
+	algora, err := s.ForAccount(newScoreAccount(t, pool)).ListBounties(ctx, hunt.BountyFilter{Source: "algora", Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, algora, 2, "should return only algora bounties")
 
-	opire, err := s.ListBounties(ctx, hunt.BountyFilter{Source: "opire", Limit: 10})
+	opire, err := s.ForAccount(newScoreAccount(t, pool)).ListBounties(ctx, hunt.BountyFilter{Source: "opire", Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, opire, 1)
 }
@@ -586,10 +586,11 @@ func TestStore_Rate_Insert(t *testing.T) {
 	require.NoError(t, s.Migrate(ctx))
 	truncateRatings(t, pool)
 
-	err := s.Rate(ctx, hunt.KindBounty, 1, "krolik", hunt.StageInteresting, "", "looks good")
+	acct := s.ForAccount(newScoreAccount(t, pool))
+	err := acct.Rate(ctx, hunt.KindBounty, 1, hunt.StageInteresting, "", "looks good")
 	require.NoError(t, err)
 
-	r, err := s.GetRating(ctx, hunt.KindBounty, 1, "krolik")
+	r, err := acct.GetRating(ctx, hunt.KindBounty, 1)
 	require.NoError(t, err)
 	// After migration 012: StageInteresting is stored in the triage column.
 	assert.Equal(t, hunt.StageInteresting, r.Triage)
@@ -605,14 +606,15 @@ func TestStore_Rate_Update(t *testing.T) {
 	truncateRatings(t, pool)
 
 	// Seed with legacy 'new' (pipeline axis, stage col).
-	err := s.Rate(ctx, hunt.KindBounty, 2, "krolik", "", hunt.StageNew, "")
+	acct := s.ForAccount(newScoreAccount(t, pool))
+	err := acct.Rate(ctx, hunt.KindBounty, 2, "", hunt.StageNew, "")
 	require.NoError(t, err)
 
 	// Update: set triage='saved' (triage axis). Stage stays 'new' (CASE guard).
-	err = s.Rate(ctx, hunt.KindBounty, 2, "krolik", hunt.StageSaved, "", "updated note")
+	err = acct.Rate(ctx, hunt.KindBounty, 2, hunt.StageSaved, "", "updated note")
 	require.NoError(t, err)
 
-	r, err := s.GetRating(ctx, hunt.KindBounty, 2, "krolik")
+	r, err := acct.GetRating(ctx, hunt.KindBounty, 2)
 	require.NoError(t, err)
 	// After migration 012: StageSaved is stored in the triage column.
 	assert.Equal(t, hunt.StageSaved, r.Triage)
@@ -625,29 +627,30 @@ func TestStore_GetRating_NotFound(t *testing.T) {
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx))
 
-	_, err := s.GetRating(ctx, hunt.KindBounty, 999999999, "nobody")
+	acct := s.ForAccount(newScoreAccount(t, pool))
+	_, err := acct.GetRating(ctx, hunt.KindBounty, 999999999)
 	assert.ErrorIs(t, err, hunt.ErrNotFound)
 }
 
-// TestListShortlist_UserIsolation asserts that a rating entered by a DIFFERENT user
-// does not appear in the owner user's shortlist, even when the stage is curated.
-// Red-on-revert: removing the r.user_name = $1 filter from ListShortlist → the
-// foreign-user rating leaks through → assert.Empty fails.
+// TestListShortlist_UserIsolation asserts that a rating entered by a DIFFERENT
+// account does not appear in the owner account's shortlist, even when the stage
+// is curated. Red-on-revert: dropping the r.account_id = $N predicate from
+// ListShortlist's ratings join → the foreign rating leaks → assert.Empty fails.
 func TestListShortlist_UserIsolation(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 
-	const ownerUser = "test_sl_iso"
-	const otherUser = "test_sl_iso_other"
+	s := hunt.NewStore(pool)
+	ownerAcct := s.ForAccount(newScoreAccount(t, pool))
+	otherAcct := s.ForAccount(newScoreAccount(t, pool))
 
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM hunt_ratings WHERE user_name IN ($1, $2)", ownerUser, otherUser)
+		_, _ = pool.Exec(ctx, "DELETE FROM hunt_ratings WHERE account_id IN ($1, $2)", ownerAcct.AccountID(), otherAcct.AccountID())
 		_, _ = pool.Exec(ctx, "DELETE FROM hunt_jobs WHERE source = 'test_sl_iso'")
 	}
 	cleanup()
 	t.Cleanup(cleanup)
 
-	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx))
 
 	// Insert one hunt_jobs row.
@@ -659,19 +662,17 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 		ON CONFLICT (dedup_hash) DO UPDATE SET source='test_sl_iso'
 		RETURNING id`, h).Scan(&jobID))
 
-	// Rate the job under the OTHER user with a triage-axis value.
-	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, "", ""))
+	// Rate the job under the OTHER account with a triage-axis value.
+	require.NoError(t, otherAcct.Rate(ctx, "job", jobID, hunt.StageSaved, "", ""))
 
-	// The owner user must see zero rows — foreign rater's row must be excluded.
-	// (ratings still key on user_name — P3 moves them to accounts; the score
-	// join needs a real account facade.)
-	rows, _, err := s.ForAccount(newScoreAccount(t, pool)).ListShortlist(ctx, hunt.ShortlistQuery{
-		User:         ownerUser,
+	// The owner account must see zero rows — a foreign account's rating must
+	// be excluded (P3: hunt_ratings.account_id is the scoping key).
+	rows, _, err := ownerAcct.ListShortlist(ctx, hunt.ShortlistQuery{
 		TriageValues: []string{hunt.StageInteresting, hunt.StageSaved},
 		StageValues:  []string{hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
 	})
 	require.NoError(t, err)
-	assert.Empty(t, rows, "rating entered by a different user must not appear in the owner's shortlist")
+	assert.Empty(t, rows, "rating entered by a different account must not appear in the owner's shortlist")
 }
 
 // ── CountScored + CountBySource (Phase 4a dashboard) ─────────────────────────

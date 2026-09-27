@@ -165,7 +165,7 @@ type currentRating struct {
 //  4. Market Read — RawHTML market card
 //  5. Description — RawHTML rendered markdown
 //  6. Application — RawHTML rate form + download links
-func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte, authority *applications.Authority, acctOf accountResolver) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
+func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, a auth.Authenticator, csrfKey []byte, authority *applications.Authority, acctOf accountResolver) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 	return func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 		id64, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
@@ -229,7 +229,7 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth
 			})
 		}
 
-		rat, ratingErr := store.GetRating(ctx, "job", id64, adminUser)
+		rat, ratingErr := store.ForAccount(aid).GetRating(ctx, "job", id64)
 		var rating *currentRating
 		if ratingErr == nil {
 			rating = &currentRating{

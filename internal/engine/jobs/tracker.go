@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -72,9 +73,17 @@ type JobTrackerListResult struct {
 	Total int          `json:"total"`
 }
 
-// trackerUser is the user_name used for all job_tracker ratings.
-// Single-operator assumption per ADR-go-job-002.
-const trackerUser = "krolik"
+// trackerAccount resolves the acting account for a job_tracker MCP call.
+// The bearer TokenInfo RequireBearerToken minted carries UserID = the key's
+// account UUID (accounts.AccountFrom reads it); a ctx without a verified
+// account is denied — there is no shared/legacy tracker identity.
+func trackerAccount(ctx context.Context, store *hunt.Store) (*hunt.AccountStore, error) {
+	aid, ok := accounts.AccountFrom(ctx)
+	if !ok {
+		return nil, errors.New("job_tracker: no account identity in context")
+	}
+	return store.ForAccount(aid), nil
+}
 
 // validTrackerStatus validates the status/stage tokens the tracker tool accepts.
 // These are a subset of hunt.Stage* constants (application pipeline).
@@ -143,11 +152,11 @@ func formatSalary(min, max *int, currency, interval string) string {
 //
 //   - triage-axis:   status=="saved"  → RateExact(triage="saved", stage="", note)
 //   - pipeline-axis: status∈pipeline  → RateExact(triage="",      stage=status, note)
-func trackerRate(ctx context.Context, store *hunt.Store, id int64, status, note string) error {
+func trackerRate(ctx context.Context, acct *hunt.AccountStore, id int64, status, note string) error {
 	if status == hunt.StageSaved {
-		return store.RateExact(ctx, hunt.KindJob, id, trackerUser, hunt.StageSaved, "", note)
+		return acct.RateExact(ctx, hunt.KindJob, id, hunt.StageSaved, "", note)
 	}
-	return store.RateExact(ctx, hunt.KindJob, id, trackerUser, "", status, note)
+	return acct.RateExact(ctx, hunt.KindJob, id, "", status, note)
 }
 
 // trackerStatusFromRow synthesises a single display status from the two-axis row.
@@ -177,6 +186,10 @@ func AddTrackedJob(ctx context.Context, input JobTrackerAddInput) (*JobTrackerRe
 	if store == nil {
 		return nil, errors.New("job_tracker_add: hunt store not available (DATABASE_URL not set?)")
 	}
+	acct, err := trackerAccount(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("job_tracker_add: %w", err)
+	}
 
 	j := hunt.Job{
 		DedupHash: trackerDedup(input.URL, input.Company, input.Title),
@@ -201,7 +214,7 @@ func AddTrackedJob(ctx context.Context, input JobTrackerAddInput) (*JobTrackerRe
 		}
 	}
 
-	if err := trackerRate(ctx, store, id, status, note); err != nil {
+	if err := trackerRate(ctx, acct, id, status, note); err != nil {
 		return nil, fmt.Errorf("job_tracker_add: rate: %w", err)
 	}
 
@@ -219,6 +232,10 @@ func ListTrackedJobs(ctx context.Context, input JobTrackerListInput) (*JobTracke
 	if store == nil {
 		return &JobTrackerListResult{Jobs: []TrackedJob{}, Total: 0}, nil
 	}
+	acct, err := trackerAccount(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("job_tracker_list: %w", err)
+	}
 
 	status := ""
 	if input.Status != "" {
@@ -228,8 +245,7 @@ func ListTrackedJobs(ctx context.Context, input JobTrackerListInput) (*JobTracke
 		}
 	}
 
-	rows, total, err := store.ListTrackedJobs(ctx, hunt.TrackedFilter{
-		User:  trackerUser,
+	rows, total, err := acct.ListTrackedJobs(ctx, hunt.TrackedFilter{
 		Stage: status,
 		Limit: input.Limit,
 	})
@@ -271,8 +287,12 @@ func UpdateTrackedJob(ctx context.Context, input JobTrackerUpdateInput) (*JobTra
 	if store == nil {
 		return nil, errors.New("job_tracker_update: hunt store not available")
 	}
+	acct, err := trackerAccount(ctx, store)
+	if err != nil {
+		return nil, fmt.Errorf("job_tracker_update: %w", err)
+	}
 
-	current, err := store.GetRating(ctx, hunt.KindJob, input.ID, trackerUser)
+	current, err := acct.GetRating(ctx, hunt.KindJob, input.ID)
 	if err != nil {
 		if errors.Is(err, hunt.ErrNotFound) {
 			if input.Status == "" {
@@ -299,7 +319,7 @@ func UpdateTrackedJob(ctx context.Context, input JobTrackerUpdateInput) (*JobTra
 		return nil, fmt.Errorf("job_tracker_update: invalid status %q", newStatus)
 	}
 
-	if err := trackerRate(ctx, store, input.ID, newStatus, note); err != nil {
+	if err := trackerRate(ctx, acct, input.ID, newStatus, note); err != nil {
 		return nil, fmt.Errorf("job_tracker_update: %w", err)
 	}
 
