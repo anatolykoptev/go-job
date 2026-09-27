@@ -3,6 +3,7 @@ package adminui
 import (
 	"bytes"
 	"context"
+	"github.com/google/uuid"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +29,7 @@ import (
 // TestResumeEditHandler_InvalidSkillLevel asserts that an invalid level returns 400.
 // Red-on-revert: remove IsValidSkillLevel check → any level accepted silently.
 func TestResumeEditHandler_InvalidSkillLevel(t *testing.T) {
-	handler := resumeSkillLevelHandler()
+	handler := resumeSkillLevelHandler(denyAccount())
 
 	form := url.Values{}
 	form.Set("level", "master") // not in allowlist
@@ -200,7 +201,7 @@ func TestResumeEditTmpl_RendersWithData(t *testing.T) {
 // Red-on-revert: remove the parseDollarsToCents error check in Writer.Save →
 // returns nil and writes 0.
 func TestResumePersonWriter_BadHourlyRate(t *testing.T) {
-	res := personsResource(nil)
+	res := personsResource(nil, fixedAccount(uuid.New()))
 	if res.Writer == nil || res.Writer.Save == nil {
 		t.Fatal("persons resource Writer or Save is nil")
 	}

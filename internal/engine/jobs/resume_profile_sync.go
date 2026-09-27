@@ -25,6 +25,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"log/slog"
 	"strconv"
 )
@@ -56,15 +57,19 @@ type derivedEntry struct {
 // failures). Callers that have already persisted a profile mutation should
 // treat a non-nil error as best-effort (log + continue) — the mutation itself
 // is not rolled back.
-func SyncProfileVectors(ctx context.Context, personID int) error {
+func SyncProfileVectors(ctx context.Context, accountID uuid.UUID, personID int) error {
 	db := GetResumeDB()
 	if db == nil {
 		// No vector store configured — nothing to sync. The profile mutation
 		// itself is unaffected.
 		return nil
 	}
+	if accountID == uuid.Nil {
+		return ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
-	desired, err := buildDerivedEntries(ctx, db, personID)
+	desired, err := buildDerivedEntries(ctx, rdb, personID)
 	if err != nil {
 		return err
 	}
@@ -72,7 +77,7 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 	// Index existing source='profile' derived rows by (mem_type, ref_id) →
 	// content + count, so unchanged single rows can be skipped (no-op, no
 	// updated_at churn) while duplicate stale rows are always reconciled.
-	existing, err := db.ListDerivedVectors(ctx, derivedMemTypes)
+	existing, err := rdb.ListDerivedVectors(ctx, derivedMemTypes)
 	if err != nil {
 		return err
 	}
@@ -117,7 +122,7 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 		// also cleans up pre-existing duplicate rows that update-in-place would
 		// leave behind. A failed insert leaves a gap that the next sync fills;
 		// stale content (the alternative) serves wrong search results.
-		if err := db.DeleteDerivedVectorByID(ctx, e.memType, e.refID); err != nil {
+		if err := rdb.DeleteDerivedVectorByID(ctx, e.memType, e.refID); err != nil {
 			slog.Warn("profile_sync: stale derived delete failed",
 				slog.String("mem_type", e.memType), slog.Int64("ref_id", e.refID), slog.Any("error", err))
 			continue
@@ -126,8 +131,8 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 		// Embedding failure degrades: embedPassage returns (nil, backendFTS) on
 		// any embedder error / dim mismatch / non-finite vector, so the row is
 		// stored FTS-only (embedding NULL) for a later backfill.
-		embedding, _ := embedPassage(ctx, db, e.content, "profile_sync")
-		if _, err := db.UpsertVectorWithSource(ctx, e.content, e.memType, &e.refID, embedding, sourceProfile); err != nil {
+		embedding, _ := embedPassage(ctx, rdb.db, e.content, "profile_sync")
+		if _, err := rdb.UpsertVectorWithSource(ctx, e.content, e.memType, &e.refID, embedding, sourceProfile); err != nil {
 			slog.Warn("profile_sync: upsert derived vector failed",
 				slog.String("mem_type", e.memType), slog.Int64("ref_id", e.refID), slog.Any("error", err))
 			// best-effort: continue syncing the rest
@@ -138,7 +143,7 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 	// AND each derived mem_type — manual source='agent' rows and other
 	// consumers' mem_types (enrich_project) are never deleted.
 	for _, mt := range derivedMemTypes {
-		if err := db.DeleteDerivedVectorsNotIn(ctx, mt, keepIDs[mt]); err != nil {
+		if err := rdb.DeleteDerivedVectorsNotIn(ctx, mt, keepIDs[mt]); err != nil {
 			slog.Warn("profile_sync: orphan delete failed",
 				slog.String("mem_type", mt), slog.Any("error", err))
 		}
@@ -149,10 +154,10 @@ func SyncProfileVectors(ctx context.Context, personID int) error {
 // buildDerivedEntries reads the structured profile entities and computes the
 // derived vector content for each, reusing the same formatters as master_resume
 // so a full rebuild and an incremental sync produce identical text.
-func buildDerivedEntries(ctx context.Context, db *ResumeDB, personID int) ([]derivedEntry, error) {
+func buildDerivedEntries(ctx context.Context, rdb *ResumeAccount, personID int) ([]derivedEntry, error) {
 	var entries []derivedEntry
 
-	exps, err := db.GetAllExperiences(ctx, personID)
+	exps, err := rdb.GetAllExperiences(ctx, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +174,7 @@ func buildDerivedEntries(ctx context.Context, db *ResumeDB, personID int) ([]der
 		})
 	}
 
-	projs, err := db.GetAllProjects(ctx, personID)
+	projs, err := rdb.GetAllProjects(ctx, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +186,7 @@ func buildDerivedEntries(ctx context.Context, db *ResumeDB, personID int) ([]der
 		})
 	}
 
-	achs, err := db.GetAllAchievements(ctx, personID)
+	achs, err := rdb.GetAllAchievements(ctx, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,13 +219,17 @@ type ResumeProfileSyncResult struct {
 // structured-profile vector rows from the current entity state and reports
 // counts. Embedding failure degrades (NULL embedding) and is not counted as an
 // error — run this after an embedder outage to backfill.
-func SyncProfileVectorsReported(ctx context.Context, personID int) (*ResumeProfileSyncResult, error) {
+func SyncProfileVectorsReported(ctx context.Context, accountID uuid.UUID, personID int) (*ResumeProfileSyncResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume DB not configured (set DATABASE_URL)")
 	}
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
-	before, err := db.ListDerivedVectors(ctx, derivedMemTypes)
+	before, err := rdb.ListDerivedVectors(ctx, derivedMemTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -229,11 +238,11 @@ func SyncProfileVectorsReported(ctx context.Context, personID int) (*ResumeProfi
 		beforeCount[r.MemType]++
 	}
 
-	if err := SyncProfileVectors(ctx, personID); err != nil {
+	if err := SyncProfileVectors(ctx, accountID, personID); err != nil {
 		return nil, err
 	}
 
-	after, err := db.ListDerivedVectors(ctx, derivedMemTypes)
+	after, err := rdb.ListDerivedVectors(ctx, derivedMemTypes)
 	if err != nil {
 		return nil, err
 	}

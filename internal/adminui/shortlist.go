@@ -133,10 +133,12 @@ func shortlistLister(store *hunt.Store, authority *applications.Authority, csrfK
 			return nil, 0, err
 		}
 
-		// One legacy-dir snapshot for the whole result set — avoids N+1 ReadDir syscalls.
-		// Authority.LegacyEntries returns nil when legacyDir is empty or unreadable;
-		// rows then show no Docs badges without failing.
-		legacyEntries := authority.LegacyEntries()
+		// One legacy-dir snapshot for the whole result set — avoids N+1 ReadDir
+		// syscalls. Bound to the acting account (resolved above for the
+		// shortlist query) — a non-operator account gets nil (legacyDir is the
+		// operator's pre-P4 tree, plan ADR-11).
+		acct := authority.ForAccount(aid)
+		legacyEntries := acct.LegacyEntries()
 
 		// Mint a single CSRF token for all star-toggle forms on this page.
 		csrfTok := mintStarCSRF(ctx, csrfKey)
@@ -144,14 +146,14 @@ func shortlistLister(store *hunt.Store, authority *applications.Authority, csrfK
 		out := make([]resource.Row, 0, len(storeRows))
 		for _, row := range storeRows {
 			// Uploads-first: canonical path per hunt_jobs.id.
-			hasResume := authority.Exists(row.ID, applications.KindResume)
-			hasCover := authority.Exists(row.ID, applications.KindCover)
-			// Legacy fallback: fuzzy slug under APPLICATIONS_DIR.
+			hasResume := acct.Exists(row.ID, applications.KindResume)
+			hasCover := acct.Exists(row.ID, applications.KindCover)
+			// Legacy fallback: fuzzy slug under APPLICATIONS_DIR (operator only).
 			if !hasResume {
-				hasResume = authority.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindResume)
+				hasResume = acct.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindResume)
 			}
 			if !hasCover {
-				hasCover = authority.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindCover)
+				hasCover = acct.LegacyExistsFromEntries(legacyEntries, row.Company, row.Title, applications.KindCover)
 			}
 
 			// Cell order MUST match shortlistSpec.Columns order.

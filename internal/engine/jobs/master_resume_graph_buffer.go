@@ -52,13 +52,13 @@ func (b *graphBuffer) edgeCount() int { return len(b.edges) }
 // GetLatestPersonIDChecked with the test-injection seam (masterResumeGuardHook,
 // nil in production) so F4 can force the guard's error path. On a destructive
 // surface the zero value is the safe one: an error REFUSES the build.
-func (db *ResumeDB) guardLatestPersonID(ctx context.Context) (exists bool, id int, err error) {
+func (a *ResumeAccount) guardLatestPersonID(ctx context.Context) (exists bool, id int, err error) {
 	if h := masterResumeGuardHook; h != nil {
 		if e := h(); e != nil {
 			return false, 0, e
 		}
 	}
-	return db.GetLatestPersonIDChecked(ctx)
+	return a.GetLatestPersonIDChecked(ctx)
 }
 
 // replayGraphAfterCommit runs the rebuild-then-swap graph phase AFTER the
@@ -73,11 +73,11 @@ func (db *ResumeDB) guardLatestPersonID(ctx context.Context) (exists bool, id in
 //   - a replay op error: the profile is committed and correct but the graph is
 //     partially stale. A WARN names that state; the call does not fail (the
 //     profile is the source of truth and resume_generate degrades gracefully).
-func replayGraphAfterCommit(ctx context.Context, db *ResumeDB, buf *graphBuffer) {
+func replayGraphAfterCommit(ctx context.Context, a *ResumeAccount, buf *graphBuffer) {
 	if masterResumeGraphOpRecorder != nil {
 		masterResumeGraphOpRecorder("clear")
 	}
-	if err := db.ClearGraph(ctx); err != nil {
+	if err := a.ClearGraph(ctx); err != nil {
 		if isAgeMissing(err) {
 			slog.Warn("master_resume_build: AGE graph absent — graph rebuild skipped (profile committed; graph stays as-is)",
 				slog.Any("error", err))
@@ -91,7 +91,7 @@ func replayGraphAfterCommit(ctx context.Context, db *ResumeDB, buf *graphBuffer)
 		if masterResumeGraphOpRecorder != nil {
 			masterResumeGraphOpRecorder("node")
 		}
-		if err := db.UpsertGraphNode(ctx, n.label, n.id, n.props); err != nil {
+		if err := a.UpsertGraphNode(ctx, n.label, n.id, n.props); err != nil {
 			if isAgeMissing(err) {
 				slog.Warn("master_resume_build: AGE graph absent during replay — graph rebuild aborted (profile committed; graph partially stale)",
 					slog.Any("error", err))
@@ -105,7 +105,7 @@ func replayGraphAfterCommit(ctx context.Context, db *ResumeDB, buf *graphBuffer)
 		if masterResumeGraphOpRecorder != nil {
 			masterResumeGraphOpRecorder("edge")
 		}
-		if err := db.UpsertGraphEdge(ctx, e.fromLabel, e.fromID, e.edgeLabel, e.toLabel, e.toID); err != nil {
+		if err := a.UpsertGraphEdge(ctx, e.fromLabel, e.fromID, e.edgeLabel, e.toLabel, e.toID); err != nil {
 			if isAgeMissing(err) {
 				slog.Warn("master_resume_build: AGE graph absent during replay — graph rebuild aborted (profile committed; graph partially stale)",
 					slog.Any("error", err))

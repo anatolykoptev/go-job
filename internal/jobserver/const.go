@@ -1,5 +1,13 @@
 package jobserver
 
+import "errors"
+
+// errNoAccountIdentity fails a tool call closed when the request context
+// carries neither a verified web-session account nor an MCP bearer-token
+// account (plan ADR-1). Account-owned data must never resolve to a global or
+// fallback owner.
+var errNoAccountIdentity = errors.New("account identity required")
+
 // Opportunity type strings (mirror jobs package unexported constants).
 const (
 	oppTypeBounty    = "bounty"

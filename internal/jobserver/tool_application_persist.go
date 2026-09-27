@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -47,7 +48,13 @@ func registerApplicationPersist(server *mcp.Server, authority *applications.Auth
 			return nil, nil, errors.New("cover_md is required")
 		}
 
-		res, err := authority.Persist(ctx, input.JobID, input.ResumeMD, input.CoverMD)
+		// Application artifacts are account-owned (plan ADR-11): persist under
+		// the acting account's namespace or not at all.
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
+		res, err := authority.ForAccount(aid).Persist(ctx, input.JobID, input.ResumeMD, input.CoverMD)
 		if err != nil {
 			return nil, nil, fmt.Errorf("application_persist: %w", err)
 		}

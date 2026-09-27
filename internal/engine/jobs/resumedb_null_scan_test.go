@@ -30,8 +30,9 @@ func TestGetAllProjects_NullDescriptionAndURL(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
 
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:  "Null Scan Test Person",
 		Email: "null-scan-test@example.com",
 	})
@@ -39,7 +40,7 @@ func TestGetAllProjects_NullDescriptionAndURL(t *testing.T) {
 		t.Fatalf("InsertPerson: %v", err)
 	}
 	// person_id FK cascades, so this also deletes the projects below.
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
 	// Insert a project with BOTH description and url as SQL NULL. InsertProject
 	// binds Go strings ('' not NULL), so we go through the pool directly to
@@ -52,7 +53,7 @@ func TestGetAllProjects_NullDescriptionAndURL(t *testing.T) {
 		t.Fatalf("insert NULL project: %v", err)
 	}
 	// And a normal fully-populated project alongside it.
-	if _, err := db.InsertProject(ctx, personID, ProjectRecord{
+	if _, err := rdb.InsertProject(ctx, personID, ProjectRecord{
 		Name:        "populated-project",
 		Description: "has a description",
 		URL:         "https://example.com",
@@ -63,7 +64,7 @@ func TestGetAllProjects_NullDescriptionAndURL(t *testing.T) {
 	}
 
 	// 1) The scan path itself must not error on the NULL row.
-	records, err := db.GetAllProjects(ctx, personID)
+	records, err := rdb.GetAllProjects(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetAllProjects returned error on NULL description/url (the bug): %v", err)
 	}
@@ -80,7 +81,7 @@ func TestGetAllProjects_NullDescriptionAndURL(t *testing.T) {
 
 	// 2) The real profile load helper must surface both projects (the symptom
 	// the operator saw was total_projects: 0).
-	summaries := loadProjects(ctx, db, personID)
+	summaries := loadProjects(ctx, rdb, personID)
 	if len(summaries) != 2 {
 		t.Fatalf("loadProjects: got %d projects, want 2", len(summaries))
 	}
@@ -98,15 +99,16 @@ func TestGetProjectsByIDs_NullDescriptionAndURL(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
 
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:  "Null Scan ByIDs Person",
 		Email: "null-scan-byids@example.com",
 	})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
 	var projID int
 	if err := db.pool.QueryRow(ctx,
@@ -117,7 +119,7 @@ func TestGetProjectsByIDs_NullDescriptionAndURL(t *testing.T) {
 		t.Fatalf("insert NULL project: %v", err)
 	}
 
-	records, err := db.GetProjectsByIDs(ctx, []int{projID})
+	records, err := rdb.GetProjectsByIDs(ctx, []int{projID})
 	if err != nil {
 		t.Fatalf("GetProjectsByIDs returned error on NULL description/url: %v", err)
 	}

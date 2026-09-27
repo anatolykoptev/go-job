@@ -23,45 +23,45 @@ import (
 // clean. The person is the profile the sync re-derives from. The DB is also
 // published as the package-level resumeDB (SetResumeDB) so SyncProfileVectors —
 // which reads GetResumeDB() — sees it.
-func testResumeDBWithPerson(t *testing.T) (*ResumeDB, int) {
+func testResumeDBWithPerson(t *testing.T) (*ResumeAccount, int) {
 	t.Helper()
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	SetResumeDB(db)
 	t.Cleanup(func() { SetResumeDB(nil) })
 	ctx := context.Background()
 
 	// testResumeDB only purges source='agent'; purge derived rows too so tests
 	// are idempotent across runs.
-	if _, err := db.pool.Exec(ctx,
-		`DELETE FROM resume_vectors WHERE user_name = $1 AND source = 'profile'`,
-		resumeVectorUser,
+	if _, err := rdb.db.pool.Exec(ctx,
+		`DELETE FROM resume_vectors WHERE account_id = $1 AND source = 'profile'`,
+		rdb.AccountID(),
 	); err != nil {
 		t.Fatalf("cleanup derived resume_vectors: %v", err)
 	}
 
-	pid, err := db.InsertPerson(ctx, PersonRecord{Name: "Sync Test Person"})
+	pid, err := rdb.InsertPerson(ctx, PersonRecord{Name: "Sync Test Person"})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
 	t.Cleanup(func() {
 		// Remove the person's entities + vectors so the next test is clean.
-		_, _ = db.pool.Exec(ctx, `DELETE FROM resume_vectors WHERE user_name = $1`, resumeVectorUser)
-		_, _ = db.pool.Exec(ctx, `DELETE FROM resume_achievements WHERE person_id = $1`, pid)
-		_, _ = db.pool.Exec(ctx, `DELETE FROM resume_projects WHERE person_id = $1`, pid)
-		_, _ = db.pool.Exec(ctx, `DELETE FROM resume_experiences WHERE person_id = $1`, pid)
-		_, _ = db.pool.Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, pid)
+		_, _ = rdb.db.pool.Exec(ctx, `DELETE FROM resume_vectors WHERE account_id = $1`, rdb.AccountID())
+		_, _ = rdb.db.pool.Exec(ctx, `DELETE FROM resume_achievements WHERE person_id = $1`, pid)
+		_, _ = rdb.db.pool.Exec(ctx, `DELETE FROM resume_projects WHERE person_id = $1`, pid)
+		_, _ = rdb.db.pool.Exec(ctx, `DELETE FROM resume_experiences WHERE person_id = $1`, pid)
+		_, _ = rdb.db.pool.Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, pid)
 	})
-	return db, pid
+	return rdb, pid
 }
 
 // TestSyncProfileVectors_CreatesDerivedRows proves the sync creates
 // source='profile' derived rows carrying the entity id as ref_id and the
 // re-derived content, reusing UpsertVectorWithSource + content-hash dedup.
 func TestSyncProfileVectors_CreatesDerivedRows(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title:       "Staff Engineer",
 		Company:     "Acme",
 		StartDate:   "2020-01",
@@ -73,7 +73,7 @@ func TestSyncProfileVectors_CreatesDerivedRows(t *testing.T) {
 		t.Fatalf("InsertExperience: %v", err)
 	}
 
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("SyncProfileVectors: %v", err)
 	}
 
@@ -84,10 +84,10 @@ func TestSyncProfileVectors_CreatesDerivedRows(t *testing.T) {
 		memType  string
 		rowCount int
 	)
-	err = db.pool.QueryRow(ctx,
+	err = rdb.db.pool.QueryRow(ctx,
 		`SELECT source, ref_id, content, mem_type FROM resume_vectors
-		 WHERE user_name=$1 AND mem_type=$2 AND ref_id=$3`,
-		resumeVectorUser, memTypeResumeExp, expID,
+		 WHERE account_id=$1 AND mem_type=$2 AND ref_id=$3`,
+		rdb.AccountID(), memTypeResumeExp, expID,
 	).Scan(&source, &refID, &content, &memType)
 	if err != nil {
 		t.Fatalf("derived row not found: %v", err)
@@ -103,9 +103,9 @@ func TestSyncProfileVectors_CreatesDerivedRows(t *testing.T) {
 		t.Errorf("content = %q, want %q", content, wantContent)
 	}
 
-	_ = db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp,
+	_ = rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp,
 	).Scan(&rowCount)
 	if rowCount != 1 {
 		t.Errorf("expected 1 derived experience row, got %d (no duplicates)", rowCount)
@@ -124,29 +124,29 @@ func TestSyncProfileVectors_CreatesDerivedRows(t *testing.T) {
 // from ListDerivedVectors) → the manual source='agent' row is deleted/overwritten
 // → RED.
 func TestSyncProfileVectors_ManualAgentRowsUntouched(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
 	// Manual memory sharing a derived mem_type but source='agent', ref_id=NULL.
 	const manualContent = "manual agent memory that must survive sync"
-	manualID, err := db.UpsertVector(ctx, manualContent, memTypeResumeExp, nil)
+	manualID, err := rdb.UpsertVector(ctx, manualContent, memTypeResumeExp, nil)
 	if err != nil {
 		t.Fatalf("UpsertVector manual: %v", err)
 	}
 
 	// A real experience → the sync will create a derived row AND run orphan delete.
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title: "Engineer", Company: "Beta",
 	})
 	if err != nil {
 		t.Fatalf("InsertExperience: %v", err)
 	}
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("SyncProfileVectors: %v", err)
 	}
 
 	var exists int
-	if err := db.pool.QueryRow(ctx,
+	if err := rdb.db.pool.QueryRow(ctx,
 		`SELECT count(*) FROM resume_vectors WHERE id=$1`,
 		manualID,
 	).Scan(&exists); err != nil {
@@ -161,7 +161,7 @@ func TestSyncProfileVectors_ManualAgentRowsUntouched(t *testing.T) {
 		content string
 		refID   *int64
 	)
-	if err := db.pool.QueryRow(ctx,
+	if err := rdb.db.pool.QueryRow(ctx,
 		`SELECT source, content, ref_id FROM resume_vectors WHERE id=$1`,
 		manualID,
 	).Scan(&source, &content, &refID); err != nil {
@@ -179,9 +179,9 @@ func TestSyncProfileVectors_ManualAgentRowsUntouched(t *testing.T) {
 
 	// And the derived row for the real experience must still exist (sync worked).
 	var derivedExists int
-	_ = db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	_ = rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&derivedExists)
 	if derivedExists != 1 {
 		t.Errorf("derived row for experience %d missing (got %d)", expID, derivedExists)
@@ -192,20 +192,20 @@ func TestSyncProfileVectors_ManualAgentRowsUntouched(t *testing.T) {
 // unreachable (nil), a profile sync still persists the derived row with a NULL
 // embedding for a later backfill, and returns no error.
 func TestSyncProfileVectors_EmbedFailureDegrades(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	prev := GetEmbedClient()
 	SetEmbedClient(nil) // embedder unreachable
 	t.Cleanup(func() { SetEmbedClient(prev) })
 
 	ctx := context.Background()
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title: "Engineer", Company: "Gamma",
 	})
 	if err != nil {
 		t.Fatalf("InsertExperience: %v", err)
 	}
 
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("SyncProfileVectors returned error on embedder outage (must degrade, not abort): %v", err)
 	}
 
@@ -213,9 +213,9 @@ func TestSyncProfileVectors_EmbedFailureDegrades(t *testing.T) {
 		exists        int
 		embeddingNull bool
 	)
-	err = db.pool.QueryRow(ctx,
-		`SELECT count(*), true FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	err = rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*), true FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&exists, &embeddingNull)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -223,9 +223,9 @@ func TestSyncProfileVectors_EmbedFailureDegrades(t *testing.T) {
 	if exists != 1 {
 		t.Fatalf("derived row not persisted on embedder outage (exists=%d) — must degrade, not skip", exists)
 	}
-	err = db.pool.QueryRow(ctx,
-		`SELECT embedding IS NULL FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	err = rdb.db.pool.QueryRow(ctx,
+		`SELECT embedding IS NULL FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&embeddingNull)
 	if err != nil {
 		t.Fatal(err)
@@ -238,27 +238,27 @@ func TestSyncProfileVectors_EmbedFailureDegrades(t *testing.T) {
 // TestSyncProfileVectors_NoOpOnUnchanged proves re-running the sync with
 // unchanged data is a no-op: no duplicate rows and no updated_at churn.
 func TestSyncProfileVectors_NoOpOnUnchanged(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
-	if _, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	if _, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title: "Engineer", Company: "Delta",
 	}); err != nil {
 		t.Fatalf("InsertExperience: %v", err)
 	}
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 
 	var updatedAtFirst string
-	if err := db.pool.QueryRow(ctx,
-		`SELECT updated_at::text FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT updated_at::text FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp,
 	).Scan(&updatedAtFirst); err != nil {
 		t.Fatalf("query updated_at after first sync: %v", err)
 	}
 
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 
@@ -266,15 +266,15 @@ func TestSyncProfileVectors_NoOpOnUnchanged(t *testing.T) {
 		updatedAtSecond string
 		rowCount        int
 	)
-	if err := db.pool.QueryRow(ctx,
-		`SELECT updated_at::text FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT updated_at::text FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp,
 	).Scan(&updatedAtSecond); err != nil {
 		t.Fatalf("query updated_at after second sync: %v", err)
 	}
-	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp,
 	).Scan(&rowCount); err != nil {
 		t.Fatalf("query count after second sync: %v", err)
 	}
@@ -290,30 +290,30 @@ func TestSyncProfileVectors_NoOpOnUnchanged(t *testing.T) {
 // TestSyncProfileVectors_RemovesOrphansOnDelete proves that deleting an entity
 // and re-syncing removes its derived row (created on insert, removed on delete).
 func TestSyncProfileVectors_RemovesOrphansOnDelete(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title: "Engineer", Company: "Epsilon",
 	})
 	if err != nil {
 		t.Fatalf("InsertExperience: %v", err)
 	}
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 
-	if err := db.DeleteExperience(ctx, expID); err != nil {
+	if err := rdb.DeleteExperience(ctx, expID); err != nil {
 		t.Fatalf("DeleteExperience: %v", err)
 	}
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 
 	var rowCount int
-	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&rowCount); err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestSyncProfileVectors_RemovesOrphansOnDelete(t *testing.T) {
 // (formatExperienceTextExtended ... exp.Domain), but the sync used to build it
 // with an EMPTY domain because GetAllExperiences never SELECTed the domain
 // column. Different content → different content_hash → ON CONFLICT
-// (user_name, content_hash) missed → a second resume_experience row for the
+// (account_id, content_hash) missed → a second resume_experience row for the
 // same ref_id. Orphan-delete kept both (both ref_ids in keepIDs), so search
 // returned duplicates and the no-op-on-unchanged invariant never converged.
 //
@@ -341,10 +341,10 @@ func TestSyncProfileVectors_RemovesOrphansOnDelete(t *testing.T) {
 // not SELECT domain) → the sync writes a second row with a different
 // content_hash → rowCount=2 → RED.
 func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title:       "Staff Engineer",
 		Company:     "Acme",
 		StartDate:   "2020-01",
@@ -357,7 +357,7 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 	}
 	// Set a non-empty domain — the condition under which the bug is visible.
 	const domain = "Platform Engineering"
-	if err := db.UpdateExperienceMeta(ctx, expID, nil, nil, domain, false); err != nil {
+	if err := rdb.UpdateExperienceMeta(ctx, expID, nil, nil, domain, false); err != nil {
 		t.Fatalf("UpdateExperienceMeta: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 		"Staff Engineer", "Acme", "2020-01", "2023-12",
 		"Led platform team", []string{"cut p99 by 40%"}, domain)
 	expIDi64 := int64(expID)
-	if _, err := db.UpsertVectorWithSource(ctx, masterContent, memTypeResumeExp, &expIDi64, nil, sourceProfile); err != nil {
+	if _, err := rdb.UpsertVectorWithSource(ctx, masterContent, memTypeResumeExp, &expIDi64, nil, sourceProfile); err != nil {
 		t.Fatalf("seed master_resume row: %v", err)
 	}
 
@@ -375,14 +375,14 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 	// byte-identical (same domain) → ON CONFLICT updates the existing row →
 	// still 1 row. Without the fix (empty domain), content_hash differs → a
 	// second row is inserted.
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("SyncProfileVectors: %v", err)
 	}
 
 	var rowCount int
-	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&rowCount); err != nil {
 		t.Fatal(err)
 	}
@@ -394,9 +394,9 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 	// The surviving row must carry the domain-tagged content, not the
 	// empty-domain variant.
 	var content string
-	if err := db.pool.QueryRow(ctx,
-		`SELECT content FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT content FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&content); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 // output) and re-syncing must produce exactly ONE derived row carrying the NEW
 // content — not a stale duplicate carrying the old content_hash.
 //
-// Before the fix, the sync upserted on ON CONFLICT (user_name, content_hash).
+// Before the fix, the sync upserted on ON CONFLICT (account_id, content_hash).
 // Changed content → different hash → no conflict → a SECOND source='profile'
 // row was inserted with the same ref_id. DeleteDerivedVectorsNotIn only removed
 // rows whose ref_id was absent from keepIDs — the stale row's ref_id was
@@ -424,10 +424,10 @@ func TestSyncProfileVectors_ExperienceDomainMatchesMasterResume(t *testing.T) {
 // content_hash, no conflict) and the orphan-delete keeps both (same ref_id in
 // keepIDs) → rowCount=2 → RED.
 func TestSyncProfileVectors_ChangedContentReconciles(t *testing.T) {
-	db, pid := testResumeDBWithPerson(t)
+	rdb, pid := testResumeDBWithPerson(t)
 	ctx := context.Background()
 
-	expID, err := db.InsertExperience(ctx, pid, ExperienceRecord{
+	expID, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{
 		Title:       "Staff Engineer",
 		Company:     "Acme",
 		Description: "Led platform team",
@@ -435,28 +435,28 @@ func TestSyncProfileVectors_ChangedContentReconciles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertExperience: %v", err)
 	}
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
 
 	// Edit the experience — change the description so the derived content
 	// (and thus the content_hash) changes.
-	if _, err := db.pool.Exec(ctx,
+	if _, err := rdb.db.pool.Exec(ctx,
 		`UPDATE resume_experiences SET description = $2 WHERE id = $1`,
 		expID, "Led infrastructure team and scaled to 10M users",
 	); err != nil {
 		t.Fatalf("update experience: %v", err)
 	}
 
-	if err := SyncProfileVectors(ctx, pid); err != nil {
+	if err := SyncProfileVectors(ctx, rdb.AccountID(), pid); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
 
 	// Exactly ONE derived row for this (mem_type, ref_id).
 	var rowCount int
-	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&rowCount); err != nil {
 		t.Fatal(err)
 	}
@@ -470,9 +470,9 @@ func TestSyncProfileVectors_ChangedContentReconciles(t *testing.T) {
 		"Staff Engineer", "Acme", "", "",
 		"Led infrastructure team and scaled to 10M users", nil, "")
 	var content string
-	if err := db.pool.QueryRow(ctx,
-		`SELECT content FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
-		resumeVectorUser, sourceProfile, memTypeResumeExp, expID,
+	if err := rdb.db.pool.QueryRow(ctx,
+		`SELECT content FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
 	).Scan(&content); err != nil {
 		t.Fatal(err)
 	}

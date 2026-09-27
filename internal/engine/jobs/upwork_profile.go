@@ -17,7 +17,8 @@ import (
 const (
 	upsertUpworkProfileSQL = `
 		INSERT INTO upwork_profile (person_id, title, overview, hourly_rate, categories, availability, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
+		SELECT $1, $2, $3, $4, $5, $6, now()
+		WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $7)
 		ON CONFLICT (person_id) DO UPDATE
 		SET title = EXCLUDED.title, overview = EXCLUDED.overview,
 		    hourly_rate = EXCLUDED.hourly_rate, categories = EXCLUDED.categories,
@@ -26,22 +27,27 @@ const (
 	getUpworkProfileSQL = `
 		SELECT COALESCE(title,''), COALESCE(overview,''),
 		       COALESCE(hourly_rate,0), COALESCE(categories,'{}'), COALESCE(availability,'')
-		FROM upwork_profile WHERE person_id = $1`
+		FROM upwork_profile WHERE person_id = $1
+		  AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)`
 
 	insertUpworkSkillSQL = `
 		INSERT INTO upwork_skills (person_id, name, position)
-		VALUES ($1, $2, (SELECT COALESCE(MAX(position),0)+1 FROM upwork_skills WHERE person_id = $1))
+		SELECT $1, $2, (SELECT COALESCE(MAX(position),0)+1 FROM upwork_skills WHERE person_id = $1)
+		WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $3)
 		ON CONFLICT (person_id, name) DO NOTHING
 		RETURNING id`
 
-
 	getUpworkSkillsSQL = `
 		SELECT id, name, position FROM upwork_skills
-		WHERE person_id = $1 ORDER BY position, id`
+		WHERE person_id = $1
+		  AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		ORDER BY position, id`
 
 	getUpworkCatalogItemsSQL = `
 		SELECT id, title, COALESCE(description,''), position FROM upwork_catalog_items
-		WHERE person_id = $1 ORDER BY position, id`
+		WHERE person_id = $1
+		  AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		ORDER BY position, id`
 )
 
 // UpworkProfile holds the data from the upwork_profile table.
@@ -71,22 +77,22 @@ type UpworkCatalogItem struct {
 
 // UpworkProfileResult is the composed view returned by GetUpworkProfile.
 type UpworkProfileResult struct {
-	Profile  *UpworkProfile
-	Skills   []UpworkSkillRecord
-	Catalog  []UpworkCatalogItem
-	Missing  bool // true when no upwork_profile row exists yet
+	Profile *UpworkProfile
+	Skills  []UpworkSkillRecord
+	Catalog []UpworkCatalogItem
+	Missing bool // true when no upwork_profile row exists yet
 }
 
 // GetUpworkProfile loads the full Upwork profile from the upwork_* tables.
 // Missing=true is returned (not an error) when no upwork_profile row exists yet.
 // Any real query error (syntax, connection, schema) is returned as an error so
 // callers can distinguish "no data yet" from "something broke".
-func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*UpworkProfileResult, error) {
+func (a *ResumeAccount) GetUpworkProfile(ctx context.Context, personID int) (*UpworkProfileResult, error) {
 	result := &UpworkProfileResult{}
 
 	profile := &UpworkProfile{PersonID: personID}
 	var categories []string
-	err := db.pool.QueryRow(ctx, getUpworkProfileSQL, personID).
+	err := a.db.pool.QueryRow(ctx, getUpworkProfileSQL, personID, a.aid).
 		Scan(&profile.Title, &profile.Overview, &profile.HourlyRate, &categories, &profile.Availability)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -104,7 +110,7 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 	}
 
 	// Load skills ordered by position.
-	rows, err := db.pool.Query(ctx, getUpworkSkillsSQL, personID)
+	rows, err := a.db.pool.Query(ctx, getUpworkSkillsSQL, personID, a.aid)
 	if err != nil {
 		slog.Warn("GetUpworkProfile: query skills", "person_id", personID, "err", err)
 	} else {
@@ -121,7 +127,7 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 	}
 
 	// Load catalog items ordered by position.
-	catRows, err := db.pool.Query(ctx, getUpworkCatalogItemsSQL, personID)
+	catRows, err := a.db.pool.Query(ctx, getUpworkCatalogItemsSQL, personID, a.aid)
 	if err != nil {
 		slog.Warn("GetUpworkProfile: query catalog", "person_id", personID, "err", err)
 	} else {
@@ -141,12 +147,16 @@ func (db *ResumeDB) GetUpworkProfile(ctx context.Context, personID int) (*Upwork
 }
 
 // UpsertUpworkProfile creates or updates the upwork_profile row for a person.
-func (db *ResumeDB) UpsertUpworkProfile(ctx context.Context, personID int, title, overview string, hourlyRate int64, categories []string, availability string) error {
+func (a *ResumeAccount) UpsertUpworkProfile(ctx context.Context, personID int, title, overview string, hourlyRate int64, categories []string, availability string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
 	if categories == nil {
 		categories = []string{}
 	}
-	_, err := db.pool.Exec(ctx, upsertUpworkProfileSQL,
-		personID, title, overview, hourlyRate, categories, availability)
+	_, err := a.db.pool.Exec(ctx, upsertUpworkProfileSQL,
+		personID, title, overview, hourlyRate, categories, availability, a.aid)
 	return err
 }
 
@@ -155,9 +165,13 @@ func (db *ResumeDB) UpsertUpworkProfile(ctx context.Context, personID int, title
 // Any other error (FK violation, dead pool, context cancellation) is propagated.
 // NOTE: absence of person_id scope in WHERE is safe ONLY under the single-user
 // invariant; if this DB ever becomes multi-person these must be person-scoped.
-func (db *ResumeDB) InsertUpworkSkill(ctx context.Context, personID int, name string) (int, error) {
+func (a *ResumeAccount) InsertUpworkSkill(ctx context.Context, personID int, name string) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
+
 	var id int
-	err := db.pool.QueryRow(ctx, insertUpworkSkillSQL, personID, name).Scan(&id)
+	err := a.db.pool.QueryRow(ctx, insertUpworkSkillSQL, personID, name, a.aid).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Genuine ON CONFLICT DO NOTHING — duplicate skill, treat as success.
@@ -170,24 +184,32 @@ func (db *ResumeDB) InsertUpworkSkill(ctx context.Context, personID int, name st
 
 // DeleteUpworkSkill removes an upwork_skills row by primary key, scoped to the given person.
 // The WHERE clause includes person_id to prevent cross-person deletion.
-func (db *ResumeDB) DeleteUpworkSkill(ctx context.Context, personID, id int) error {
-	_, err := db.pool.Exec(ctx, deleteUpworkSkillPersonSQL, id, personID)
+func (a *ResumeAccount) DeleteUpworkSkill(ctx context.Context, personID, id int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	_, err := a.db.pool.Exec(ctx, deleteUpworkSkillPersonSQL, id, personID, a.aid)
 	return err
 }
 
 // GetUpworkSkillByID fetches a single upwork_skills row by primary key.
-func (db *ResumeDB) GetUpworkSkillByID(ctx context.Context, skillID int) (UpworkSkillRecord, error) {
+func (a *ResumeAccount) GetUpworkSkillByID(ctx context.Context, skillID int) (UpworkSkillRecord, error) {
 	var s UpworkSkillRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, name, position FROM upwork_skills WHERE id = $1`, skillID).
+	err := a.conn(ctx).QueryRow(ctx,
+		`SELECT id, name, position FROM upwork_skills WHERE id = $1 AND `+personOwnedBy2, skillID, a.aid).
 		Scan(&s.ID, &s.Name, &s.Position)
 	return s, err
 }
 
 // UpdateUpworkSkill updates the name of an upwork_skills row.
-func (db *ResumeDB) UpdateUpworkSkill(ctx context.Context, skillID int, name string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE upwork_skills SET name = $2 WHERE id = $1`, skillID, name)
+func (a *ResumeAccount) UpdateUpworkSkill(ctx context.Context, skillID int, name string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE upwork_skills SET name = $2 WHERE id = $1 AND `+personOwnedBy3, skillID, name, a.aid)
 	return err
 }
 
@@ -241,29 +263,38 @@ func FormatUpworkPasteBlocks(r *UpworkProfileResult) []UpworkPasteBlock {
 
 	return blocks
 }
+
 // New SQL constants for catalog CRUD + reorder (all person-scoped per ADR #7)
+//
 //nolint:gosec // these are SQL statements, not credentials
 const (
 	insertUpworkCatalogItemSQL = `
 		INSERT INTO upwork_catalog_items (person_id, title, description, position)
-		VALUES ($1, $2, $3,
-		        (SELECT COALESCE(MAX(position), 0) + 1
-		         FROM upwork_catalog_items WHERE person_id = $1))
+		SELECT $1, $2, $3,
+		       (SELECT COALESCE(MAX(position), 0) + 1
+		        FROM upwork_catalog_items WHERE person_id = $1)
+		WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $4)
 		RETURNING id`
 
 	deleteUpworkCatalogItemSQL = `
-		DELETE FROM upwork_catalog_items WHERE id = $1 AND person_id = $2`
+		DELETE FROM upwork_catalog_items
+		WHERE id = $1 AND person_id = $2 AND person_id IN (SELECT id FROM resume_persons WHERE account_id = $3)`
 
 	deleteUpworkSkillPersonSQL = `
-		DELETE FROM upwork_skills WHERE id = $1 AND person_id = $2`
+		DELETE FROM upwork_skills
+		WHERE id = $1 AND person_id = $2 AND person_id IN (SELECT id FROM resume_persons WHERE account_id = $3)`
 )
 
 // InsertUpworkCatalogItem adds a new catalog item to upwork_catalog_items.
 // Position is seeded as MAX(position)+1 per person.
 // Returns the new item id.
-func (db *ResumeDB) InsertUpworkCatalogItem(ctx context.Context, personID int, title, description string) (int, error) {
+func (a *ResumeAccount) InsertUpworkCatalogItem(ctx context.Context, personID int, title, description string) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
+
 	var id int
-	err := db.pool.QueryRow(ctx, insertUpworkCatalogItemSQL, personID, title, description).Scan(&id)
+	err := a.db.pool.QueryRow(ctx, insertUpworkCatalogItemSQL, personID, title, description, a.aid).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert upwork catalog item: %w", err)
 	}
@@ -272,25 +303,33 @@ func (db *ResumeDB) InsertUpworkCatalogItem(ctx context.Context, personID int, t
 
 // DeleteUpworkCatalogItem removes an upwork_catalog_items row.
 // WHERE clause includes person_id to prevent cross-person deletion.
-func (db *ResumeDB) DeleteUpworkCatalogItem(ctx context.Context, personID, id int) error {
-	_, err := db.pool.Exec(ctx, deleteUpworkCatalogItemSQL, id, personID)
+func (a *ResumeAccount) DeleteUpworkCatalogItem(ctx context.Context, personID, id int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	_, err := a.db.pool.Exec(ctx, deleteUpworkCatalogItemSQL, id, personID, a.aid)
 	return err
 }
 
 // GetUpworkCatalogItemByID fetches a single upwork_catalog_items row by primary key.
-func (db *ResumeDB) GetUpworkCatalogItemByID(ctx context.Context, itemID int) (UpworkCatalogItem, error) {
+func (a *ResumeAccount) GetUpworkCatalogItemByID(ctx context.Context, itemID int) (UpworkCatalogItem, error) {
 	var c UpworkCatalogItem
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, title, COALESCE(description,''), position FROM upwork_catalog_items WHERE id = $1`, itemID).
+	err := a.conn(ctx).QueryRow(ctx,
+		`SELECT id, title, COALESCE(description,''), position FROM upwork_catalog_items WHERE id = $1 AND `+personOwnedBy2, itemID, a.aid).
 		Scan(&c.ID, &c.Title, &c.Description, &c.Position)
 	return c, err
 }
 
 // UpdateUpworkCatalogItem updates the title and description of a catalog item.
-func (db *ResumeDB) UpdateUpworkCatalogItem(ctx context.Context, itemID int, title, description string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE upwork_catalog_items SET title = $2, description = $3 WHERE id = $1`,
-		itemID, title, description)
+func (a *ResumeAccount) UpdateUpworkCatalogItem(ctx context.Context, itemID int, title, description string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE upwork_catalog_items SET title = $2, description = $3 WHERE id = $1 AND `+personOwnedBy4,
+		itemID, title, description, a.aid)
 	return err
 }
 
@@ -300,15 +339,19 @@ func (db *ResumeDB) UpdateUpworkCatalogItem(ctx context.Context, itemID int, tit
 // full set has contiguous positions with no gaps or duplicates.
 //
 //nolint:dupl // intentional parallel: same algorithm, different table/column/error-string
-func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int, orderedIDs []int) error {
-	tx, err := db.pool.Begin(ctx)
+func (a *ResumeAccount) ReorderUpworkCatalogItems(ctx context.Context, personID int, orderedIDs []int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	tx, err := a.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("reorder catalog items begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Fetch the full current set ordered by old position, id.
-	rows, err := tx.Query(ctx, `SELECT id FROM upwork_catalog_items WHERE person_id = $1 ORDER BY position, id`, personID)
+	rows, err := tx.Query(ctx, `SELECT id FROM upwork_catalog_items WHERE person_id = $1 AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2) ORDER BY position, id`, personID, a.aid)
 	if err != nil {
 		return fmt.Errorf("reorder catalog items fetch current: %w", err)
 	}
@@ -341,8 +384,8 @@ func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int,
 
 	for i, id := range finalOrder {
 		if _, execErr := tx.Exec(ctx,
-			`UPDATE upwork_catalog_items SET position = $1 WHERE id = $2 AND person_id = $3`,
-			i+1, id, personID,
+			`UPDATE upwork_catalog_items SET position = $1 WHERE id = $2 AND person_id = $3 AND `+personOwnedBy4,
+			i+1, id, personID, a.aid,
 		); execErr != nil {
 			return fmt.Errorf("reorder catalog item id=%d: %w", id, execErr)
 		}
@@ -359,15 +402,19 @@ func (db *ResumeDB) ReorderUpworkCatalogItems(ctx context.Context, personID int,
 // full set has contiguous positions with no gaps or duplicates.
 //
 //nolint:dupl // intentional parallel: same algorithm, different table/column/error-string
-func (db *ResumeDB) ReorderUpworkSkills(ctx context.Context, personID int, orderedIDs []int) error {
-	tx, err := db.pool.Begin(ctx)
+func (a *ResumeAccount) ReorderUpworkSkills(ctx context.Context, personID int, orderedIDs []int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+
+	tx, err := a.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("reorder skills begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Fetch the full current set ordered by old position, id.
-	rows, err := tx.Query(ctx, `SELECT id FROM upwork_skills WHERE person_id = $1 ORDER BY position, id`, personID)
+	rows, err := tx.Query(ctx, `SELECT id FROM upwork_skills WHERE person_id = $1 AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2) ORDER BY position, id`, personID, a.aid)
 	if err != nil {
 		return fmt.Errorf("reorder skills fetch current: %w", err)
 	}
@@ -400,8 +447,8 @@ func (db *ResumeDB) ReorderUpworkSkills(ctx context.Context, personID int, order
 
 	for i, id := range finalOrder {
 		if _, execErr := tx.Exec(ctx,
-			`UPDATE upwork_skills SET position = $1 WHERE id = $2 AND person_id = $3`,
-			i+1, id, personID,
+			`UPDATE upwork_skills SET position = $1 WHERE id = $2 AND person_id = $3 AND `+personOwnedBy4,
+			i+1, id, personID, a.aid,
 		); execErr != nil {
 			return fmt.Errorf("reorder skill id=%d: %w", id, execErr)
 		}

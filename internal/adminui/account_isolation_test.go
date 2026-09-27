@@ -12,9 +12,14 @@ package adminui
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +28,7 @@ import (
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -163,7 +169,8 @@ func TestShortlistLister_AccountIsolation(t *testing.T) {
 
 	require.NoError(t, store.ForAccount(aidA).Rate(ctx, "job", jobID, hunt.StageSaved, "", ""))
 
-	authority := applications.New(nil, t.TempDir())
+	// Operator = aidA so the A-side exercises the legacy-fallback path too.
+	authority := applications.New(nil, t.TempDir(), aidA)
 	listerA := shortlistLister(store, authority, nil, fixedAccount(aidA))
 	listerB := shortlistLister(store, authority, nil, fixedAccount(aidB))
 
@@ -351,4 +358,116 @@ func TestHuntSettingsResource_AccountIsolation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, total)
 	assert.Empty(t, rows)
+}
+
+// ─── P4 deny matrix: oversize + downloads (plan ADR-10/ADR-11) ───────────────
+
+// TestOversizeLister_AccountIsolation proves the admin oversize table is
+// account-scoped: A's spill rows are invisible to B's listing, and a denied
+// resolver (uuid.Nil) matches nothing. RED-on-revert: dropping the
+// `account_id = $N` predicate from oversizeLister returns A's row to B.
+func TestOversizeLister_AccountIsolation(t *testing.T) {
+	pool := openJobsPool(t)
+	ctx := context.Background()
+
+	ostore := oversize.NewStore(pool)
+	require.NoError(t, ostore.Migrate(ctx))
+	aidA := newTestAccount(t, pool)
+	aidB := newTestAccount(t, pool)
+
+	idA, err := ostore.ForAccount(aidA).Save(ctx, oversize.Entry{
+		ToolName: "iso_oversize_tool", Payload: json.RawMessage(`{"a":1}`),
+		SizeBytes: 8, SHA256: "iso-a",
+	})
+	require.NoError(t, err)
+	idB, err := ostore.ForAccount(aidB).Save(ctx, oversize.Entry{
+		ToolName: "iso_oversize_tool", Payload: json.RawMessage(`{"b":2}`),
+		SizeBytes: 8, SHA256: "iso-b",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM oversize_responses WHERE id = ANY($1)`, []int64{idA, idB})
+	})
+
+	listerA := oversizeResource(pool, fixedAccount(aidA)).Lister
+	listerB := oversizeResource(pool, fixedAccount(aidB)).Lister
+	listerNil := oversizeResource(pool, denyAccount()).Lister
+
+	q := resource.ListQuery{Sort: oversizeSpec.Resolve("created", "desc"), Limit: 25}
+
+	rowsA, totalA, err := listerA(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, 1, totalA)
+	require.Len(t, rowsA, 1)
+	assert.Equal(t, strconv.FormatInt(idA, 10), rowsA[0].ID, "A lists only its own spill")
+
+	rowsB, totalB, err := listerB(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, 1, totalB)
+	require.Len(t, rowsB, 1)
+	assert.Equal(t, strconv.FormatInt(idB, 10), rowsB[0].ID, "B must never see A's spill row")
+
+	rowsNil, totalNil, err := listerNil(ctx, q)
+	require.NoError(t, err)
+	assert.Zero(t, totalNil)
+	assert.Empty(t, rowsNil, "no account identity → empty listing (fail-closed)")
+}
+
+// TestDownloadHandler_AccountIsolation proves the download handler serves
+// only the acting account's artifacts: B cannot fetch A's PDF even with a
+// known job id, the operator's pre-P4 (account-less) artifacts are reachable
+// by the operator but not by B, and a denied resolver is a flat 404.
+// RED-on-revert: resolving with an unscoped Authority or dropping the acctOf
+// gate lets B's request land on A's file.
+func TestDownloadHandler_AccountIsolation(t *testing.T) {
+	pool := openJobsPool(t)
+	ctx := context.Background()
+
+	require.NoError(t, hunt.NewStore(pool).Migrate(ctx))
+	aidA := newTestAccount(t, pool)
+	aidB := newTestAccount(t, pool)
+
+	uploadsRoot := t.TempDir()
+	t.Setenv("UPLOADS_ROOT", uploadsRoot)
+
+	// A's artifact at the account-scoped canonical path.
+	jobID := int64(4242)
+	dirA := filepath.Join(uploadsRoot, "go-job", "applications", aidA.String(), strconv.FormatInt(jobID, 10))
+	require.NoError(t, os.MkdirAll(dirA, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dirA, "resume.pdf"), []byte("%PDF-A"), 0o644))
+
+	// Pre-P4 operator artifact at the account-less location.
+	legacyJob := int64(4343)
+	legacyDir := filepath.Join(uploadsRoot, "go-job", "applications", strconv.FormatInt(legacyJob, 10))
+	require.NoError(t, os.MkdirAll(legacyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "resume.pdf"), []byte("%PDF-legacy"), 0o644))
+
+	authority := applications.New(nil, "", aidA) // aidA plays the operator
+	handler := downloadHandler(pool, authority, fixedAccount(aidA))
+	handlerB := downloadHandler(pool, authority, fixedAccount(aidB))
+	handlerNil := downloadHandler(pool, authority, denyAccount())
+
+	get := func(h http.HandlerFunc, id int64, kind string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet,
+			fmt.Sprintf("/admin/jobs/%d/download/%s", id, kind), nil)
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		req.SetPathValue("kind", kind)
+		rr := httptest.NewRecorder()
+		h(rr, req)
+		return rr
+	}
+
+	// A reads its own artifact.
+	assert.Equal(t, http.StatusOK, get(handler, jobID, "resume").Code)
+	// B requesting A's job id must NOT get A's file — 404 (nothing exists for B).
+	assert.Equal(t, http.StatusNotFound, get(handlerB, jobID, "resume").Code,
+		"B must not fetch A's artifact even with a known job id")
+	// The operator's pre-P4 account-less artifact resolves for the operator…
+	assert.Equal(t, http.StatusOK, get(handler, legacyJob, "resume").Code,
+		"operator keeps pre-P4 account-less artifacts (ADR-11)")
+	// …but not for B.
+	assert.Equal(t, http.StatusNotFound, get(handlerB, legacyJob, "resume").Code,
+		"B must not reach the operator's legacy location")
+	// No account identity → flat 404.
+	assert.Equal(t, http.StatusNotFound, get(handlerNil, jobID, "resume").Code)
 }

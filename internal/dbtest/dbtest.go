@@ -92,6 +92,15 @@ func DropAccountTables(tb testingTB, pool *pgxpool.Pool) {
 		 -- test, matching the guarded DO block in hunt schema 014.
 		 ALTER TABLE IF EXISTS hunt_ratings
 		   DROP CONSTRAINT IF EXISTS hunt_ratings_account_id_fkey;
+		 -- P4: same shape for the resume hub + vectors and the oversize
+		 -- spill table (Bootstrap's EnsureResumeAccountScope /
+		 -- EnsureOversizeAccountScope re-add them).
+		 ALTER TABLE IF EXISTS resume_persons
+		   DROP CONSTRAINT IF EXISTS resume_persons_account_id_fkey;
+		 ALTER TABLE IF EXISTS resume_vectors
+		   DROP CONSTRAINT IF EXISTS resume_vectors_account_id_fkey;
+		 ALTER TABLE IF EXISTS oversize_responses
+		   DROP CONSTRAINT IF EXISTS oversize_responses_account_id_fkey;
 		 DROP TABLE IF EXISTS panel_accounts;`); err != nil {
 		tb.Fatalf("dbtest.DropAccountTables: %v", err)
 	}

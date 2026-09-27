@@ -18,6 +18,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -340,7 +341,7 @@ func TestNew_WiresSessionTenantGate(t *testing.T) {
 	t.Setenv("ADMIN_EMAIL", "gate@t.example")
 	t.Setenv("ADMIN_USERNAME", "")
 
-	handler, _, ok := New(hunt.NewStore(pool), applications.New(nil, t.TempDir()), acctStore, op.ID)
+	handler, _, ok := New(hunt.NewStore(pool), applications.New(nil, t.TempDir(), uuid.MustParse(op.ID)), acctStore, op.ID)
 	require.True(t, ok, "bcrypt driver must be enabled with a bootstrapped store")
 
 	// Real login through the assembled handler → session cookie.

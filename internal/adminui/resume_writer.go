@@ -11,6 +11,7 @@ import (
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,9 +35,25 @@ var experiencesSpec = admintable.Spec{
 	DefaultDir: admintable.Desc,
 }
 
+// resumeScopedDB resolves the account-bound resume facade for the request
+// (plan ADR-15). ok=false fails closed: no DB configured, or no verified
+// account identity in ctx — missing/malformed/nil UUID never resolves to a
+// global owner, and foreign persons/entities are indistinguishable from absent.
+func resumeScopedDB(ctx context.Context, acctOf accountResolver) (*jobs.ResumeAccount, bool) {
+	db := jobs.GetResumeDB()
+	if db == nil {
+		return nil, false
+	}
+	aid, ok := acctOf(ctx)
+	if !ok || aid == uuid.Nil {
+		return nil, false
+	}
+	return db.ForAccount(aid), true
+}
+
 // experiencesResource builds a go-panel Resource for resume experiences with
 // full CRUD via Writer (create, edit, delete).
-func experiencesResource(pool *pgxpool.Pool) resource.Resource {
+func experiencesResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "experiences",
 		Title:  "Experiences",
@@ -44,17 +61,17 @@ func experiencesResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpResume,
 		Sort:   experiencesSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: experiencesLister(pool),
+		Lister: experiencesLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			expID, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			e, err := db.GetExperienceByID(ctx, expID)
+			e, err := rdb.GetExperienceByID(ctx, expID)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -77,19 +94,19 @@ func experiencesResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				e, err := db.GetExperienceByID(ctx, expID)
+				e, err := rdb.GetExperienceByID(ctx, expID)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return experienceToMap(e), nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, values map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("title", "resume database not configured")
 				}
 				highlights := parseHighlights(values["highlights"])
@@ -103,29 +120,29 @@ func experiencesResource(pool *pgxpool.Pool) resource.Resource {
 					Highlights:  highlights,
 				}
 				if id == "" {
-					personID := db.GetLatestPersonID(ctx)
+					personID := rdb.GetLatestPersonID(ctx)
 					if personID == 0 {
 						return resource.NewSaveError("title", "no resume person found — run master_resume_build first")
 					}
-					_, err := db.InsertExperience(ctx, personID, e)
+					_, err := rdb.InsertExperience(ctx, personID, e)
 					return err
 				}
 				expID, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("title", "invalid experience ID")
 				}
-				return db.UpdateExperience(ctx, expID, e)
+				return rdb.UpdateExperience(ctx, expID, e)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				expID, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("title", "invalid experience ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("title", "resume database not configured")
 				}
-				return db.DeleteExperience(ctx, expID)
+				return rdb.DeleteExperience(ctx, expID)
 			},
 			PresetValues: func(ctx context.Context, _ tenant.Tenant) (map[string]string, error) {
 				// No preset values needed — person_id is resolved inside Save from
@@ -137,18 +154,18 @@ func experiencesResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			AfterDelete: func(ctx context.Context, id string, err error) {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			RedirectAfterSave: func(_ context.Context, _ string) string {
@@ -162,17 +179,17 @@ func experiencesResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 // experiencesLister returns a Lister closure for the experiences resource.
-func experiencesLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func experiencesLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		personID := db.GetLatestPersonID(ctx)
+		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
 			return nil, 0, nil
 		}
-		exps, err := db.GetAllExperiences(ctx, personID)
+		exps, err := rdb.GetAllExperiences(ctx, personID)
 		if err != nil {
 			slog.Error("experiencesLister: GetAllExperiences", "err", err)
 			return nil, 0, err
@@ -229,18 +246,28 @@ func parseHighlights(s string) []string {
 }
 
 // getLatestPersonIDSafe returns the latest person ID without panicking.
-func getLatestPersonIDSafe(ctx context.Context) int {
-	db := jobs.GetResumeDB()
-	if db == nil {
+func getLatestPersonIDSafe(ctx context.Context, acctOf accountResolver) int {
+	rdb, acctOK := resumeScopedDB(ctx, acctOf)
+	if !acctOK {
 		return 0
 	}
-	return db.GetLatestPersonID(ctx)
+	return rdb.GetLatestPersonID(ctx)
+}
+
+// syncProfileVectorsForRequest resolves the request account and re-syncs the
+// profile vectors for that account only — a no-op when identity is absent.
+func syncProfileVectorsForRequest(ctx context.Context, acctOf accountResolver, personID int) error {
+	aid, ok := acctOf(ctx)
+	if !ok || aid == uuid.Nil {
+		return nil
+	}
+	return jobs.SyncProfileVectors(ctx, aid, personID)
 }
 
 // syncProfileVectorsBestEffortCtx is the context-based version of
 // syncProfileVectorsBestEffort for use in Writer hooks.
-func syncProfileVectorsBestEffortCtx(ctx context.Context, personID int) {
-	if err := jobs.SyncProfileVectors(ctx, personID); err != nil {
+func syncProfileVectorsBestEffortCtx(ctx context.Context, acctOf accountResolver, personID int) {
+	if err := syncProfileVectorsForRequest(ctx, acctOf, personID); err != nil {
 		slog.Warn("resume writer: profile vector sync failed (mutation already persisted)",
 			slog.Int("person_id", personID), slog.Any("err", err))
 	}
@@ -268,7 +295,7 @@ var skillLevelOptions = []resource.Option{
 }
 
 // skillsResource builds a go-panel Resource for resume skills with full CRUD.
-func skillsResource(pool *pgxpool.Pool) resource.Resource {
+func skillsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "skills",
 		Title:  "Skills",
@@ -276,17 +303,17 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpResume,
 		Sort:   skillsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: skillsLister(pool),
+		Lister: skillsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			skillID, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			s, err := db.GetSkillByID(ctx, skillID)
+			s, err := rdb.GetSkillByID(ctx, skillID)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -309,11 +336,11 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				s, err := db.GetSkillByID(ctx, skillID)
+				s, err := rdb.GetSkillByID(ctx, skillID)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
@@ -324,8 +351,8 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 				}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, values map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				level := values["level"]
@@ -341,29 +368,29 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 					Level:    level,
 				}
 				if id == "" {
-					personID := db.GetLatestPersonID(ctx)
+					personID := rdb.GetLatestPersonID(ctx)
 					if personID == 0 {
 						return resource.NewSaveError("name", "no resume person found — run master_resume_build first")
 					}
-					_, err := db.InsertSkill(ctx, personID, s)
+					_, err := rdb.InsertSkill(ctx, personID, s)
 					return err
 				}
 				skillID, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid skill ID")
 				}
-				return db.UpdateSkill(ctx, skillID, s)
+				return rdb.UpdateSkill(ctx, skillID, s)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				skillID, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid skill ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				return db.DeleteSkill(ctx, skillID)
+				return rdb.DeleteSkill(ctx, skillID)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -372,18 +399,19 @@ func skillsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 // skillsLister returns a Lister closure for the skills resource.
+//
 //nolint:dupl // structurally identical to other resume listers
-func skillsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func skillsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		personID := db.GetLatestPersonID(ctx)
+		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
 			return nil, 0, nil
 		}
-		skills, err := db.GetAllSkills(ctx, personID)
+		skills, err := rdb.GetAllSkills(ctx, personID)
 		if err != nil {
 			slog.Error("skillsLister: GetAllSkills", "err", err)
 			return nil, 0, err
@@ -422,7 +450,7 @@ var personsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func personsResource(pool *pgxpool.Pool) resource.Resource {
+func personsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "persons",
 		Title:  "Profile",
@@ -430,17 +458,17 @@ func personsResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpResume,
 		Sort:   personsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: personsLister(pool),
+		Lister: personsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			pid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			p, err := db.GetPerson(ctx, pid)
+			p, err := rdb.GetPerson(ctx, pid)
 			if err != nil || p == nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -462,26 +490,26 @@ func personsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				p, err := db.GetPerson(ctx, pid)
+				p, err := rdb.GetPerson(ctx, pid)
 				if err != nil || p == nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return personToMap(p), nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				pid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid person ID")
 				}
-				person, err := db.GetPerson(ctx, pid)
+				person, err := rdb.GetPerson(ctx, pid)
 				if err != nil || person == nil {
 					return resource.NewSaveError("name", "person not found")
 				}
@@ -507,10 +535,10 @@ func personsResource(pool *pgxpool.Pool) resource.Resource {
 					Headline:        v["headline"],
 					HourlyRateCents: hourlyRateCents,
 				}
-				if err := db.UpdateResumePerson(ctx, pid, updated); err != nil {
+				if err := rdb.UpdateResumePerson(ctx, pid, updated); err != nil {
 					return resource.NewSaveError("name", "update failed")
 				}
-				if err := db.UpdatePersonUpworkFields(ctx, pid, v["headline"], hourlyRateCents); err != nil {
+				if err := rdb.UpdatePersonUpworkFields(ctx, pid, v["headline"], hourlyRateCents); err != nil {
 					slog.Warn("person resource: UpdatePersonUpworkFields failed", "err", err)
 				}
 				return nil
@@ -519,9 +547,9 @@ func personsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			RedirectAfterSave: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -530,17 +558,17 @@ func personsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func personsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func personsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		p, err := db.GetPerson(ctx, pid)
+		p, err := rdb.GetPerson(ctx, pid)
 		if err != nil || p == nil {
 			return nil, 0, nil
 		}
@@ -593,22 +621,22 @@ var achievementsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func achievementsResource(pool *pgxpool.Pool) resource.Resource {
+func achievementsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "achievements", Title: "Achievements", Icon: "🏆", Group: grpResume,
 		Sort:   achievementsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: achievementsLister(pool),
+		Lister: achievementsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			aid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			a, err := db.GetAchievementByID(ctx, aid)
+			a, err := rdb.GetAchievementByID(ctx, aid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -626,63 +654,63 @@ func achievementsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				a, err := db.GetAchievementByID(ctx, aid)
+				a, err := rdb.GetAchievementByID(ctx, aid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"text": a.Text, "metric": a.Metric, "value": a.Value, "context": a.Context}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("text", "resume database not configured")
 				}
 				a := jobs.AchievementRecord{Text: v["text"], Metric: v["metric"], Value: v["value"], Context: v["context"]}
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("text", "no resume person found")
 					}
-					_, err := db.InsertAchievement(ctx, pid, a)
+					_, err := rdb.InsertAchievement(ctx, pid, a)
 					return err
 				}
 				aid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("text", "invalid ID")
 				}
-				return db.UpdateAchievement(ctx, aid, a)
+				return rdb.UpdateAchievement(ctx, aid, a)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				aid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("text", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("text", "resume database not configured")
 				}
-				return db.DeleteAchievement(ctx, aid)
+				return rdb.DeleteAchievement(ctx, aid)
 			},
 			AfterSave: func(ctx context.Context, _ string, err error) {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			AfterDelete: func(ctx context.Context, _ string, err error) {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
@@ -692,17 +720,17 @@ func achievementsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func achievementsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func achievementsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllAchievements(ctx, pid)
+		items, err := rdb.GetAllAchievements(ctx, pid)
 		if err != nil {
 			slog.Error("achievementsLister", "err", err)
 			return nil, 0, err
@@ -734,22 +762,22 @@ var projectsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func projectsResource(pool *pgxpool.Pool) resource.Resource {
+func projectsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "projects", Title: "Projects", Icon: "📁", Group: grpResume,
 		Sort:   projectsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: projectsLister(pool),
+		Lister: projectsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			pid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			p, err := db.GetProjectByID(ctx, pid)
+			p, err := rdb.GetProjectByID(ctx, pid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -768,19 +796,19 @@ func projectsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				p, err := db.GetProjectByID(ctx, pid)
+				p, err := rdb.GetProjectByID(ctx, pid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return projectToMap(p), nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				p := jobs.ProjectRecord{
@@ -788,46 +816,46 @@ func projectsResource(pool *pgxpool.Pool) resource.Resource {
 					Tech: parseHighlights(v["tech"]), Highlights: parseHighlights(v["highlights"]),
 				}
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("name", "no resume person found")
 					}
-					_, err := db.InsertProject(ctx, pid, p)
+					_, err := rdb.InsertProject(ctx, pid, p)
 					return err
 				}
 				pid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				return db.UpdateProject(ctx, pid, p)
+				return rdb.UpdateProject(ctx, pid, p)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				pid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				return db.DeleteProject(ctx, pid)
+				return rdb.DeleteProject(ctx, pid)
 			},
 			AfterSave: func(ctx context.Context, _ string, err error) {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			AfterDelete: func(ctx context.Context, _ string, err error) {
 				if err != nil {
 					return
 				}
-				personID := getLatestPersonIDSafe(ctx)
+				personID := getLatestPersonIDSafe(ctx, acctOf)
 				if personID > 0 {
-					syncProfileVectorsBestEffortCtx(ctx, personID)
+					syncProfileVectorsBestEffortCtx(ctx, acctOf, personID)
 				}
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
@@ -837,17 +865,17 @@ func projectsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func projectsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func projectsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllProjects(ctx, pid)
+		items, err := rdb.GetAllProjects(ctx, pid)
 		if err != nil {
 			slog.Error("projectsLister", "err", err)
 			return nil, 0, err
@@ -898,22 +926,22 @@ var educationsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func educationsResource(pool *pgxpool.Pool) resource.Resource {
+func educationsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "educations", Title: "Education", Icon: "🎓", Group: grpResume,
 		Sort:   educationsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: educationsLister(pool),
+		Lister: educationsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			eid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			e, err := db.GetEducationByID(ctx, eid)
+			e, err := rdb.GetEducationByID(ctx, eid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -934,19 +962,19 @@ func educationsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				e, err := db.GetEducationByID(ctx, eid)
+				e, err := rdb.GetEducationByID(ctx, eid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return educationToMap(e), nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("school", "resume database not configured")
 				}
 				e := jobs.EducationRecord{
@@ -955,29 +983,29 @@ func educationsResource(pool *pgxpool.Pool) resource.Resource {
 					Highlights: parseHighlights(v["highlights"]),
 				}
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("school", "no resume person found")
 					}
-					_, err := db.InsertEducation(ctx, pid, e)
+					_, err := rdb.InsertEducation(ctx, pid, e)
 					return err
 				}
 				eid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("school", "invalid ID")
 				}
-				return db.UpdateEducation(ctx, eid, e)
+				return rdb.UpdateEducation(ctx, eid, e)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				eid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("school", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("school", "resume database not configured")
 				}
-				return db.DeleteEducation(ctx, eid)
+				return rdb.DeleteEducation(ctx, eid)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -986,17 +1014,17 @@ func educationsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func educationsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func educationsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllEducations(ctx, pid)
+		items, err := rdb.GetAllEducations(ctx, pid)
 		if err != nil {
 			slog.Error("educationsLister", "err", err)
 			return nil, 0, err
@@ -1043,22 +1071,22 @@ var certificationsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func certificationsResource(pool *pgxpool.Pool) resource.Resource {
+func certificationsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "certifications", Title: "Certifications", Icon: "📜", Group: grpResume,
 		Sort:   certificationsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: certificationsLister(pool),
+		Lister: certificationsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			cid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			c, err := db.GetCertificationByID(ctx, cid)
+			c, err := rdb.GetCertificationByID(ctx, cid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -1076,46 +1104,46 @@ func certificationsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				c, err := db.GetCertificationByID(ctx, cid)
+				c, err := rdb.GetCertificationByID(ctx, cid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"name": c.Name, "issuer": c.Issuer, "year": c.Year, "url": c.URL}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				c := jobs.CertificationRecord{Name: v["name"], Issuer: v["issuer"], Year: v["year"], URL: v["url"]}
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("name", "no resume person found")
 					}
-					_, err := db.InsertCertification(ctx, pid, c)
+					_, err := rdb.InsertCertification(ctx, pid, c)
 					return err
 				}
 				cid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				return db.UpdateCertification(ctx, cid, c)
+				return rdb.UpdateCertification(ctx, cid, c)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				cid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				return db.DeleteCertification(ctx, cid)
+				return rdb.DeleteCertification(ctx, cid)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -1124,17 +1152,17 @@ func certificationsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func certificationsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func certificationsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllCertifications(ctx, pid)
+		items, err := rdb.GetAllCertifications(ctx, pid)
 		if err != nil {
 			slog.Error("certificationsLister", "err", err)
 			return nil, 0, err
@@ -1165,22 +1193,22 @@ var domainsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func domainsResource(pool *pgxpool.Pool) resource.Resource {
+func domainsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "domains", Title: "Domains", Icon: "🌐", Group: grpResume,
 		Sort:   domainsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: domainsLister(pool),
+		Lister: domainsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			did, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			d, err := db.GetDomainByID(ctx, did)
+			d, err := rdb.GetDomainByID(ctx, did)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -1195,46 +1223,46 @@ func domainsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				d, err := db.GetDomainByID(ctx, did)
+				d, err := rdb.GetDomainByID(ctx, did)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"name": d.Name}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				name := v["name"]
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("name", "no resume person found")
 					}
-					_, err := db.InsertDomain(ctx, pid, name)
+					_, err := rdb.InsertDomain(ctx, pid, name)
 					return err
 				}
 				did, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				return db.UpdateDomain(ctx, did, name)
+				return rdb.UpdateDomain(ctx, did, name)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				did, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				return db.DeleteDomain(ctx, did)
+				return rdb.DeleteDomain(ctx, did)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -1242,17 +1270,17 @@ func domainsResource(pool *pgxpool.Pool) resource.Resource {
 	}
 }
 
-func domainsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func domainsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllDomains(ctx, pid)
+		items, err := rdb.GetAllDomains(ctx, pid)
 		if err != nil {
 			slog.Error("domainsLister", "err", err)
 			return nil, 0, err
@@ -1280,22 +1308,22 @@ var methodologiesSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func methodologiesResource(pool *pgxpool.Pool) resource.Resource {
+func methodologiesResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name: "methodologies", Title: "Methodologies", Icon: "⚙️", Group: grpResume,
 		Sort:   methodologiesSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: methodologiesLister(pool),
+		Lister: methodologiesLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			mid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			m, err := db.GetMethodologyByID(ctx, mid)
+			m, err := rdb.GetMethodologyByID(ctx, mid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -1311,46 +1339,46 @@ func methodologiesResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				m, err := db.GetMethodologyByID(ctx, mid)
+				m, err := rdb.GetMethodologyByID(ctx, mid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"name": m.Name, "description": m.Description}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
 				name, desc := v["name"], v["description"]
 				if id == "" {
-					pid := db.GetLatestPersonID(ctx)
+					pid := rdb.GetLatestPersonID(ctx)
 					if pid == 0 {
 						return resource.NewSaveError("name", "no resume person found")
 					}
-					_, err := db.InsertMethodology(ctx, pid, name, desc)
+					_, err := rdb.InsertMethodology(ctx, pid, name, desc)
 					return err
 				}
 				mid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				return db.UpdateMethodology(ctx, mid, name, desc)
+				return rdb.UpdateMethodology(ctx, mid, name, desc)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				mid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				return db.DeleteMethodology(ctx, mid)
+				return rdb.DeleteMethodology(ctx, mid)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return resumeEditURL },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return resumeEditURL },
@@ -1359,17 +1387,17 @@ func methodologiesResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other resume listers
-func methodologiesLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func methodologiesLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		items, err := db.GetAllMethodologies(ctx, pid)
+		items, err := rdb.GetAllMethodologies(ctx, pid)
 		if err != nil {
 			slog.Error("methodologiesLister", "err", err)
 			return nil, 0, err
