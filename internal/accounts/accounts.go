@@ -19,6 +19,7 @@ import (
 	"os"
 
 	"github.com/anatolykoptev/go-panel/auth"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -94,11 +95,23 @@ END $$;`
 //go:embed mcp_api_keys.sql
 var mcpAPIKeysSchema string
 
+// accountJobScoresSchema is the accounts-owned DDL for account_job_scores
+// (plan ADR-6/ADR-15) — the per-account fit-score surface that replaces the
+// global hunt_jobs.fit_* columns for every account view. Same rule as
+// mcp_api_keys: lives here (never under */schema/) and executes inside
+// Bootstrap because it REFERENCES panel_accounts.
+//
+//go:embed account_job_scores.sql
+var accountJobScoresSchema string
+
 // Bootstrap runs the boot-time panel_accounts sequence IN ORDER (the ordering
 // is load-bearing, ADR-6): EnsureSchema creates the table + TOTP columns
 // before any account-owned DDL may FK-reference them; the role-constraint
-// migration follows; the mcp_api_keys schema applies next; the env-seeded
-// operator admin runs last.
+// migration follows; the accounts-owned schemas (mcp_api_keys,
+// account_job_scores) apply next; the env-seeded operator admin runs last —
+// after it, the transitional legacy-score backfill copies hunt_jobs.fit_*
+// into account_job_scores for the operator (one-shot, idempotent; see
+// BackfillLegacyJobScores).
 //
 // A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
 // skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.
@@ -123,11 +136,61 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if _, err := pool.Exec(ctx, mcpAPIKeysSchema); err != nil {
 		return nil, nil, fmt.Errorf("accounts: mcp_api_keys schema: %w", err)
 	}
+	if _, err := pool.Exec(ctx, accountJobScoresSchema); err != nil {
+		return nil, nil, fmt.Errorf("accounts: account_job_scores schema: %w", err)
+	}
 	op, err := seedOperator(ctx, pool, store, seed)
 	if err != nil {
 		return nil, nil, fmt.Errorf("accounts: seed operator: %w", err)
 	}
+	if op != nil {
+		if err := BackfillLegacyJobScores(ctx, pool, op.ID); err != nil {
+			return nil, nil, fmt.Errorf("accounts: legacy score backfill: %w", err)
+		}
+	}
 	return store, op, nil
+}
+
+// BackfillLegacyJobScores copies the legacy global hunt_jobs.fit_* score
+// columns into account_job_scores for the operator account — the expand
+// half of the ADR-13 expand/backfill/constrain migration. TRANSITIONAL: it
+// exists only until the hunt_jobs.fit_* columns drop post-soak; scoring
+// writes from P2 on land in account_job_scores directly, so this is a
+// one-shot cutover copy, idempotent across reboots (ON CONFLICT DO NOTHING —
+// an already-rescored row keeps its newer value).
+//
+// hunt_jobs may not exist when Bootstrap runs on a fresh DB (Bootstrap
+// precedes hStore.Migrate — ADR-6 ordering), so the table's presence is
+// probed via to_regclass first; absent means there is nothing to backfill.
+// Only scored jobs copy — a NULL scored_at has nothing to carry over and the
+// job stays in the account's unscored pool for the worker sweep.
+func BackfillLegacyJobScores(ctx context.Context, pool *pgxpool.Pool, accountID string) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.hunt_jobs')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe hunt_jobs: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: hunt schema not migrated yet, nothing to copy
+	}
+	aid, err := uuid.Parse(accountID)
+	if err != nil || aid == uuid.Nil {
+		return fmt.Errorf("legacy score backfill: invalid account id %q", accountID)
+	}
+	ct, err := pool.Exec(ctx, `
+		INSERT INTO account_job_scores
+			(account_id, job_id, fit_score, fit_band, success_band, over_under, score_rationale, scored_at)
+		SELECT $1, j.id, j.fit_score, j.fit_band, j.success_band, j.over_under, j.score_rationale, j.scored_at
+		FROM hunt_jobs j
+		WHERE j.scored_at IS NOT NULL
+		ON CONFLICT (account_id, job_id) DO NOTHING`, aid)
+	if err != nil {
+		return err
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("accounts: backfilled legacy global scores into account_job_scores",
+			slog.String("account_id", accountID), slog.Int64("rows", n))
+	}
+	return nil
 }
 
 // seedOperator provisions the operator admin account from env (baseline plan

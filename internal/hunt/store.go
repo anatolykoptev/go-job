@@ -3,11 +3,9 @@ package hunt
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -140,7 +138,8 @@ func (s *Store) Notifier() Notifier { return s.notifier }
 // It is a no-op if the notifier is nil or the job is not open/empty-status.
 // Called by the MCP path (persistJobListings) when HUNT_NOTIFY_ON_SEARCH=true.
 // score is nil because the MCP path scores lazily (Decision 5) — the worker's
-// next cycle picks up unscored rows via the scored_at IS NULL sweep.
+// next cycle picks up rows with no account_job_scores entry (per-account
+// unscored sweep, P2).
 func (s *Store) NotifyJobIfOpen(j Job) {
 	if s.notifier != nil && (j.Status == StatusOpen || j.Status == "") {
 		s.notifier.NotifyNewJob(j, nil)
@@ -433,111 +432,6 @@ func (s *Store) UpsertJob(ctx context.Context, j Job) (id int64, outcome Outcome
 		return id, OutcomeCreated, nil
 	}
 	return id, OutcomeMerged, nil
-}
-
-// SetJobScore persists the fit-scoring result for a job.
-// It updates ONLY the score columns (fit_score, fit_band, success_band,
-// over_under, score_rationale, scored_at). It does NOT touch status,
-// closed_at, first_seen_at, or any ingest fields — scoring is orthogonal
-// to ingest (see UpsertJob invariant at store.go:299-301).
-func (s *Store) SetJobScore(ctx context.Context, id int64, sr ScoreResult) error {
-	rationale := scoreRationale{
-		FitReasons:       sr.FitReasons,
-		FitGaps:          sr.FitGaps,
-		SuccessReasoning: sr.SuccessReasoning,
-	}
-	rationaleJSON, err := json.Marshal(rationale)
-	if err != nil {
-		return fmt.Errorf("hunt: marshal score rationale: %w", err)
-	}
-	ct, err := s.pool.Exec(ctx, `
-		UPDATE hunt_jobs
-		SET fit_score       = $1,
-		    fit_band        = $2,
-		    success_band    = $3,
-		    over_under      = $4,
-		    score_rationale = $5,
-		    scored_at       = $6
-		WHERE id = $7`,
-		sr.FitScore, sr.FitBand, sr.SuccessBand, sr.OverUnder,
-		rationaleJSON, sr.ScoredAt, id,
-	)
-	if err != nil {
-		return fmt.Errorf("hunt: set job score: %w", err)
-	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("hunt: set job score: %w", ErrNotFound)
-	}
-	return nil
-}
-
-// UnscoredOpenJobs returns open jobs that have never been scored (scored_at IS
-// NULL), oldest first, capped at limit. Uses the idx_hunt_jobs_unscored partial
-// index (migration 008). When rescoreAll is true, the scored_at filter is
-// dropped (re-score existing rows) for the HUNT_SCORE_RESCORE_ALL one-shot.
-func (s *Store) UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]Job, error) {
-	limit = clampLimit(limit, 50, 500)
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, dedup_hash, title, company, url, source, external_id, location, remote,
-		       job_type, experience, salary_min, salary_max, salary_currency, salary_interval,
-		       skills, tags, description, posted_at, first_seen_at, last_seen_at,
-		       status, closed_at, last_checked_at
-		FROM hunt_jobs
-		WHERE status = 'open'
-		  AND (scored_at IS NULL OR $2)
-		ORDER BY first_seen_at ASC
-		LIMIT $1`, limit, rescoreAll)
-	if err != nil {
-		return nil, fmt.Errorf("hunt: unscored open jobs: %w", err)
-	}
-	defer rows.Close()
-
-	var result []Job
-	for rows.Next() {
-		j, scanErr := scanJobRow(rows)
-		if scanErr != nil {
-			return nil, fmt.Errorf("hunt: unscored open jobs scan: %w", scanErr)
-		}
-		result = append(result, j)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("hunt: unscored open jobs rows: %w", err)
-	}
-	return result, nil
-}
-
-// UnscoredJobsStats holds the aggregate stats for the unscored-open pool.
-// Used by the periodic gauge refresher to update gojob_hunt_unscored_jobs_count
-// and gojob_hunt_unscored_jobs_max_age_seconds between hunt cycles without
-// fetching full job rows.
-type UnscoredJobsStats struct {
-	Count     int
-	OldestAge time.Duration // zero if Count == 0
-}
-
-// UnscoredOpenJobsStats returns the count and oldest first_seen_at age of open
-// jobs that have never been scored (scored_at IS NULL). Uses the same
-// idx_hunt_jobs_unscored partial index as UnscoredOpenJobs but returns only
-// two scalars (COUNT + MIN(first_seen_at)) — no row fetch, no scan, no
-// allocation. Designed for the periodic gauge refresher that runs between
-// hunt cycles (every HUNT_SCORE_GAUGE_REFRESH_INTERVAL, default 10m) so the
-// alert gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the LIVE
-// state, not a value frozen at the end of the last 6h cycle.
-func (s *Store) UnscoredOpenJobsStats(ctx context.Context) (UnscoredJobsStats, error) {
-	var count int
-	var oldest *time.Time
-	err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*), MIN(first_seen_at)
-		FROM hunt_jobs
-		WHERE status = 'open' AND scored_at IS NULL`).Scan(&count, &oldest)
-	if err != nil {
-		return UnscoredJobsStats{}, fmt.Errorf("hunt: unscored open jobs stats: %w", err)
-	}
-	stats := UnscoredJobsStats{Count: count}
-	if oldest != nil {
-		stats.OldestAge = time.Since(*oldest)
-	}
-	return stats, nil
 }
 
 // HuntSettings is the operator-tunable configuration for the hunt ingest worker.
@@ -1093,189 +987,6 @@ func (s *Store) GetRating(ctx context.Context, kind string, entryID int64, user 
 		r.Note = *note
 	}
 	return &r, nil
-}
-
-// ShortlistRow is the postgres projection for the /admin/shortlist page.
-// It joins hunt_jobs with hunt_ratings for a given user, filtered to the
-// active triage+stage sets. All nullable DB columns use pointer types.
-type ShortlistRow struct {
-	ID             int64
-	Title          string
-	Company        string
-	URL            string
-	Location       string
-	FitScore       *int
-	FitBand        string
-	SuccessBand    string
-	OverUnder      string
-	SalaryMin      *int
-	SalaryMax      *int
-	SalaryCurrency string
-	SalaryInterval string
-	PostedAt       *time.Time
-	ScoredAt       *time.Time
-	Triage         string // '' = untriaged
-	Stage          string // '' = not in pipeline
-	Note           string
-	RatedAt        time.Time
-}
-
-// ShortlistQuery is the parameter bag for Store.ListShortlist.
-//
-// The caller renders FilterSpec → WhereConds/WhereArgs (admintable.FilterSpec.Where)
-// and Spec.OrderBy → OrderBy (admintable.Spec.OrderBy) before calling. This keeps
-// the hunt package free of admintable imports while allowing the lister and tests to
-// share a single query path — so the isolation test guards the live code path.
-type ShortlistQuery struct {
-	User string
-	// TriageValues is the set of hunt_ratings.triage values that qualify a job for the shortlist.
-	// A job appears if EITHER r.triage = ANY(TriageValues) OR r.stage = ANY(StageValues).
-	TriageValues []string
-	// StageValues is the set of hunt_ratings.stage values that qualify a job for the shortlist.
-	StageValues []string
-	// WhereConds is the pre-rendered SQL boolean expression from admintable.FilterSpec.Where.
-	// Bind arguments are in WhereArgs ($1…$N). Empty → treated as "TRUE".
-	WhereConds string
-	WhereArgs  []any
-	// OrderBy is the pre-rendered ORDER BY clause (column list, no keyword) from
-	// admintable.Spec.OrderBy. Empty → default: "j.fit_score DESC NULLS LAST, j.company".
-	OrderBy string
-	// Limit and Offset control pagination. Limit=0 → fetch all (no LIMIT clause).
-	Limit  int
-	Offset int
-}
-
-// shortlistJoin is the FROM + JOIN shared by count and select queries.
-const shortlistJoin = `FROM hunt_jobs j JOIN hunt_ratings r ON r.entry_kind = 'job' AND r.entry_id = j.id`
-
-// shortlistDefaultOrder is the fallback ORDER BY when ShortlistQuery.OrderBy is empty.
-const shortlistDefaultOrder = "j.fit_score DESC NULLS LAST, j.company"
-
-// safeOrderByPatterns is the allowlist of column expressions that may appear
-// in an ORDER BY clause. BH-5: defense-in-depth against SQL injection — even
-// though admintable.Spec.OrderBy is author-declared, ListShortlist is a public
-// API. Each entry is a full "column [ASC|DESC] [NULLS LAST]" expression.
-var safeOrderByPatterns = map[string]bool{
-	"j.fit_score DESC NULLS LAST": true,
-	"j.fit_score ASC":             true,
-	"j.company ASC":               true,
-	"j.company DESC":              true,
-	"j.title ASC":                 true,
-	"j.title DESC":                true,
-	"j.posted_at DESC":            true,
-	"j.posted_at ASC":             true,
-	"j.scored_at DESC":            true,
-	"j.scored_at ASC":             true,
-	"j.location ASC":              true,
-	"j.location DESC":             true,
-	"j.salary_max DESC":           true,
-	"j.salary_max ASC":            true,
-	"r.updated_at DESC":           true,
-	"r.updated_at ASC":            true,
-	"r.triage ASC":                true,
-	"r.triage DESC":               true,
-	"r.stage ASC":                 true,
-	"r.stage DESC":                true,
-	shortlistDefaultOrder:         true,
-}
-
-// isSafeOrderBy reports whether orderBy is in the allowlist of safe ORDER BY
-// expressions. BH-5: prevents SQL injection via raw OrderBy interpolation.
-func isSafeOrderBy(orderBy string) bool {
-	return safeOrderByPatterns[strings.TrimSpace(orderBy)]
-}
-
-// ListShortlist returns hunt_jobs rows that have a hunt_ratings row for the given
-// user (q.User) whose triage is in q.TriageValues OR stage is in q.StageValues,
-// applying optional FilterSpec conditions and pagination. Returns the matching rows
-// and the pre-pagination total count.
-//
-// The security-critical user_name and axis isolation guards live here (not in the
-// caller), so that both the live lister and the isolation test exercise the same code.
-func (s *Store) ListShortlist(ctx context.Context, q ShortlistQuery) ([]ShortlistRow, int, error) {
-	// Build the full WHERE clause.
-	// q.WhereConds ($1…$N) from FilterSpec precedes the isolation guards at $N+1/$N+2/$N+3.
-	filter := "TRUE"
-	if strings.TrimSpace(q.WhereConds) != "" {
-		filter = q.WhereConds
-	}
-	n := len(q.WhereArgs)
-	//nolint:gosec // filter = q.WhereConds (author-controlled FilterSpec SQLExpr/SQLExprs + literal operators); all URL values are bind args; isolation guards are literal templates.
-	fullWhere := fmt.Sprintf(
-		"%s AND r.user_name = $%d AND (r.triage = ANY($%d::text[]) OR r.stage = ANY($%d::text[]))",
-		filter, n+1, n+2, n+3,
-	)
-	baseArgs := append(append([]any{}, q.WhereArgs...), q.User, q.TriageValues, q.StageValues)
-
-	// COUNT — total matching rows before pagination.
-	var total int
-	if err := s.pool.QueryRow(ctx,
-		"SELECT count(*) "+shortlistJoin+" WHERE "+fullWhere,
-		baseArgs...,
-	).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("hunt: count shortlist: %w", err)
-	}
-
-	orderBy := shortlistDefaultOrder
-	if q.OrderBy != "" {
-		// BH-5: validate OrderBy against an allowlist of safe column expressions.
-		// admintable.Spec.OrderBy is author-declared, but ListShortlist is a public
-		// API callable from non-admin paths (MCP tools). Defense-in-depth: reject
-		// anything not in the allowlist rather than interpolating raw input.
-		if !isSafeOrderBy(q.OrderBy) {
-			slog.Warn("hunt: rejecting unsafe OrderBy, using default", slog.String("orderby", q.OrderBy))
-			orderBy = shortlistDefaultOrder
-		} else {
-			orderBy = q.OrderBy
-		}
-	}
-
-	const selectCols = `SELECT j.id,
-		       COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.url,''),
-		       COALESCE(j.location,''),
-		       j.fit_score, COALESCE(j.fit_band,''),
-		       COALESCE(j.success_band,''), COALESCE(j.over_under,''),
-		       j.salary_min, j.salary_max,
-		       COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
-		       j.posted_at, j.scored_at,
-		       COALESCE(r.triage,''), COALESCE(r.stage,''), COALESCE(r.note,''), r.rated_at `
-
-	var query string
-	queryArgs := append([]any{}, baseArgs...)
-	if q.Limit > 0 {
-		//nolint:gosec // orderBy from admintable.Spec.OrderBy (author-declared SQLExpr + ASC/DESC/NULLS LAST); pagination clause = literal template; no URL input.
-		query = selectCols + shortlistJoin + " WHERE " + fullWhere +
-			fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", orderBy, n+4, n+5)
-		queryArgs = append(queryArgs, q.Limit, q.Offset)
-	} else {
-		//nolint:gosec
-		query = selectCols + shortlistJoin + " WHERE " + fullWhere + " ORDER BY " + orderBy
-	}
-
-	rows, err := s.pool.Query(ctx, query, queryArgs...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("hunt: list shortlist: %w", err)
-	}
-	defer rows.Close()
-
-	var out []ShortlistRow
-	for rows.Next() {
-		var row ShortlistRow
-		if err := rows.Scan(
-			&row.ID, &row.Title, &row.Company, &row.URL,
-			&row.Location,
-			&row.FitScore, &row.FitBand,
-			&row.SuccessBand, &row.OverUnder,
-			&row.SalaryMin, &row.SalaryMax,
-			&row.SalaryCurrency, &row.SalaryInterval,
-			&row.PostedAt, &row.ScoredAt,
-			&row.Triage, &row.Stage, &row.Note, &row.RatedAt,
-		); err != nil {
-			return nil, 0, fmt.Errorf("hunt: scan shortlist row: %w", err)
-		}
-		out = append(out, row)
-	}
-	return out, total, rows.Err()
 }
 
 // GetBountyWithRaw returns a single bounty by id including the Raw JSONB column.
@@ -2032,13 +1743,15 @@ func (s *Store) CountOpenJobs(ctx context.Context) int {
 
 // CountShortlist returns the number of hunt_jobs rows with a hunt_ratings row
 // for the given user whose triage is in triageValues OR stage is in stageValues.
-// Uses the same shortlistJoin constant as ListShortlist so both paths stay in sync.
+// Membership is ratings-driven (scores cannot change cardinality — the score
+// join is UNIQUE(account_id, job_id)), so the account join is not needed here.
 // Errors are silently swallowed (returns 0).
 func (s *Store) CountShortlist(ctx context.Context, user string, triageValues, stageValues []string) int {
 	var n int
 	_ = s.pool.QueryRow(ctx,
-		"SELECT count(*) "+shortlistJoin+
-			" WHERE r.user_name = $1 AND (r.triage = ANY($2::text[]) OR r.stage = ANY($3::text[]))",
+		`SELECT count(*) FROM hunt_jobs j JOIN hunt_ratings r
+		 ON r.entry_kind = 'job' AND r.entry_id = j.id
+		 WHERE r.user_name = $1 AND (r.triage = ANY($2::text[]) OR r.stage = ANY($3::text[]))`,
 		user, triageValues, stageValues,
 	).Scan(&n)
 	return n
@@ -2201,16 +1914,6 @@ UPDATE hunt_jobs
 		return fmt.Errorf("hunt: set status: %w", ErrNotFound)
 	}
 	return nil
-}
-
-// CountScored returns the number of open hunt_jobs rows that have been LLM-scored
-// (scored_at IS NOT NULL). Errors are silently swallowed (returns 0).
-func (s *Store) CountScored(ctx context.Context) int {
-	var n int
-	_ = s.pool.QueryRow(ctx,
-		"SELECT count(*) FROM hunt_jobs WHERE status = 'open' AND scored_at IS NOT NULL",
-	).Scan(&n)
-	return n
 }
 
 // CountBySource returns the open job count per source ordered descending by count.

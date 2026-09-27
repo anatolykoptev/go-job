@@ -34,6 +34,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/accounts"
+	"github.com/google/uuid"
 )
 
 const (
@@ -65,7 +66,18 @@ type driver struct {
 	resolver   tenant.Resolver
 	authorizer tenant.Authorizer
 	totpKey    []byte // non-nil only under bcrypt — feeds MountTOTPEnrollment
+	// accountOf resolves the acting account UUID for the data plane (P2 —
+	// account_job_scores and every later account-scoped read). bcrypt:
+	// session-stamped identity via accounts.AccountFrom; hmac: the pinned
+	// operator account when the pin is a real UUID (ADR-17).
+	accountOf accountResolver
 }
+
+// accountResolver resolves the acting panel_accounts UUID inside a request
+// ctx — the data-plane identity seam for adminui surfaces. A miss is never a
+// cross-account leak: scoped joins match nothing on uuid.Nil, and score writes
+// deny outright. The global-default tenant accessor stays banned as the identity source (ADR-1).
+type accountResolver func(ctx context.Context) (uuid.UUID, bool)
 
 // selectDriver builds the configured auth driver. Returns ok=false when the
 // selected driver's env/store requirements are unmet — admin disabled, never
@@ -132,6 +144,7 @@ func bcryptDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey string) (
 		resolver:   sessionTenantResolver{a: a},
 		authorizer: accountMatchAuthorizer{},
 		totpKey:    encKey,
+		accountOf:  accounts.AccountFrom,
 	}, true
 }
 
@@ -144,6 +157,11 @@ func hmacDriver(hmacKey, password, adminUser, operatorID string) *driver {
 	if slug == "" {
 		slug = accounts.SingleOperatorSlug
 	}
+	// The data-plane pin is the operator account UUID when one resolves; the
+	// "operator" sentinel (no seeded account) is not a UUID — score views then
+	// render unscored (no account_job_scores row can match uuid.Nil) and score
+	// writes deny, consistent with ADR-17's auth-only fallback shape.
+	pinID, _ := uuid.Parse(slug)
 	return &driver{
 		authn: auth.NewHMACAuth(auth.HMACConfig{
 			Username:   adminUser,
@@ -155,6 +173,12 @@ func hmacDriver(hmacKey, password, adminUser, operatorID string) *driver {
 		}),
 		resolver:   pinnedTenantResolver{slug: slug},
 		authorizer: pinnedTenantAuthorizer{slug: slug},
+		accountOf: func(context.Context) (uuid.UUID, bool) {
+			if pinID == uuid.Nil {
+				return uuid.Nil, false
+			}
+			return pinID, true
+		},
 	}
 }
 

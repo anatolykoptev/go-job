@@ -48,6 +48,11 @@ preflight:
 	@echo "==> identity fitness: X-MCP-User edge header is never read (post-Caddy-exemption it is client-controllable, ADR-4)"
 	@! grep -rn 'X-MCP-User' internal/ main.go --include='*.go' | grep -v '_test\.go' || (echo "FAIL: X-MCP-User consumed -- after the Caddy exemption this header is attacker-controlled; identity comes from verified bearer keys only" && exit 1)
 	@echo "==> identity fitness: ADR-6 boot order (EnsureSchema -> role migration -> mcp_api_keys DDL -> seed) is asserted by accounts.TestBootstrap_Order_SourceGate; Bootstrap-before-hStore.Migrate by accounts.TestBootstrap_PrecedesHuntMigrate_SourceGate"
+	@echo "==> score-plane fitness: account-scoped paths never reference hunt_jobs score columns (ADR-15; scores live in account_job_scores via alias s)"
+	@! grep -rnE 'j\.(fit_score|fit_band|success_band|over_under|score_rationale|scored_at)' internal/adminui internal/hunt internal/huntworker --include='*.go' | grep -v '_test\.go' | grep -v ':[[:space:]]*//' || (echo "FAIL: j.<score-col> referenced in an account-scoped path -- score columns come from account_job_scores alias s, bound to the resolved account; the corpus columns are dead" && exit 1)
+	@! grep -rnE 'UPDATE[[:space:]]+hunt_jobs[[:space:]]+SET.*(fit_|scored_at|score_rationale)' internal/adminui internal/hunt internal/huntworker --include='*.go' | grep -v '_test\.go' | grep -v ':[[:space:]]*//' || (echo "FAIL: a score write still targets hunt_jobs -- writes go through AccountStore.SetJobScore into account_job_scores" && exit 1)
+	@! grep -rln 'account_job_scores' internal/hunt/schema/ 2>/dev/null || (echo "FAIL: account_job_scores DDL under internal/hunt/schema -- the table is accounts-owned and Bootstrap-applied (go:embed), never a migration-root file" && exit 1)
+	@grep -q "accountJobScoresSchema" internal/accounts/accounts.go && grep -q "account_job_scores" internal/accounts/account_job_scores.sql && echo "OK: account_job_scores is accounts-owned and Bootstrap-applied" || (echo "FAIL: account_job_scores embed/Bootstrap wiring missing"; exit 1)
 
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...

@@ -41,6 +41,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
+	"github.com/google/uuid"
 )
 
 // jobScoreSetter is the narrow store interface used by scoring helpers.
@@ -50,7 +51,7 @@ type jobScoreSetter interface {
 }
 
 // unscoredJobStore is the narrow store interface used by the end-of-cycle
-// unscored-open sweep. Implemented by *hunt.Store; tests inject a fake.
+// unscored-open sweep. Implemented by *hunt.AccountStore; tests inject a fake.
 type unscoredJobStore interface {
 	jobScoreSetter
 	UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]hunt.Job, error)
@@ -59,9 +60,22 @@ type unscoredJobStore interface {
 // unscoredJobStatsStore is the narrow store interface used by the periodic
 // gauge refresher (refreshUnscoredGauges). It returns count + oldest age
 // without fetching full job rows — a single SELECT COUNT(*), MIN(first_seen_at).
-// Implemented by *hunt.Store; tests inject a fake.
+// Implemented by *hunt.AccountStore; tests inject a fake.
 type unscoredJobStatsStore interface {
 	UnscoredOpenJobsStats(ctx context.Context) (hunt.UnscoredJobsStats, error)
+}
+
+// accountScoreStore is the account-scoped scoring surface the worker drives
+// (plan ADR-15): *hunt.AccountStore — bound via store.ForAccount(aid) — in
+// production; tests inject fakes. It bundles the three scoped ops the worker
+// needs: persist a score row for the account, fetch the account's unscored
+// pool for the end-of-cycle sweep, and the pool's COUNT/MIN stats for gauges.
+// The unscoped hunt_jobs.fit_* surface is deliberately gone — a score without
+// an owning account is not expressible.
+type accountScoreStore interface {
+	jobScoreSetter
+	unscoredJobStatsStore
+	UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]hunt.Job, error)
 }
 
 // huntSettingsStore is the narrow store interface for loading/saving hunt
@@ -196,8 +210,13 @@ const perPlatformTimeout = 120 * time.Second
 
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
-	store          *hunt.Store
-	notifier       hunt.Notifier
+	store    *hunt.Store
+	notifier hunt.Notifier
+	// scores is the account-bound score surface (store.ForAccount output in
+	// production — TRANSITIONAL: pinned to the operator account until P3 wires
+	// per-cycle account enumeration, plan ADR-7). nil → the worker ingests the
+	// shared corpus but persists no scores (no account to attach them to).
+	scores         accountScoreStore
 	notifyMetric   func(outcome string)  // wired to engine.IncrHuntNotify in production
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
 	scorerDeps     score.ScorerDeps
@@ -421,7 +440,9 @@ func (w *Worker) Run(ctx context.Context) {
 			slog.Info("hunt worker: stopping")
 			return
 		case <-gaugeTicker.C:
-			refreshUnscoredGauges(ctx, w.store)
+			if w.scores != nil {
+				refreshUnscoredGauges(ctx, w.scores)
+			}
 		case <-ticker.C:
 			// BH-7: Skip tick if previous cycle is still running. A slow cycle
 			// (e.g., ATS APIs hanging) can exceed HUNT_INGEST_INTERVAL; without
@@ -538,10 +559,16 @@ func (w *Worker) runCycle(ctx context.Context) {
 						j.ID = id
 						// Score first (persist fit data), then notify — both fire on
 						// OutcomeCreated; scoring is orthogonal to notification.
-						sr := scoreJobWithLimit(ctx, outcome, j,
-							w.scoringProfile, w.scorerDeps, w.store, &llmCallsThisCycle)
-						if sr != nil {
-							observeScore(*sr)
+						// Scores persist per-account (account_job_scores); with no
+						// bound account the job is notified unscored — the corpus row
+						// still landed, only the judgment is account-owned.
+						var sr *hunt.ScoreResult
+						if w.scores != nil {
+							sr = scoreJobWithLimit(ctx, outcome, j,
+								w.scoringProfile, w.scorerDeps, w.scores, &llmCallsThisCycle)
+							if sr != nil {
+								observeScore(*sr)
+							}
 						}
 						w.maybeNotifyJob(j, outcome, sr)
 					case outcome == hunt.OutcomeMerged:
@@ -552,13 +579,11 @@ func (w *Worker) runCycle(ctx context.Context) {
 		}
 	}
 
-	// End-of-cycle unscored-open sweep: score jobs that were ingested in previous
-	// cycles but never scored (scored_at IS NULL). Only when scoring is enabled and
-	// the store satisfies the unscoredJobStore interface (production path).
-	if w.scoringProfile != nil {
-		if sweepStore, ok := interface{}(w.store).(unscoredJobStore); ok {
-			runUnscoredSweep(ctx, sweepStore, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle, settings.ScoreSweepLimit)
-		}
+	// End-of-cycle unscored-open sweep: score open jobs that have no
+	// account_job_scores row FOR THIS ACCOUNT yet. Only when scoring is enabled
+	// and an account is bound (w.scores != nil — see StartWorker).
+	if w.scoringProfile != nil && w.scores != nil {
+		runUnscoredSweep(ctx, w.scores, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle, settings.ScoreSweepLimit)
 	}
 
 	elapsed := time.Since(start)
@@ -843,7 +868,14 @@ func refreshUnscoredGauges(ctx context.Context, store any) {
 // is available.  Noop otherwise.
 // Must be called after engine.SetHuntStore.
 // notifier may be nil — if nil, no Telegram notifications are sent by the worker.
-func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier) {
+// scoreAccount is the account the worker's score writes and unscored sweep
+// bind to (store.ForAccount). TRANSITIONAL (P2→P3): main resolves the single
+// seeded operator account — scoring today is single-operator by deployment
+// shape. P3 replaces this pin with per-cycle enumeration over active
+// panel_accounts LEFT JOIN account_hunt_settings (plan ADR-7).
+// uuid.Nil keeps ingest running but disables score persistence — a score with
+// no owning account has nowhere to land.
+func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier, scoreAccount uuid.UUID) {
 	// Nil-store first, on the CONCRETE pointer: LoadSettings takes the
 	// huntSettingsStore interface — a nil *hunt.Store would arrive typed-nil,
 	// slip its store==nil guard, and nil-deref inside GetHuntSettings (a
@@ -863,5 +895,10 @@ func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier)
 		return
 	}
 	w.SetNotifier(notifier)
+	if scoreAccount != uuid.Nil {
+		w.scores = store.ForAccount(scoreAccount)
+	} else {
+		slog.Warn("hunt worker: no scoring account resolved — score writes, the unscored sweep and its gauges are OFF (P3 wires account enumeration)")
+	}
 	go w.Run(ctx)
 }
