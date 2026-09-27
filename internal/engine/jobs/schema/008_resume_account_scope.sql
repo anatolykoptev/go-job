@@ -52,8 +52,10 @@ BEGIN
 END $$;
 
 -- Swap the vector dedup scope: user_name stops being the scoping key (the
--- column itself stays until the post-soak drop, ADR-13).
-ALTER TABLE resume_vectors DROP CONSTRAINT IF EXISTS resume_vectors_user_name_content_hash_key;
+-- column itself stays until the post-soak drop, ADR-13). The legacy
+-- UNIQUE(user_name, content_hash) constraint drop lives in
+-- accounts.EnsureResumeAccountScope (Bootstrap) — this file stays
+-- additive-only so every statement is idempotent under the apply-all path.
 DO $$
 BEGIN
     IF NOT EXISTS (

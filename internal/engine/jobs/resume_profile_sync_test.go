@@ -209,20 +209,24 @@ func TestSyncProfileVectors_EmbedFailureDegrades(t *testing.T) {
 		t.Fatalf("SyncProfileVectors returned error on embedder outage (must degrade, not abort): %v", err)
 	}
 
-	var (
-		exists        int
-		embeddingNull bool
-	)
+	var exists int
 	err = rdb.db.pool.QueryRow(ctx,
-		`SELECT count(*), true FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
 		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,
-	).Scan(&exists, &embeddingNull)
+	).Scan(&exists)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if exists != 1 {
 		t.Fatalf("derived row not persisted on embedder outage (exists=%d) — must degrade, not skip", exists)
 	}
+	// The NULL-embedding assertion needs the pgvector column — absent when
+	// the soft 005 migration was skipped on this test DB.
+	if !rdb.db.HasEmbedding() {
+		t.Log("embedding column absent (005 not applied) — persistence asserted, NULL-embedding probe skipped")
+		return
+	}
+	var embeddingNull bool
 	err = rdb.db.pool.QueryRow(ctx,
 		`SELECT embedding IS NULL FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3 AND ref_id=$4`,
 		rdb.AccountID(), sourceProfile, memTypeResumeExp, expID,

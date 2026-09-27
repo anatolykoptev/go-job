@@ -636,13 +636,16 @@ func BackfillResumeAccountData(ctx context.Context, pool *pgxpool.Pool, accountI
 		       OR (a.updated_at = b.updated_at AND a.id < b.id))`, aid); err != nil {
 		return fmt.Errorf("resume backfill: vector dedupe: %w", err)
 	}
+	// $1 binds the uuid for the column write; $2 binds the canonical text
+	// form for the hash — one param can't be deduced as both uuid and text
+	// (SQLSTATE 42P08). The text form must match jobs.vectorContentHash.
 	ct, err = pool.Exec(ctx, `
 		UPDATE resume_vectors
 		SET account_id = $1,
 		    content_hash = encode(sha256(
-		        ($1::text || '|' || mem_type || '|' || COALESCE(ref_id, 0)::text || '|' || content)::bytea
+		        ($2 || '|' || mem_type || '|' || COALESCE(ref_id, 0)::text || '|' || content)::bytea
 		    ), 'hex')
-		WHERE account_id IS NULL`, aid)
+		WHERE account_id IS NULL`, aid, aid.String())
 	if err != nil {
 		return fmt.Errorf("resume backfill: stamp/re-key vectors: %w", err)
 	}
