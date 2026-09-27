@@ -54,6 +54,26 @@ func TestSelectDriver_HMAC(t *testing.T) {
 	require.Equal(t, "uuid-1234", d2.resolver.Resolve(req).CitySlug)
 }
 
+// dropAccountTables resets the identity-schema state these suites own.
+// mcp_api_keys must go first — it FK-references panel_accounts — and its
+// schema_migrations tracking row is cleared so the next hunt.Migrate
+// re-runs 014_mcp_api_keys.sql (pgutil skips recorded files; without the
+// delete the table would never come back).
+func dropAccountTables(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`DROP TABLE IF EXISTS mcp_api_keys;
+		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
+		 DROP TABLE IF EXISTS panel_accounts;
+		 DO $$
+		 BEGIN
+		     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+		         DELETE FROM schema_migrations WHERE name = '014_mcp_api_keys.sql';
+		     END IF;
+		 END $$`)
+	require.NoError(t, err)
+}
+
 // TestSelectDriver_BcryptRequiresStoreAndKey proves the default driver fails
 // closed: no account store or no ADMIN_TOTP_ENC_KEY → admin disabled, never
 // half-configured.
@@ -104,9 +124,7 @@ func TestSessionTenantSeam_EndToEnd(t *testing.T) {
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
 
-	_, err = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
-	require.NoError(t, err)
+	dropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool,
 		accounts.OperatorSeed{Email: "seam@t.example", Password: "seam-pass-123"})
 	require.NoError(t, err)
@@ -328,9 +346,7 @@ func TestNew_WiresSessionTenantGate(t *testing.T) {
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
 
-	_, err = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
-	require.NoError(t, err)
+	dropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool,
 		accounts.OperatorSeed{Email: "gate@t.example", Password: "gate-pass-123"})
 	require.NoError(t, err)

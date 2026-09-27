@@ -39,6 +39,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/anatolykoptev/go_job/internal/pdfrender"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -65,7 +66,7 @@ func main() {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	huntNotifier, acctStore, operatorID := initEngine(sigCtx)
+	huntNotifier, acctStore, keyStore, operatorID := initEngine(sigCtx)
 
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
@@ -104,7 +105,7 @@ func main() {
 
 	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
 	if hs := engine.GetHuntStore(); hs != nil {
-		startAdminServer(sigCtx, hs, authority, acctStore, operatorID, slog.Default())
+		startAdminServer(sigCtx, hs, authority, acctStore, keyStore, operatorID, slog.Default())
 	}
 
 	hooks := mcpserver.MCPHooks{
@@ -116,20 +117,35 @@ func main() {
 		},
 	}
 
-	// BH-2: Wire BearerAuth when MCP_BEARER_TOKEN is set. Without this, any
-	// client that can reach :8891/mcp has unauthenticated access to all 44
-	// tools (job search, resume analysis, LLM scoring, DB writes). When the
-	// token is unset, log a warning — acceptable for localhost-only deployments
-	// but must not be exposed to untrusted networks without auth.
+	// BH-2/ADR-3: MCP bearer auth on :8891. The DB-backed mcp_api_keys
+	// verifier is authoritative whenever the accounts substrate is live —
+	// sha256 lookup per request, so revocation and account deactivation apply
+	// on the very next call. MCP_BEARER_TOKEN survives only as the no-DB
+	// fallback lever: a static verifier mints a UserID-less TokenInfo that
+	// accounts.AccountFrom denies once tools resolve identity — the ADR-17
+	// "auth-only, no data plane" shape. LoopbackBypass is NEVER set: behind
+	// Caddy every RemoteAddr is loopback, and bypass there means auth
+	// disabled on all external traffic (regression-gated by
+	// accounts.TestLoopbackBypass_NeverEnabled_SourceGate).
 	var bearerAuth *mcpserver.BearerAuth
-	if token := env.Str("MCP_BEARER_TOKEN", ""); token != "" {
-		bearerAuth = &mcpserver.BearerAuth{
-			Verifier:       mcpserver.StaticTokenVerifier(token),
-			LoopbackBypass: true, // allow self-connect from same host
+	switch {
+	case keyStore != nil:
+		if env.Str("MCP_BEARER_TOKEN", "") != "" {
+			slog.Warn("MCP_BEARER_TOKEN set but ignored — the mcp_api_keys DB verifier is authoritative when DATABASE_URL is configured (unset the env to silence)")
 		}
-		slog.Info("MCP BearerAuth enabled (loopback bypass on)")
-	} else {
-		slog.Warn("MCP_BEARER_TOKEN not set — MCP server running without authentication (acceptable for localhost-only)")
+		bearerAuth = &mcpserver.BearerAuth{
+			Verifier:       keyStore.Verifier(),
+			LoopbackBypass: false,
+		}
+		slog.Info("MCP BearerAuth enabled (mcp_api_keys DB verifier; loopback bypass OFF)")
+	case env.Str("MCP_BEARER_TOKEN", "") != "":
+		bearerAuth = &mcpserver.BearerAuth{
+			Verifier:       mcpserver.StaticTokenVerifier(env.Str("MCP_BEARER_TOKEN", "")),
+			LoopbackBypass: false,
+		}
+		slog.Info("MCP BearerAuth enabled (static env token — auth-only fallback; TokenInfo carries no account identity)")
+	default:
+		slog.Warn("no MCP bearer auth — accounts store unavailable and MCP_BEARER_TOKEN unset; /mcp is unauthenticated (localhost-only deployments only)")
 	}
 
 	if err := mcpserver.Serve(&mcp.Implementation{
@@ -262,8 +278,10 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 // the hunt.Notifier wired to the hunt store (nil if unconfigured — main hands
 // it to StartWorker for ingest Telegram notifications) plus the
 // bootstrapAccounts products (account store + operator ID; zero-valued
-// without DATABASE_URL or on failure) for startAdminServer — ADR-6 below.
-func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, string) {
+// without DATABASE_URL or on failure) for startAdminServer — ADR-6 below —
+// and the mcp_api_keys KeyStore (nil without DATABASE_URL) backing both MCP
+// bearer verifiers and the ADR-4 legacy edge-token seed.
+func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *accounts.KeyStore, string) {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
@@ -380,8 +398,12 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, s
 
 	// bootstrapAccounts products for startAdminServer; zero values (no DB /
 	// failed) mean bcrypt self-disables while AUTH_DRIVER=hmac still works.
+	// keyStore (ADR-3) follows the same lifecycle: nil without a live pool,
+	// so a no-DB deploy gets the env-token fallback rather than a verifier
+	// against tables that do not exist.
 	var acctStore *auth.PgxAccountStore
 	var operatorID string
+	var keyStore *accounts.KeyStore
 
 	// Resume DB (PostgreSQL + AGE graph)
 	if c.DatabaseURL == "" {
@@ -413,6 +435,10 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, s
 			// the hStore.Migrate runner (migrations may REFERENCES
 			// panel_accounts) and must not move into startAdminServer.
 			acctStore, operatorID = bootstrapAccounts(sigCtx, rdb.Pool())
+			// ADR-3: the mcp_api_keys store exists whenever the pool does —
+			// even on a failed Bootstrap the verifier fails CLOSED (lookup
+			// error → denial), so wiring it unconditionally is safe.
+			keyStore = accounts.NewKeyStore(rdb.Pool())
 
 			// Wire oversize store on the same pool (fails-soft: optional spill feature).
 			wireOversize(sigCtx, rdb.Pool())
@@ -457,6 +483,14 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, s
 
 				slog.Info("hunt store ready")
 			}
+
+			// ADR-4 zero-window seed: fold the live Caddy edge token
+			// (MCP_LEGACY_TOKEN_SEED) into mcp_api_keys under the operator
+			// account, so the DB verifier accepts it from the very first
+			// request — the Caddy /job/* map-gate exemption lands only AFTER
+			// this is live. Runs strictly AFTER hStore.Migrate (migration
+			// 014 owns the table) — never move it above the runner.
+			seedLegacyEdgeToken(sigCtx, keyStore, acctStore, operatorID)
 		}
 	}
 
@@ -549,7 +583,7 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, s
 	// Background monitors replaced by lazy on-read enrichment (Phase 3).
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
-	return huntNotifier, acctStore, operatorID
+	return huntNotifier, acctStore, keyStore, operatorID
 }
 
 // checkEmbedCorpus verifies at startup that the active embed client is the one
@@ -747,15 +781,77 @@ func bootstrapAccounts(ctx context.Context, pool *pgxpool.Pool) (*auth.PgxAccoun
 	return acctStore, ""
 }
 
-// acctStore/operatorID are the accounts.Bootstrap products from initEngine —
+// seedLegacyEdgeToken is the ADR-4 zero-window cutover lever: the live Caddy
+// map token arrives via MCP_LEGACY_TOKEN_SEED (plaintext env, same value the
+// {mcp_valid} map compares) and is folded into mcp_api_keys under the
+// operator account — the DB verifier then accepts the edge token from its
+// first request, so the Caddy exemption deploys with no auth gap. Idempotent
+// (ON CONFLICT DO NOTHING) across restarts. The plaintext is never logged —
+// only accounts.KeyPrefix.
+//
+// Ordered AFTER the hunt migration runner (migration 014 owns mcp_api_keys);
+// caller guarantees the DB path is live. No env → no-op.
+func seedLegacyEdgeToken(ctx context.Context, ks *accounts.KeyStore, acctStore *auth.PgxAccountStore, operatorID string) {
+	raw := env.Str("MCP_LEGACY_TOKEN_SEED", "")
+	if raw == "" {
+		return
+	}
+	if ks == nil {
+		slog.Warn("MCP_LEGACY_TOKEN_SEED set but the accounts store is unavailable — edge token NOT seeded")
+		return
+	}
+	owner, ok := seedOwner(ctx, acctStore, operatorID)
+	if !ok {
+		slog.Error("MCP_LEGACY_TOKEN_SEED set but no operator account resolves — edge token NOT seeded; do NOT deploy the Caddy /job/* exemption until a seed lands")
+		return
+	}
+	inserted, err := ks.SeedEdgeToken(ctx, owner, raw, "legacy-edge-token")
+	switch {
+	case err != nil:
+		slog.Error("MCP legacy edge token seed failed",
+			slog.String("key_prefix", accounts.KeyPrefix(raw)), slog.Any("error", err))
+	case inserted:
+		slog.Info("MCP legacy edge token seeded into mcp_api_keys",
+			slog.String("key_prefix", accounts.KeyPrefix(raw)),
+			slog.String("account_id", owner.String()))
+	default:
+		slog.Info("MCP legacy edge token already present in mcp_api_keys",
+			slog.String("key_prefix", accounts.KeyPrefix(raw)))
+	}
+}
+
+// seedOwner resolves the account the seeded edge token attaches to: the
+// env-seeded operator (operatorID from bootstrapAccounts), else the
+// ADMIN_EMAIL account when the seed envs were partial. It never guesses — a
+// credential is only ever attached to an account the operator configured.
+func seedOwner(ctx context.Context, acctStore *auth.PgxAccountStore, operatorID string) (uuid.UUID, bool) {
+	if id, err := uuid.Parse(operatorID); err == nil && id != uuid.Nil {
+		return id, true
+	}
+	if acctStore != nil {
+		if email := accounts.OperatorSeedFromEnv().Email; email != "" {
+			// GetByEmail is active-only — a deactivated operator must not
+			// acquire fresh keys via the seed path.
+			if acct, err := acctStore.GetByEmail(ctx, email); err == nil && acct != nil {
+				if id, err := uuid.Parse(acct.ID); err == nil && id != uuid.Nil {
+					return id, true
+				}
+			}
+		}
+	}
+	return uuid.Nil, false
+}
+
+// acctStore/keyStore/operatorID are the accounts products from initEngine —
 // Bootstrap runs there, on the DB-ready path BEFORE hStore.Migrate and before
 // this listener exists (ADR-6 — the ordering is load-bearing): the P1
 // mcp_api_keys migration REFERENCES panel_accounts, and P1's MCP bearer
 // verifier reads the account tables whether or not the admin UI initializes.
 // acctStore nil (no DATABASE_URL or a failed Bootstrap) degrades to the
 // bcrypt driver self-disabling (fail-closed) while AUTH_DRIVER=hmac still
-// works as a DB-independent single-operator rollback.
-func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, operatorID string, logger *slog.Logger) {
+// works as a DB-independent single-operator rollback; keyStore nil removes
+// bearer auth from panelmcp but leaves its TenantResolver denying (below).
+func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, keyStore *accounts.KeyStore, operatorID string, logger *slog.Logger) {
 	handler, panel, ok := adminui.New(store, authority, acctStore, operatorID)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD; the default bcrypt driver also needs ADMIN_TOTP_ENC_KEY and DATABASE_URL)")
@@ -788,14 +884,31 @@ func startAdminServer(ctx context.Context, store *hunt.Store, authority *applica
 
 	// Admin MCP server: auto-exposes registered Resources as MCP tools.
 	// Runs on a separate port so it can be independently gated/authed.
+	// ADR-16: it now carries the SAME mcp_api_keys bearer verifier as :8891
+	// (when the accounts substrate is live) plus an unconditional
+	// TenantResolver pinning each tool call to the bearer's account UUID.
+	// Fail-closed by construction: keyStore nil → no bearerAuth → no
+	// TokenInfo in ctx → MCPTenantResolver denies every call, so a no-DB
+	// deployment can never serve an unauthenticated fail-open 'spb' tenant.
 	mcpPort := env.Str("ADMIN_MCP_PORT", "8897")
+	var panelBearer *mcpserver.BearerAuth
+	if keyStore != nil {
+		panelBearer = &mcpserver.BearerAuth{
+			Verifier:       keyStore.Verifier(),
+			LoopbackBypass: false,
+		}
+	} else {
+		logger.Warn("admin MCP: accounts store unavailable — no bearer auth; TenantResolver still denies every call (fail-closed)")
+	}
 	go func() {
 		logger.Info("admin MCP endpoint", slog.String("addr", mcpPort))
 		if err := panelmcp.Run(panelmcp.Config{
-			Panel:   panel,
-			Port:    mcpPort,
-			Context: ctx,
-			Logger:  logger,
+			Panel:          panel,
+			Port:           mcpPort,
+			Context:        ctx,
+			Logger:         logger,
+			BearerAuth:     panelBearer,
+			TenantResolver: accounts.MCPTenantResolver,
 		}); err != nil {
 			logger.Error("admin MCP server", slog.Any("error", err))
 		}

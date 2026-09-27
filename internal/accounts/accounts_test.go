@@ -23,13 +23,25 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// dropAccountTables resets the panel_accounts schema this suite owns. The
+// dropAccountTables resets the account-schema state this suite owns. The
 // tables are dropped (not truncated) so each test exercises EnsureSchema from
 // the absent-table state — the same state Bootstrap faces on a fresh deploy.
+// mcp_api_keys goes with them, and its schema_migrations tracking row is
+// cleared: pgutil skips already-recorded files, so without the delete the
+// next Migrate would leave mcp_api_keys dropped forever — a FK-less table a
+// later test could silently verify against.
 func dropAccountTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
-		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
+		`DROP TABLE IF EXISTS mcp_api_keys;
+		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
+		 DROP TABLE IF EXISTS panel_accounts;
+		 DO $$
+		 BEGIN
+		     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+		         DELETE FROM schema_migrations WHERE name = '014_mcp_api_keys.sql';
+		     END IF;
+		 END $$`)
 	require.NoError(t, err)
 }
 

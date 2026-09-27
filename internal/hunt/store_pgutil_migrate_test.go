@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	panelauth "github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -98,6 +99,19 @@ func openEphemeralTestDB(t *testing.T) *pgxpool.Pool {
 	return ephPool
 }
 
+// ensurePanelAccounts stands up the real panel_accounts schema via the
+// upstream go-panel store — the ADR-6 precondition every DB must satisfy
+// before the hunt migration runner reaches 014_mcp_api_keys.sql (which
+// REFERENCES panel_accounts). Prod gets the same ordering for free:
+// accounts.Bootstrap runs EnsureSchema inside initEngine strictly before
+// hStore.Migrate. Calling the real EnsureSchema — not a stub CREATE TABLE —
+// keeps the fixture honest against upstream DDL drift.
+func ensurePanelAccounts(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	require.NoError(t, panelauth.NewPgxAccountStore(pool).EnsureSchema(context.Background()),
+		"panel_accounts must exist before migrations that reference it (ADR-6)")
+}
+
 // schemaMigrationsRows returns the set of names tracked in schema_migrations
 // on the given pool, ordered by name.
 func schemaMigrationsRows(t *testing.T, pool *pgxpool.Pool) []string {
@@ -127,6 +141,7 @@ func schemaMigrationsRows(t *testing.T, pool *pgxpool.Pool) []string {
 func TestStore_Migrate_PgUtil_FreshDB(t *testing.T) {
 	pool := openEphemeralTestDB(t)
 	ctx := context.Background()
+	ensurePanelAccounts(t, pool)
 
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx), "fresh migrate must succeed")
@@ -176,6 +191,11 @@ func TestStore_Migrate_PgUtil_AdoptedDB(t *testing.T) {
 	ctx := context.Background()
 
 	// --- Seed a legacy-adopted DB: old tracker + app tables + a sentinel row.
+	// 0. panel_accounts first — 014 REFERENCES it; in prod Bootstrap's
+	//    EnsureSchema lands before any migration runner (ADR-6), and the
+	//    adopted prod DB this fixture mimics already had it.
+	ensurePanelAccounts(t, pool)
+
 	// 1. Create the OLD schema_versions tracker (the shape the pre-pgutil
 	//    code used: version TEXT PK, applied_at).
 	_, err := pool.Exec(ctx, `
