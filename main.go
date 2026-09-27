@@ -21,6 +21,7 @@ import (
 	"github.com/anatolykoptev/go-kit/metrics/mcpmw"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-mcpserver"
+	"github.com/anatolykoptev/go-panel/auth"
 	panelmcp "github.com/anatolykoptev/go-panel/mcp"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
@@ -38,6 +39,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/jobserver"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/anatolykoptev/go_job/internal/pdfrender"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -63,7 +65,7 @@ func main() {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	huntNotifier := initEngine(sigCtx)
+	huntNotifier, acctStore, operatorID := initEngine(sigCtx)
 
 	slog.Info("starting go_job",
 		slog.String("port", mcpPort),
@@ -102,7 +104,7 @@ func main() {
 
 	// Operator admin UI (go-panel) on :8896 — fail-soft (no-op without ADMIN_* env).
 	if hs := engine.GetHuntStore(); hs != nil {
-		startAdminServer(sigCtx, hs, authority, slog.Default())
+		startAdminServer(sigCtx, hs, authority, acctStore, operatorID, slog.Default())
 	}
 
 	hooks := mcpserver.MCPHooks{
@@ -256,11 +258,12 @@ func startPrometheusScrape(ctx context.Context, logger *slog.Logger) {
 	}()
 }
 
-// initEngine initialises the global engine (DB, proxy pool, clients) and returns
-// the hunt.Notifier that was wired to the hunt store (nil if bot init failed or
-// the store was not configured). The caller (main) passes this to StartWorker so
-// the ingest worker can fire Telegram notifications on OutcomeCreated.
-func initEngine(sigCtx context.Context) hunt.Notifier {
+// initEngine initialises the global engine (DB, proxy pool, clients). Returns
+// the hunt.Notifier wired to the hunt store (nil if unconfigured — main hands
+// it to StartWorker for ingest Telegram notifications) plus the
+// bootstrapAccounts products (account store + operator ID; zero-valued
+// without DATABASE_URL or on failure) for startAdminServer — ADR-6 below.
+func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, string) {
 	directFirst, initPool := resolveFetchMode(fetchDirectFirst)
 
 	c := engine.Config{
@@ -328,9 +331,9 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	}
 
 	// Twitter client (fallback — local accounts or guest mode)
-	accounts := twitter.ParseAccounts(env.Str("TWITTER_ACCOUNTS", ""))
+	twAccounts := twitter.ParseAccounts(env.Str("TWITTER_ACCOUNTS", ""))
 	openCount := 2
-	if len(accounts) > 0 {
+	if len(twAccounts) > 0 {
 		openCount = 0
 	}
 	// When go-social is configured it owns all Twitter search; the local client
@@ -344,7 +347,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 		disableGuestFallback = true
 	}
 	tw, err := twitter.NewClient(twitter.ClientConfig{
-		Accounts:             accounts,
+		Accounts:             twAccounts,
 		OpenAccountCount:     openCount,
 		DisableGuestFallback: disableGuestFallback,
 	})
@@ -375,6 +378,11 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
 	var huntNotifier hunt.Notifier
 
+	// bootstrapAccounts products for startAdminServer; zero values (no DB /
+	// failed) mean bcrypt self-disables while AUTH_DRIVER=hmac still works.
+	var acctStore *auth.PgxAccountStore
+	var operatorID string
+
 	// Resume DB (PostgreSQL + AGE graph)
 	if c.DatabaseURL == "" {
 		slog.Warn("hunt persist DISABLED", slog.String("reason", "DATABASE_URL unset"))
@@ -401,17 +409,13 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 				}
 			})
 
+			// ADR-6 ordering is load-bearing: bootstrapAccounts must precede
+			// the hStore.Migrate runner (migrations may REFERENCES
+			// panel_accounts) and must not move into startAdminServer.
+			acctStore, operatorID = bootstrapAccounts(rdb.Pool())
+
 			// Wire oversize store on the same pool (fails-soft: optional spill feature).
-			osStore := oversize.NewStore(rdb.Pool())
-			if err := osStore.Migrate(context.Background()); err != nil {
-				slog.Error("oversize migrate failed", slog.Any("error", err))
-				// Non-fatal: oversize spill is optional; continue startup.
-			} else {
-				engine.SetOversizeStore(osStore)
-				slog.Info("oversize store ready")
-				// #185: auto-purge old oversize responses to prevent unbounded table growth.
-				osStore.StartAutoPurge(sigCtx)
-			}
+			wireOversize(sigCtx, rdb.Pool())
 
 			// Wire hunt store on the same pool.
 			// FATAL: when DATABASE_URL is set, hunt persistence is a core dependency —
@@ -545,7 +549,7 @@ func initEngine(sigCtx context.Context) hunt.Notifier {
 	// Background monitors replaced by lazy on-read enrichment (Phase 3).
 	// Telegram notify is now wired directly into the ingest hook (store.UpsertX)
 	// so it fires on any ingest path — not just from the old monitor goroutines.
-	return huntNotifier
+	return huntNotifier, acctStore, operatorID
 }
 
 // checkEmbedCorpus verifies at startup that the active embed client is the one
@@ -706,21 +710,52 @@ func startNotifyHealthCheck(ctx context.Context, n *notify.ProductNotifier) {
 // admin credentials are unset (adminui.New returns ok=false) both are skipped,
 // so deploying before the env is wired changes nothing.
 //
-// accounts.Bootstrap runs HERE, before adminui.New and before any other
-// account-consuming migration (ADR-6 — the ordering is load-bearing): today
-// Bootstrap is the only panel_accounts writer; the P1 mcp_api_keys migration
-// must sequence after it. A Bootstrap failure degrades to acctStore=nil —
-// the bcrypt driver self-disables (fail-closed) while AUTH_DRIVER=hmac still
-// works as a DB-independent single-operator rollback.
-func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, logger *slog.Logger) {
-	acctStore, operator, err := accounts.Bootstrap(ctx, store.Pool(), accounts.OperatorSeedFromEnv())
+// wireOversize migrates and registers the optional spill store on the resume
+// pool. Fails-soft: a Migrate error logs and continues — oversize spill is
+// optional, never a boot blocker.
+func wireOversize(ctx context.Context, pool *pgxpool.Pool) {
+	osStore := oversize.NewStore(pool)
+	if err := osStore.Migrate(context.Background()); err != nil {
+		slog.Error("oversize migrate failed", slog.Any("error", err))
+		return
+	}
+	engine.SetOversizeStore(osStore)
+	slog.Info("oversize store ready")
+	// #185: auto-purge old oversize responses to prevent unbounded table growth.
+	osStore.StartAutoPurge(ctx)
+}
+
+// bootstrapAccounts is the DB-ready-path half of the ADR-6 ordering contract:
+// it runs inside initEngine BEFORE the hStore.Migrate runner — EnsureSchema
+// must create panel_accounts (+ TOTP columns) before any standard-roots
+// migration can REFERENCES it, and before P1's MCP bearer verifier can read
+// it — independent of whether the admin UI ever initializes. It must not move
+// back into the admin path: a Bootstrap nested under startAdminServer leaves
+// MCP fail-open on deployments that never start the admin UI.
+// A failure degrades to (nil, ""): the bcrypt driver self-disables
+// (fail-closed) while AUTH_DRIVER=hmac still works as a DB-independent
+// single-operator rollback. A nil pool (no DATABASE_URL) is a no-op.
+func bootstrapAccounts(pool *pgxpool.Pool) (*auth.PgxAccountStore, string) {
+	acctStore, op, err := accounts.Bootstrap(context.Background(), pool, accounts.OperatorSeedFromEnv())
 	if err != nil {
-		logger.Error("accounts bootstrap failed — bcrypt driver unavailable; AUTH_DRIVER=hmac still works", slog.Any("error", err))
+		slog.Error("accounts bootstrap failed — bcrypt driver unavailable; AUTH_DRIVER=hmac still works", slog.Any("error", err))
+		return acctStore, ""
 	}
-	operatorID := ""
-	if operator != nil {
-		operatorID = operator.ID
+	if op != nil {
+		return acctStore, op.ID
 	}
+	return acctStore, ""
+}
+
+// acctStore/operatorID are the accounts.Bootstrap products from initEngine —
+// Bootstrap runs there, on the DB-ready path BEFORE hStore.Migrate and before
+// this listener exists (ADR-6 — the ordering is load-bearing): the P1
+// mcp_api_keys migration REFERENCES panel_accounts, and P1's MCP bearer
+// verifier reads the account tables whether or not the admin UI initializes.
+// acctStore nil (no DATABASE_URL or a failed Bootstrap) degrades to the
+// bcrypt driver self-disabling (fail-closed) while AUTH_DRIVER=hmac still
+// works as a DB-independent single-operator rollback.
+func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, operatorID string, logger *slog.Logger) {
 	handler, panel, ok := adminui.New(store, authority, acctStore, operatorID)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD; the default bcrypt driver also needs ADMIN_TOTP_ENC_KEY and DATABASE_URL)")

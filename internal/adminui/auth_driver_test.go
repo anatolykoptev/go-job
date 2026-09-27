@@ -1,7 +1,9 @@
 package adminui
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +16,8 @@ import (
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
+	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
+	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -182,19 +186,33 @@ func TestTOTPEncryptionKey(t *testing.T) {
 	}
 }
 
-// TestProxiedClientIP: single trusted proxy (Caddy) → the LAST X-Forwarded-For
-// hop is the peer Caddy saw; earlier hops are client-controllable. No XFF →
-// RemoteAddr host.
+// TestProxiedClientIP: XFF is honoured ONLY for a trusted immediate peer —
+// loopback (host-local proxy) or private/ULA (docker bridge gateway /
+// in-network Caddy container, which is what the compose-published
+// 127.0.0.1:8896 mapping actually presents). A direct routable peer's XFF is
+// client-controllable spoof material — ignored, RemoteAddr wins.
 func TestProxiedClientIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
-	req.RemoteAddr = "10.0.0.9:4433"
+	req.RemoteAddr = "10.0.0.9:4433" // private peer, no XFF
 	require.Equal(t, "10.0.0.9", proxiedClientIP(req))
 
-	req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.7")
-	require.Equal(t, "203.0.113.7", proxiedClientIP(req), "last XFF hop wins")
+	// Trusted peers → last XFF hop wins (earlier hops are client-controllable).
+	for _, peer := range []string{"127.0.0.1:4433", "10.0.0.9:4433", "172.18.0.1:4433", "192.168.1.5:4433"} {
+		req.RemoteAddr = peer
+		req.Header.Set("X-Forwarded-For", "6.6.6.6, 203.0.113.7")
+		require.Equal(t, "203.0.113.7", proxiedClientIP(req), "loopback/private peer %s → last XFF hop", peer)
+	}
 
+	// Untrusted (routable) peer → XFF ignored entirely.
+	req.RemoteAddr = "203.0.113.99:4433"
+	require.Equal(t, "203.0.113.99", proxiedClientIP(req), "routable peer's XFF is attacker-controlled — must be ignored")
+
+	// Trusted peer with empty/malformed XFF → RemoteAddr.
+	req.RemoteAddr = "127.0.0.1:4433"
 	req.Header.Set("X-Forwarded-For", "")
-	require.Equal(t, "10.0.0.9", proxiedClientIP(req))
+	require.Equal(t, "127.0.0.1", proxiedClientIP(req))
+	req.Header.Set("X-Forwarded-For", "  , ,")
+	require.Equal(t, "127.0.0.1", proxiedClientIP(req), "all-empty XFF hops fall back to RemoteAddr")
 }
 
 // TestLoginLimiter proves the fixed-window contract auth relies on: limit
@@ -222,4 +240,133 @@ func TestLoginLimiter(t *testing.T) {
 	cancel()
 	_, err = l.Allow(cancelled, "ip3", 3, time.Minute)
 	require.Error(t, err)
+}
+
+// TestLoginLimiter_ZeroValue: a bare LoginLimiter{} must satisfy
+// auth.RateLimiter without NewLoginLimiter — Allow lazily initialises
+// hits/now, so the zero value never nil-derefs.
+func TestLoginLimiter_ZeroValue(t *testing.T) {
+	var l accounts.LoginLimiter
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		ok, err := l.Allow(ctx, "ip", 2, time.Minute)
+		require.NoError(t, err)
+		require.True(t, ok, "hit %d under limit must allow on a zero-value limiter", i)
+	}
+	ok, err := l.Allow(ctx, "ip", 2, time.Minute)
+	require.NoError(t, err)
+	require.False(t, ok, "over-limit must deny on a zero-value limiter")
+}
+
+// captureSlog swaps the default logger for a buffer-backed text handler —
+// the MED-3 assertions below read the emitted records, not just the return
+// values (the findings are "log loud, don't disable" so the LOG is the
+// contract under test).
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+// TestSelectDriver_BcryptZeroLoginable_Logs covers the zero-loginable trap:
+// bcrypt driver + ADMIN_PASSWORD set but no seed identifier → admin enabled
+// with nobody able to log in — must scream ADMIN_EMAIL/ADMIN_USERNAME, not
+// disable (CLI-provisioned accounts may still work) and not stay silent.
+func TestSelectDriver_BcryptZeroLoginable_Logs(t *testing.T) {
+	t.Setenv("AUTH_DRIVER", "")
+	t.Setenv("ADMIN_TOTP_ENC_KEY", strings.Repeat("ab", 32))
+	t.Setenv("ADMIN_EMAIL", "")
+	t.Setenv("ADMIN_USERNAME", "")
+
+	buf := captureSlog(t)
+	d, ok := selectDriver(auth.NewPgxAccountStore(nil), "", testHMACKey, "pw", "admin")
+	require.True(t, ok, "admin stays enabled — accounts provisioned out-of-band may still log in")
+	require.NotNil(t, d)
+	require.Contains(t, buf.String(), "no operator account was seeded")
+	require.Contains(t, buf.String(), "ADMIN_EMAIL")
+}
+
+// TestSelectDriver_BcryptNonEmailSeed_Logs: an ADMIN_USERNAME-only seed
+// (e.g. "admin") produces a non-email identifier the login form's
+// <input type=email> cannot submit — the driver must name ADMIN_EMAIL.
+func TestSelectDriver_BcryptNonEmailSeed_Logs(t *testing.T) {
+	t.Setenv("AUTH_DRIVER", "")
+	t.Setenv("ADMIN_TOTP_ENC_KEY", strings.Repeat("ab", 32))
+	t.Setenv("ADMIN_EMAIL", "")
+	t.Setenv("ADMIN_USERNAME", "admin") // non-email-shaped identifier
+
+	buf := captureSlog(t)
+	d, ok := selectDriver(auth.NewPgxAccountStore(nil), "uuid-1", testHMACKey, "pw", "admin")
+	require.True(t, ok)
+	require.NotNil(t, d)
+	require.Contains(t, buf.String(), "not email-shaped")
+	require.Contains(t, buf.String(), "ADMIN_EMAIL")
+}
+
+// TestNew_WiresSessionTenantGate is the §5b amputation gate for
+// adminui.New's resource.Config: it drives a REAL bcrypt login through the
+// assembled panel and then GETs a guarded route
+// (/admin/security/totp/enroll — chosen because it touches only
+// panel_accounts, no hunt tables). Expected: 200 — sessionTenantResolver
+// resolved the session account UUID and accountMatchAuthorizer allowed it.
+//
+// Mutation contract (both must turn this test RED):
+//   - delete `Resolver: d.resolver` → Config falls back to
+//     tenant.PathResolver{Segment:2} → resolves the GLOBAL tenant ("spb")
+//     for this path → accountMatchAuthorizer denies (uuid ≠ spb) → 403;
+//   - delete `TenantAuthorizer: d.authorizer` → GlobalOnlyAuthorizer denies
+//     the non-global account tenant → 403.
+func TestNew_WiresSessionTenantGate(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	dbtest.RequireTestDB(t, dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	ctx := context.Background()
+
+	_, err = pool.Exec(ctx,
+		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
+	require.NoError(t, err)
+	acctStore, op, err := accounts.Bootstrap(ctx, pool,
+		accounts.OperatorSeed{Email: "gate@t.example", Password: "gate-pass-123"})
+	require.NoError(t, err)
+	require.NotNil(t, op)
+
+	t.Setenv("AUTH_DRIVER", "")
+	t.Setenv("ADMIN_HMAC_KEY", testHMACKey)
+	t.Setenv("ADMIN_PASSWORD", "unused-hmac-pw")
+	t.Setenv("ADMIN_TOTP_ENC_KEY", strings.Repeat("ab", 32))
+	t.Setenv("ADMIN_CSRF_KEY", strings.Repeat("cd", 32))
+	t.Setenv("ADMIN_EMAIL", "gate@t.example")
+	t.Setenv("ADMIN_USERNAME", "")
+
+	handler, _, ok := New(hunt.NewStore(pool), applications.New(nil, t.TempDir()), acctStore, op.ID)
+	require.True(t, ok, "bcrypt driver must be enabled with a bootstrapped store")
+
+	// Real login through the assembled handler → session cookie.
+	form := url.Values{"email": {"gate@t.example"}, "password": {"gate-pass-123"}}
+	loginReq := httptest.NewRequest(http.MethodPost, adminBasePath+"/login", strings.NewReader(form.Encode()))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	lw := httptest.NewRecorder()
+	handler.ServeHTTP(lw, loginReq)
+	require.Equal(t, http.StatusSeeOther, lw.Code, "password-only login must issue a session")
+	cookies := lw.Result().Cookies()
+	require.NotEmpty(t, cookies, "login must set a session cookie")
+
+	// The guarded probe: resolver+authorizer must resolve-and-allow the
+	// session's own tenant. Either Config amputation collapses to a deny.
+	req := httptest.NewRequest(http.MethodGet, adminBasePath+"/security/totp/enroll/", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code,
+		"guarded route must be reachable for the session's own tenant — a 403 here means the Resolver/TenantAuthorizer fields were dropped from resource.New's Config (§5b)")
+	require.Contains(t, w.Body.String(), `name="current_password"`,
+		"the enroll gate renders the re-auth form (MED-4 step-up present)")
 }

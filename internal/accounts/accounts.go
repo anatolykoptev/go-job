@@ -73,6 +73,7 @@ BEGIN
         SELECT 1 FROM pg_constraint
         WHERE conname = 'panel_accounts_role_check'
           AND conrelid = 'panel_accounts'::regclass
+          AND contype = 'c' -- only a CHECK satisfies the guard: a same-named FK/UNIQUE must not suppress the ADD CONSTRAINT
     ) THEN
         ALTER TABLE panel_accounts
             ADD CONSTRAINT panel_accounts_role_check CHECK (role IN ('user', 'admin'));
@@ -84,11 +85,19 @@ END $$;`
 // any account-consuming migration may FK-reference them; the role-constraint
 // migration follows; the env-seeded operator admin runs last.
 //
+// A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
+// skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.
+// The bcrypt driver treats nil acctStore as "admin disabled" (fail-closed);
+// the hmac rollback does not need a store at all.
+//
 // Returns the ready store and the seeded operator account — nil account when
 // the seed envs are absent (a deployment that never enables the admin UI), or
 // when the stored operator row is deactivated (the env seed must not resurrect
 // an operator that was deliberately deactivated).
 func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*auth.PgxAccountStore, *auth.Account, error) {
+	if pool == nil {
+		return nil, nil, nil
+	}
 	store := auth.NewPgxAccountStore(pool)
 	if err := store.EnsureSchema(ctx); err != nil {
 		return nil, nil, fmt.Errorf("accounts: ensure schema: %w", err)

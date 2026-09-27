@@ -19,12 +19,15 @@ type window struct {
 // auth.RateLimiter's signature matches identity.RateLimiter verbatim, so a
 // Redis-backed limiter can replace this without touching the call site.
 //
+// The zero value is ready to use: Allow lazily initialises hits/now under the
+// mutex, so a bare LoginLimiter{} never nil-derefs.
+//
 // Fail-closed per the auth contract: the only error source is ctx.Err() —
 // every other path returns a definitive allow/deny, never silently allows.
 type LoginLimiter struct {
 	mu   sync.Mutex
 	hits map[string]window
-	now  func() time.Time // test seam
+	now  func() time.Time // test seam; nil → time.Now
 }
 
 // NewLoginLimiter returns a zero-value-ready limiter.
@@ -38,9 +41,18 @@ func (l *LoginLimiter) Allow(ctx context.Context, key string, limit int, win tim
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Lazy init keeps the zero value usable — NewLoginLimiter is the
+	// conventional constructor but a bare LoginLimiter{} must not panic.
+	if l.hits == nil {
+		l.hits = make(map[string]window)
+	}
+	nowFn := l.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
 	// Amortized cleanup: sweep expired windows once the map is large enough to
 	// matter. Bounds memory on a long-lived process under many distinct IPs.
 	if len(l.hits) > 4096 {
