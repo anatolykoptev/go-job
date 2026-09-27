@@ -412,7 +412,7 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, s
 			// ADR-6 ordering is load-bearing: bootstrapAccounts must precede
 			// the hStore.Migrate runner (migrations may REFERENCES
 			// panel_accounts) and must not move into startAdminServer.
-			acctStore, operatorID = bootstrapAccounts(rdb.Pool())
+			acctStore, operatorID = bootstrapAccounts(sigCtx, rdb.Pool())
 
 			// Wire oversize store on the same pool (fails-soft: optional spill feature).
 			wireOversize(sigCtx, rdb.Pool())
@@ -735,8 +735,8 @@ func wireOversize(ctx context.Context, pool *pgxpool.Pool) {
 // A failure degrades to (nil, ""): the bcrypt driver self-disables
 // (fail-closed) while AUTH_DRIVER=hmac still works as a DB-independent
 // single-operator rollback. A nil pool (no DATABASE_URL) is a no-op.
-func bootstrapAccounts(pool *pgxpool.Pool) (*auth.PgxAccountStore, string) {
-	acctStore, op, err := accounts.Bootstrap(context.Background(), pool, accounts.OperatorSeedFromEnv())
+func bootstrapAccounts(ctx context.Context, pool *pgxpool.Pool) (*auth.PgxAccountStore, string) {
+	acctStore, op, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeedFromEnv())
 	if err != nil {
 		slog.Error("accounts bootstrap failed — bcrypt driver unavailable; AUTH_DRIVER=hmac still works", slog.Any("error", err))
 		return acctStore, ""
