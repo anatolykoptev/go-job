@@ -545,6 +545,61 @@
     closeDrawer();
   });
 
+  // Destructive-form confirmation — CSP-compliant replacement for the inline
+  // onsubmit="return confirm(...)" this form used to carry, for the same
+  // reason as the copy buttons above: the page CSP is
+  // `script-src 'self' 'unsafe-eval'` with no 'unsafe-inline', so an inline
+  // handler never runs. It failed silently and open — the browser dropped
+  // the handler, the form submitted anyway, and the row was deleted with no
+  // prompt. Any form carrying data-confirm is gated here instead.
+  //
+  // The message comes from the attribute rather than being built in JS, so
+  // the server owns the wording and the browser owns nothing but the prompt.
+  // Reading it via getAttribute also means a title containing a quote is
+  // already unescaped by the HTML parser — the old inline version pasted the
+  // title into a JS string literal, where a quote would have broken it.
+  document.addEventListener('submit',function(e){
+    var form=e.target.closest('form[data-confirm]');
+    if(!form) return;
+    if(!window.confirm(form.getAttribute('data-confirm'))) e.preventDefault();
+  });
+  // Undo window — the only part of delete-with-undo that cannot be rendered by
+  // the server. An element carrying data-undo-after="<ms>" disappears after
+  // that long: a dimmed table row, or the toast a detail-page delete leaves on
+  // the list.
+  //
+  // If this file fails to load, the row stays dimmed and the toast stays put
+  // forever. That is the SAFE direction and it is chosen, not incidental: a
+  // stale visible row is something the operator can act on, whereas a row that
+  // vanished on a timer that did not run is indistinguishable from a delete
+  // they never made. Nothing here performs the delete — that already happened
+  // server-side — so a missing timer costs tidiness, never data.
+  //
+  // armUndoTimers is idempotent per element (data-undo-armed), because htmx
+  // swaps re-run it over nodes that may already be counting down.
+  function armUndoTimers(root){
+    var nodes=(root||document).querySelectorAll('[data-undo-after]');
+    for(var i=0;i<nodes.length;i++){
+      (function(el){
+        if(el.getAttribute('data-undo-armed')==='1') return;
+        el.setAttribute('data-undo-armed','1');
+        var ms=parseInt(el.getAttribute('data-undo-after'),10);
+        if(!(ms>0)) return;
+        setTimeout(function(){
+          if(!el.parentNode) return;
+          el.classList.add('undo-expired');
+          // let the fade finish before the node goes
+          setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); },200);
+        },ms);
+      })(nodes[i]);
+    }
+  }
+  armUndoTimers(document);
+  // htmx replaces the row with its deleted placeholder, so the new node needs
+  // arming; afterSwap fires for the swapped-in content.
+  document.addEventListener('htmx:afterSwap',function(e){
+    armUndoTimers(e.target && e.target.parentNode ? e.target.parentNode : document);
+  });
   // Esc — close drawer and return focus to hamburger.
   document.addEventListener('keydown',function(e){
     if(e.key!=='Escape') return;

@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -19,11 +20,111 @@ type listPageData struct {
 	TotalPages  int
 	BasePath    string
 	QueryString string // raw query string for sort link base URL
+	// CSRFToken is issued only when the resource can undo a delete
+	// (Writer.Restore != nil). It is what the row-level Delete and Вернуть
+	// buttons post, and its emptiness is what hides them — so a resource that
+	// cannot restore can never render a one-click delete.
+	CSRFToken string
+	// RestorableID carries the row just deleted from a DETAIL page, so the list
+	// can offer the same way back the table row does. Server-rendered rather
+	// than client state: it survives a reload and needs no script.
+	RestorableID string
+	// ActiveView is the resolved Resource.Views key ("" when none declared).
+	ActiveView string
+	// Selected is the request's raw query values, used ONLY to mark which chip
+	// is currently active. Never a source of SQL — see ListQuery's doc.
+	Selected url.Values
+}
+
+// rowPath builds a per-row URL under this resource: {basePath}/{name}/{id}.
+//
+// PathEscape because id is a database value. A slug with a slash in it does not
+// error, it silently builds a URL pointing somewhere else.
+func rowPath(d listPageData, id string, suffix string) string {
+	return d.BasePath + "/" + d.Resource.Name + "/" + url.PathEscape(id) + suffix
+}
+
+// rowDetailHref is where a row's FIRST cell links to, or "" for no link.
+//
+// Consumers do not build this. They cannot: a Lister returns rows from a store
+// package that has no idea where the panel is mounted, so asking them for a
+// URL is asking them to hardcode "/admin" — which is the exact bug CrossLinkCell
+// was promoted into the framework to remove, and which every consumer of it
+// reproduced until BasePathFrom existed. The framework already assembles this
+// path for the Edit link three lines below; it can assemble this one too.
+//
+// Row.Href still wins, for the case the derivation cannot serve: a detail page
+// belonging to a DIFFERENT resource.
+//
+// EffectiveDetailer rather than `d.Resource.Detailer != nil` because a resource
+// that sets only FetchRow HAS a detail route — Register synthesizes the
+// Detailer into a copy and mounts that, leaving the original field nil. Reading
+// the field directly would leave exactly those resources unlinked, and the
+// symptom is invisible: a name that is simply not a link.
+func rowDetailHref(d listPageData, row Row) string {
+	if row.Href != "" {
+		return row.Href
+	}
+	if row.ID == "" || EffectiveDetailer(d.Resource) == nil {
+		return ""
+	}
+	return rowPath(d, row.ID, "")
+}
+
+// chipClass returns the filter-chip class list, adding "active" when value is
+// the one currently selected for key. Without this the selected chip renders
+// identically to the others: `.filter-chip.active` has existed in styles.templ
+// since the chips did, and nothing applied it, so no admin list has ever shown
+// which filter is on.
+func chipClass(d listPageData, key, value string) string {
+	for _, v := range d.Selected[key] {
+		if v == value {
+			return "filter-chip active"
+		}
+	}
+	return "filter-chip"
+}
+
+// viewChipClass returns the chip class for a view key.
+func viewChipClass(d listPageData, key string) string {
+	if d.ActiveView == key {
+		return "filter-chip active"
+	}
+	return "filter-chip"
+}
+
+// viewsLabel is the caption beside the view chips.
+func viewsLabel(r Resource) string {
+	if r.ViewsLabel != "" {
+		return r.ViewsLabel
+	}
+	return "view"
+}
+
+// viewLabel is the chip text for one view, falling back to its key.
+func viewLabel(v View) string {
+	if v.Label != "" {
+		return v.Label
+	}
+	return v.Key
 }
 
 // listPageContent renders the full list page content (page header + filter bar + table + pagination).
 // Wrapped by Layout for non-htmx requests; used directly for htmx fragment swap.
 templ listPageContent(d listPageData) {
+	if d.RestorableID != "" && d.CSRFToken != "" {
+		// Rendered server-side rather than raised in JS: it survives a reload,
+		// needs no client state, and works under the admin CSP, which drops
+		// inline handlers. admin.js only fades it — if that never loads the
+		// toast stays, which is the safe direction.
+		<div class="undo-toast" data-undo-after="5000" role="status">
+			<span>{ d.Resource.Title } deleted</span>
+			<form method="POST" action={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + d.RestorableID + "/restore") }>
+				<input type="hidden" name={ csrfFormField } value={ d.CSRFToken }/>
+				<button type="submit" class="row-undo">Вернуть</button>
+			</form>
+		</div>
+	}
 	<div class="page-header">
 		<div style="display:flex;align-items:center;justify-content:space-between;gap:1rem">
 			<div>
@@ -49,7 +150,9 @@ templ listPageContent(d listPageData) {
 // sort/filter/pagination click has no target and htmx silently does nothing.
 templ listRowsFragment(d listPageData) {
 	<div id={ d.Resource.Name + "-region" }>
-		@listTable(d)
+		<div class="crm-table-scroll">
+			@listTable(d)
+		</div>
 		@pagination(d)
 	</div>
 }
@@ -66,7 +169,7 @@ templ listRowsAppend(d listPageData) {
 
 // filterBar renders the filter chips for ILike text search and Eq/AnyOf chip selectors.
 templ filterBar(d listPageData) {
-	if len(d.Resource.Filter.Filters) > 0 {
+	if len(d.Resource.Filter.Filters) > 0 || len(d.Resource.Views) > 0 {
 		<form
 			class="filter-bar"
 			hx-get={ d.BasePath + "/" + d.Resource.Name + "/rows" }
@@ -74,6 +177,19 @@ templ filterBar(d listPageData) {
 			hx-push-url="true"
 			hx-trigger="change, submit"
 		>
+			if len(d.Resource.Views) > 0 {
+				<div style="display:flex;gap:.25rem;align-items:center">
+					<span style="font-family:var(--font-mono);font-size:.625rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em">{ viewsLabel(d.Resource) }</span>
+					for _, v := range d.Resource.Views {
+						<button
+							type="submit"
+							name="view"
+							value={ v.Key }
+							class={ viewChipClass(d, v.Key) }
+						>{ viewLabel(v) }</button>
+					}
+				</div>
+			}
 			for _, f := range d.Resource.Filter.Filters {
 				if len(f.Allowed) > 0 {
 					<div style="display:flex;gap:.25rem;align-items:center">
@@ -83,7 +199,7 @@ templ filterBar(d listPageData) {
 								type="submit"
 								name={ f.Key }
 								value={ a }
-								class="filter-chip"
+								class={ chipClass(d, f.Key, a) }
 							>{ a }</button>
 						}
 					</div>
@@ -91,6 +207,7 @@ templ filterBar(d listPageData) {
 					<input
 						type="search"
 						name={ f.Key }
+						value={ d.Selected.Get(f.Key) }
 						placeholder={ "Search " + f.Key + "..." }
 						style="padding:.375rem .625rem;background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--font-sans);font-size:.8125rem"
 					/>
@@ -149,28 +266,80 @@ templ listTable(d listPageData) {
 // Load-more append fragment (parity by construction, edit column included).
 templ listRows(d listPageData) {
 	for _, row := range d.Rows {
-		<tr>
-			for i, cell := range row.Cells {
-				if i == 0 && row.Href != "" {
-					<td style={ colCellStyle(d, i) }>
-						<a class="row-name" href={ templ.SafeURL(row.Href) }>{ cell.Value }</a>
-					</td>
-				} else if cell.HTML {
-					<td style={ colCellStyle(d, i) }>@templ.Raw(cell.Value)</td>
-				} else {
-					<td style={ colCellStyle(d, i) }>{ cell.Value }</td>
-				}
-			}
-			if d.Resource.Writer != nil {
-				<td style="text-align:right">
-					<a
-						href={ templ.SafeURL(d.BasePath + "/" + d.Resource.Name + "/" + row.ID + "/edit") }
-						style="font-size:.75rem;color:var(--text-secondary);text-decoration:none"
-					>Edit</a>
-				</td>
-			}
-		</tr>
+		@listRow(d, row)
 	}
+}
+
+// listRow renders ONE data row.
+//
+// Extracted from listRows so the delete handler can swap a single <tr> and get
+// markup identical to the full-page render. Two templates that "look the same"
+// drift, and the drift shows only in the swapped row — next to its unswapped
+// neighbours, which is the one place nobody has a baseline for.
+templ listRow(d listPageData, row Row) {
+	{{ detailHref := rowDetailHref(d, row) }}
+	<tr>
+		for i, cell := range row.Cells {
+			if i == 0 && detailHref != "" {
+				<td style={ colCellStyle(d, i) }>
+					// Plain string, never templ.SafeURL: SafeURL is the opt-OUT
+					// of templ's URL sanitiser, so casting a consumer-supplied
+					// Row.Href to it renders javascript: verbatim in the href.
+					<a class="row-name" href={ detailHref }>{ cell.Value }</a>
+				</td>
+			} else if cell.HTML {
+				<td style={ colCellStyle(d, i) }>@templ.Raw(cell.Value)</td>
+			} else {
+				<td style={ colCellStyle(d, i) }>{ cell.Value }</td>
+			}
+		}
+		if d.Resource.Writer != nil {
+			<td style="text-align:right;white-space:nowrap">
+				<a
+					href={ rowPath(d, row.ID, "/edit") }
+					style="font-size:.75rem;color:var(--text-secondary);text-decoration:none"
+				>Edit</a>
+				if d.Resource.Writer.Restore != nil && d.CSRFToken != "" {
+					<button
+						type="button"
+						class="row-delete"
+						hx-post={ d.BasePath + "/" + d.Resource.Name + "/" + row.ID + "/delete" }
+						hx-vals={ csrfVals(d.CSRFToken) }
+						hx-target="closest tr"
+						hx-swap="outerHTML"
+						aria-label={ "Delete " + row.ID }
+					>Delete</button>
+				}
+			</td>
+		}
+	</tr>
+}
+
+// deletedRow replaces a row the operator just deleted: dimmed, and offering the
+// way back where Delete used to be.
+//
+// It is rendered ONLY when the resource has a Restore, so this markup can never
+// appear for a resource that cannot honour the button it draws. The row is
+// removed from the DOM by admin.js after the undo window; if that script fails
+// to load the row stays dimmed instead of vanishing, which is the safe
+// direction — a stale visible row is recoverable, a silently vanished one is
+// indistinguishable from a delete the operator did not intend.
+templ deletedRow(d listPageData, id string, label string) {
+	<tr class="row-deleted" data-undo-after="5000">
+		<td colspan={ listColspanExceptActions(d) } class="row-deleted-label">
+			{ label } deleted
+		</td>
+		<td style="text-align:right;white-space:nowrap">
+			<button
+				type="button"
+				class="row-undo"
+				hx-post={ d.BasePath + "/" + d.Resource.Name + "/" + id + "/restore" }
+				hx-vals={ csrfVals(d.CSRFToken) }
+				hx-target="closest tr"
+				hx-swap="outerHTML"
+			>Вернуть</button>
+		</td>
+	</tr>
 }
 
 // pagination renders page navigation inside a stable-id wrapper so the
@@ -224,6 +393,26 @@ templ paginationInner(d listPageData) {
 // --- helper functions (not components) ---
 
 // listColspan returns the total column count including the optional edit column.
+// listColspanExceptActions is listColspan minus the actions column: a deleted
+// row's label spans the data columns while its actions cell keeps the undo
+// button exactly where the Delete it replaced used to be.
+func listColspanExceptActions(d listPageData) string {
+	return strconv.Itoa(len(d.Resource.Sort.Columns))
+}
+
+// csrfVals renders the token as an hx-vals JSON object. htmx sends it as an
+// ordinary form field, so the existing CSRF check on the route applies
+// unchanged — this adds an affordance, not an exemption. The field name comes
+// from csrfFormField for the same reason the templates do: a literal here
+// would 403 silently, which is what a working button looks like.
+func csrfVals(token string) string {
+	b, err := json.Marshal(map[string]string{csrfFormField: token})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func listColspan(d listPageData) string {
 	n := len(d.Resource.Sort.Columns)
 	if d.Resource.Writer != nil {
@@ -293,10 +482,19 @@ func colHeaderStyle(col admintable.Column) string {
 // colCellStyle builds the inline style for a <td> element using the column at index i.
 // Out-of-bounds index (extra cells) returns an empty string safely.
 func colCellStyle(d listPageData, i int) string {
-	if i >= len(d.Resource.Sort.Columns) {
+	return colCellStyleAt(d.Resource.Sort.Columns, i)
+}
+
+// colCellStyleAt is colCellStyle over a bare column slice, so the Trash table —
+// which renders another resource's columns without that resource's
+// listPageData — styles its cells through the SAME code the list uses. Two
+// functions drawing "the same" cell drift, and the drift shows only on the page
+// nobody has a baseline for.
+func colCellStyleAt(cols []admintable.Column, i int) string {
+	if i >= len(cols) {
 		return ""
 	}
-	col := d.Resource.Sort.Columns[i]
+	col := cols[i]
 	s := ""
 	if col.Align != "" {
 		s += "text-align:" + col.Align + ";"

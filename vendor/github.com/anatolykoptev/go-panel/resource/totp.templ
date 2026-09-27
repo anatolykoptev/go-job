@@ -34,7 +34,7 @@ templ totpEnrollContent(d totpEnrollPageData) {
 		<code style="display:block;padding:.5rem .75rem;background:var(--pm7-muted);border-radius:.375rem;font-size:.75rem;user-select:all;word-break:break-all">{ d.OTPAuthURI }</code>
 	</div>
 	<form method="POST" action={ templ.SafeURL(d.ConfirmURL) } style="max-width:20rem">
-		<input type="hidden" name="_csrf" value={ d.CSRFToken }/>
+		<input type="hidden" name={ csrfFormField } value={ d.CSRFToken }/>
 		<div style="margin-bottom:1rem">
 			<label for="totp-code" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Enter the 6-digit code from your app</label>
 			<input id="totp-code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" required autofocus class="pm7-input"/>
@@ -90,7 +90,7 @@ templ totpReauthFormContent(action, csrfToken, errMsg, title, submitLabel string
 	</div>
 	@totpErrorBanner(errMsg)
 	<form method="POST" action={ templ.SafeURL(action) } style="max-width:20rem">
-		<input type="hidden" name="_csrf" value={ csrfToken }/>
+		<input type="hidden" name={ csrfFormField } value={ csrfToken }/>
 		<div style="margin-bottom:1rem">
 			<label for="totp-reauth-password" style="display:block;font-size:.875rem;color:var(--pm7-muted-foreground);margin-bottom:.375rem">Confirm your current password</label>
 			<input id="totp-reauth-password" name="current_password" type="password" autocomplete="current-password" required autofocus class="pm7-input"/>

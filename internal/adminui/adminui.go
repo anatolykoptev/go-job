@@ -7,7 +7,6 @@ package adminui
 import (
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
@@ -24,7 +23,11 @@ const (
 )
 
 // New builds the admin handler mounted at /admin. Returns (nil,nil,false) when
-// ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled.
+// ADMIN_HMAC_KEY (>=32 bytes) or ADMIN_PASSWORD is unset — admin disabled —
+// or when the selected AUTH_DRIVER's own requirements fail (see auth_driver.go).
+// acctStore/operatorID come from accounts.Bootstrap (the caller must run it
+// before any account-consuming migration, ADR-6); acctStore may be nil without
+// a database — only the AUTH_DRIVER=hmac rollback is possible then.
 // The returned *resource.Panel can be used to expose Resources via MCP
 // (see go-panel/mcp); nil when admin is disabled.
 //
@@ -32,7 +35,7 @@ const (
 // Bespoke 4-/5-segment routes (POST /rate, GET /download/{kind}) precede the
 // panel catch-all and do not shadow go-panel's 3-segment routes (/rows, /{id}).
 // GET /admin/jobs/{id} is served by go-panel via the Detailer (natural URL).
-func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *resource.Panel, bool) {
+func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, operatorID string) (http.Handler, *resource.Panel, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
 	if len(hmacKey) < 32 || password == "" {
@@ -45,21 +48,33 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 
 	adminUser := envOr("ADMIN_USERNAME", "admin")
 
-	a := auth.NewHMACAuth(auth.HMACConfig{
-		Username:   adminUser,
-		Password:   password,
-		HMACKey:    []byte(hmacKey),
-		BasePath:   adminBasePath,
-		SessionTTL: 12 * time.Hour,
-		Secure:     true,
-	})
-	checkAuthCapabilities(a)
+	d, ok := selectDriver(acctStore, operatorID, hmacKey, password, adminUser)
+	if !ok {
+		return nil, nil, false
+	}
+	a := d.authn
+	cn := checkAuthCapabilities(a)
 	p := resource.New(resource.Config{
-		Title:    "go-job",
-		BasePath: adminBasePath,
-		Auth:     a,
-		CSRFKey:  []byte(csrfKey),
+		Title:            "go-job",
+		BasePath:         adminBasePath,
+		Auth:             a,
+		CSRFKey:          []byte(csrfKey),
+		Resolver:         d.resolver,
+		TenantAuthorizer: d.authorizer,
 	})
+
+	// TOTP self-service enrollment ("my own 2FA") mounts only under bcrypt:
+	// the routes resolve the acting account via auth.SessionFrom, which the
+	// HMAC session never populates — under AUTH_DRIVER=hmac every enrollment
+	// route would 401 anyway (ADR-17: no identity-dependent flows in rollback).
+	if d.totpKey != nil {
+		resource.MountTOTPEnrollment(p, resource.TOTPEnrollmentConfig{
+			Store:             acctStore,
+			TOTPEncryptionKey: d.totpKey,
+			Issuer:            totpIssuer,
+			PathPrefix:        "security/totp",
+		})
+	}
 
 	pool := store.Pool()
 
@@ -137,7 +152,7 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 	// Wrap the go-panel catch-all with withSessionCookieContext so the
 	// jobsLister closure can generate per-request CSRF tokens for the
 	// star-toggle inline forms without needing the *http.Request.
-	mux.Handle(adminBasePath+"/", withSessionCookieContext(a.SessionCookieName(), p.Handler()))
+	mux.Handle(adminBasePath+"/", withSessionCookieContext(cn.SessionCookieName(), p.Handler()))
 	return mux, p, true
 }
 
@@ -145,10 +160,12 @@ func New(store *hunt.Store, authority *applications.Authority) (http.Handler, *r
 // (SessionCookieName). Mirrors go-panel resource/resource.go:377 validateWriterConfig:
 // the bespoke CSRF handlers on this mux perform the same session-cookie binding as
 // go-panel's Writer path, so they need the same fail-closed guarantee at construction.
-func checkAuthCapabilities(a auth.Authenticator) {
-	if _, ok := any(a).(cookieNamer); !ok {
+func checkAuthCapabilities(a auth.Authenticator) cookieNamer {
+	cn, ok := any(a).(cookieNamer)
+	if !ok {
 		panic("adminui: authenticator must implement SessionCookieName() — CSRF session binding fail-closed")
 	}
+	return cn
 }
 
 func envOr(key, def string) string {

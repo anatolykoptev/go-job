@@ -1,0 +1,137 @@
+package resource
+
+import (
+	"fmt"
+	"strconv"
+)
+
+// trashPageData is the whole Trash page: one section per resource that opted
+// into the trash AND that this operator may reach.
+//
+// The page is panel-wide rather than per-resource because a deleted row is
+// looked for by WHEN it was deleted, not by which table it came from — the
+// operator who wants it back remembers the mistake, not the schema. Payload
+// mounts a Trash per collection; that is the shape to copy only once several
+// resources hold enough deleted rows to be worth separating.
+type trashPageData struct {
+	BasePath string
+	// CSRFToken is bound to the SESSION, not to a resource, so one token covers
+	// every section's Вернуть button. The restore route each button posts to
+	// still runs that resource's own guard — the token is a forgery check, never
+	// an authorisation.
+	CSRFToken string
+	Sections  []trashSection
+}
+
+// trashSection is one resource's deleted rows.
+type trashSection struct {
+	Resource Resource
+	Rows     []Row
+	// Total is every deleted row this resource has, not only the rendered ones.
+	// Rows is capped at trashPageSize, and a cap the operator cannot see reads
+	// exactly like a complete list — so when Total exceeds len(Rows) the section
+	// says so in words.
+	Total int
+	// Err marks a section whose lister failed. It renders as an explicit
+	// "could not read" line rather than as no rows, because a resource that
+	// silently drops out of the page is indistinguishable from one whose trash
+	// is empty — and the row the operator came looking for is exactly the one
+	// they would then conclude was gone for good.
+	Err bool
+}
+
+// trashPageContent renders the Trash page body inside the standard shell.
+templ trashPageContent(d trashPageData) {
+	<div class="page-header">
+		<h2>Trash</h2>
+		<p>Deleted rows are kept, never destroyed. Restore one here at any time.</p>
+	</div>
+	if len(d.Sections) == 0 {
+		<p style="color:var(--text-muted);padding:2rem 0">Trash is empty.</p>
+	}
+	for _, s := range d.Sections {
+		@trashSectionBlock(d, s)
+	}
+}
+
+// trashSectionBlock renders one resource's deleted rows under its own heading,
+// using that resource's own columns — a merged table would have to invent a
+// lowest common denominator, and the cell that identifies a row differs per
+// resource.
+templ trashSectionBlock(d trashPageData, s trashSection) {
+	<section style="margin-bottom:2.5rem">
+		<h3 style="font-size:.875rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:.75rem">
+			if s.Resource.Icon != "" {
+				<span aria-hidden="true">{ s.Resource.Icon }</span>
+			}
+			{ s.Resource.Title }
+			if !s.Err {
+				// Suppressed on failure: Total is 0 when the lister errored, and
+				// a heading reading "Items 0" directly above "could not read
+				// this resource's trash" restates the very thing the section is
+				// there to deny.
+				<span style="font-family:var(--font-mono);color:var(--text-muted);font-weight:400">{ strconv.Itoa(s.Total) }</span>
+			}
+		</h3>
+		if s.Err {
+			<p class="trash-unreadable" role="status">
+				Could not read this resource's trash. The rows are still there — see the server log.
+			</p>
+		} else {
+			<div class="crm-table-scroll">
+				<table class="crm-table">
+					<thead>
+						<tr>
+							for _, col := range s.Resource.Sort.Columns {
+								<th style={ colHeaderStyle(col) }>{ col.Label }</th>
+							}
+							<th style="width:5rem"></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, row := range s.Rows {
+							@trashRow(d, s, row)
+						}
+					</tbody>
+				</table>
+			</div>
+			if s.Total > len(s.Rows) {
+				<p style="color:var(--text-muted);font-size:.8125rem;margin-top:.5rem">
+					{ fmt.Sprintf("Showing the %d most recently deleted of %d.", len(s.Rows), s.Total) }
+				</p>
+			}
+		}
+	</section>
+}
+
+// trashRow renders one deleted row plus its way back.
+//
+// Row.Href is deliberately IGNORED here. A resource's detail page reads the
+// live rows, so a link built for the list would 404 from the trash — and a
+// dead link on a recovery page is worse than no link, because the operator
+// reads the 404 as "the row really is gone".
+templ trashRow(d trashPageData, s trashSection, row Row) {
+	<tr>
+		for i, cell := range row.Cells {
+			if cell.HTML {
+				<td style={ colCellStyleAt(s.Resource.Sort.Columns, i) }>@templ.Raw(cell.Value)</td>
+			} else {
+				<td style={ colCellStyleAt(s.Resource.Sort.Columns, i) }>{ cell.Value }</td>
+			}
+		}
+		<td style="text-align:right;white-space:nowrap">
+			// No hx-target/hx-swap: restoreHandler answers HX-Refresh, so htmx
+			// reloads the page rather than swapping this row. Carrying swap
+			// attributes that never fire would suggest a row-level exchange that
+			// does not happen, and the next person to touch this would debug the
+			// swap rather than read the handler.
+			<button
+				type="button"
+				class="row-undo"
+				hx-post={ d.BasePath + "/" + s.Resource.Name + "/" + row.ID + "/restore" }
+				hx-vals={ csrfVals(d.CSRFToken) }
+				aria-label={ "Restore " + row.ID }
+			>Вернуть</button>
+		</td>
+	</tr>
+}

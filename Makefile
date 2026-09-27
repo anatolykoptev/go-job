@@ -41,6 +41,14 @@ preflight:
 	@! grep -nE '\.(gd-copy-btn|li-pre|li-code-wrap|cc-muted|cc-green|cc-amber|cc-red)\{' internal/adminui/linkedin.go internal/adminui/upwork.go || (echo "FAIL: copy-block/char-chip CSS rule regrew in linkedin.go/upwork.go -- it must live only in partials.go sharedCSS" && exit 1)
 	@grep -qE '\.gd-copy-btn\{' internal/adminui/partials.go || (echo "FAIL: copy-block CSS missing from partials.go sharedCSS -- the single source of truth was removed" && exit 1)
 	@echo "OK: copy-block/char-chip CSS is single-sourced in partials.go"
+	@echo "==> identity fitness: tenant.From is never an account-identity source (ADR-1; its global 'spb' default makes it fail-open)"
+	@! grep -rn 'tenant\.From' internal/accounts/ internal/adminui/ main.go || (echo "FAIL: tenant.From used in adminui/accounts/main -- account identity must come from auth.SessionFrom / panelmcp.TenantResolver, never the global-default tenant accessor" && exit 1)
+	@echo "==> identity fitness: zero RequiredRole decls in adminui (HMAC rollback is not a RoleAuthenticator; Register panics fail-closed, ADR-17)"
+	@! grep -rn 'RequiredRole:[[:space:]]*"' internal/adminui/ --include='*.go' | grep -v '_test\.go' || (echo "FAIL: RequiredRole declared on an adminui resource -- under AUTH_DRIVER=hmac this panics at Register; role gating is bcrypt-only and unused in v1" && exit 1)
+	@echo "==> identity fitness: X-MCP-User edge header is never read (post-Caddy-exemption it is client-controllable, ADR-4)"
+	@! grep -rn 'X-MCP-User' internal/ main.go --include='*.go' | grep -v '_test\.go' || (echo "FAIL: X-MCP-User consumed -- after the Caddy exemption this header is attacker-controlled; identity comes from verified bearer keys only" && exit 1)
+	@echo "==> identity fitness: ADR-6 boot order (EnsureSchema -> role migration -> seed) is asserted by accounts.TestBootstrap_Order_SourceGate"
+
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...
 	@echo "==> go test -p $(GO_TEST_PARALLEL) ./internal/..."

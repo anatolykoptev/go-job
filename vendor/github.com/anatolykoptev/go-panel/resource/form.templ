@@ -122,7 +122,7 @@ templ formPageContent(d formPageData) {
 		action={ templ.SafeURL(d.saveURL()) }
 		style="max-width:40rem"
 	>
-		<input type="hidden" name="_csrf" value={ d.CSRFToken }/>
+		<input type="hidden" name={ csrfFormField } value={ d.CSRFToken }/>
 		for _, fld := range d.localeFields() {
 			@formField(fld, d.fieldValue(fld.Key), d.fieldError(fld.Key), d.localeBadge(fld))
 		}

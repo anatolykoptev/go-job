@@ -25,6 +25,7 @@ import (
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
 	"github.com/anatolykoptev/go-twitter/social"
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/adminui"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
@@ -704,10 +705,25 @@ func startNotifyHealthCheck(ctx context.Context, n *notify.ProductNotifier) {
 // auto-exposes all registered Resources as MCP list/get tools. Fail-soft: when
 // admin credentials are unset (adminui.New returns ok=false) both are skipped,
 // so deploying before the env is wired changes nothing.
+//
+// accounts.Bootstrap runs HERE, before adminui.New and before any other
+// account-consuming migration (ADR-6 — the ordering is load-bearing): today
+// Bootstrap is the only panel_accounts writer; the P1 mcp_api_keys migration
+// must sequence after it. A Bootstrap failure degrades to acctStore=nil —
+// the bcrypt driver self-disables (fail-closed) while AUTH_DRIVER=hmac still
+// works as a DB-independent single-operator rollback.
 func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, logger *slog.Logger) {
-	handler, panel, ok := adminui.New(store, authority)
+	acctStore, operator, err := accounts.Bootstrap(ctx, store.Pool(), accounts.OperatorSeedFromEnv())
+	if err != nil {
+		logger.Error("accounts bootstrap failed — bcrypt driver unavailable; AUTH_DRIVER=hmac still works", slog.Any("error", err))
+	}
+	operatorID := ""
+	if operator != nil {
+		operatorID = operator.ID
+	}
+	handler, panel, ok := adminui.New(store, authority, acctStore, operatorID)
 	if !ok {
-		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD to enable)")
+		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD; the default bcrypt driver also needs ADMIN_TOTP_ENC_KEY and DATABASE_URL)")
 		return
 	}
 	// Bind all interfaces inside the container; host exposure is restricted to
