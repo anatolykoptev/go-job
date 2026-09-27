@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -168,6 +170,21 @@ func truncateJobs(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), "TRUNCATE hunt_jobs CASCADE")
 	require.NoError(t, err)
+}
+
+// newScoreAccount bootstraps the accounts-owned schema (Bootstrap is
+// idempotent — panel_accounts, mcp_api_keys, account_job_scores) and inserts
+// a fresh panel_accounts row, returning its UUID. Score writes through
+// hunt.AccountStore need a real account for the account_job_scores FK.
+func newScoreAccount(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
+	require.NoError(t, err, "accounts.Bootstrap")
+	aid, _, err := accounts.CreateAccount(ctx, pool,
+		"hunt-test-"+uuid.NewString()[:12]+"@example.com", "hunt test", nil, "user")
+	require.NoError(t, err, "accounts.CreateAccount")
+	return aid
 }
 
 func TestStore_UpsertJob_Created(t *testing.T) {
@@ -646,7 +663,9 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 	require.NoError(t, s.Rate(ctx, "job", jobID, otherUser, hunt.StageSaved, "", ""))
 
 	// The owner user must see zero rows — foreign rater's row must be excluded.
-	rows, _, err := s.ListShortlist(ctx, hunt.ShortlistQuery{
+	// (ratings still key on user_name — P3 moves them to accounts; the score
+	// join needs a real account facade.)
+	rows, _, err := s.ForAccount(newScoreAccount(t, pool)).ListShortlist(ctx, hunt.ShortlistQuery{
 		User:         ownerUser,
 		TriageValues: []string{hunt.StageInteresting, hunt.StageSaved},
 		StageValues:  []string{hunt.StageClaimed, hunt.StageApplied, hunt.StageInterview, hunt.StageOffer},
@@ -660,14 +679,16 @@ func TestListShortlist_UserIsolation(t *testing.T) {
 // TestStore_CountScored_OnlyOpenAndScored seeds open-scored, open-unscored,
 // and closed-scored rows. Assert CountScored returns only the open-AND-scored count.
 //
-// RED-on-revert: removing "AND scored_at IS NOT NULL" from CountScored's query
-// makes the result include unscored rows and the assertion fails.
+// RED-on-revert: removing the account_job_scores EXISTS predicate (or reading
+// hunt_jobs.scored_at again) makes the result include unscored rows and the
+// assertion fails.
 func TestStore_CountScored_OnlyOpenAndScored(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx))
 	truncateJobs(t, pool)
+	sc := s.ForAccount(newScoreAccount(t, pool))
 
 	mustUpsert := func(url, source, status string) int64 {
 		t.Helper()
@@ -684,7 +705,7 @@ func TestStore_CountScored_OnlyOpenAndScored(t *testing.T) {
 	}
 	score := func(id int64) {
 		t.Helper()
-		require.NoError(t, s.SetJobScore(ctx, id, hunt.ScoreResult{
+		require.NoError(t, sc.SetJobScore(ctx, id, hunt.ScoreResult{
 			FitBand:     "moderate",
 			SuccessBand: "MODERATE",
 			OverUnder:   "well_matched",
@@ -703,8 +724,8 @@ func TestStore_CountScored_OnlyOpenAndScored(t *testing.T) {
 	_, err := pool.Exec(ctx, "UPDATE hunt_jobs SET status='closed' WHERE id=$1", idC)
 	require.NoError(t, err)
 
-	got := s.CountScored(ctx)
-	assert.Equal(t, 1, got, "CountScored must count only open rows with scored_at IS NOT NULL")
+	got := sc.CountScored(ctx)
+	assert.Equal(t, 1, got, "CountScored must count only open rows scored for this account")
 }
 
 // TestStore_CountBySource_DescendingOrder seeds open jobs from multiple sources

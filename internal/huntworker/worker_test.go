@@ -11,6 +11,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -443,5 +444,7 @@ func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
 // SIGSEGVd before the MCP listener bound).
 func TestStartWorker_NilStore_Noop(t *testing.T) {
 	t.Setenv("HUNT_INGEST_ENABLED", "true")
-	StartWorker(t.Context(), nil, nil) // must not panic
+	// uuid.Nil scoreAccount: no binding attempted — the nil-store early
+	// return fires first anyway.
+	StartWorker(t.Context(), nil, nil, uuid.Nil) // must not panic
 }

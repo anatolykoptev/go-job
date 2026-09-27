@@ -132,10 +132,10 @@ func TestBootstrap_SeedOperator(t *testing.T) {
 
 // TestBootstrap_Order_SourceGate is the ADR-6 boot-order gate: in Bootstrap's
 // body, EnsureSchema must precede the role-migration Exec, which precedes the
-// accounts-owned mcp_api_keys DDL, which precedes seedOperator — the ALTER and
-// the FK both touch tables EnsureSchema creates, and the seed writes through
-// the constraint. A reorder that compiles is still broken; this test is the
-// load-bearing-order witness.
+// accounts-owned DDL (mcp_api_keys, then account_job_scores), which precedes
+// seedOperator — the ALTER and both FKs touch tables EnsureSchema creates,
+// and the seed writes through the constraint. A reorder that compiles is
+// still broken; this test is the load-bearing-order witness.
 func TestBootstrap_Order_SourceGate(t *testing.T) {
 	src, err := os.ReadFile("accounts.go")
 	require.NoError(t, err)
@@ -144,14 +144,17 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	ensure := strings.Index(s, "store.EnsureSchema(ctx)")
 	migrate := strings.Index(s, "pool.Exec(ctx, roleMigrationSQL)")
 	keys := strings.Index(s, "pool.Exec(ctx, mcpAPIKeysSchema)")
+	scores := strings.Index(s, "pool.Exec(ctx, accountJobScoresSchema)")
 	seed := strings.Index(s, "seedOperator(ctx")
 	require.Positive(t, ensure, "EnsureSchema call site missing from Bootstrap")
 	require.Positive(t, migrate, "roleMigrationSQL Exec missing from Bootstrap")
 	require.Positive(t, keys, "mcpAPIKeysSchema Exec missing from Bootstrap")
+	require.Positive(t, scores, "accountJobScoresSchema Exec missing from Bootstrap")
 	require.Positive(t, seed, "seedOperator call missing from Bootstrap")
 	require.Less(t, ensure, migrate, "ADR-6: EnsureSchema must precede the role migration")
 	require.Less(t, migrate, keys, "accounts-owned mcp_api_keys DDL applies after the role migration")
-	require.Less(t, keys, seed, "all schema lands before the operator seed")
+	require.Less(t, keys, scores, "accounts-owned account_job_scores DDL applies after mcp_api_keys")
+	require.Less(t, scores, seed, "all schema lands before the operator seed")
 }
 
 // TestBootstrap_PrecedesHuntMigrate_SourceGate is the main.go half of the

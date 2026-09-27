@@ -53,6 +53,7 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 		return nil, nil, false
 	}
 	a := d.authn
+	acctOf := d.accountOf
 	cn := checkAuthCapabilities(a)
 	p := resource.New(resource.Config{
 		Title:            "go-job",
@@ -81,13 +82,13 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	// Shortlist (curated targets) is registered first so it appears first in the
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
 	// nav item — no manual p.AddNav call needed.
-	resource.Register(p, shortlistResource(store, adminUser, authority, []byte(csrfKey)))
+	resource.Register(p, shortlistResource(store, adminUser, authority, []byte(csrfKey), acctOf))
 	resource.Register(p, huntSettingsResource(pool))
 
 	// Wire Detailer onto the jobs resource so GET /admin/jobs/{id} is served
 	// by go-panel's framework detail page instead of a bespoke handler.
-	jr := jobsResource(store, adminUser, authority, []byte(csrfKey))
-	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority)
+	jr := jobsResource(store, adminUser, authority, []byte(csrfKey), acctOf)
+	jr.Detailer = jobDetailer(pool, store, adminUser, a, []byte(csrfKey), authority, acctOf)
 	resource.Register(p, jr)
 
 	resource.Register(p, bountiesResource(pool))
@@ -124,11 +125,11 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
 	// GET /admin/jobs/{id} (natural 3-segment URL) is now served by go-panel.
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser)))
+	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, adminUser, acctOf)))
 	// POST action routes are mounted via p.MountAction, which wraps with the
 	// auth guard, parses the form body, and verifies CSRF before calling Handler.
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/rate", Handler: rateHandler(store, adminUser)})
-	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/rescore", Handler: rescoreHandler(pool, store)})
+	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/rescore", Handler: rescoreHandler(pool, store, acctOf)})
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/shortlist", Handler: shortlistHandler(store, adminUser)})
 	// Inline pipeline-stage dropdown in the jobs table — note-preserving (SetStage, not Rate).
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/stage", Handler: stageHandler(store, adminUser)})

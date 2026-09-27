@@ -140,8 +140,10 @@ var jobsSpec = admintable.Spec{
 		// NOT the same as colStatus ("status" = job posting open/closed — separate axis).
 		{Key: colKeyStage, Label: "Stage", Sortable: true, SQLExpr: sqlRStage, NullsLast: true, Width: colWidthStage},
 		{Key: colCompany, Label: "Company", Sortable: true, SQLExpr: sqlJCompany},
-		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: colWidth8rem},
-		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
+		// Score columns come from account_job_scores (alias s) — per-account
+		// judgments joined by jobsLister on the resolved account.
+		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "s.fit_score", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: colWidth8rem},
+		{Key: "market", Label: "Market Read", Sortable: true, SQLExpr: "CASE s.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: colStatus, Label: lblStatus, Sortable: true, SQLExpr: sqlJStatus},
 		{Key: "posted", Label: lblPosted, Sortable: true, SQLExpr: "j.posted_at", NullsLast: true, TieBreakSQLExpr: "j.last_seen_at DESC", Width: "6rem"},
 		{Key: "location", Label: "Location", Sortable: false},
@@ -169,7 +171,7 @@ var jobsFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
-func jobsResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
+func jobsResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
 	pool := store.Pool()
 	return resource.Resource{
 		Name:   "jobs",
@@ -185,12 +187,16 @@ func jobsResource(store *hunt.Store, adminUser string, authority *applications.A
 			}
 			return strconv.Itoa(n)
 		}),
-		Lister: jobsLister(pool, adminUser, authority, csrfKey),
+		Lister: jobsLister(pool, adminUser, authority, csrfKey, acctOf),
 		// Detailer wired in adminui.New: GET /admin/jobs/{id} served by go-panel framework.
 	}
 }
 
-func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Authority, csrfKey []byte) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+// acctOf resolves the acting account for the per-account score join
+// (account_job_scores s). A miss binds uuid.Nil — the LEFT JOIN then matches
+// nothing and every row renders unscored; a foreign account's score is
+// unreachable by construction.
+func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		where := "TRUE"
 		if strings.TrimSpace(q.WhereConds) != "" {
@@ -210,15 +216,16 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 			return nil, 0, fmt.Errorf("adminui: count jobs: %w", err)
 		}
 
-		// Args layout: [...whereArgs, adminUser, triageValues[], stageValues[], limit, offset]
+		// Args layout: [...whereArgs, adminUser, triageValues[], stageValues[], limit, offset, accountID]
 		// $n+1 = adminUser, $n+2 = shortlistTriageValues, $n+3 = shortlistPipelineValues,
-		// $n+4 = limit, $n+5 = offset.
+		// $n+4 = limit, $n+5 = offset, $n+6 = account id (score join).
 		// The LEFT JOIN computes starred (bool), triage, and stage per-row from hunt_ratings.
 		// All three reuse the same single LEFT JOIN — no second join.
-		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistTriageValues, shortlistPipelineValues, q.Limit, q.Offset)
+		aid, _ := acctOf(ctx)
+		args := append(append([]any{}, q.WhereArgs...), adminUser, shortlistTriageValues, shortlistPipelineValues, q.Limit, q.Offset, aid)
 		query := fmt.Sprintf(`
 			SELECT j.id, COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.status,''),
-			       j.fit_score, COALESCE(j.fit_band,''), COALESCE(j.success_band,''), COALESCE(j.over_under,''),
+			       s.fit_score, COALESCE(s.fit_band,''), COALESCE(s.success_band,''), COALESCE(s.over_under,''),
 			       j.posted_at, j.last_seen_at,
 			       COALESCE(j.location,''), COALESCE(j.source,''), COALESCE(j.url,''),
 			       COALESCE(r.triage = ANY($%d::text[]) OR r.stage = ANY($%d::text[]), false) AS starred,
@@ -227,8 +234,10 @@ func jobsLister(pool *pgxpool.Pool, adminUser string, authority *applications.Au
 			  FROM hunt_jobs j
 			  LEFT JOIN hunt_ratings r
 			         ON r.entry_kind = 'job' AND r.entry_id = j.id AND r.user_name = $%d
+			  LEFT JOIN account_job_scores s
+			         ON s.job_id = j.id AND s.account_id = $%d
 			 WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d`,
-			n+2, n+3, n+1, where, jobsSpec.OrderBy(q.Sort), n+4, n+5)
+			n+2, n+3, n+1, n+6, where, jobsSpec.OrderBy(q.Sort), n+4, n+5)
 		rows, err := pool.Query(ctx, query, args...)
 		if err != nil {
 			return nil, 0, fmt.Errorf("adminui: list jobs: %w", err)

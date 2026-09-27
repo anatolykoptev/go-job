@@ -84,7 +84,11 @@ func main() {
 	// the hunt store is unavailable).  Must run after initEngine wired the store.
 	// huntNotifier is the same Telegram notifier wired to the store so the worker
 	// fires on OutcomeCreated without going back through the store's unexported field.
-	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier)
+	// P2 TRANSITIONAL: scores persist per-account (account_job_scores) — the
+	// worker binds the single operator account until P3 wires enumeration.
+	// seedOwner resolves operatorID → ADMIN_EMAIL account; Nil → ingest-only.
+	scoreAcct, _ := seedOwner(sigCtx, acctStore, operatorID)
+	huntworker.StartWorker(sigCtx, engine.GetHuntStore(), huntNotifier, scoreAcct)
 	huntworker.StartOpportunityWorker(sigCtx, engine.GetHuntStore())
 
 	startPrometheusScrape(sigCtx, slog.Default())
