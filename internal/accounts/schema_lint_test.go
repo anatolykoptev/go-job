@@ -16,11 +16,14 @@ package accounts_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
+	jobs "github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +39,12 @@ var accountOwnedTables = map[string]bool{
 	// hunt_ratings is account-owned (ADR-15) despite living in the hunt
 	// schema — the corpus/… split is by ownership, not by namespace.
 	"hunt_ratings": true,
+	// P4 (ADR-8/9/10): resume hub + vectors and the oversize spill table
+	// are account-owned; account_id lands via schema 008/003 plus the
+	// Bootstrap Ensure* probes.
+	"resume_persons":     true,
+	"resume_vectors":     true,
+	"oversize_responses": true,
 }
 
 func TestSchemaLint_AccountIDClassification(t *testing.T) {
@@ -48,6 +57,18 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	require.NoError(t, hunt.NewStore(pool).Migrate(ctx), "hunt.Migrate")
+	// P4 tables must exist for the membership assertions — Bootstrap alone
+	// no-ops on their absence (migrations precede panel_accounts only in a
+	// cold boot). ConnectResumeDB applies the embedded schema; the soft
+	// AGE/pgvector files degrade cleanly when the extensions are absent.
+	rdb, err := jobs.ConnectResumeDB(ctx, os.Getenv("DATABASE_URL"))
+	require.NoError(t, err, "ConnectResumeDB")
+	defer rdb.Close()
+	require.NoError(t, oversize.NewStore(pool).Migrate(ctx), "oversize.Migrate")
+	// Re-run the account-scope probes post-migration — the ordering real
+	// deploys hit when resume/oversize tables first appear.
+	require.NoError(t, accounts.EnsureResumeAccountScope(ctx, pool))
+	require.NoError(t, accounts.EnsureOversizeAccountScope(ctx, pool))
 
 	// Derive the live classification: table → has account_id.
 	rows, err := pool.Query(ctx, `
