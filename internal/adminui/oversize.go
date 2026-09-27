@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -36,7 +37,7 @@ const (
 	oversizeSelectCols = "id, tool_name, item_count, size_bytes, query_hash, created_at"
 )
 
-func oversizeResource(pool *pgxpool.Pool) resource.Resource {
+func oversizeResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	scan := func(rows pgx.Rows) (resource.Row, error) {
 		var id int64
 		var toolName, queryHash string
@@ -63,11 +64,51 @@ func oversizeResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpSystem,
 		Sort:   oversizeSpec,
 		Filter: oversizeFilter,
-		Lister: huntLister(pool, tblOversize, oversizeSelectCols, oversizeSpec, scan),
+		Lister: oversizeLister(pool, acctOf, scan),
 	}
 }
 
-// oversizeQuerySQL returns the SELECT query string used by huntLister for
+// oversizeLister is the account-scoped variant of huntLister for
+// oversize_responses (plan ADR-10): every count/select carries
+// `account_id = $N` so a foreign account's spills are invisible — a missed
+// account resolution binds uuid.Nil and simply matches nothing (fail-closed).
+func oversizeLister(pool *pgxpool.Pool, acctOf accountResolver, scan func(pgx.Rows) (resource.Row, error)) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
+		where := "TRUE"
+		if w := q.WhereConds; len(w) > 0 {
+			where = w
+		}
+		aid, _ := acctOf(ctx)
+		n := len(q.WhereArgs)
+		countArgs := append(append([]any{}, q.WhereArgs...), aid)
+		var total int
+		if err := pool.QueryRow(ctx,
+			fmt.Sprintf("SELECT count(*) FROM %s WHERE %s AND account_id = $%d", tblOversize, where, n+1),
+			countArgs...,
+		).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("adminui: count oversize: %w", err)
+		}
+		args := append(append([]any{}, q.WhereArgs...), aid, q.Limit, q.Offset)
+		query := fmt.Sprintf("SELECT %s FROM %s WHERE %s AND account_id = $%d ORDER BY %s LIMIT $%d OFFSET $%d",
+			oversizeSelectCols, tblOversize, where, n+1, oversizeSpec.OrderBy(q.Sort), n+2, n+3)
+		rows, err := pool.Query(ctx, query, args...)
+		if err != nil {
+			return nil, 0, fmt.Errorf("adminui: list oversize: %w", err)
+		}
+		defer rows.Close()
+		var out []resource.Row
+		for rows.Next() {
+			r, err := scan(rows)
+			if err != nil {
+				return nil, 0, fmt.Errorf("adminui: scan oversize: %w", err)
+			}
+			out = append(out, r)
+		}
+		return out, total, rows.Err()
+	}
+}
+
+// oversizeQuerySQL returns the SELECT query string used by oversizeLister for
 // oversize_responses. Exposed for tests to assert payload/sample are absent.
 func oversizeQuerySQL(where, orderBy string, limitPos, offsetPos int) string {
 	return fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d",

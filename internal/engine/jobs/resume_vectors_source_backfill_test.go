@@ -42,11 +42,11 @@ func runBackfillMigration(t *testing.T, db *ResumeDB) {
 // `ref_id IS NOT NULL` filter, or match `WHERE source='agent'`) → the manual row
 // is relabeled to source='profile' → RED.
 func TestResumeVectors_SourceBackfill_PreservesManualRows(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	// Manual free-text memory: ref_id=NULL, source='agent' (the schema default).
-	manualID, err := db.UpsertVector(ctx, "manual memory that must stay agent", "note", nil)
+	manualID, err := rdb.UpsertVector(ctx, "manual memory that must stay agent", "note", nil)
 	if err != nil {
 		t.Fatalf("UpsertVector manual: %v", err)
 	}
@@ -58,13 +58,13 @@ func TestResumeVectors_SourceBackfill_PreservesManualRows(t *testing.T) {
 	// represents (a historical artifact the backfill exists to fix).
 	derivedRefID := int64(99999)
 	derivedContent := "stale derived row from pre-branch build"
-	derivedHash := vectorContentHash(resumeVectorUser, memTypeResumeExp, &derivedRefID, derivedContent)
+	derivedHash := vectorContentHash(rdb.AccountID().String(), memTypeResumeExp, &derivedRefID, derivedContent)
 	var derivedID int64
 	if err := db.pool.QueryRow(ctx, `
-		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
+		INSERT INTO resume_vectors (account_id, content, mem_type, source, ref_id, content_hash)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
-	`, resumeVectorUser, derivedContent, memTypeResumeExp, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
+	`, rdb.AccountID(), derivedContent, memTypeResumeExp, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
 		t.Fatalf("seed stale derived row: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestResumeVectors_SourceBackfill_PreservesManualRows(t *testing.T) {
 // changes nothing the second time (the `source = 'agent'` predicate no longer
 // matches rows the first run relabeled).
 func TestResumeVectors_SourceBackfill_Idempotent(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	// Pre-existing derived row: source='agent' (schema-004 default), ref_id NOT
@@ -105,13 +105,13 @@ func TestResumeVectors_SourceBackfill_Idempotent(t *testing.T) {
 	// ref_id, so the historical state must be seeded directly.
 	derivedRefID := int64(88888)
 	derivedContent := "derived row for idempotency check"
-	derivedHash := vectorContentHash(resumeVectorUser, memTypeResumeProj, &derivedRefID, derivedContent)
+	derivedHash := vectorContentHash(rdb.AccountID().String(), memTypeResumeProj, &derivedRefID, derivedContent)
 	var derivedID int64
 	if err := db.pool.QueryRow(ctx, `
-		INSERT INTO resume_vectors (user_name, content, mem_type, source, ref_id, content_hash)
+		INSERT INTO resume_vectors (account_id, content, mem_type, source, ref_id, content_hash)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
-	`, resumeVectorUser, derivedContent, memTypeResumeProj, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
+	`, rdb.AccountID(), derivedContent, memTypeResumeProj, sourceAgent, derivedRefID, derivedHash).Scan(&derivedID); err != nil {
 		t.Fatalf("seed stale derived row: %v", err)
 	}
 

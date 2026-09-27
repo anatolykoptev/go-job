@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/google/uuid"
 )
 
 // ResumeEnrichResult is the structured output of resume_enrich.
@@ -102,22 +103,26 @@ Only include updates that are clearly supported by the user's answers. Do not fa
 Return ONLY the JSON object, no markdown, no explanation.`
 
 // EnrichResume handles the interactive enrichment flow.
-func EnrichResume(ctx context.Context, action string, answers []AnswerPair) (*ResumeEnrichResult, error) {
+func EnrichResume(ctx context.Context, accountID uuid.UUID, action string, answers []AnswerPair) (*ResumeEnrichResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
-	personID := db.GetLatestPersonID(ctx)
+	personID := rdb.GetLatestPersonID(ctx)
 	if personID == 0 {
 		return nil, errors.New("no master resume found — run master_resume_build first")
 	}
 
 	switch action {
 	case "start":
-		return enrichStart(ctx, db, personID)
+		return enrichStart(ctx, rdb, personID)
 	case "answer":
-		return enrichAnswer(ctx, db, personID, answers)
+		return enrichAnswer(ctx, rdb, personID, answers)
 	default:
 		return nil, fmt.Errorf("invalid action %q — use 'start' or 'answer'", action)
 	}
@@ -129,9 +134,9 @@ type AnswerPair struct {
 	Answer     string `json:"answer"`
 }
 
-func enrichStart(ctx context.Context, db *ResumeDB, personID int) (*ResumeEnrichResult, error) {
+func enrichStart(ctx context.Context, rdb *ResumeAccount, personID int) (*ResumeEnrichResult, error) {
 	// Load current data
-	dataStr := buildCurrentDataString(ctx, db, personID)
+	dataStr := buildCurrentDataString(ctx, rdb, personID)
 
 	prompt := fmt.Sprintf(enrichQuestionPrompt, engine.TruncateRunes(dataStr, 8000, ""))
 	raw, err := engine.CallLLM(ctx, prompt)
@@ -155,13 +160,13 @@ func enrichStart(ctx context.Context, db *ResumeDB, personID int) (*ResumeEnrich
 	}, nil
 }
 
-func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []AnswerPair) (*ResumeEnrichResult, error) {
+func enrichAnswer(ctx context.Context, rdb *ResumeAccount, personID int, answers []AnswerPair) (*ResumeEnrichResult, error) {
 	if len(answers) == 0 {
 		return nil, errors.New("no answers provided")
 	}
 
 	// Load current data
-	dataStr := buildCurrentDataString(ctx, db, personID)
+	dataStr := buildCurrentDataString(ctx, rdb, personID)
 
 	// Format Q&A
 	var qaStr strings.Builder
@@ -188,7 +193,6 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 	}
 
 	applied := 0
-	rdb := GetResumeDB()
 
 	for _, updateRaw := range parsed.Updates {
 		var base struct {
@@ -209,7 +213,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			if err := json.Unmarshal(updateRaw, &u); err != nil {
 				continue
 			}
-			sid, err := db.InsertSkillExtended(ctx, personID, SkillRecord{
+			sid, err := rdb.InsertSkillExtended(ctx, personID, SkillRecord{
 				Name:       u.Name,
 				Category:   u.Category,
 				Level:      u.Level,
@@ -217,7 +221,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				Source:     "enrichment",
 			})
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: u.Name}); err != nil {
+				if err := rdb.UpsertGraphNode(ctx, "Skill", sid, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				applied++
@@ -234,11 +238,11 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				continue
 			}
 			// Find matching achievement and update
-			achvs, _ := db.GetAllAchievements(ctx, personID)
+			achvs, _ := rdb.GetAllAchievements(ctx, personID)
 			for _, a := range achvs {
 				if strings.Contains(strings.ToLower(a.Text), strings.ToLower(u.AchievementText)) ||
 					strings.Contains(strings.ToLower(u.AchievementText), strings.ToLower(a.Text)) {
-					updateAchievementMetrics(ctx, db, a.ID, u.MetricNumeric, u.MetricUnit, u.NewText)
+					updateAchievementMetrics(ctx, rdb, a.ID, u.MetricNumeric, u.MetricUnit, u.NewText)
 					applied++
 					break
 				}
@@ -257,7 +261,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			}
 			var parentPtr *int
 			if u.ParentExperience != "" {
-				exps, _ := db.GetAllExperiences(ctx, personID)
+				exps, _ := rdb.GetAllExperiences(ctx, personID)
 				for _, exp := range exps {
 					if strings.EqualFold(exp.Company, u.ParentExperience) {
 						parentPtr = &exp.ID
@@ -265,18 +269,18 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 					}
 				}
 			}
-			projID, err := db.InsertProjectWithParent(ctx, personID, parentPtr, ProjectRecord{
+			projID, err := rdb.InsertProjectWithParent(ctx, personID, parentPtr, ProjectRecord{
 				Name:        u.Name,
 				Description: u.Description,
 				Tech:        u.Tech,
 				Highlights:  u.Highlights,
 			})
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Proj", projID, map[string]string{graphPropName: u.Name}); err != nil {
+				if err := rdb.UpsertGraphNode(ctx, "Proj", projID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				if parentPtr != nil {
-					if err := db.UpsertGraphEdge(ctx, "Proj", projID, "PART_OF", "Exp", *parentPtr); err != nil {
+					if err := rdb.UpsertGraphEdge(ctx, "Proj", projID, "PART_OF", "Exp", *parentPtr); err != nil {
 						slog.Debug("graph edge upsert failed", slog.Any("error", err))
 					}
 				}
@@ -284,7 +288,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 				if rdb != nil {
 					text := formatProjectText(u.Name, u.Description, u.Tech, u.Highlights)
 					refID := int64(projID)
-					embedding, _ := embedPassage(ctx, rdb, text, "resume_enrich add")
+					embedding, _ := embedPassage(ctx, rdb.db, text, "resume_enrich add")
 					if _, err := rdb.UpsertVectorWithSource(ctx, text, memTypeEnrichProj, &refID, embedding, sourceProfile); err != nil {
 						slog.Debug("resume_vectors add project failed", slog.Any("error", err))
 					}
@@ -300,9 +304,9 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			if err := json.Unmarshal(updateRaw, &u); err != nil {
 				continue
 			}
-			methID, err := db.InsertMethodology(ctx, personID, u.Name, u.Description)
+			methID, err := rdb.InsertMethodology(ctx, personID, u.Name, u.Description)
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Method", methID, map[string]string{graphPropName: u.Name}); err != nil {
+				if err := rdb.UpsertGraphNode(ctx, "Method", methID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("graph node upsert failed", slog.Any("error", err))
 				}
 				applied++
@@ -315,9 +319,9 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 			if err := json.Unmarshal(updateRaw, &u); err != nil {
 				continue
 			}
-			domID, err := db.InsertDomain(ctx, personID, u.Name)
+			domID, err := rdb.InsertDomain(ctx, personID, u.Name)
 			if err == nil {
-				if err := db.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: u.Name}); err != nil {
+				if err := rdb.UpsertGraphNode(ctx, "Domain", domID, map[string]string{graphPropName: u.Name}); err != nil {
 					slog.Debug("upsert domain graph node failed", slog.Any("error", err))
 				}
 				applied++
@@ -326,7 +330,7 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 	}
 
 	// Mark as enriched
-	if err := db.MarkPersonEnriched(ctx, personID); err != nil {
+	if err := rdb.MarkPersonEnriched(ctx, personID); err != nil {
 		slog.Debug("mark person enriched failed", slog.Any("error", err))
 	}
 
@@ -340,27 +344,27 @@ func enrichAnswer(ctx context.Context, db *ResumeDB, personID int, answers []Ans
 }
 
 // updateAchievementMetrics updates metric fields on an achievement.
-func updateAchievementMetrics(ctx context.Context, db *ResumeDB, achvID int, metricNumeric *float64, metricUnit, newText string) {
+func updateAchievementMetrics(ctx context.Context, rdb *ResumeAccount, achvID int, metricNumeric *float64, metricUnit, newText string) {
 	if newText != "" {
-		if _, err := db.pool.Exec(ctx,
-			`UPDATE resume_achievements SET text = $2 WHERE id = $1`, achvID, newText); err != nil {
+		if _, err := rdb.db.pool.Exec(ctx,
+			`UPDATE resume_achievements SET text = $2 WHERE id = $1 AND `+personOwnedBy3, achvID, newText, rdb.aid); err != nil {
 			slog.Debug("update achievement text failed", slog.Any("error", err))
 		}
 	}
 	if metricNumeric != nil || metricUnit != "" {
-		if _, err := db.pool.Exec(ctx,
-			`UPDATE resume_achievements SET metric_numeric = $2, metric_unit = $3 WHERE id = $1`,
-			achvID, metricNumeric, metricUnit); err != nil {
+		if _, err := rdb.db.pool.Exec(ctx,
+			`UPDATE resume_achievements SET metric_numeric = $2, metric_unit = $3 WHERE id = $1 AND `+personOwnedBy4,
+			achvID, metricNumeric, metricUnit, rdb.aid); err != nil {
 			slog.Debug("update achievement metrics failed", slog.Any("error", err))
 		}
 	}
 }
 
 // buildCurrentDataString assembles current resume data for LLM consumption.
-func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) string {
+func buildCurrentDataString(ctx context.Context, rdb *ResumeAccount, personID int) string {
 	var b strings.Builder
 
-	exps, _ := db.GetAllExperiences(ctx, personID)
+	exps, _ := rdb.GetAllExperiences(ctx, personID)
 	b.WriteString("EXPERIENCES:\n")
 	for _, e := range exps {
 		fmt.Fprintf(&b, "- %s at %s (%s-%s)", e.Title, e.Company, e.StartDate, e.EndDate)
@@ -376,7 +380,7 @@ func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) str
 		}
 	}
 
-	skills, _ := db.GetAllSkills(ctx, personID)
+	skills, _ := rdb.GetAllSkills(ctx, personID)
 	b.WriteString("\nSKILLS:\n")
 	for _, s := range skills {
 		label := s.Name
@@ -386,7 +390,7 @@ func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) str
 		fmt.Fprintf(&b, "- %s [%s, %s]\n", label, s.Category, s.Level)
 	}
 
-	projs, _ := db.GetAllProjects(ctx, personID)
+	projs, _ := rdb.GetAllProjects(ctx, personID)
 	if len(projs) > 0 {
 		b.WriteString("\nPROJECTS:\n")
 		for _, p := range projs {
@@ -394,7 +398,7 @@ func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) str
 		}
 	}
 
-	achvs, _ := db.GetAllAchievements(ctx, personID)
+	achvs, _ := rdb.GetAllAchievements(ctx, personID)
 	if len(achvs) > 0 {
 		b.WriteString("\nACHIEVEMENTS:\n")
 		for _, a := range achvs {
@@ -406,7 +410,7 @@ func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) str
 		}
 	}
 
-	domains, _ := db.GetAllDomains(ctx, personID)
+	domains, _ := rdb.GetAllDomains(ctx, personID)
 	if len(domains) > 0 {
 		b.WriteString("\nDOMAINS:\n")
 		for _, d := range domains {
@@ -414,7 +418,7 @@ func buildCurrentDataString(ctx context.Context, db *ResumeDB, personID int) str
 		}
 	}
 
-	meths, _ := db.GetAllMethodologies(ctx, personID)
+	meths, _ := rdb.GetAllMethodologies(ctx, personID)
 	if len(meths) > 0 {
 		b.WriteString("\nMETHODOLOGIES:\n")
 		for _, m := range meths {

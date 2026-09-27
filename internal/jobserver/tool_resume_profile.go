@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,7 +15,11 @@ func registerResumeProfile(server *mcp.Server) {
 		Name:        "resume_profile",
 		Description: "Read the stored resume profile from the database. Returns structured data: personal info, experiences, skills, projects, achievements, educations, certifications, domains, methodologies. Optionally filter by section. Use this to see what the user's resume contains before generating tailored versions.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ResumeProfileInput) (*mcp.CallToolResult, *jobs.ResumeProfileResult, error) {
-		result, err := jobs.GetResumeProfile(ctx, input.Section)
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
+		result, err := jobs.GetResumeProfile(ctx, aid, input.Section)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -37,11 +42,15 @@ func registerResumeProfileSync(server *mcp.Server) {
 		if db == nil {
 			return nil, nil, errors.New("resume DB not configured (set DATABASE_URL)")
 		}
-		personID := db.GetLatestPersonID(ctx)
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
+		personID := db.ForAccount(aid).GetLatestPersonID(ctx)
 		if personID == 0 {
 			return nil, nil, errors.New("no resume found — use master_resume_build first")
 		}
-		result, err := jobs.SyncProfileVectorsReported(ctx, personID)
+		result, err := jobs.SyncProfileVectorsReported(ctx, aid, personID)
 		if err != nil {
 			return nil, nil, err
 		}

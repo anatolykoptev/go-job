@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,7 +18,11 @@ func registerResumeGenerate(server *mcp.Server) {
 		if input.JobDescription == "" {
 			return nil, nil, errors.New("job_description is required")
 		}
-		result, err := jobs.GenerateResume(ctx, input.JobDescription, input.Company, input.Format)
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
+		result, err := jobs.GenerateResume(ctx, aid, input.JobDescription, input.Company, input.Format)
 		if err != nil {
 			return nil, nil, err
 		}

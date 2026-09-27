@@ -100,7 +100,13 @@ func main() {
 	// TypstAdapter wraps pandoc+typst; gracefully degrades when binaries absent.
 	adapter := pdfrender.New()
 	legacyDir := env.Str("APPLICATIONS_DIR", "/data/applications")
-	authority := applications.New(adapter, legacyDir)
+	// The operator account owns the pre-P4 application artifacts: the
+	// account-less uploads location and the fuzzy APPLICATIONS_DIR lookup
+	// resolve only through ForAccount(operatorAID) (plan ADR-11). An
+	// unparseable/absent operator id yields uuid.Nil → all legacy fallbacks
+	// stay disabled (fail-closed).
+	operatorAID, _ := uuid.Parse(operatorID)
+	authority := applications.New(adapter, legacyDir, operatorAID)
 	// Probe binary availability at startup: sets gojob_pdf_renderer_available
 	// gauge (1=present, 0=absent) so post-deploy verification is unambiguous.
 	if !adapter.Ready() {

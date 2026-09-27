@@ -242,15 +242,18 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, a auth.Authenticator, cs
 			slog.WarnContext(ctx, "jobDetailer: fetch hunt_ratings", "id", id64, "err", ratingErr)
 		}
 
-		// Uploads-first: canonical path by hunt_jobs.id.
-		hasResume := authority.Exists(id64, applications.KindResume)
-		hasCover := authority.Exists(id64, applications.KindCover)
-		// Legacy fallback: fuzzy slug under APPLICATIONS_DIR.
+		// Uploads-first: account-scoped canonical path by hunt_jobs.id
+		// (operator also reads the pre-P4 account-less location). aid was
+		// already resolved above for the score/rating reads.
+		acct := authority.ForAccount(aid)
+		hasResume := acct.Exists(id64, applications.KindResume)
+		hasCover := acct.Exists(id64, applications.KindCover)
+		// Legacy fallback (operator account only — enforced inside).
 		if !hasResume {
-			hasResume = authority.LegacyResolve(rec.Company, rec.Title, applications.KindResume) != ""
+			hasResume = acct.LegacyResolve(rec.Company, rec.Title, applications.KindResume) != ""
 		}
 		if !hasCover {
-			hasCover = authority.LegacyResolve(rec.Company, rec.Title, applications.KindCover) != ""
+			hasCover = acct.LegacyResolve(rec.Company, rec.Title, applications.KindCover) != ""
 		}
 		appHTML, err := buildApplicationSectionHTML(id64, csrfTok, rating, hasResume, hasCover)
 		if err != nil {

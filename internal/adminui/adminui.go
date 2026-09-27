@@ -95,23 +95,23 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	resource.Register(p, freelanceResource(pool))
 	resource.Register(p, securityResource(pool))
 	resource.Register(p, contestsResource(pool))
-	resource.Register(p, oversizeResource(pool))
+	resource.Register(p, oversizeResource(pool, acctOf))
 
 	// Resume resources — Writer-enabled CRUD via go-panel framework.
-	resource.Register(p, personsResource(pool))
-	resource.Register(p, experiencesResource(pool))
-	resource.Register(p, skillsResource(pool))
-	resource.Register(p, achievementsResource(pool))
-	resource.Register(p, projectsResource(pool))
-	resource.Register(p, educationsResource(pool))
-	resource.Register(p, certificationsResource(pool))
-	resource.Register(p, domainsResource(pool))
-	resource.Register(p, methodologiesResource(pool))
+	resource.Register(p, personsResource(pool, acctOf))
+	resource.Register(p, experiencesResource(pool, acctOf))
+	resource.Register(p, skillsResource(pool, acctOf))
+	resource.Register(p, achievementsResource(pool, acctOf))
+	resource.Register(p, projectsResource(pool, acctOf))
+	resource.Register(p, educationsResource(pool, acctOf))
+	resource.Register(p, certificationsResource(pool, acctOf))
+	resource.Register(p, domainsResource(pool, acctOf))
+	resource.Register(p, methodologiesResource(pool, acctOf))
 
 	// Upwork resources — Writer-enabled CRUD via go-panel framework.
-	resource.Register(p, upworkOverviewResource(pool))
-	resource.Register(p, upworkSkillsResource(pool))
-	resource.Register(p, upworkCatalogResource(pool))
+	resource.Register(p, upworkOverviewResource(pool, acctOf))
+	resource.Register(p, upworkSkillsResource(pool, acctOf))
+	resource.Register(p, upworkCatalogResource(pool, acctOf))
 
 	// Sidebar nav entries for bespoke pages (appear below auto-generated resource items).
 	p.AddNav(shell.NavItem{Group: grpHunt})
@@ -137,19 +137,19 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/triage", Handler: triageHandler(store, acctOf)})
 	// Job posting lifecycle status dropdown on the detail page.
 	p.MountAction(resource.ActionSpec{Path: "jobs/{id}/status", Handler: statusHandler(store)})
-	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority)))
+	mux.Handle("GET "+adminBasePath+"/jobs/{id}/download/{kind}", a.Require(downloadHandler(pool, authority, acctOf)))
 	// /admin/shortlist (list + htmx rows) is handled by go-panel via resource.Register above.
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;
 	// PDFs are accessible via the job detail page at /admin/jobs/{id}).
-	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p)))
+	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p, acctOf)))
 	// Resume editor routes (Part-D)
-	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey))))
-	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler()})
+	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey), acctOf)))
+	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler(acctOf)})
 	mux.HandleFunc("GET "+adminBasePath+"/linkedin", a.Require(linkedinHandler(p, authority.LegacyDir())))
-	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey))))
-	p.MountAction(resource.ActionSpec{Path: "upwork/catalog/reorder", Handler: upworkCatalogReorderHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/skill/reorder", Handler: upworkSkillReorderHandler()})
-	p.MountAction(resource.ActionSpec{Path: "upwork/categories", Handler: upworkCategoriesEditHandler()})
+	mux.HandleFunc("GET "+adminBasePath+"/upwork", a.Require(upworkHandler(p, a, []byte(csrfKey), acctOf)))
+	p.MountAction(resource.ActionSpec{Path: "upwork/catalog/reorder", Handler: upworkCatalogReorderHandler(acctOf)})
+	p.MountAction(resource.ActionSpec{Path: "upwork/skill/reorder", Handler: upworkSkillReorderHandler(acctOf)})
+	p.MountAction(resource.ActionSpec{Path: "upwork/categories", Handler: upworkCategoriesEditHandler(acctOf)})
 	// Wrap the go-panel catch-all with withSessionCookieContext so the
 	// jobsLister closure can generate per-request CSRF tokens for the
 	// star-toggle inline forms without needing the *http.Request.

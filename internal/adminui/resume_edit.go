@@ -39,20 +39,20 @@ type resumeEditData struct {
 }
 
 // resumeEditHandler renders the full resume editor page (GET /admin/resume/edit).
-func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte, acctOf accountResolver) http.HandlerFunc {
 	tmpl := template.Must(template.New("resume_edit").Parse(resumeEditTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		db := jobs.GetResumeDB()
-		if db == nil {
-			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
+		ctx := r.Context()
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
+			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Resume database not configured or no account identity.")); err != nil {
 				slog.Error("adminui: render resume_edit", "err", err)
 			}
 			return
 		}
 
-		ctx := r.Context()
-		personID := db.GetLatestPersonID(ctx)
+		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
 			if err := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
 				slog.Error("adminui: render resume_edit", "err", err)
@@ -60,7 +60,7 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 			return
 		}
 
-		person, err := db.GetPerson(ctx, personID)
+		person, err := rdb.GetPerson(ctx, personID)
 		if err != nil {
 			slog.Warn("resumeEditHandler: GetPerson", "err", err)
 			if err2 := p.RenderPageHTML(w, r, "Edit Resume", "resume", resumeEmptyHTML("Could not load person: "+err.Error())); err2 != nil {
@@ -69,14 +69,14 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 			return
 		}
 
-		exps, _ := db.GetAllExperiences(ctx, personID)
-		skills, _ := db.GetAllSkills(ctx, personID)
-		achs, _ := db.GetAllAchievements(ctx, personID)
-		domains, _ := db.GetAllDomains(ctx, personID)
-		meths, _ := db.GetAllMethodologies(ctx, personID)
-		projs, _ := db.GetAllProjects(ctx, personID)
-		edus, _ := db.GetAllEducations(ctx, personID)
-		certs, _ := db.GetAllCertifications(ctx, personID)
+		exps, _ := rdb.GetAllExperiences(ctx, personID)
+		skills, _ := rdb.GetAllSkills(ctx, personID)
+		achs, _ := rdb.GetAllAchievements(ctx, personID)
+		domains, _ := rdb.GetAllDomains(ctx, personID)
+		meths, _ := rdb.GetAllMethodologies(ctx, personID)
+		projs, _ := rdb.GetAllProjects(ctx, personID)
+		edus, _ := rdb.GetAllEducations(ctx, personID)
+		certs, _ := rdb.GetAllCertifications(ctx, personID)
 
 		sessVal := sessionValue(r, a.(cookieNamer).SessionCookieName())
 		hourlyRateStr := ""
@@ -111,7 +111,7 @@ func resumeEditHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) 
 
 // resumeSkillLevelHandler handles POST /admin/resume/skill/{id}/level.
 // parseIDParam + level validation run BEFORE requireResumeDB for early rejection.
-func resumeSkillLevelHandler() http.HandlerFunc {
+func resumeSkillLevelHandler(acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		id, ok := parseIDParam(w, r)
@@ -123,11 +123,11 @@ func resumeSkillLevelHandler() http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("invalid level %q", level), http.StatusBadRequest)
 			return
 		}
-		db, _, ok2 := requireResumeDB(w, r)
+		rdb, _, ok2 := requireResumeDB(w, r, acctOf)
 		if !ok2 {
 			return
 		}
-		if err := db.UpdateSkillLevel(r.Context(), id, level); err != nil {
+		if err := rdb.UpdateSkillLevel(r.Context(), id, level); err != nil {
 			slog.Error("resumeSkillLevelHandler: UpdateSkillLevel", "id", id, "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return
@@ -138,20 +138,21 @@ func resumeSkillLevelHandler() http.HandlerFunc {
 
 // --- helpers ---
 
-// requireResumeDB returns the package-level ResumeDB and the latest personID.
-// Writes a 500/404 and returns ok=false when DB is nil or no person exists.
-func requireResumeDB(w http.ResponseWriter, r *http.Request) (*jobs.ResumeDB, int, bool) {
-	db := jobs.GetResumeDB()
-	if db == nil {
-		http.Error(w, "resume db not configured", http.StatusInternalServerError)
+// requireResumeDB returns the account-bound resume facade and the acting
+// account's latest personID. Writes 500/404 and returns ok=false when the DB
+// is absent, no account identity resolves, or the account has no person.
+func requireResumeDB(w http.ResponseWriter, r *http.Request, acctOf accountResolver) (*jobs.ResumeAccount, int, bool) {
+	rdb, acctOK := resumeScopedDB(r.Context(), acctOf)
+	if !acctOK {
+		http.Error(w, "resume db not configured or no account identity", http.StatusInternalServerError)
 		return nil, 0, false
 	}
-	personID := db.GetLatestPersonID(r.Context())
+	personID := rdb.GetLatestPersonID(r.Context())
 	if personID == 0 {
 		http.Error(w, "no resume person found", http.StatusNotFound)
 		return nil, 0, false
 	}
-	return db, personID, true
+	return rdb, personID, true
 }
 
 // parseIDParam extracts and validates the {id} path value (must be positive int).

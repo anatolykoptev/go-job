@@ -18,7 +18,7 @@ func TestResumeHandler_EmptyState(t *testing.T) {
 	// GetResumeDB() returns nil (package-level resumeDB is nil in test binary).
 	// resumeHandler must detect nil and render the empty-state message gracefully.
 	p := testDetailPanel()
-	handler := resumeHandler(p)
+	handler := resumeHandler(p, denyAccount())
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/resume", nil)
 	rr := httptest.NewRecorder()

@@ -94,6 +94,11 @@ func firstN(payload any, n int) json.RawMessage {
 //   - if marshalled length <= threshold → returns payload unchanged
 //   - else → Save to store and return *Envelope
 //
+// Account scope (plan ADR-10): callers pass an account-bound view — in
+// production store.ForAccount(aid) — so the spill row is owned by the acting
+// account and invisible to every other account. The unscoped *Store has no
+// Save method, making unscoped writes unreachable.
+//
 // Errors from json.Marshal or store.Save are returned; caller is responsible
 // for fallback behaviour (likely returning original payload + log).
 func MaybeSpill(ctx context.Context, store Storer, toolName string, payload any) (any, error) {

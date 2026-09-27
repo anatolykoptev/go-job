@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/google/uuid"
 	"os"
 	"reflect"
 	"strings"
@@ -108,7 +109,7 @@ func TestNoGodTool(t *testing.T) {
 func TestNoBooleanPropertySchema(t *testing.T) {
 	// Build the server exactly as main.go does.
 	srv := mcp.NewServer(&mcp.Implementation{Name: "go_job-test", Version: "test"}, nil)
-	RegisterTools(srv, applications.New(nil, ""))
+	RegisterTools(srv, applications.New(nil, "", uuid.Nil))
 
 	// Connect via in-memory transport.
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

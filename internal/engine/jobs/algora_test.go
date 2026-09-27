@@ -154,10 +154,10 @@ func TestParseGitHubIssueURL(t *testing.T) {
 	}{
 		{"https://github.com/zio/zio-blocks/issues/519", "zio", "zio-blocks", 519, true},
 		{"https://github.com/golemcloud/golem-cli/issues/275", "golemcloud", "golem-cli", 275, true},
-		{"https://github.com/org/repo/pulls/10", "", "", 0, false},     // not issues
-		{"https://example.com/foo/bar/issues/1", "", "", 0, false},      // not github
-		{"https://github.com/org/repo/issues/abc", "", "", 0, false},    // non-numeric
-		{"https://github.com/org/repo", "", "", 0, false},               // no issues path
+		{"https://github.com/org/repo/pulls/10", "", "", 0, false},   // not issues
+		{"https://example.com/foo/bar/issues/1", "", "", 0, false},   // not github
+		{"https://github.com/org/repo/issues/abc", "", "", 0, false}, // non-numeric
+		{"https://github.com/org/repo", "", "", 0, false},            // no issues path
 	}
 
 	for _, tt := range tests {

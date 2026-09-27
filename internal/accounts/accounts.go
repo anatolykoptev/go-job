@@ -172,6 +172,19 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if err := EnsureHuntRatingsAccountScope(ctx, pool); err != nil {
 		return nil, nil, fmt.Errorf("accounts: hunt_ratings account scope: %w", err)
 	}
+	// P4 (plan ADR-6/ADR-8/ADR-9/ADR-10): resume_persons + resume_vectors +
+	// oversize_responses carry account_id the same way. Unconditional because
+	// ConnectResumeDB runs BEFORE Bootstrap — on a fresh DB panel_accounts
+	// does not exist when resume schema 008 / oversize schema 003 execute, so
+	// their FK DO-blocks skip; these probes re-issue the FK adds here. The
+	// oversize sweep additionally purges ownerless spill rows on every boot —
+	// a NULL-account spill is unreachable through every scoped read anyway.
+	if err := EnsureResumeAccountScope(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: resume account scope: %w", err)
+	}
+	if err := EnsureOversizeAccountScope(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: oversize account scope: %w", err)
+	}
 	op, err := seedOperator(ctx, pool, store, seed)
 	if err != nil {
 		return nil, nil, fmt.Errorf("accounts: seed operator: %w", err)
@@ -185,6 +198,9 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 		}
 		if err := BackfillLegacyHuntSettings(ctx, pool, op.ID); err != nil {
 			return nil, nil, fmt.Errorf("accounts: legacy hunt settings backfill: %w", err)
+		}
+		if err := BackfillResumeAccountData(ctx, pool, op.ID); err != nil {
+			return nil, nil, fmt.Errorf("accounts: resume backfill: %w", err)
 		}
 	}
 	return store, op, nil
@@ -434,3 +450,205 @@ func seedOperator(ctx context.Context, pool *pgxpool.Pool, store *auth.PgxAccoun
 // mode (ADR-17) — the HMAC session carries no account identity, so the tenant
 // must come from configuration, not from the request.
 const SingleOperatorSlug = "operator"
+
+// ─── P4 scope: resume cluster + oversize (plan ADR-6/8/9/10) ─────────────────
+
+// EnsureResumeAccountScope applies the expand-half column adds and the guarded
+// account_id FKs on resume_persons and resume_vectors, re-issues the vector
+// UNIQUE swap ((user_name, content_hash) → (account_id, content_hash)) and the
+// account indexes — the same statements resume schema 008 runs. It runs on
+// EVERY Bootstrap because ConnectResumeDB precedes it: on a fresh DB
+// panel_accounts does not exist when 008 executes, so its guarded DO blocks
+// skip the FKs; this probe re-issues them once the identity root exists.
+// No-ops when the resume tables are absent (fresh DB — Bootstrap precedes
+// hStore.Migrate AND ConnectResumeDB may not have run in tests).
+func EnsureResumeAccountScope(ctx context.Context, pool *pgxpool.Pool) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.resume_persons')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe resume_persons: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: resume schema not migrated yet; 008 creates the scope
+	}
+	if _, err := pool.Exec(ctx, `
+		ALTER TABLE resume_persons ADD COLUMN IF NOT EXISTS account_id UUID;
+		ALTER TABLE resume_vectors ADD COLUMN IF NOT EXISTS account_id UUID;`); err != nil {
+		return fmt.Errorf("resume scope: add account_id columns: %w", err)
+	}
+	// Orphan sweep before the FKs — same rationale as the hunt_ratings sweep in
+	// EnsureHuntRatingsAccountScope: ownerless rows would violate a re-added
+	// constraint (test cleanup drops panel_accounts and recreates it empty).
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM resume_persons
+		WHERE account_id IS NOT NULL
+		  AND account_id NOT IN (SELECT id FROM panel_accounts);
+		DELETE FROM resume_vectors
+		WHERE account_id IS NOT NULL
+		  AND account_id NOT IN (SELECT id FROM panel_accounts)`); err != nil {
+		return fmt.Errorf("resume scope: orphan sweep: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'resume_persons_account_id_fkey'
+				  AND conrelid = 'resume_persons'::regclass
+			) THEN
+				ALTER TABLE resume_persons
+					ADD CONSTRAINT resume_persons_account_id_fkey
+					FOREIGN KEY (account_id) REFERENCES panel_accounts(id);
+			END IF;
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'resume_vectors_account_id_fkey'
+				  AND conrelid = 'resume_vectors'::regclass
+			) THEN
+				ALTER TABLE resume_vectors
+					ADD CONSTRAINT resume_vectors_account_id_fkey
+					FOREIGN KEY (account_id) REFERENCES panel_accounts(id);
+			END IF;
+		END $$`); err != nil {
+		return fmt.Errorf("resume scope: account FKs: %w", err)
+	}
+	// The vector dedup scope swap tolerates pre-backfill NULLs (NULLs are
+	// distinct under UNIQUE); NOT NULL enforcement is deferred to P5 (ADR-13).
+	if _, err := pool.Exec(ctx, `
+		ALTER TABLE resume_vectors DROP CONSTRAINT IF EXISTS resume_vectors_user_name_content_hash_key;
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'resume_vectors_account_content_key'
+				  AND conrelid = 'resume_vectors'::regclass
+			) THEN
+				ALTER TABLE resume_vectors
+					ADD CONSTRAINT resume_vectors_account_content_key
+					UNIQUE (account_id, content_hash);
+			END IF;
+		END $$;
+		CREATE INDEX IF NOT EXISTS idx_resume_persons_account ON resume_persons (account_id);
+		CREATE INDEX IF NOT EXISTS idx_resume_vectors_account ON resume_vectors (account_id);`); err != nil {
+		return fmt.Errorf("resume scope: vector unique swap/indexes: %w", err)
+	}
+	return nil
+}
+
+// EnsureOversizeAccountScope applies the expand-half column add and the
+// guarded account_id FK on oversize_responses, then purges ownerless spill
+// rows — plan ADR-10/backfill note: spill rows are a TTL'd cache, so unowned
+// rows are DELETED rather than guessed-stamped to an account. The purge runs
+// unconditionally on every Bootstrap: a NULL-account row is unreachable
+// through every scoped read, so dropping it early is always safe.
+// No-ops when oversize_responses is absent (Bootstrap precedes
+// oversize.Migrate on a fresh DB — schema 003 creates the scope there).
+func EnsureOversizeAccountScope(ctx context.Context, pool *pgxpool.Pool) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.oversize_responses')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe oversize_responses: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: oversize schema not migrated yet; 003 creates the scope
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE oversize_responses ADD COLUMN IF NOT EXISTS account_id UUID`); err != nil {
+		return fmt.Errorf("oversize scope: add account_id: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM oversize_responses
+		WHERE account_id IS NULL
+		   OR account_id NOT IN (SELECT id FROM panel_accounts)`); err != nil {
+		return fmt.Errorf("oversize scope: unowned-row purge: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'oversize_responses_account_id_fkey'
+				  AND conrelid = 'oversize_responses'::regclass
+			) THEN
+				ALTER TABLE oversize_responses
+					ADD CONSTRAINT oversize_responses_account_id_fkey
+					FOREIGN KEY (account_id) REFERENCES panel_accounts(id);
+			END IF;
+		END $$;
+		CREATE INDEX IF NOT EXISTS idx_oversize_responses_account
+			ON oversize_responses (account_id, created_at DESC)`); err != nil {
+		return fmt.Errorf("oversize scope: account FK/index: %w", err)
+	}
+	return nil
+}
+
+// BackfillResumeAccountData stamps existing resume_persons and resume_vectors
+// rows with the operator account and re-keys every stamped vector's
+// content_hash to sha256(<op-uuid>|<mem_type>|<coalesce(ref_id,0)>|<content>)
+// — the same digest the account-scoped writers compute in
+// jobs.vectorContentHash (plan ADR-9). Legacy rows carried
+// sha256(user_name|...); after stamping, dedup must still recognise them, so
+// the hash is recomputed over the NEW account key. pgcrypto's sha256() is a
+// core function (PG 11+), no extension needed.
+//
+// Dedupe precedes the stamp: two legacy rows differing only in user_name
+// collapse to the same (account_id, content_hash) pair once re-keyed — the
+// freshest updated_at row wins, matching the hunt_ratings collapse rule. Rows
+// colliding with an ALREADY-stamped operator row are dropped first so a
+// repeated/interleaved backfill can never violate the new UNIQUE.
+//
+// resume_persons rows simply stamp — the persons table has no uniqueness
+// constraint to collide with, and every child row follows the parent's
+// ownership transitively via person_id.
+func BackfillResumeAccountData(ctx context.Context, pool *pgxpool.Pool, accountID string) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.resume_persons')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe resume_persons: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: resume schema not migrated yet, nothing to backfill
+	}
+	aid, err := uuid.Parse(accountID)
+	if err != nil || aid == uuid.Nil {
+		return fmt.Errorf("resume backfill: invalid account id %q", accountID)
+	}
+
+	ct, err := pool.Exec(ctx,
+		`UPDATE resume_persons SET account_id = $1 WHERE account_id IS NULL`, aid)
+	if err != nil {
+		return fmt.Errorf("resume backfill: stamp persons: %w", err)
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("accounts: backfilled resume_persons rows to operator account",
+			slog.String("account_id", accountID), slog.Int64("rows", n))
+	}
+
+	// Drop NULL-account rows whose (mem_type, ref_id, content) is already
+	// held by the operator (or a fresher NULL twin): after re-keying both
+	// would hash identically under the operator account.
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM resume_vectors a USING resume_vectors b
+		WHERE a.account_id IS NULL
+		  AND (b.account_id IS NULL OR b.account_id = $1)
+		  AND a.id <> b.id
+		  AND a.mem_type = b.mem_type
+		  AND COALESCE(a.ref_id, 0) = COALESCE(b.ref_id, 0)
+		  AND a.content = b.content
+		  AND (a.updated_at < b.updated_at
+		       OR (a.updated_at = b.updated_at AND a.id < b.id))`, aid); err != nil {
+		return fmt.Errorf("resume backfill: vector dedupe: %w", err)
+	}
+	ct, err = pool.Exec(ctx, `
+		UPDATE resume_vectors
+		SET account_id = $1,
+		    content_hash = encode(sha256(
+		        ($1::text || '|' || mem_type || '|' || COALESCE(ref_id, 0)::text || '|' || content)::bytea
+		    ), 'hex')
+		WHERE account_id IS NULL`, aid)
+	if err != nil {
+		return fmt.Errorf("resume backfill: stamp/re-key vectors: %w", err)
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("accounts: backfilled resume_vectors rows to operator account (content_hash re-keyed)",
+			slog.String("account_id", accountID), slog.Int64("rows", n))
+	}
+	return nil
+}

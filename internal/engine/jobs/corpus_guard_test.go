@@ -63,14 +63,14 @@ func vectorAtCosine(dim int, cos float64) []float32 {
 }
 
 func TestCheckCorpusConvention_MatchingClientPasses(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	if !db.HasEmbedding() {
 		t.Skip("embedding column absent (005 migration not applied on test DB) — convention probe needs the vector path")
 	}
 	ctx := context.Background()
 
 	stored := axisVector(1024)
-	if _, err := db.UpsertVector(ctx, "corpus convention probe row", "resume_project", stored); err != nil {
+	if _, err := rdb.UpsertVector(ctx, "corpus convention probe row", "resume_project", stored); err != nil {
 		t.Fatalf("seed vector: %v", err)
 	}
 
@@ -84,14 +84,14 @@ func TestCheckCorpusConvention_MatchingClientPasses(t *testing.T) {
 // the corpus. Nothing else in the stack reports this — pgvector accepts the
 // write, the row count goes up, and retrieval quietly degrades.
 func TestCheckCorpusConvention_DriftedClientIsCaught(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	if !db.HasEmbedding() {
 		t.Skip("embedding column absent (005 migration not applied on test DB) — convention probe needs the vector path")
 	}
 	ctx := context.Background()
 
 	stored := axisVector(1024)
-	if _, err := db.UpsertVector(ctx, "corpus convention probe row", "resume_project", stored); err != nil {
+	if _, err := rdb.UpsertVector(ctx, "corpus convention probe row", "resume_project", stored); err != nil {
 		t.Fatalf("seed vector: %v", err)
 	}
 
@@ -117,13 +117,13 @@ func TestCheckCorpusConvention_DriftedClientIsCaught(t *testing.T) {
 }
 
 func TestStoredDim_ReportsTheCorpusDimension(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	if !db.HasEmbedding() {
 		t.Skip("embedding column absent (005 migration not applied on test DB)")
 	}
 	ctx := context.Background()
 
-	if _, err := db.UpsertVector(ctx, "corpus dim probe row", "resume_project", axisVector(1024)); err != nil {
+	if _, err := rdb.UpsertVector(ctx, "corpus dim probe row", "resume_project", axisVector(1024)); err != nil {
 		t.Fatalf("seed vector: %v", err)
 	}
 	dim, err := db.StoredDim(ctx)

@@ -247,10 +247,14 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority, csrfKey [
 		}
 		defer rows.Close()
 
-		// Snapshot legacy-dir entries once per list call to avoid N+1 ReadDir calls.
+		// Snapshot legacy-dir entries once per list call to avoid N+1 ReadDir
+		// calls. Bound to the acting account — a non-operator account gets nil
+		// (legacyDir is the operator's pre-P4 tree, plan ADR-11).
 		var legacyEntries []os.DirEntry
+		var acct *applications.AccountAuthority
 		if authority != nil {
-			legacyEntries = authority.LegacyEntries()
+			acct = authority.ForAccount(aid)
+			legacyEntries = acct.LegacyEntries()
 		}
 
 		// Mint a single CSRF token for all star-toggle forms on this page.
@@ -273,14 +277,14 @@ func jobsLister(pool *pgxpool.Pool, authority *applications.Authority, csrfKey [
 			}
 
 			hasResume, hasCover := false, false
-			if authority != nil {
-				hasResume = authority.Exists(id, applications.KindResume)
-				hasCover = authority.Exists(id, applications.KindCover)
+			if acct != nil {
+				hasResume = acct.Exists(id, applications.KindResume)
+				hasCover = acct.Exists(id, applications.KindCover)
 				if !hasResume {
-					hasResume = authority.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindResume)
+					hasResume = acct.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindResume)
 				}
 				if !hasCover {
-					hasCover = authority.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindCover)
+					hasCover = acct.LegacyExistsFromEntries(legacyEntries, company, title, applications.KindCover)
 				}
 			}
 

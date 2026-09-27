@@ -212,7 +212,7 @@ func TestExtractJSONLD(t *testing.T) {
 }
 
 func containsStr(s, sub string) bool {
-return strings.Contains(s, sub)
+	return strings.Contains(s, sub)
 }
 
 // TestLinkedInJobApplyMethodPlumbing verifies the EasyApply / ApplyMethod /

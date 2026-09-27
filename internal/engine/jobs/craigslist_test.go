@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -919,18 +920,15 @@ func saveDefaultLocationDeps(t *testing.T) {
 	origDefault := engine.Cfg.CraigslistDefaultLocation
 	origTimeout := craigslistProfileTimeout
 	profileLocationCacheMu.Lock()
-	origCacheHit := profileLocationCacheHit
-	origCacheVal := profileLocationCached
-	profileLocationCacheHit = false
-	profileLocationCached = ""
+	origCache := profileLocationCache
+	profileLocationCache = map[uuid.UUID]string{}
 	profileLocationCacheMu.Unlock()
 	t.Cleanup(func() {
 		craigslistProfileLocation = origProfile
 		engine.Cfg.CraigslistDefaultLocation = origDefault
 		craigslistProfileTimeout = origTimeout
 		profileLocationCacheMu.Lock()
-		profileLocationCacheHit = origCacheHit
-		profileLocationCached = origCacheVal
+		profileLocationCache = origCache
 		profileLocationCacheMu.Unlock()
 	})
 }
@@ -1461,6 +1459,8 @@ func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
+	aid := rdb.AccountID()
 
 	// Drive the REAL loadCachedProfileLocation path: it reads
 	// GetResumeDB().GetLatestPersonID, so register the test DB on the
@@ -1475,7 +1475,7 @@ func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
 	// Insert a person whose location is the pre-edit value. InsertPerson itself
 	// invalidates the cache (the sibling hook), so the cache starts cold
 	// regardless of prior state.
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:     "Craigslist Cache Invalidation Test",
 		Email:    "craigslist-cache-invalidation-test@example.com",
 		Location: "Seattle, WA",
@@ -1483,10 +1483,10 @@ func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
 	// First read populates the cache with the pre-edit location.
-	first, err := loadCachedProfileLocation(ctx)
+	first, err := cachedProfileLocationForAccount(ctx, aid)
 	if err != nil {
 		t.Fatalf("first loadCachedProfileLocation: %v", err)
 	}
@@ -1495,7 +1495,7 @@ func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
 	}
 
 	// Update the location through the SAME path the admin UI uses.
-	if err := db.UpdateResumePerson(ctx, personID, PersonRecord{
+	if err := rdb.UpdateResumePerson(ctx, personID, PersonRecord{
 		ID:       personID,
 		Name:     "Craigslist Cache Invalidation Test",
 		Email:    "craigslist-cache-invalidation-test@example.com",
@@ -1505,7 +1505,7 @@ func TestProfileLocationCache_InvalidatedOnUpdateResumePerson(t *testing.T) {
 	}
 
 	// Second read must reflect the NEW value — the cache was invalidated.
-	second, err := loadCachedProfileLocation(ctx)
+	second, err := cachedProfileLocationForAccount(ctx, aid)
 	if err != nil {
 		t.Fatalf("second loadCachedProfileLocation: %v", err)
 	}
@@ -1638,6 +1638,8 @@ func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
+	aid := rdb.AccountID()
 
 	origDB := GetResumeDB()
 	SetResumeDB(db)
@@ -1645,7 +1647,7 @@ func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
 
 	saveDefaultLocationDeps(t)
 
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:     "Craigslist Clear Cache Test",
 		Email:    "craigslist-clear-cache-test@example.com",
 		Location: "Seattle, WA",
@@ -1655,7 +1657,7 @@ func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
 	}
 
 	// First read populates the cache.
-	first, err := loadCachedProfileLocation(ctx)
+	first, err := cachedProfileLocationForAccount(ctx, aid)
 	if err != nil {
 		t.Fatalf("first loadCachedProfileLocation: %v", err)
 	}
@@ -1664,13 +1666,13 @@ func TestProfileLocationCache_InvalidatedOnClearPerson(t *testing.T) {
 	}
 
 	// Clear the person — this changes what GetLatestPersonID returns.
-	if err := db.ClearPerson(ctx, personID); err != nil {
+	if err := rdb.ClearPerson(ctx, personID); err != nil {
 		t.Fatalf("ClearPerson: %v", err)
 	}
 
 	// Second read must NOT serve the stale cached value — the cache was
 	// invalidated, so it re-queries and finds no person (GetLatestPersonID=0).
-	second, err := loadCachedProfileLocation(ctx)
+	second, err := cachedProfileLocationForAccount(ctx, aid)
 	if err != nil {
 		t.Fatalf("second loadCachedProfileLocation: %v", err)
 	}

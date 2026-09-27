@@ -170,18 +170,19 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
 
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:  "Upwork Profile Test",
 		Email: "upwork-profile-test@example.com",
 	})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
 	// Before upsert: Missing=true with no error.
-	before, err := db.GetUpworkProfile(ctx, personID)
+	before, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile (before): %v", err)
 	}
@@ -196,11 +197,11 @@ func TestGetUpworkProfile_RoundTrip(t *testing.T) {
 	const wantRate int64 = 15000
 	wantCategories := []string{"Software Development", "Backend"}
 
-	if err := db.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, wantCategories, wantAvailability); err != nil {
+	if err := rdb.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, wantCategories, wantAvailability); err != nil {
 		t.Fatalf("UpsertUpworkProfile: %v", err)
 	}
 
-	after, err := db.GetUpworkProfile(ctx, personID)
+	after, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile (after): %v", err)
 	}
@@ -242,17 +243,18 @@ func TestInsertDeleteUpworkSkill_RoundTrip(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
 
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:  "Upwork Skill Test",
 		Email: "upwork-skill-test@example.com",
 	})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
-	id, err := db.InsertUpworkSkill(ctx, personID, "Go")
+	id, err := rdb.InsertUpworkSkill(ctx, personID, "Go")
 	if err != nil {
 		t.Fatalf("InsertUpworkSkill: %v", err)
 	}
@@ -261,7 +263,7 @@ func TestInsertDeleteUpworkSkill_RoundTrip(t *testing.T) {
 	}
 
 	// Duplicate insert should be a no-op (not an error).
-	id2, err := db.InsertUpworkSkill(ctx, personID, "Go")
+	id2, err := rdb.InsertUpworkSkill(ctx, personID, "Go")
 	if err != nil {
 		t.Fatalf("InsertUpworkSkill duplicate: %v", err)
 	}
@@ -270,7 +272,7 @@ func TestInsertDeleteUpworkSkill_RoundTrip(t *testing.T) {
 	}
 
 	// Delete and verify gone.
-	if err := db.DeleteUpworkSkill(ctx, personID, id); err != nil {
+	if err := rdb.DeleteUpworkSkill(ctx, personID, id); err != nil {
 		t.Fatalf("DeleteUpworkSkill: %v", err)
 	}
 }

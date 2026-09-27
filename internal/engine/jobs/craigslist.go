@@ -18,7 +18,9 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/google/uuid"
 )
 
 const craigslistSiteSearch = "site:craigslist.org"
@@ -1024,23 +1026,23 @@ var craigslistProfileTimeout = 2 * time.Second
 // which lives inside this default implementation only).
 var craigslistProfileLocation = loadCachedProfileLocation
 
-// profileLocationCache memoises the operator's resume location across reads.
-// See craigslistProfileLocation for the invalidation story.
+// profileLocationCache memoises the requesting account's resume location
+// across reads (per-account keys — plan P4: account A must never see account
+// B's profile location leaking in as a search default). See
+// craigslistProfileLocation for the invalidation story.
 var (
-	profileLocationCacheMu  sync.Mutex
-	profileLocationCached   string
-	profileLocationCacheHit bool
+	profileLocationCacheMu sync.Mutex
+	profileLocationCache   = map[uuid.UUID]string{}
 )
 
-// invalidateProfileLocationCache clears the memoised profile location so the
-// next read re-queries resume_persons. Called from UpdateResumePerson and
-// InsertPerson — both write resume_persons.location in-process (the admin UI
-// POST /admin/resume/edit and a fresh person insert) with no restart, so the
-// cache must not keep serving the pre-write value.
-func invalidateProfileLocationCache() {
+// invalidateProfileLocationCache drops one account's memoised profile
+// location so the next read re-queries resume_persons. Called from
+// UpdateResumePerson and InsertPerson — both write resume_persons.location
+// in-process (the admin UI POST /admin/resume/edit and a fresh person insert)
+// with no restart, so the cache must not keep serving the pre-write value.
+func invalidateProfileLocationCache(aid uuid.UUID) {
 	profileLocationCacheMu.Lock()
-	profileLocationCached = ""
-	profileLocationCacheHit = false
+	delete(profileLocationCache, aid)
 	profileLocationCacheMu.Unlock()
 }
 
@@ -1051,9 +1053,23 @@ func invalidateProfileLocationCache() {
 // "no DB configured", "no person row" and "empty location" return ("", nil)
 // because they are legitimate no-profile states, not read failures.
 func loadCachedProfileLocation(ctx context.Context) (string, error) {
+	// The profile tier is per-account: the requesting account's own latest
+	// person supplies the location (plan P4 — a foreign account's resume
+	// location must never leak in as a search default). No account identity
+	// in ctx → no profile tier at all (config tier still applies).
+	aid, ok := accounts.AccountFrom(ctx)
+	if !ok {
+		return "", nil
+	}
+	return cachedProfileLocationForAccount(ctx, aid)
+}
+
+// cachedProfileLocationForAccount is the account-bound core of
+// loadCachedProfileLocation — split out so tests exercise the per-account read
+// without forging a session/bearer ctx.
+func cachedProfileLocationForAccount(ctx context.Context, aid uuid.UUID) (string, error) {
 	profileLocationCacheMu.Lock()
-	if profileLocationCacheHit {
-		cached := profileLocationCached
+	if cached, hit := profileLocationCache[aid]; hit {
 		profileLocationCacheMu.Unlock()
 		return cached, nil
 	}
@@ -1063,11 +1079,12 @@ func loadCachedProfileLocation(ctx context.Context) (string, error) {
 	if db == nil {
 		return "", nil
 	}
-	personID := db.GetLatestPersonID(ctx)
+	rdb := db.ForAccount(aid)
+	personID := rdb.GetLatestPersonID(ctx)
 	if personID == 0 {
 		return "", nil
 	}
-	person, err := db.GetPerson(ctx, personID)
+	person, err := rdb.GetPerson(ctx, personID)
 	if err != nil {
 		return "", fmt.Errorf("craigslist: profile read failed: %w", err)
 	}
@@ -1081,8 +1098,7 @@ func loadCachedProfileLocation(ctx context.Context) (string, error) {
 	// Cache only on a non-empty success; a failure/empty leaves the cache cold
 	// so a later retry when the DB is reachable can still populate it.
 	profileLocationCacheMu.Lock()
-	profileLocationCached = loc
-	profileLocationCacheHit = true
+	profileLocationCache[aid] = loc
 	profileLocationCacheMu.Unlock()
 	return loc, nil
 }
