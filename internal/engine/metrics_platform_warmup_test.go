@@ -98,11 +98,13 @@ func TestInit_WarmsPlatformResultsMatrix(t *testing.T) {
 // prev==degraded (always true on the first cycle_reset call, since
 // scoringDegradedState initializes false) leaves the gauge absent from
 // Prometheus until a real 0→1 transition — the alert sees "no data", not 0.
-// The unscored-jobs gauges don't have the early-return bug but are
-// pre-registered too for defense-in-depth.
 //
-// RED-on-revert: remove any of the three reg.Gauge().Set(0) lines from
-// warmAlertBoundedMetrics → the corresponding key goes missing → RED.
+// P3: the unscored-jobs gauges carry the {account} label — the account set is
+// dynamic (enumerated per cycle), so they are created on first Set and must
+// NOT be pre-registered as unlabelled series.
+//
+// RED-on-revert: remove the reg.Gauge(MetricHuntScoringDegraded).Set(0) line
+// from warmAlertBoundedMetrics → the key goes missing → RED.
 func TestWarmAlertBoundedMetrics_PreRegistersESC2Gauges(t *testing.T) {
 	orig := reg
 	t.Cleanup(func() { reg = orig })
@@ -111,13 +113,15 @@ func TestWarmAlertBoundedMetrics_PreRegistersESC2Gauges(t *testing.T) {
 	warmAlertBoundedMetrics()
 
 	snap := reg.GaugeSnapshot()
+	if v, ok := snap[MetricHuntScoringDegraded]; !ok || v != 0 {
+		t.Errorf("ESC-2 gauge %q missing/non-zero after warm-up (present=%v value=%v) — warmAlertBoundedMetrics does not pre-register it", MetricHuntScoringDegraded, ok, v)
+	}
 	for _, name := range []string{
-		MetricHuntScoringDegraded,
 		MetricHuntUnscoredJobsCount,
 		MetricHuntUnscoredJobsMaxAge,
 	} {
-		if v, ok := snap[name]; !ok || v != 0 {
-			t.Errorf("ESC-2 gauge %q missing/non-zero after warm-up (present=%v value=%v) — warmAlertBoundedMetrics does not pre-register it", name, ok, v)
+		if _, ok := snap[name]; ok {
+			t.Errorf("unscored gauge %q must NOT be pre-registered unlabelled — P3 series carry {account} and are created on first Set", name)
 		}
 	}
 }
