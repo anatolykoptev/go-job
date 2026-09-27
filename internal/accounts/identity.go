@@ -62,7 +62,8 @@ func parseAccountID(raw string) (uuid.UUID, bool) {
 // when bearerAuth is nil: with no verified identity in ctx it returns
 // (zero Tenant, false), and upstream callTenant denies the call — the
 // no-DB/no-auth shape stays fail-closed rather than falling back to the
-// global 'spb' tenant.
+// global 'spb' tenant. The deny contract is pinned upstream over the real
+// transport by go-panel's TestListTool_TenantResolverDenies.
 func MCPTenantResolver(ctx context.Context) (tenant.Tenant, bool) {
 	id, ok := AccountFrom(ctx)
 	if !ok {

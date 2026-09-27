@@ -435,3 +435,13 @@ func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
 	assert.Equal(t, float64(0), maxAgeVal,
 		"unscored jobs max-age gauge must be 0 when no unscored jobs are found")
 }
+
+// TestStartWorker_NilStore_Noop pins the DB-down boot path: a nil *hunt.Store
+// must return before LoadSettings — the huntSettingsStore interface would
+// carry a typed nil past its internal store==nil guard and panic inside
+// GetHuntSettings (observed: a boot with DATABASE_URL set but unreachable
+// SIGSEGVd before the MCP listener bound).
+func TestStartWorker_NilStore_Noop(t *testing.T) {
+	t.Setenv("HUNT_INGEST_ENABLED", "true")
+	StartWorker(t.Context(), nil, nil) // must not panic
+}

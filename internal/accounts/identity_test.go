@@ -17,6 +17,7 @@ import (
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
+	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/google/uuid"
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/stretchr/testify/require"
@@ -117,7 +118,7 @@ func TestMCPTenantResolver_EndToEnd(t *testing.T) {
 func TestAccountFrom_SessionEndToEnd(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
-	dropAccountTables(t, pool)
+	dbtest.DropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool,
 		accounts.OperatorSeed{Email: "edge@t.example", Password: "edge-pass-123"})
 	require.NoError(t, err)
@@ -186,9 +187,10 @@ func TestLoopbackBypass_NeverEnabled_SourceGate(t *testing.T) {
 }
 
 // TestMCPEdgeWiring_SourceGate guards the load-bearing wiring ordering:
-// the legacy-token seed runs inside initEngine AFTER the hunt migration
-// runner (migration 014 owns mcp_api_keys); the DB verifier is mounted on
-// BOTH listeners; panelmcp always carries the fail-closed TenantResolver.
+// the legacy-token seed runs inside initEngine AFTER bootstrapAccounts —
+// Bootstrap applies the accounts-owned mcp_api_keys DDL; the DB verifier is
+// mounted on BOTH listeners; panelmcp always carries the fail-closed
+// TenantResolver.
 func TestMCPEdgeWiring_SourceGate(t *testing.T) {
 	src, err := os.ReadFile("../../main.go")
 	require.NoError(t, err)
@@ -205,12 +207,12 @@ func TestMCPEdgeWiring_SourceGate(t *testing.T) {
 	}
 
 	init := body("initEngine")
-	migrate := strings.Index(init, "hStore.Migrate(")
+	boot := strings.Index(init, "bootstrapAccounts(")
 	seed := strings.Index(init, "seedLegacyEdgeToken(")
-	require.Positive(t, migrate, "hStore.Migrate call missing from initEngine")
+	require.Positive(t, boot, "bootstrapAccounts call missing from initEngine")
 	require.Positive(t, seed, "seedLegacyEdgeToken call missing from initEngine (ADR-4 seed must run on the DB-ready path)")
-	require.Less(t, migrate, seed,
-		"ADR-4: the legacy-token seed must run AFTER hStore.Migrate — migration 014 creates mcp_api_keys")
+	require.Less(t, boot, seed,
+		"ADR-4: the legacy-token seed must run AFTER bootstrapAccounts — Bootstrap owns the mcp_api_keys DDL")
 
 	require.Equal(t, 2, strings.Count(s, "keyStore.Verifier()"),
 		"the DB verifier must be mounted on BOTH listeners — :8891 edge and :8897 panelmcp")
