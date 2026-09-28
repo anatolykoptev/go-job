@@ -23,8 +23,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,11 +59,29 @@ func seedResumeProfile(t *testing.T, pool *pgxpool.Pool, skills [][3]string, dom
 	// here to avoid a dependency on engine/jobs. If the tables don't exist, the
 	// DB test will error (not skip) — that is intentional.
 
+	// Account-stamped person: resume_persons.account_id is NOT NULL + FK'd to
+	// panel_accounts once Bootstrap's P5 constrain has run on the shared test
+	// DB. When panel_accounts exists, create a fixture account through the
+	// seam and stamp it; when absent (this package run alone before any
+	// accounts test), the column carries no FK and a bare uuid satisfies the
+	// NOT NULL — either way a NULL stamp is never legal in the final schema.
+	var accountID uuid.UUID
+	var reg *string
+	err := pool.QueryRow(ctx, `SELECT to_regclass('public.panel_accounts')`).Scan(&reg)
+	require.NoError(t, err, "probe panel_accounts")
+	if reg != nil {
+		accountID, _, err = accounts.CreateAccount(ctx, pool,
+			"score-profile-"+uuid.NewString()[:12]+"@example.com", "score test", nil, "user")
+		require.NoError(t, err, "seed fixture account")
+	} else {
+		accountID = uuid.New()
+	}
+
 	// Insert person.
 	var personID int
-	err := pool.QueryRow(ctx,
-		`INSERT INTO resume_persons (name, email) VALUES ($1, $2) RETURNING id`,
-		"Test User", "test@example.com",
+	err = pool.QueryRow(ctx,
+		`INSERT INTO resume_persons (name, email, account_id) VALUES ($1, $2, $3) RETURNING id`,
+		"Test User", "test@example.com", accountID,
 	).Scan(&personID)
 	require.NoError(t, err, "seed person")
 

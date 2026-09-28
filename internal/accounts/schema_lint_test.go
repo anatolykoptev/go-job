@@ -69,18 +69,26 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 	// deploys hit when resume/oversize tables first appear.
 	require.NoError(t, accounts.EnsureResumeAccountScope(ctx, pool))
 	require.NoError(t, accounts.EnsureOversizeAccountScope(ctx, pool))
+	// P5: a SECOND Bootstrap post-migration — the fresh-DB ordering where
+	// the account-bearing tables appeared after the first Bootstrap's
+	// constrain pass (Bootstrap precedes the migration runners in prod).
+	// Also the constrain step's own idempotency proof.
+	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
+	require.NoError(t, err, "second Bootstrap (post-migration) must be clean")
 
-	// Derive the live classification: table → has account_id.
+	// Derive the live classification: table → account_id presence + nullability.
 	rows, err := pool.Query(ctx, `
-		SELECT DISTINCT table_name
+		SELECT table_name, is_nullable
 		FROM information_schema.columns
 		WHERE table_schema = current_schema() AND column_name = 'account_id'`)
 	require.NoError(t, err)
 	withAccountID := map[string]bool{}
+	accountNullable := map[string]string{}
 	for rows.Next() {
-		var name string
-		require.NoError(t, rows.Scan(&name))
+		var name, nullable string
+		require.NoError(t, rows.Scan(&name, &nullable))
 		withAccountID[name] = true
+		accountNullable[name] = nullable
 	}
 	require.NoError(t, rows.Err())
 	rows.Close()
@@ -101,10 +109,15 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 	require.NoError(t, allRows.Err())
 	allRows.Close()
 
-	// 1. Every declared account-owned table exists and carries account_id.
+	// 1. Every declared account-owned table exists, carries account_id, and
+	//    (P5) carries it NOT NULL — the constrained end state, derived from
+	//    live information_schema after the full migrate+bootstrap sequence.
 	for tbl := range accountOwnedTables {
 		assert.Contains(t, allTables, tbl, "%s must exist", tbl)
 		assert.True(t, withAccountID[tbl], "%s must carry account_id (per-account class)", tbl)
+		assert.Equal(t, "NO", accountNullable[tbl],
+			"%s.account_id must be constrained NOT NULL (P5/ADR-13) — "+
+				"a nullable account_id on an account-owned table is the pre-gate state", tbl)
 	}
 
 	// 2. Every shared-corpus hunt_* table lacks account_id — the corpus is
@@ -161,4 +174,44 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 	pkRows.Close()
 	assert.Equal(t, []string{"account_id"}, pkCols,
 		"account_hunt_settings PRIMARY KEY must be account_id — the row key IS the account")
+
+	// 6. P5 constrain residue: every expand-half account FK exists
+	//    unconditionally, the account-scoped UNIQUEs own the scoping key,
+	//    and the legacy user_name UNIQUEs are gone.
+	for tbl, fk := range map[string]string{
+		"hunt_ratings":       "hunt_ratings_account_id_fkey",
+		"resume_persons":     "resume_persons_account_id_fkey",
+		"resume_vectors":     "resume_vectors_account_id_fkey",
+		"oversize_responses": "oversize_responses_account_id_fkey",
+	} {
+		var ok bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = $1 AND conrelid = $2::regclass AND contype = 'f'
+			)`, fk, tbl).Scan(&ok))
+		assert.True(t, ok, "FK %s on %s must exist", fk, tbl)
+	}
+	for _, uq := range []string{
+		"hunt_ratings_entry_account_key",
+		"resume_vectors_account_content_key",
+	} {
+		var ok bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = $1 AND contype = 'u'
+			)`, uq).Scan(&ok))
+		assert.True(t, ok, "account-scoped UNIQUE %s must exist", uq)
+	}
+	for _, uq := range []string{
+		"hunt_ratings_entry_kind_entry_id_user_name_key",
+		"resume_vectors_user_name_content_hash_key",
+	} {
+		var ok bool
+		require.NoError(t, pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = $1 AND contype = 'u'
+			)`, uq).Scan(&ok))
+		assert.False(t, ok, "legacy user_name UNIQUE %s must be gone", uq)
+	}
 }

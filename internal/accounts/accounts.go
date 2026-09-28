@@ -124,7 +124,11 @@ var accountHuntSettingsSchema string
 // account_job_scores (BackfillLegacyJobScores), hunt_settings id=1 into the
 // operator's account_hunt_settings row (BackfillLegacyHuntSettings), and
 // stamp existing hunt_ratings rows with the operator account
-// (BackfillHuntRatingsAccount). All three are one-shot and idempotent.
+// (BackfillHuntRatingsAccount), and resume_persons/resume_vectors follow via
+// BackfillResumeAccountData. All are one-shot and idempotent. LAST comes the
+// P5 constrain (ConstrainAccountColumns): the ADR-13 data-gate that SETs NOT
+// NULL on every expand-half account_id once zero NULLs remain — and refuses
+// the boot, listing per-table counts, when they do.
 //
 // A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
 // skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.
@@ -202,6 +206,15 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 		if err := BackfillResumeAccountData(ctx, pool, op.ID); err != nil {
 			return nil, nil, fmt.Errorf("accounts: resume backfill: %w", err)
 		}
+	}
+	// P5 constrain (plan ADR-13) — the data-gated cutover flip: runs AFTER
+	// the operator seed and every backfill, so a surviving NULL account_id
+	// is data no backfill owns. The step refuses loudly (per-table NULL
+	// counts) and leaves the columns nullable on dirty data; on clean data
+	// it applies SET NOT NULL plus the unconditional FK/UNIQUE re-asserts.
+	// Unconditional by design — it is the gate, not a schema nicety.
+	if err := ConstrainAccountColumns(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: account constrain: %w", err)
 	}
 	return store, op, nil
 }

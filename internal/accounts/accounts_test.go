@@ -155,6 +155,7 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	backfillRatings := strings.Index(s, "BackfillHuntRatingsAccount(ctx")
 	backfillSettings := strings.Index(s, "BackfillLegacyHuntSettings(ctx")
 	backfillResume := strings.Index(s, "BackfillResumeAccountData(ctx")
+	constrain := strings.Index(s, "ConstrainAccountColumns(ctx")
 	require.Positive(t, ensure, "EnsureSchema call site missing from Bootstrap")
 	require.Positive(t, migrate, "roleMigrationSQL Exec missing from Bootstrap")
 	require.Positive(t, keys, "mcpAPIKeysSchema Exec missing from Bootstrap")
@@ -168,6 +169,7 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	require.Positive(t, resumeScope, "EnsureResumeAccountScope call missing from Bootstrap")
 	require.Positive(t, oversizeScope, "EnsureOversizeAccountScope call missing from Bootstrap")
 	require.Positive(t, backfillResume, "BackfillResumeAccountData call missing from Bootstrap")
+	require.Positive(t, constrain, "ConstrainAccountColumns call missing from Bootstrap")
 	require.Less(t, ensure, migrate, "ADR-6: EnsureSchema must precede the role migration")
 	require.Less(t, migrate, keys, "accounts-owned mcp_api_keys DDL applies after the role migration")
 	require.Less(t, keys, scores, "accounts-owned account_job_scores DDL applies after mcp_api_keys")
@@ -181,6 +183,10 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	require.Less(t, seed, backfillRatings, "backfills need the seeded operator UUID")
 	require.Less(t, seed, backfillSettings, "backfills need the seeded operator UUID")
 	require.Less(t, seed, backfillResume, "resume backfill needs the seeded operator UUID")
+	require.Less(t, backfillScores, constrain, "P5 constrain runs after ALL backfills (ADR-13 data gate)")
+	require.Less(t, backfillRatings, constrain, "P5 constrain runs after ALL backfills")
+	require.Less(t, backfillSettings, constrain, "P5 constrain runs after ALL backfills")
+	require.Less(t, backfillResume, constrain, "P5 constrain runs after ALL backfills")
 }
 
 // TestBootstrap_PrecedesHuntMigrate_SourceGate is the main.go half of the
