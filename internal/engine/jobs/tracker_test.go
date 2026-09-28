@@ -3,14 +3,19 @@ package jobs_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/jackc/pgx/v5/pgxpool"
+	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 // TestJobTrackerContract_AddResult verifies that JobTrackerResult has the expected JSON shape.
@@ -112,54 +117,84 @@ func TestTracker_SavedToApplied_TransitionVisibleInList(t *testing.T) {
 	engine.SetHuntStore(store)
 	t.Cleanup(func() { engine.SetHuntStore(prev) })
 
-	ctx := context.Background()
-
-	// Step 1: Add a tracker job as 'saved' (triage axis).
-	addResult, err := jobs.AddTrackedJob(ctx, jobs.JobTrackerAddInput{
-		Title:   "Tracker Transition Test Job",
-		Company: "Acme Tracker Corp",
-		URL:     "https://example.com/tracker-transition-" + t.Name(),
-		Status:  "saved",
-		Notes:   "initial note",
-	})
+	// P3: tracker calls resolve the acting account from ctx (bearer TokenInfo
+	// → accounts.AccountFrom). The row must exist — hunt_ratings.account_id is
+	// an FK — and only the SDK middleware stamps the ctx key, so the calls run
+	// inside a RequireBearerToken-wrapped request context.
+	baseCtx := context.Background()
+	if _, _, err := accounts.Bootstrap(baseCtx, pool, accounts.OperatorSeed{}); err != nil {
+		t.Fatalf("accounts bootstrap: %v", err)
+	}
+	aid, _, err := accounts.CreateAccount(baseCtx, pool,
+		"tracker-test-"+t.Name()+"@example.com", "tracker test", nil, "user")
 	if err != nil {
-		t.Fatalf("AddTrackedJob(saved): %v", err)
+		t.Fatalf("create account: %v", err)
 	}
-	jobID := addResult.ID
-	t.Logf("inserted tracker job id=%d", jobID)
-
-	// Step 2: Update to 'applied' (pipeline axis). This is where the pre-fix code
-	// would call Rate(triage="", stage="applied"), preserving the prior triage='saved'.
-	if _, err := jobs.UpdateTrackedJob(ctx, jobs.JobTrackerUpdateInput{
-		ID:     jobID,
-		Status: "applied",
-		Notes:  "applied note",
-	}); err != nil {
-		t.Fatalf("UpdateTrackedJob(applied): %v", err)
+	verifier := func(_ context.Context, _ string, _ *http.Request) (*sdkauth.TokenInfo, error) {
+		return &sdkauth.TokenInfo{UserID: aid.String(), Expiration: time.Now().Add(time.Hour)}, nil
 	}
+	authed := sdkauth.RequireBearerToken(verifier, nil)
 
-	// Step 3: List and assert the reported status is 'applied', not 'saved'.
-	listResult, err := jobs.ListTrackedJobs(ctx, jobs.JobTrackerListInput{Limit: 100})
-	if err != nil {
-		t.Fatalf("ListTrackedJobs: %v", err)
-	}
+	// The tracker sequence runs inside the bearer-stamped ctx — the same
+	// identity path the jobserver tool handlers drive.
+	authed(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 
-	var found *jobs.TrackedJob
-	for i := range listResult.Jobs {
-		if listResult.Jobs[i].ID == jobID {
-			found = &listResult.Jobs[i]
-			break
+		// Step 1: Add a tracker job as 'saved' (triage axis).
+		addResult, err := jobs.AddTrackedJob(ctx, jobs.JobTrackerAddInput{
+			Title:   "Tracker Transition Test Job",
+			Company: "Acme Tracker Corp",
+			URL:     "https://example.com/tracker-transition-" + t.Name(),
+			Status:  "saved",
+			Notes:   "initial note",
+		})
+		if err != nil {
+			t.Errorf("AddTrackedJob(saved): %v", err)
+			return
 		}
-	}
-	if found == nil {
-		t.Fatalf("job id=%d not found in ListTrackedJobs output (total=%d)", jobID, listResult.Total)
-	}
+		jobID := addResult.ID
+		t.Logf("inserted tracker job id=%d", jobID)
 
-	const wantStatus = jobs.StatusApplied
-	if found.Status != wantStatus {
-		t.Errorf("after Add(saved)→Update(applied): want status=%q, got %q — "+
-			"this indicates trackerRate is using Rate() (CASE-preserve) instead of RateExact()", wantStatus, found.Status)
-	}
+		// Step 2: Update to 'applied' (pipeline axis). This is where the pre-fix code
+		// would call Rate(triage="", stage="applied"), preserving the prior triage='saved'.
+		if _, err := jobs.UpdateTrackedJob(ctx, jobs.JobTrackerUpdateInput{
+			ID:     jobID,
+			Status: "applied",
+			Notes:  "applied note",
+		}); err != nil {
+			t.Errorf("UpdateTrackedJob(applied): %v", err)
+			return
+		}
+
+		// Step 3: List and assert the reported status is 'applied', not 'saved'.
+		listResult, err := jobs.ListTrackedJobs(ctx, jobs.JobTrackerListInput{Limit: 100})
+		if err != nil {
+			t.Errorf("ListTrackedJobs: %v", err)
+			return
+		}
+
+		var found *jobs.TrackedJob
+		for i := range listResult.Jobs {
+			if listResult.Jobs[i].ID == jobID {
+				found = &listResult.Jobs[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("job id=%d not found in ListTrackedJobs output (total=%d)", jobID, listResult.Total)
+			return
+		}
+
+		const wantStatus = jobs.StatusApplied
+		if found.Status != wantStatus {
+			t.Errorf("after Add(saved)→Update(applied): want status=%q, got %q — "+
+				"this indicates trackerRate is using Rate() (CASE-preserve) instead of RateExact()", wantStatus, found.Status)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		return req
+	}())
 }
 
 // TestTrackedJob_JSONShape asserts exact JSON tag fidelity for TrackedJob.

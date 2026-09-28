@@ -57,7 +57,7 @@ func stageDropdownHTML(id int64, currentStage, csrfTok string) string {
 // hunt_ratings.stage. CSRF-protected. Uses Store.SetStage so the existing note is
 // preserved. Pipeline-only: rejects any triage-axis value.
 // On success redirects to Referer (preserving filter state).
-func stageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
+func stageHandler(store *hunt.Store, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -75,7 +75,13 @@ func stageHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 			return
 		}
 
-		if err := store.SetStage(r.Context(), "job", id64, adminUser, stage); err != nil {
+		aid, ok := acctOf(r.Context())
+		if !ok {
+			http.Error(w, "account identity required", http.StatusForbidden)
+			return
+		}
+
+		if err := store.ForAccount(aid).SetStage(r.Context(), "job", id64, stage); err != nil {
 			slog.Error("stageHandler: set stage", "id", id64, "err", err)
 			dest := safeAdminReferer(r.Header.Get("Referer"))
 			if strings.Contains(dest, "?") {

@@ -1,7 +1,8 @@
 // cmd/migrate-tracker migrates the legacy SQLite tracker.db rows into postgres
 // hunt_jobs + hunt_ratings. Idempotent — safe to re-run.
 // Usage: go run ./cmd/migrate-tracker -db <path> -dsn <DATABASE_URL>
-//        go run ./cmd/migrate-tracker -dry-run -db <path> -dsn <DATABASE_URL>
+//
+//	go run ./cmd/migrate-tracker -dry-run -db <path> -dsn <DATABASE_URL>
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "modernc.org/sqlite"
 )
@@ -35,6 +37,7 @@ type sqliteJob struct {
 func main() {
 	dbPath := flag.String("db", "", "Path to SQLite tracker.db (required)")
 	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "Postgres DSN (defaults to $DATABASE_URL)")
+	account := flag.String("account", "", "panel_accounts UUID that owns the migrated hunt_ratings rows (required)")
 	dryRun := flag.Bool("dry-run", false, "Print what would be migrated without writing")
 	flag.Parse()
 
@@ -46,8 +49,13 @@ func main() {
 		slog.Error("--dsn or $DATABASE_URL is required")
 		os.Exit(1)
 	}
+	aid, err := uuid.Parse(*account)
+	if *account == "" || err != nil || aid == uuid.Nil {
+		slog.Error("--account <panel_accounts UUID> is required (see panel_accounts table)")
+		os.Exit(1)
+	}
 
-	if err := run(context.Background(), *dbPath, *dsn, *dryRun); err != nil {
+	if err := run(context.Background(), *dbPath, *dsn, aid, *dryRun); err != nil {
 		slog.Error("migration failed", "err", err)
 		os.Exit(1)
 	}
@@ -55,7 +63,7 @@ func main() {
 
 // run is extracted so defer statements execute on all exit paths.
 // main() calls os.Exit based on the returned error.
-func run(ctx context.Context, dbPath, dsn string, dryRun bool) error {
+func run(ctx context.Context, dbPath, dsn string, aid uuid.UUID, dryRun bool) error {
 	// Open SQLite
 	sqliteDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -100,6 +108,7 @@ func run(ctx context.Context, dbPath, dsn string, dryRun bool) error {
 	defer pool.Close()
 
 	store := hunt.NewStore(pool)
+	acct := store.ForAccount(aid)
 
 	start := time.Now()
 	migrated, skipped := 0, 0
@@ -147,7 +156,7 @@ func run(ctx context.Context, dbPath, dsn string, dryRun bool) error {
 		if stage == hunt.StageSaved {
 			triage, stageVal = hunt.StageSaved, ""
 		}
-		if err := store.Rate(ctx, hunt.KindJob, id, "krolik", triage, stageVal, note); err != nil {
+		if err := acct.Rate(ctx, hunt.KindJob, id, triage, stageVal, note); err != nil {
 			slog.Error("rate job", "id", id, "err", err)
 			skipped++
 			continue

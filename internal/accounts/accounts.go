@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/google/uuid"
@@ -104,14 +105,26 @@ var mcpAPIKeysSchema string
 //go:embed account_job_scores.sql
 var accountJobScoresSchema string
 
+// accountHuntSettingsSchema is the accounts-owned DDL for
+// account_hunt_settings (plan ADR-7) — the per-account hunt worker knobs that
+// replace the single-row hunt_settings table for account-scoped reads and
+// writes. Same rule as mcp_api_keys and account_job_scores: lives here
+// (never under */schema/) and executes inside Bootstrap because it
+// REFERENCES panel_accounts.
+//
+//go:embed account_hunt_settings.sql
+var accountHuntSettingsSchema string
+
 // Bootstrap runs the boot-time panel_accounts sequence IN ORDER (the ordering
 // is load-bearing, ADR-6): EnsureSchema creates the table + TOTP columns
 // before any account-owned DDL may FK-reference them; the role-constraint
 // migration follows; the accounts-owned schemas (mcp_api_keys,
-// account_job_scores) apply next; the env-seeded operator admin runs last —
-// after it, the transitional legacy-score backfill copies hunt_jobs.fit_*
-// into account_job_scores for the operator (one-shot, idempotent; see
-// BackfillLegacyJobScores).
+// account_job_scores, account_hunt_settings) apply next; the env-seeded operator admin runs last —
+// after it, the transitional backfills copy hunt_jobs.fit_* into
+// account_job_scores (BackfillLegacyJobScores), hunt_settings id=1 into the
+// operator's account_hunt_settings row (BackfillLegacyHuntSettings), and
+// stamp existing hunt_ratings rows with the operator account
+// (BackfillHuntRatingsAccount). All three are one-shot and idempotent.
 //
 // A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
 // skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.
@@ -122,10 +135,20 @@ var accountJobScoresSchema string
 // the seed envs are absent (a deployment that never enables the admin UI), or
 // when the stored operator row is deactivated (the env seed must not resurrect
 // an operator that was deliberately deactivated).
+var bootstrapMu sync.Mutex
+
 func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*auth.PgxAccountStore, *auth.Account, error) {
 	if pool == nil {
 		return nil, nil, nil
 	}
+	// Serialize bootstraps in-process: EnsureSchema's CREATE TYPE IF NOT
+	// EXISTS races under concurrent bootstraps (pg_type_typname_nsp_index
+	// 23505) — parallel tests hit it; a serial bootstrap is also the only
+	// sane prod shape. Cross-process serialization stays the CI runner's
+	// job (-p 1), same as before.
+	bootstrapMu.Lock()
+	defer bootstrapMu.Unlock()
+
 	store := auth.NewPgxAccountStore(pool)
 	if err := store.EnsureSchema(ctx); err != nil {
 		return nil, nil, fmt.Errorf("accounts: ensure schema: %w", err)
@@ -139,6 +162,16 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if _, err := pool.Exec(ctx, accountJobScoresSchema); err != nil {
 		return nil, nil, fmt.Errorf("accounts: account_job_scores schema: %w", err)
 	}
+	if _, err := pool.Exec(ctx, accountHuntSettingsSchema); err != nil {
+		return nil, nil, fmt.Errorf("accounts: account_hunt_settings schema: %w", err)
+	}
+	// Unconditional (not op-gated): the account scope on hunt_ratings is
+	// schema, not seed data — every bootstrap re-ensures it, which is also
+	// what lets test cleanup drop the FK and trust the next Bootstrap to
+	// restore it.
+	if err := EnsureHuntRatingsAccountScope(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: hunt_ratings account scope: %w", err)
+	}
 	op, err := seedOperator(ctx, pool, store, seed)
 	if err != nil {
 		return nil, nil, fmt.Errorf("accounts: seed operator: %w", err)
@@ -146,6 +179,12 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if op != nil {
 		if err := BackfillLegacyJobScores(ctx, pool, op.ID); err != nil {
 			return nil, nil, fmt.Errorf("accounts: legacy score backfill: %w", err)
+		}
+		if err := BackfillHuntRatingsAccount(ctx, pool, op.ID); err != nil {
+			return nil, nil, fmt.Errorf("accounts: hunt_ratings backfill: %w", err)
+		}
+		if err := BackfillLegacyHuntSettings(ctx, pool, op.ID); err != nil {
+			return nil, nil, fmt.Errorf("accounts: legacy hunt settings backfill: %w", err)
 		}
 	}
 	return store, op, nil
@@ -189,6 +228,149 @@ func BackfillLegacyJobScores(ctx context.Context, pool *pgxpool.Pool, accountID 
 	if n := ct.RowsAffected(); n > 0 {
 		slog.Info("accounts: backfilled legacy global scores into account_job_scores",
 			slog.String("account_id", accountID), slog.Int64("rows", n))
+	}
+	return nil
+}
+
+// BackfillHuntRatingsAccount stamps existing hunt_ratings rows with the
+// operator account and performs the expand-half column add (plan ADR-6/13).
+// Bootstrap runs BEFORE hStore.Migrate, so on a live DB the table exists but
+// account_id does not yet — the ADD COLUMN IF NOT EXISTS here is the same
+// statement hunt schema 014 re-issues (idempotent either way). On a fresh
+// DB the table is absent → nothing to backfill; 014 creates the column
+// empty.
+//
+// Multi-user legacy rows collapse deterministically before the UPDATE: rows
+// sharing (entry_kind, entry_id) but differing in user_name would violate
+// UNIQUE(entry_kind, entry_id, account_id) once stamped with the same
+// operator id, so the freshest updated_at row wins and the rest delete.
+// Single-operator deployments carry at most one row per (kind,id) — the
+// DELETE is a no-op safety net there.
+func BackfillHuntRatingsAccount(ctx context.Context, pool *pgxpool.Pool, accountID string) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.hunt_ratings')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe hunt_ratings: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: hunt schema not migrated yet, nothing to backfill
+	}
+	aid, err := uuid.Parse(accountID)
+	if err != nil || aid == uuid.Nil {
+		return fmt.Errorf("hunt_ratings backfill: invalid account id %q", accountID)
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE hunt_ratings ADD COLUMN IF NOT EXISTS account_id UUID`); err != nil {
+		return fmt.Errorf("hunt_ratings backfill: add account_id: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM hunt_ratings a USING hunt_ratings b
+		WHERE a.account_id IS NULL AND b.account_id IS NULL
+		  AND a.entry_kind = b.entry_kind AND a.entry_id = b.entry_id
+		  AND (a.updated_at < b.updated_at
+		       OR (a.updated_at = b.updated_at AND a.id < b.id))`); err != nil {
+		return fmt.Errorf("hunt_ratings backfill: dedupe: %w", err)
+	}
+	ct, err := pool.Exec(ctx,
+		`UPDATE hunt_ratings SET account_id = $1 WHERE account_id IS NULL`, aid)
+	if err != nil {
+		return fmt.Errorf("hunt_ratings backfill: stamp account: %w", err)
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("accounts: backfilled hunt_ratings rows to operator account",
+			slog.String("account_id", accountID), slog.Int64("rows", n))
+	}
+	return nil
+}
+
+// EnsureHuntRatingsAccountScope applies the expand-half column add and the
+// guarded account_id FK on hunt_ratings — the same statements hunt schema
+// 014 re-issues. It runs on EVERY Bootstrap (not only when an operator is
+// seeded): the scope is schema, and test cleanup drops the FK alongside
+// panel_accounts, so each bootstrap must restore it. No-ops when
+// hunt_ratings is absent (fresh DB — Bootstrap precedes hStore.Migrate)
+// or when the constraint already exists.
+func EnsureHuntRatingsAccountScope(ctx context.Context, pool *pgxpool.Pool) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.hunt_ratings')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe hunt_ratings: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: hunt schema not migrated yet; 014 creates the scope
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE hunt_ratings ADD COLUMN IF NOT EXISTS account_id UUID`); err != nil {
+		return fmt.Errorf("hunt_ratings scope: add account_id: %w", err)
+	}
+	// Orphan sweep before the FK: rows stamped with an account that no longer
+	// exists (e.g. test cleanup dropped panel_accounts and re-created it
+	// empty) would violate the re-added constraint. An ownerless rating is
+	// meaningless — delete, never NULL out. In prod the FK has been enforced
+	// since first apply so this is a no-op there; it only fires when the
+	// constraint is absent, which is exactly when the sweep is needed.
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM hunt_ratings
+		WHERE account_id IS NOT NULL
+		  AND account_id NOT IN (SELECT id FROM panel_accounts)`); err != nil {
+		return fmt.Errorf("hunt_ratings scope: orphan sweep: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'hunt_ratings_account_id_fkey'
+				  AND conrelid = 'hunt_ratings'::regclass
+			) THEN
+				ALTER TABLE hunt_ratings
+					ADD CONSTRAINT hunt_ratings_account_id_fkey
+					FOREIGN KEY (account_id) REFERENCES panel_accounts(id);
+			END IF;
+		END $$`); err != nil {
+		return fmt.Errorf("hunt_ratings scope: account FK: %w", err)
+	}
+	return nil
+}
+
+// BackfillLegacyHuntSettings copies the legacy single-row hunt_settings
+// (id=1) into the operator's account_hunt_settings row preserving EVERY
+// stored value — including enabled and score_fail_open (plan ADR-7: the
+// operator keeps today's behavior; only NEW accounts default to
+// disabled/fail-closed). One-shot, idempotent (ON CONFLICT DO NOTHING — an
+// already-edited account row is never clobbered).
+//
+// Fleet-global knobs (interval_seconds, score_sweep_limit, the fleet LLM
+// cap) deliberately do NOT migrate — they are env/deploy config now. The
+// legacy hunt_settings row itself stays until the post-soak drop (ADR-13).
+// hunt_settings may not exist on a fresh DB (Bootstrap precedes
+// hStore.Migrate) → probed via to_regclass like the other backfills.
+func BackfillLegacyHuntSettings(ctx context.Context, pool *pgxpool.Pool, accountID string) error {
+	var reg *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public.hunt_settings')").Scan(&reg); err != nil {
+		return fmt.Errorf("probe hunt_settings: %w", err)
+	}
+	if reg == nil {
+		return nil // fresh DB: nothing to migrate
+	}
+	aid, err := uuid.Parse(accountID)
+	if err != nil || aid == uuid.Nil {
+		return fmt.Errorf("legacy hunt settings backfill: invalid account id %q", accountID)
+	}
+	ct, err := pool.Exec(ctx, `
+		INSERT INTO account_hunt_settings
+			(account_id, enabled, queries, notify_chat_id, notify_min_fit,
+			 notify_max_age_seconds, score_enabled, score_min_jaccard,
+			 score_max_llm_per_cycle, score_fail_open, updated_at)
+		SELECT $1, enabled, queries, notify_chat_id, notify_min_fit,
+		       notify_max_age_seconds, score_enabled, score_min_jaccard,
+		       score_max_llm_per_cycle, score_fail_open, updated_at
+		FROM hunt_settings WHERE id = 1
+		ON CONFLICT (account_id) DO NOTHING`, aid)
+	if err != nil {
+		return fmt.Errorf("legacy hunt settings backfill: %w", err)
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("accounts: migrated hunt_settings row into operator account_hunt_settings",
+			slog.String("account_id", accountID))
 	}
 	return nil
 }

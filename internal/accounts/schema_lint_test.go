@@ -29,9 +29,13 @@ import (
 // schema lint expects to carry account_id. A new account-scoped table that
 // lands without updating this set trips the "unclassified" assertion below.
 var accountOwnedTables = map[string]bool{
+	"account_hunt_settings":     true, // ADR-7 per-account worker knobs
 	"account_job_scores":        true,
 	"mcp_api_keys":              true,
 	"panel_totp_recovery_codes": true,
+	// hunt_ratings is account-owned (ADR-15) despite living in the hunt
+	// schema — the corpus/… split is by ownership, not by namespace.
+	"hunt_ratings": true,
 }
 
 func TestSchemaLint_AccountIDClassification(t *testing.T) {
@@ -77,15 +81,16 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 	allRows.Close()
 
 	// 1. Every declared account-owned table exists and carries account_id.
-	for _, tbl := range []string{"account_job_scores", "mcp_api_keys", "panel_totp_recovery_codes"} {
+	for tbl := range accountOwnedTables {
 		assert.Contains(t, allTables, tbl, "%s must exist", tbl)
 		assert.True(t, withAccountID[tbl], "%s must carry account_id (per-account class)", tbl)
 	}
 
 	// 2. Every shared-corpus hunt_* table lacks account_id — the corpus is
-	//    account-blind by design (ADR-6/ADR-15).
+	//    account-blind by design (ADR-6/ADR-15). hunt_ratings is the declared
+	//    exception: it holds per-account judgments, not corpus.
 	for _, tbl := range allTables {
-		if len(tbl) >= 5 && tbl[:5] == "hunt_" {
+		if len(tbl) >= 5 && tbl[:5] == "hunt_" && !accountOwnedTables[tbl] {
 			assert.False(t, withAccountID[tbl],
 				"shared-corpus table %s must NOT carry account_id — per-account data lives in account_* tables", tbl)
 		}
@@ -108,4 +113,31 @@ func TestSchemaLint_AccountIDClassification(t *testing.T) {
 			assert.Fail(t, "table %s carries account_id but is not in the declared per-account set", tbl)
 		}
 	}
+
+	// 5. account_hunt_settings is keyed BY the account (ADR-7): its PRIMARY
+	//    KEY must be account_id alone — a surrogate key would re-open the
+	//    multi-row shape the single-row hunt_settings table had. Derived from
+	//    live information_schema, not the DDL text.
+	var pkCols []string
+	pkRows, err := pool.Query(ctx, `
+		SELECT kcu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.table_schema = kcu.table_schema
+		 AND tc.table_name = kcu.table_name
+		WHERE tc.table_schema = current_schema()
+		  AND tc.table_name = 'account_hunt_settings'
+		  AND tc.constraint_type = 'PRIMARY KEY'
+		ORDER BY kcu.ordinal_position`)
+	require.NoError(t, err)
+	for pkRows.Next() {
+		var col string
+		require.NoError(t, pkRows.Scan(&col))
+		pkCols = append(pkCols, col)
+	}
+	require.NoError(t, pkRows.Err())
+	pkRows.Close()
+	assert.Equal(t, []string{"account_id"}, pkCols,
+		"account_hunt_settings PRIMARY KEY must be account_id — the row key IS the account")
 }

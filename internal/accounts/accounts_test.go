@@ -9,6 +9,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -145,16 +146,31 @@ func TestBootstrap_Order_SourceGate(t *testing.T) {
 	migrate := strings.Index(s, "pool.Exec(ctx, roleMigrationSQL)")
 	keys := strings.Index(s, "pool.Exec(ctx, mcpAPIKeysSchema)")
 	scores := strings.Index(s, "pool.Exec(ctx, accountJobScoresSchema)")
+	settings := strings.Index(s, "pool.Exec(ctx, accountHuntSettingsSchema)")
+	ratingsScope := strings.Index(s, "EnsureHuntRatingsAccountScope(ctx")
 	seed := strings.Index(s, "seedOperator(ctx")
+	backfillScores := strings.Index(s, "BackfillLegacyJobScores(ctx")
+	backfillRatings := strings.Index(s, "BackfillHuntRatingsAccount(ctx")
+	backfillSettings := strings.Index(s, "BackfillLegacyHuntSettings(ctx")
 	require.Positive(t, ensure, "EnsureSchema call site missing from Bootstrap")
 	require.Positive(t, migrate, "roleMigrationSQL Exec missing from Bootstrap")
 	require.Positive(t, keys, "mcpAPIKeysSchema Exec missing from Bootstrap")
 	require.Positive(t, scores, "accountJobScoresSchema Exec missing from Bootstrap")
+	require.Positive(t, settings, "accountHuntSettingsSchema Exec missing from Bootstrap")
+	require.Positive(t, ratingsScope, "EnsureHuntRatingsAccountScope call missing from Bootstrap")
 	require.Positive(t, seed, "seedOperator call missing from Bootstrap")
+	require.Positive(t, backfillScores, "BackfillLegacyJobScores call missing from Bootstrap")
+	require.Positive(t, backfillRatings, "BackfillHuntRatingsAccount call missing from Bootstrap")
+	require.Positive(t, backfillSettings, "BackfillLegacyHuntSettings call missing from Bootstrap")
 	require.Less(t, ensure, migrate, "ADR-6: EnsureSchema must precede the role migration")
 	require.Less(t, migrate, keys, "accounts-owned mcp_api_keys DDL applies after the role migration")
 	require.Less(t, keys, scores, "accounts-owned account_job_scores DDL applies after mcp_api_keys")
-	require.Less(t, scores, seed, "all schema lands before the operator seed")
+	require.Less(t, scores, settings, "accounts-owned account_hunt_settings DDL applies after account_job_scores")
+	require.Less(t, settings, ratingsScope, "hunt_ratings account scope is re-ensured after the accounts-owned DDL")
+	require.Less(t, ratingsScope, seed, "all schema lands before the operator seed")
+	require.Less(t, seed, backfillScores, "backfills need the seeded operator UUID")
+	require.Less(t, seed, backfillRatings, "backfills need the seeded operator UUID")
+	require.Less(t, seed, backfillSettings, "backfills need the seeded operator UUID")
 }
 
 // TestBootstrap_PrecedesHuntMigrate_SourceGate is the main.go half of the
@@ -202,4 +218,36 @@ func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
 		"Bootstrap must not live inside startAdminServer — the account schema must exist even when the admin UI never starts")
 	require.NotContains(t, admin, "bootstrapAccounts(",
 		"bootstrapAccounts must not be called from the admin path — initEngine's DB block is the only legal call site")
+}
+
+// TestSetNotifyChatID_Upsert proves --notify-chat-id upserts: a pre-existing
+// settings row takes the new chat id and keeps its enabled flag (the former
+// ON CONFLICT DO NOTHING silently dropped updates to existing rows).
+func TestSetNotifyChatID_Upsert(t *testing.T) {
+	pool := openTestPool(t)
+	dbtest.DropAccountTables(t, pool)
+	ctx := context.Background()
+
+	_, op, err := accounts.Bootstrap(ctx, pool,
+		accounts.OperatorSeed{Email: "op-upsert@t.dev", Password: "pw-pw-pw-pw", Name: "Op"})
+	require.NoError(t, err)
+	require.NotNil(t, op)
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO account_hunt_settings (account_id, enabled, notify_chat_id) VALUES ($1, true, 111)
+		 ON CONFLICT (account_id) DO UPDATE SET enabled = true, notify_chat_id = 111`,
+		op.ID)
+	require.NoError(t, err)
+
+	stored, err := accounts.SetNotifyChatID(ctx, pool, uuid.MustParse(op.ID), -222)
+	require.NoError(t, err)
+	require.True(t, stored)
+
+	var chatID int64
+	var enabled bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT notify_chat_id, enabled FROM account_hunt_settings WHERE account_id = $1`,
+		op.ID).Scan(&chatID, &enabled))
+	require.Equal(t, int64(-222), chatID, "existing row must take the new chat id")
+	require.True(t, enabled, "upsert must preserve the enabled flag")
 }

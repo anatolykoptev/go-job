@@ -138,8 +138,10 @@ groups:
       # freeze_stall = the oldest unscored open job has been waiting > 2h.
       # Tuning: for: 10m — the gauge is set once per hunt cycle (6h), so 10m
       # sustained avoids flapping on a single stale sweep reading.
+      # P3: the gauge is per-account ({account=<uuid>} label) — aggregate with
+      # max() so the alert fires when ANY account's backlog stalls.
       - alert: GojobHuntScoringFreezeStall
-        expr: gojob_hunt_unscored_jobs_max_age_seconds > 7200
+        expr: max(gojob_hunt_unscored_jobs_max_age_seconds) > 7200
         for: 10m
         labels:
           severity: warning
@@ -150,7 +152,8 @@ groups:
           summary: "go-job: unscored jobs oldest age > 2h — scoring pipeline stalled"
           description: |
             The oldest unscored open job has been waiting for more than 2 hours
-            (gojob_hunt_unscored_jobs_max_age_seconds > 7200) for 10m+. The
+            (max over accounts of gojob_hunt_unscored_jobs_max_age_seconds
+            > 7200) for 10m+. The
             scoring pipeline is stuck: either the LLM backend is down, the
             per-cycle circuit breaker is permanently tripping (budget too low),
             or the unscored sweep is not running.

@@ -30,7 +30,7 @@ func TestScoringDegraded_BudgetExhausted_DoesNotSetGauge(t *testing.T) {
 	llmCalls.Store(1) // budget already exhausted (1 >= maxLLM=1)
 
 	job := hunt.Job{ID: 100}
-	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
+	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, testBudget(&llmCalls))
 
 	require.NotNil(t, result, "budget-exhausted result must be returned")
 	assert.Equal(t, hunt.FitBandUnscored, result.FitBand, "budget-exhausted job must be unscored")
@@ -67,7 +67,7 @@ func TestScoringDegraded_LatchFix_CleanCycleClearsGauge(t *testing.T) {
 	// Phase 1: drive into degraded via llm_error.
 	var llmCalls atomic.Int64
 	job1 := hunt.Job{ID: 200, Title: "Go Dev", Description: "Go Rust distributed", PostedAt: &postedAt}
-	r1 := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job1, prof, depsErr, store, &llmCalls)
+	r1 := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job1, prof, depsErr, store, testBudget(&llmCalls))
 	require.NotNil(t, r1)
 	assert.Equal(t, "llm_error", r1.LLMResult, "phase 1 must produce llm_error")
 
@@ -79,7 +79,7 @@ func TestScoringDegraded_LatchFix_CleanCycleClearsGauge(t *testing.T) {
 	llmCalls.Store(1) // budget exhausted (1 >= maxLLM=1)
 
 	job2 := hunt.Job{ID: 201, Title: "Rust Dev", Description: "Rust Go systems", PostedAt: &postedAt}
-	r2 := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job2, prof, depsErr, store, &llmCalls)
+	r2 := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job2, prof, depsErr, store, testBudget(&llmCalls))
 	require.NotNil(t, r2)
 	assert.Equal(t, hunt.FitBandUnscored, r2.FitBand, "budget-exhausted job must be unscored")
 
@@ -105,7 +105,7 @@ func TestScoringDegraded_BudgetExhausted_IncrementsSkippedBudgetCounter(t *testi
 	llmCalls.Store(1) // budget exhausted
 
 	job := hunt.Job{ID: 300}
-	r := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
+	r := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, testBudget(&llmCalls))
 	require.NotNil(t, r)
 	assert.Equal(t, "skipped_budget", r.LLMResult, "budget-exhausted job must carry LLMResult=skipped_budget")
 

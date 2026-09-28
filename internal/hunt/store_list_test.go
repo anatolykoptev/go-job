@@ -38,7 +38,7 @@ func TestStore_ListBounties_FilterBySkills(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	goBounties, err := s.ListBounties(ctx, hunt.BountyFilter{Skills: []string{"go"}, Limit: 10})
+	goBounties, err := s.ForAccount(newScoreAccount(t, pool)).ListBounties(ctx, hunt.BountyFilter{Skills: []string{"go"}, Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, goBounties, 1, "skills filter should return only bounties with 'go'")
 	assert.Equal(t, "Go bounty", goBounties[0].Title)
@@ -166,12 +166,13 @@ func TestStore_ListRatings_Basic(t *testing.T) {
 	require.NoError(t, s.Migrate(ctx))
 	truncateRatings(t, pool)
 
-	err := s.Rate(ctx, hunt.KindBounty, 42, "krolik", hunt.StageInteresting, "", "")
+	acct := s.ForAccount(newScoreAccount(t, pool))
+	err := acct.Rate(ctx, hunt.KindBounty, 42, hunt.StageInteresting, "", "")
 	require.NoError(t, err)
-	err = s.Rate(ctx, hunt.KindJob, 7, "krolik", hunt.StageSaved, "", "good fit")
+	err = acct.Rate(ctx, hunt.KindJob, 7, hunt.StageSaved, "", "good fit")
 	require.NoError(t, err)
 
-	results, err := s.ListRatings(ctx, hunt.RatingFilter{User: "krolik", Limit: 10})
+	results, err := acct.ListRatings(ctx, hunt.RatingFilter{Limit: 10})
 	require.NoError(t, err)
 	assert.Len(t, results, 2, "should return both ratings for user krolik")
 }

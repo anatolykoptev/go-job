@@ -72,7 +72,7 @@ func newDashTestPanel() *resource.Panel {
 func TestDashboardHandler_FourStatCards(t *testing.T) {
 	p := newDashTestPanel()
 	store := &countingDashStore{}
-	h := dashboardHandler(p, store, "admin", fixedAccount(uuid.Nil))
+	h := dashboardHandler(p, store, fixedAccount(uuid.Nil))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/dashboard", nil)
@@ -103,7 +103,7 @@ func TestDashboardHandler_FourStatCards(t *testing.T) {
 func TestDashboardHandler_CacheHit_ZeroCountsOnSecondRender(t *testing.T) {
 	p := newDashTestPanel()
 	store := &countingDashStore{}
-	h := dashboardHandler(p, store, "admin", fixedAccount(uuid.Nil))
+	h := dashboardHandler(p, store, fixedAccount(uuid.Nil))
 
 	// First request: warm the cache.
 	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/dashboard", nil)

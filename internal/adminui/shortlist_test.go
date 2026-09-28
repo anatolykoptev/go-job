@@ -15,17 +15,18 @@ import (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // rateForTest is a test-only helper that routes a logical status value to the
-// correct DB axis (triage vs stage) and calls Store.Rate. Mirrors the axis-routing
-// logic in trackerRate and the adminui handlers so tests exercise the real code path.
+// correct DB axis (triage vs stage) and calls AccountStore.Rate. Mirrors the
+// axis-routing logic in trackerRate and the adminui handlers so tests exercise
+// the real code path.
 //
 // Triage-axis values (hunt.TriageStages): written to triage column, stage="".
 // Pipeline-axis values (hunt.PipelineStages): written to stage column, triage="".
-func rateForTest(ctx context.Context, store *hunt.Store, kind string, id int64, user, value, note string) error {
+func rateForTest(ctx context.Context, acct *hunt.AccountStore, kind string, id int64, value, note string) error {
 	switch value {
 	case hunt.StageInteresting, hunt.StageSaved, hunt.StageDiscarded:
-		return store.Rate(ctx, kind, id, user, value, "", note)
+		return acct.Rate(ctx, kind, id, value, "", note)
 	default:
-		return store.Rate(ctx, kind, id, user, "", value, note)
+		return acct.Rate(ctx, kind, id, "", value, note)
 	}
 }
 
@@ -43,7 +44,8 @@ func openShortlistPool(t *testing.T) *pgxpool.Pool {
 
 func truncateShortlistData(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(), "DELETE FROM hunt_ratings WHERE user_name = 'test_sl'")
+	_, err := pool.Exec(context.Background(),
+		"DELETE FROM hunt_ratings WHERE entry_kind='job' AND entry_id IN (SELECT id FROM hunt_jobs WHERE source='test_sl')")
 	if err != nil {
 		t.Fatalf("truncate ratings: %v", err)
 	}
@@ -119,18 +121,17 @@ func TestShortlistPG_ListShortlist(t *testing.T) {
 
 	// Rate A as "saved" (triage axis), B as "interesting" (triage axis),
 	// C as "discarded" (triage axis, excluded from shortlist by shortlistTriageValues).
-	if err := rateForTest(ctx, store, "job", idA, "test_sl", hunt.StageSaved, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idA, hunt.StageSaved, ""); err != nil {
 		t.Fatalf("rate A: %v", err)
 	}
-	if err := rateForTest(ctx, store, "job", idB, "test_sl", hunt.StageInteresting, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idB, hunt.StageInteresting, ""); err != nil {
 		t.Fatalf("rate B: %v", err)
 	}
-	if err := rateForTest(ctx, store, "job", idC, "test_sl", hunt.StageDiscarded, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idC, hunt.StageDiscarded, ""); err != nil {
 		t.Fatalf("rate C: %v", err)
 	}
 
 	rows, _, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
-		User:         "test_sl",
 		TriageValues: shortlistTriageValues,
 		StageValues:  shortlistPipelineValues,
 	})
@@ -191,13 +192,13 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 
 	for _, v := range activeTriageValues {
 		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate triage=%s: %v", v, err)
 		}
 	}
 	for _, v := range activePipelineValues {
 		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate stage=%s: %v", v, err)
 		}
 	}
@@ -205,13 +206,12 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 	// Excluded values (must not appear).
 	for _, v := range []string{hunt.StageDiscarded, hunt.StageRejected} {
 		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate excluded=%s: %v", v, err)
 		}
 	}
 
 	rows, _, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
-		User:         "test_sl",
 		TriageValues: shortlistTriageValues,
 		StageValues:  shortlistPipelineValues,
 	})

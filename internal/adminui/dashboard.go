@@ -22,7 +22,6 @@ const navIDDashboard = "dashboard"
 // ForAccount binds the per-account score counter (nil store → nil facade).
 type dashboardStore interface {
 	CountOpenJobs(ctx context.Context) int
-	CountShortlist(ctx context.Context, user string, triageValues, stageValues []string) int
 	CountBySource(ctx context.Context) []hunt.SourceCount
 	ForAccount(aid uuid.UUID) *hunt.AccountStore
 }
@@ -76,7 +75,7 @@ func cachedSources(ttl time.Duration, fn func(context.Context) []hunt.SourceCoun
 // closure per request misses the cache and fires N live COUNT(*) per render
 // (security HIGH finding F3). The second request fires 0 COUNT queries when
 // the TTL has not expired.
-func dashboardHandler(p *resource.Panel, store dashboardStore, adminUser string, acctOf accountResolver) http.HandlerFunc {
+func dashboardHandler(p *resource.Panel, store dashboardStore, acctOf accountResolver) http.HandlerFunc {
 	const cacheTTL = 30 * time.Second
 
 	totalBadge := shell.CachedBadge(cacheTTL, func(ctx context.Context) string {
@@ -91,8 +90,14 @@ func dashboardHandler(p *resource.Panel, store dashboardStore, adminUser string,
 		}
 		return strconv.Itoa(as.CountScored(ctx))
 	})
-	shortlistBadge := shell.CachedBadge(cacheTTL, func(ctx context.Context) string {
-		return strconv.Itoa(store.CountShortlist(ctx, adminUser, shortlistTriageValues, shortlistPipelineValues))
+	// Shortlist count is per-account (hunt_ratings.account_id) — cached per
+	// account id like the scored badge so a foreign count can never render.
+	shortlistBadge := perAccountBadge(cacheTTL, func(ctx context.Context, aid uuid.UUID) string {
+		as := store.ForAccount(aid)
+		if as == nil {
+			return "0"
+		}
+		return strconv.Itoa(as.CountShortlist(ctx, shortlistTriageValues, shortlistPipelineValues))
 	})
 	sourcesFunc := cachedSources(cacheTTL, store.CountBySource)
 
@@ -109,7 +114,7 @@ func dashboardHandler(p *resource.Panel, store dashboardStore, adminUser string,
 		grid := components.Grid(
 			components.StatCardView(components.StatCard{Label: "Total", Value: totalBadge(ctx)}),
 			components.StatCardView(components.StatCard{Label: "Scored", Value: scoredBadge(ctx, aid)}),
-			components.StatCardView(components.StatCard{Label: "Shortlist", Value: shortlistBadge(ctx)}),
+			components.StatCardView(components.StatCard{Label: "Shortlist", Value: shortlistBadge(ctx, aid)}),
 			components.StatCardView(components.StatCard{Label: "Sources", Value: strconv.Itoa(len(srcs)), Spark: sparkNums}),
 		)
 

@@ -167,7 +167,7 @@ func TestMaxLLMPerCycle_CircuitBreaker(t *testing.T) {
 			Description: "Go systems",
 			PostedAt:    &postedAt,
 		}
-		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, scoreStore, &cycleCounter)
+		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, scoreStore, testBudget(&cycleCounter))
 	}
 
 	assert.Equal(t, int64(2), llmCalls.Load(),
@@ -225,7 +225,7 @@ func TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget(t *testing.T) 
 			Description: "Go systems",
 			PostedAt:    &stalePosted,
 		}
-		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, staleDeps, scoreStore, &cycleCounter)
+		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, staleDeps, scoreStore, testBudget(&cycleCounter))
 	}
 
 	// 2 fit jobs — must each call the LLM (budget is not exhausted by stale jobs).
@@ -236,7 +236,7 @@ func TestMaxLLMPerCycle_StaleJobsDoNotConsumeCircuitBreakerBudget(t *testing.T) 
 			Description: "Go systems",
 			PostedAt:    &freshPosted,
 		}
-		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, fitDeps, scoreStore, &cycleCounter)
+		scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, fitDeps, scoreStore, testBudget(&cycleCounter))
 	}
 
 	// Stale jobs must not have used any LLM budget.
