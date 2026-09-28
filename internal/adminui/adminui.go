@@ -5,12 +5,14 @@
 package adminui
 
 import (
+	"context"
 	"net/http"
 	"os"
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -27,7 +29,9 @@ const (
 // or when the selected AUTH_DRIVER's own requirements fail (see auth_driver.go).
 // acctStore/operatorID come from accounts.Bootstrap (the caller must run it
 // before any account-consuming migration, ADR-6); acctStore may be nil without
-// a database — only the AUTH_DRIVER=hmac rollback is possible then.
+// a database — only the AUTH_DRIVER=hmac rollback is possible then. keyStore
+// feeds the self-serve /admin/keys surface (bcrypt mode only); nil under
+// bcrypt omits those mounts defensively.
 // The returned *resource.Panel can be used to expose Resources via MCP
 // (see go-panel/mcp); nil when admin is disabled.
 //
@@ -35,7 +39,10 @@ const (
 // Bespoke 4-/5-segment routes (POST /rate, GET /download/{kind}) precede the
 // panel catch-all and do not shadow go-panel's 3-segment routes (/rows, /{id}).
 // GET /admin/jobs/{id} is served by go-panel via the Detailer (natural URL).
-func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, operatorID string) (http.Handler, *resource.Panel, bool) {
+// The PUBLIC /admin/register route also lives on the outer mux (no session
+// exists there — the panel guard would demand one), mounted only under the
+// bcrypt driver.
+func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, keyStore *accounts.KeyStore, operatorID string) (http.Handler, *resource.Panel, bool) {
 	hmacKey := os.Getenv("ADMIN_HMAC_KEY")
 	password := os.Getenv("ADMIN_PASSWORD")
 	if len(hmacKey) < 32 || password == "" {
@@ -48,7 +55,8 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 
 	adminUser := envOr("ADMIN_USERNAME", "admin")
 
-	d, ok := selectDriver(acctStore, operatorID, hmacKey, password, adminUser)
+	pool := store.Pool()
+	d, ok := selectDriver(acctStore, pool, operatorID, hmacKey, password, adminUser)
 	if !ok {
 		return nil, nil, false
 	}
@@ -76,8 +84,6 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 			PathPrefix:        "security/totp",
 		})
 	}
-
-	pool := store.Pool()
 
 	// Shortlist (curated targets) is registered first so it appears first in the
 	// Hunt nav group. resource.Register auto-routes /admin/shortlist and adds the
@@ -118,6 +124,19 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
+	if d.selfServe && keyStore != nil {
+		p.AddNav(shell.NavItem{ID: "keys", Label: "MCP Keys", Icon: "🔑", URL: "/admin/keys/"})
+	}
+	if d.selfServe {
+		// Visible is cosmetic only — the in-handler sess.Role=="admin" check
+		// in accounts_admin.go is the real gate (RequiredRole stays banned:
+		// it panics under hmac and is grep-gated by Makefile preflight).
+		p.AddNav(shell.NavItem{ID: "accounts", Label: "Accounts", Icon: "👥", URL: "/admin/accounts/",
+			Visible: func(ctx context.Context) bool {
+				sess, ok := auth.SessionFrom(ctx)
+				return ok && sess.Role == "admin"
+			}})
+	}
 	p.AddNav(shell.NavItem{ID: navIDLinkedin, Label: "LinkedIn", Icon: "💼", URL: "/admin/linkedin"})
 	p.AddNav(shell.NavItem{ID: navIDUpwork, Label: "Upwork", Icon: "🟢", URL: "/admin/upwork"})
 
@@ -125,6 +144,29 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	// POST /rate and GET /download/{kind} are bespoke — not handled by Detailer.
 	// GET /admin/jobs/{id} (natural 3-segment URL) is now served by go-panel.
 	mux := http.NewServeMux()
+
+	// P6 self-serve surfaces — bcrypt driver ONLY (d.selfServe is the named
+	// contract; hmac never mounts them, see auth_driver.go header):
+	//   - GET/POST /admin/register on the OUTER mux: the anonymous caller has
+	//     no session, so the panel guard would deny/redirect before any
+	//     handler ran — the route must sit beside /login, unguarded.
+	//   - /admin/keys + /admin/accounts are session-scoped: MountPage/
+	//     MountAction wrap them with the auth+CSRF guard for free.
+	// keyStore nil (defensive — same pool lifecycle, can't happen today) omits
+	// the keys surface; a nil store must never panic.
+	if d.selfServe {
+		reg := newRegisterHandler(pool, []byte(csrfKey))
+		mux.HandleFunc("GET "+adminBasePath+"/register", reg.get)
+		mux.HandleFunc("POST "+adminBasePath+"/register", reg.post)
+		if keyStore != nil {
+			p.MountPage(resource.PageSpec{Path: "keys", Handler: keysPage(p, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName())})
+			p.MountAction(resource.ActionSpec{Path: "keys/mint", Handler: keysMint(p, acctStore, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName(), accounts.NewLoginLimiter())})
+			p.MountAction(resource.ActionSpec{Path: "keys/{id}/revoke", Handler: keysRevoke(p, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName())})
+		}
+		p.MountPage(resource.PageSpec{Path: "accounts", Handler: accountsPage(p, pool, []byte(csrfKey), cn.SessionCookieName())})
+		p.MountAction(resource.ActionSpec{Path: "accounts/{id}/activate", Handler: accountSetActive(acctStore, true)})
+		p.MountAction(resource.ActionSpec{Path: "accounts/{id}/deactivate", Handler: accountSetActive(acctStore, false)})
+	}
 	mux.HandleFunc("GET "+adminBasePath+"/dashboard", a.Require(dashboardHandler(p, store, acctOf)))
 	// POST action routes are mounted via p.MountAction, which wraps with the
 	// auth guard, parses the form body, and verifies CSRF before calling Handler.
