@@ -104,9 +104,7 @@ func TestSessionTenantSeam_EndToEnd(t *testing.T) {
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
 
-	_, err = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
-	require.NoError(t, err)
+	dbtest.DropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool,
 		accounts.OperatorSeed{Email: "seam@t.example", Password: "seam-pass-123"})
 	require.NoError(t, err)
@@ -328,9 +326,7 @@ func TestNew_WiresSessionTenantGate(t *testing.T) {
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
 
-	_, err = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS panel_totp_recovery_codes; DROP TABLE IF EXISTS panel_accounts`)
-	require.NoError(t, err)
+	dbtest.DropAccountTables(t, pool)
 	acctStore, op, err := accounts.Bootstrap(ctx, pool,
 		accounts.OperatorSeed{Email: "gate@t.example", Password: "gate-pass-123"})
 	require.NoError(t, err)
