@@ -33,7 +33,9 @@ func resumeHandler(p *resource.Panel, acctOf accountResolver) http.HandlerFunc {
 
 		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
-			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
+			empty := resumeEmptyHTML("No resume data yet.") +
+				`<div style="padding:0 1.5rem"><a href="` + adminBasePath + `/resume/import">Import your resume</a> to build it.</div>`
+			if err := p.RenderPageHTML(w, r, "Resume", "resume", empty); err != nil {
 				slog.Error("adminui: render resume", "err", err)
 			}
 			return

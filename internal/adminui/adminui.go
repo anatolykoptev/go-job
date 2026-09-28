@@ -124,6 +124,7 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
+	p.AddNav(shell.NavItem{ID: "resume-import", Label: "Import", Icon: "📥", URL: "/admin/resume/import"})
 	if d.selfServe && keyStore != nil {
 		p.AddNav(shell.NavItem{ID: "keys", Label: "MCP Keys", Icon: "🔑", URL: "/admin/keys/"})
 	}
@@ -187,6 +188,11 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	// shortlistDownloadHandler removed (orphaned route — Docs cell is a badge, not a link;
 	// PDFs are accessible via the job detail page at /admin/jobs/{id}).
 	mux.HandleFunc("GET "+adminBasePath+"/resume", a.Require(resumeHandler(p, acctOf)))
+	// Resume import is a bespoke route pair, not MountPage/MountAction:
+	// MountAction's csrfProtect caps the whole body at 1 MB (bare 400 on
+	// oversize) — real .docx/.pdf need a larger, page-rendered limit.
+	mux.HandleFunc("GET "+adminBasePath+"/resume/import", a.Require(resumeImportPage(p, acctOf, []byte(csrfKey), cn.SessionCookieName())))
+	mux.HandleFunc("POST "+adminBasePath+"/resume/import", a.Require(resumeImportPost(p, acctOf, []byte(csrfKey), cn.SessionCookieName(), accounts.NewLoginLimiter())))
 	// Resume editor routes (Part-D)
 	mux.HandleFunc("GET "+adminBasePath+"/resume/edit", a.Require(resumeEditHandler(p, a, []byte(csrfKey), acctOf)))
 	p.MountAction(resource.ActionSpec{Path: "resume/skill/{id}/level", Handler: resumeSkillLevelHandler(acctOf)})
