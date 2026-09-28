@@ -128,6 +128,7 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 		p.AddNav(shell.NavItem{ID: "keys", Label: "MCP Keys", Icon: "🔑", URL: "/admin/keys/"})
 	}
 	if d.selfServe {
+		p.AddNav(shell.NavItem{ID: "password", Label: "Password", Icon: "🔒", URL: "/admin/password/"})
 		// Visible is cosmetic only — the in-handler sess.Role=="admin" check
 		// in accounts_admin.go is the real gate (RequiredRole stays banned:
 		// it panics under hmac and is grep-gated by Makefile preflight).
@@ -159,11 +160,13 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 		mux.HandleFunc("GET "+adminBasePath+"/register", reg.get)
 		mux.HandleFunc("POST "+adminBasePath+"/register", reg.post)
 		if keyStore != nil {
-			p.MountPage(resource.PageSpec{Path: "keys", Handler: keysPage(p, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName())})
+			p.MountPage(resource.PageSpec{Path: "keys", Aliases: []string{"keys"}, Handler: keysPage(p, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName())})
 			p.MountAction(resource.ActionSpec{Path: "keys/mint", Handler: keysMint(p, acctStore, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName(), accounts.NewLoginLimiter())})
 			p.MountAction(resource.ActionSpec{Path: "keys/{id}/revoke", Handler: keysRevoke(p, keyStore, acctOf, []byte(csrfKey), cn.SessionCookieName())})
 		}
-		p.MountPage(resource.PageSpec{Path: "accounts", Handler: accountsPage(p, pool, []byte(csrfKey), cn.SessionCookieName())})
+		p.MountPage(resource.PageSpec{Path: "accounts", Aliases: []string{"accounts"}, Handler: accountsPage(p, pool, []byte(csrfKey), cn.SessionCookieName())})
+		p.MountPage(resource.PageSpec{Path: "password", Aliases: []string{"password"}, Handler: passwordPage(p, acctOf, []byte(csrfKey), cn.SessionCookieName())})
+		p.MountAction(resource.ActionSpec{Path: "password/change", Handler: passwordChange(p, acctStore, acctOf, []byte(csrfKey), cn.SessionCookieName(), accounts.NewLoginLimiter())})
 		p.MountAction(resource.ActionSpec{Path: "accounts/{id}/activate", Handler: accountSetActive(acctStore, true)})
 		p.MountAction(resource.ActionSpec{Path: "accounts/{id}/deactivate", Handler: accountSetActive(acctStore, false)})
 	}
