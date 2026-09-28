@@ -440,7 +440,7 @@ func seedOperator(ctx context.Context, pool *pgxpool.Pool, store *auth.PgxAccoun
 		// is the source of truth for the credential) while staying deactivated
 		// (env must not resurrect it).
 		var active bool
-		var storedHash string
+		var storedHash *string // *string, not string: a legacy NULL row must not fail the scan — it counts as a mismatch and env wins
 		if err := pool.QueryRow(ctx,
 			"SELECT id, active, password_hash FROM panel_accounts WHERE email = $1", seed.Email,
 		).Scan(&id, &active, &storedHash); err != nil {
@@ -454,7 +454,7 @@ func seedOperator(ctx context.Context, pool *pgxpool.Pool, store *auth.PgxAccoun
 		// EVERY write — that stamp is the credential epoch liveSession
 		// revokes sessions against. Re-syncing an unchanged env password on
 		// every boot would therefore kick every live session each restart.
-		if !auth.VerifyPassword(seed.Password, storedHash) {
+		if storedHash == nil || !auth.VerifyPassword(seed.Password, *storedHash) {
 			if err := store.UpdatePasswordHash(ctx, id, hash); err != nil {
 				return nil, err
 			}

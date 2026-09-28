@@ -114,17 +114,22 @@ func passwordChange(p *resource.Panel, acctStore *auth.PgxAccountStore, acctOf a
 			return
 		}
 		// The epoch stamp revoked this session along with all others —
-		// expire the cookie explicitly (path must match the login-issued
-		// cookie) and send the user through the login form.
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieName,
-			Value:    "",
-			Path:     adminBasePath,
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   r.TLS != nil,
-			SameSite: http.SameSiteLaxMode,
-		})
+		// expire both cookies explicitly (path must match the login-issued
+		// cookies) and send the user through the login form. The mfa_pending
+		// half-session is cleared too: it is not epoch-checked upstream, so
+		// without this a rotation would leave a 5-minute window in which an
+		// already password-authenticated attacker could finish TOTP.
+		for _, name := range []string{cookieName, cookieName + "_mfa"} {
+			http.SetCookie(w, &http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     adminBasePath,
+				MaxAge:   -1,
+				HttpOnly: true,
+				Secure:   r.TLS != nil,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
 		http.Redirect(w, r, adminBasePath+"/login", http.StatusSeeOther)
 	}
 }
