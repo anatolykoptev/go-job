@@ -154,6 +154,9 @@ var resumeTableTotalCounts = []string{
 	"resume_domains",
 	"resume_methodologies",
 	"resume_vectors",
+	"upwork_profile",
+	"upwork_skills",
+	"upwork_catalog_items",
 }
 
 // accountScopedCountSQL returns the per-account row-count probe for a resume
