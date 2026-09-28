@@ -5,12 +5,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -266,4 +268,37 @@ func TestSetNotifyChatID_Upsert(t *testing.T) {
 		op.ID).Scan(&chatID, &enabled))
 	require.Equal(t, int64(-222), chatID, "existing row must take the new chat id")
 	require.True(t, enabled, "upsert must preserve the enabled flag")
+}
+
+// TestSeedOperator_ResyncKeepsEpoch: UpdatePasswordHash stamps
+// password_changed_at on EVERY write — the credential epoch liveSession
+// revokes sessions against. seedOperator therefore verifies the env password
+// against the stored hash first: an unchanged env password must NOT bump the
+// epoch on every restart; a changed one must.
+func TestSeedOperator_ResyncKeepsEpoch(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	dbtest.DropAccountTables(t, pool)
+
+	seed := accounts.OperatorSeed{Email: "op-epoch@t.example", Password: "seed-password-123", Name: "op"}
+	_, _, err := accounts.Bootstrap(ctx, pool, seed)
+	require.NoError(t, err)
+
+	var pca *time.Time
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT password_changed_at FROM panel_accounts WHERE email = 'op-epoch@t.example'`).Scan(&pca))
+	assert.Nil(t, pca, "fresh seed must not stamp the epoch")
+
+	_, _, err = accounts.Bootstrap(ctx, pool, seed)
+	require.NoError(t, err, "second bootstrap must be idempotent")
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT password_changed_at FROM panel_accounts WHERE email = 'op-epoch@t.example'`).Scan(&pca))
+	assert.Nil(t, pca, "same-password re-sync must not stamp the epoch — it would revoke live sessions on every restart")
+
+	seed.Password = "rotated-env-password-456"
+	_, _, err = accounts.Bootstrap(ctx, pool, seed)
+	require.NoError(t, err)
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT password_changed_at FROM panel_accounts WHERE email = 'op-epoch@t.example'`).Scan(&pca))
+	assert.NotNil(t, pca, "a genuinely changed env password must stamp the epoch")
 }

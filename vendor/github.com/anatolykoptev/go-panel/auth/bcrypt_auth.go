@@ -270,6 +270,12 @@ type sessionData struct {
 	Role   string `json:"role"`
 	Exp    int64  `json:"exp"`
 	Nonce  string `json:"n"`
+	// Iat is the issue time in Unix milliseconds — the credential-epoch
+	// check in liveSession denies any token minted before the account's
+	// password_changed_at. Tokens minted before this field existed decode
+	// with 0, so they are revoked by the first password rotation (and
+	// otherwise unaffected while password_changed_at stays NULL).
+	Iat int64 `json:"iat"`
 }
 
 // Session is the authenticated session exposed to downstream handlers via SessionFrom.
@@ -305,6 +311,7 @@ func (a *BcryptTOTPAuth) makeTokenWithDomain(userID, role, domain string, ttl ti
 		Role:   role,
 		Exp:    time.Now().Add(ttl).Unix(),
 		Nonce:  hex.EncodeToString(nb[:]),
+		Iat:    time.Now().UnixMilli(),
 	}
 	payload, err := json.Marshal(sd)
 	if err != nil {
@@ -809,6 +816,9 @@ func (a *BcryptTOTPAuth) liveSession(r *http.Request) *sessionData {
 	}
 	if acct == nil || !acct.Active || acct.Role != sd.Role {
 		return nil // deactivated, role changed, or store contract violation -> revoke
+	}
+	if acct.PasswordChangedAt != nil && sd.Iat < acct.PasswordChangedAt.UnixMilli() {
+		return nil // password rotated after this token was issued -> revoke
 	}
 	return sd
 }

@@ -10,9 +10,11 @@ package adminui
 // (pw:<accountID>, 5/min) checked BEFORE the bcrypt verify: a stolen
 // session must not become an unthrottled password oracle.
 //
-// On success the existing session stays valid — sessions bind to account
-// id+role, not the password hash, so the user is not kicked out of the
-// cabinet they just updated the credential from.
+// On success the credential epoch bumps (UpdatePasswordHash stamps
+// password_changed_at) — every session issued before the rotation, INCLUDING
+// this one, is revoked by the live-session recheck. The handler therefore
+// clears the cookie and redirects to login: honest UX for "all sessions
+// revoked", and the immediate re-login double-checks the new credential.
 
 import (
 	"html/template"
@@ -111,7 +113,24 @@ func passwordChange(p *resource.Panel, acctStore *auth.PgxAccountStore, acctOf a
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		renderPasswordPage(w, r, p, csrf.Issue(csrfKey, sessionValue(r, cookieName), csrf.DefaultTTL), "", "Password updated.")
+		// The epoch stamp revoked this session along with all others —
+		// expire both cookies explicitly (path must match the login-issued
+		// cookies) and send the user through the login form. The mfa_pending
+		// half-session is cleared too: it is not epoch-checked upstream, so
+		// without this a rotation would leave a 5-minute window in which an
+		// already password-authenticated attacker could finish TOTP.
+		for _, name := range []string{cookieName, cookieName + "_mfa"} {
+			http.SetCookie(w, &http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     adminBasePath,
+				MaxAge:   -1,
+				HttpOnly: true,
+				Secure:   r.TLS != nil,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+		http.Redirect(w, r, adminBasePath+"/login", http.StatusSeeOther)
 	}
 }
 

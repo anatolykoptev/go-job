@@ -266,6 +266,7 @@ func accountSetPassword(ctx context.Context, pool *pgxpool.Pool, out io.Writer, 
 		fmt.Fprintf(out, "temporary password (shown once — rotate in the cabinet or via account set-password): %s\n", password)
 	}
 	fmt.Fprintf(out, "password updated: %s\n", id)
+	fmt.Fprintln(out, "all existing sessions for this account have been revoked")
 	return nil
 }
 
