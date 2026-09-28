@@ -887,7 +887,7 @@ func seedOwner(ctx context.Context, acctStore *auth.PgxAccountStore, operatorID 
 // works as a DB-independent single-operator rollback; keyStore nil removes
 // bearer auth from panelmcp but leaves its TenantResolver denying (below).
 func startAdminServer(ctx context.Context, store *hunt.Store, authority *applications.Authority, acctStore *auth.PgxAccountStore, keyStore *accounts.KeyStore, operatorID string, logger *slog.Logger) {
-	handler, panel, ok := adminui.New(store, authority, acctStore, operatorID)
+	handler, panel, ok := adminui.New(store, authority, acctStore, keyStore, operatorID)
 	if !ok {
 		logger.Info("admin UI disabled (set ADMIN_HMAC_KEY + ADMIN_PASSWORD; the default bcrypt driver also needs ADMIN_TOTP_ENC_KEY and DATABASE_URL)")
 		return

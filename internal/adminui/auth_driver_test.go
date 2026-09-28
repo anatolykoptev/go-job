@@ -32,7 +32,7 @@ const testHMACKey = "0123456789abcdef0123456789abcdef" // 32 bytes
 func TestSelectDriver_HMAC(t *testing.T) {
 	t.Setenv("AUTH_DRIVER", "hmac")
 
-	d, ok := selectDriver(nil, "", testHMACKey, "pw", "admin")
+	d, ok := selectDriver(nil, nil, "", testHMACKey, "pw", "admin")
 	require.True(t, ok)
 	require.IsType(t, &auth.HMACAuth{}, d.authn)
 	require.Nil(t, d.totpKey, "hmac mode must not wire TOTP enrollment")
@@ -50,7 +50,7 @@ func TestSelectDriver_HMAC(t *testing.T) {
 	require.False(t, okD, "a non-pinned tenant is denied even in hmac mode")
 
 	// Seeded operator → its UUID is the pin.
-	d2, ok := selectDriver(nil, "uuid-1234", testHMACKey, "pw", "admin")
+	d2, ok := selectDriver(nil, nil, "uuid-1234", testHMACKey, "pw", "admin")
 	require.True(t, ok)
 	require.Equal(t, "uuid-1234", d2.resolver.Resolve(req).CitySlug)
 }
@@ -62,11 +62,11 @@ func TestSelectDriver_BcryptRequiresStoreAndKey(t *testing.T) {
 	t.Setenv("AUTH_DRIVER", "")
 	t.Setenv("ADMIN_TOTP_ENC_KEY", strings.Repeat("ab", 32))
 
-	_, ok := selectDriver(nil, "", testHMACKey, "pw", "admin")
+	_, ok := selectDriver(nil, nil, "", testHMACKey, "pw", "admin")
 	require.False(t, ok, "nil account store must disable the bcrypt driver")
 
 	t.Setenv("ADMIN_TOTP_ENC_KEY", "short")
-	_, ok = selectDriver(auth.NewPgxAccountStore(nil), "", testHMACKey, "pw", "admin")
+	_, ok = selectDriver(auth.NewPgxAccountStore(nil), nil, "", testHMACKey, "pw", "admin")
 	require.False(t, ok, "invalid TOTP key must disable the bcrypt driver")
 }
 
@@ -77,7 +77,7 @@ func TestSelectDriver_BcryptWiresSessionSeam(t *testing.T) {
 	t.Setenv("AUTH_DRIVER", "")
 	t.Setenv("ADMIN_TOTP_ENC_KEY", strings.Repeat("ab", 32))
 
-	d, ok := selectDriver(auth.NewPgxAccountStore(nil), "", testHMACKey, "pw", "admin")
+	d, ok := selectDriver(auth.NewPgxAccountStore(nil), nil, "", testHMACKey, "pw", "admin")
 	require.True(t, ok)
 	require.IsType(t, &auth.BcryptTOTPAuth{}, d.authn)
 	require.NotNil(t, d.totpKey)
@@ -282,7 +282,7 @@ func TestSelectDriver_BcryptZeroLoginable_Logs(t *testing.T) {
 	t.Setenv("ADMIN_USERNAME", "")
 
 	buf := captureSlog(t)
-	d, ok := selectDriver(auth.NewPgxAccountStore(nil), "", testHMACKey, "pw", "admin")
+	d, ok := selectDriver(auth.NewPgxAccountStore(nil), nil, "", testHMACKey, "pw", "admin")
 	require.True(t, ok, "admin stays enabled — accounts provisioned out-of-band may still log in")
 	require.NotNil(t, d)
 	require.Contains(t, buf.String(), "no operator account was seeded")
@@ -299,7 +299,7 @@ func TestSelectDriver_BcryptNonEmailSeed_Logs(t *testing.T) {
 	t.Setenv("ADMIN_USERNAME", "admin") // non-email-shaped identifier
 
 	buf := captureSlog(t)
-	d, ok := selectDriver(auth.NewPgxAccountStore(nil), "uuid-1", testHMACKey, "pw", "admin")
+	d, ok := selectDriver(auth.NewPgxAccountStore(nil), nil, "uuid-1", testHMACKey, "pw", "admin")
 	require.True(t, ok)
 	require.NotNil(t, d)
 	require.Contains(t, buf.String(), "not email-shaped")
@@ -341,7 +341,7 @@ func TestNew_WiresSessionTenantGate(t *testing.T) {
 	t.Setenv("ADMIN_EMAIL", "gate@t.example")
 	t.Setenv("ADMIN_USERNAME", "")
 
-	handler, _, ok := New(hunt.NewStore(pool), applications.New(nil, t.TempDir(), uuid.MustParse(op.ID)), acctStore, op.ID)
+	handler, _, ok := New(hunt.NewStore(pool), applications.New(nil, t.TempDir(), uuid.MustParse(op.ID)), acctStore, accounts.NewKeyStore(pool), op.ID)
 	require.True(t, ok, "bcrypt driver must be enabled with a bootstrapped store")
 
 	// Real login through the assembled handler → session cookie.

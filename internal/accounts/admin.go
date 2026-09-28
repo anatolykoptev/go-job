@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
@@ -220,4 +221,73 @@ func (k *KeyStore) ActiveKeyIDsByPrefix(ctx context.Context, prefix string) ([]u
 		return nil, fmt.Errorf("mcp key prefix rows: %w", err)
 	}
 	return ids, nil
+}
+
+// RegisterPending inserts a panel_accounts row for the PUBLIC self-serve
+// registration surface (P6). role and active are SQL LITERALS, never
+// parameters — the unauthenticated endpoint can never mint an admin row or
+// an already-active one; the panel_accounts_role_check CHECK constraint is
+// the second wall.
+//
+// Email conflict returns created=false: ON CONFLICT (email) DO NOTHING
+// leaves the existing row byte-for-byte untouched (no oracle: the caller
+// renders an identical success page either way). The caller hashes the
+// password BEFORE calling us regardless of conflict, so the bcrypt cost
+// equalizes the taken/untaken timing.
+//
+// RegisterPending is the ONLY panel_accounts write the anonymous surface
+// performs — deliberate divergence from CreateAccount (active=true, role
+// parameterized) which stays the trusted CLI seam.
+func RegisterPending(ctx context.Context, pool *pgxpool.Pool, email, name, passwordHash string) (created bool, err error) {
+	ct, err := pool.Exec(ctx, `
+		INSERT INTO panel_accounts (email, name, password_hash, role, active)
+		VALUES ($1, $2, $3, 'user', false)
+		ON CONFLICT (email) DO NOTHING`,
+		email, name, passwordHash)
+	if err != nil {
+		return false, fmt.Errorf("accounts: register pending: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
+// PendingLoginHint returns the auth.BcryptConfig.LoginFailHint hook for the
+// bcrypt driver: when a login fails on the unknown/inactive-email branch
+// (go-panel runs its timing-equalizing dummy compare BEFORE consulting the
+// hook, so this is never a timing oracle), it looks up the email WITHOUT
+// GetByEmail's active/password filters and reports one narrow fact — "a
+// passworded registration exists but is not yet active":
+//
+//   - row exists AND active=false AND password_hash IS NOT NULL
+//     → ("This account is registered but not yet active — an operator will
+//     approve it.", true)
+//   - every other shape (no row, active row mid-flight, inactive
+//     passwordless/key-only account — such an account can never log in
+//     anyway) → ("", false): the generic "Invalid email or password" stands.
+//
+// Enumeration tradeoff (accepted in the P6 plan): the hint reveals
+// pending/inactive-passworded registration status behind the same 5/min/IP
+// login throttle. It never distinguishes an active account from a
+// nonexistent one.
+//
+// The hook receives the email go-panel already normalized
+// (verifyPassword lower-trims the form value before GetByEmail) and
+// normalizes identically itself — defense in depth for any future caller.
+func PendingLoginHint(pool *pgxpool.Pool) func(ctx context.Context, email string) (string, bool) {
+	return func(ctx context.Context, email string) (string, bool) {
+		email = strings.ToLower(strings.TrimSpace(email))
+		var active, hasPassword bool
+		err := pool.QueryRow(ctx,
+			`SELECT active, password_hash IS NOT NULL FROM panel_accounts WHERE email = $1`,
+			email).Scan(&active, &hasPassword)
+		if err != nil {
+			// ErrNoRows (no such email) AND transient errors alike keep the
+			// generic message — a DB hiccup must not surface as a login hint
+			// or an extra 5xx, the request already failed closed as 401.
+			return "", false
+		}
+		if active || !hasPassword {
+			return "", false
+		}
+		return "This account is registered but not yet active — an operator will approve it.", true
+	}
 }
