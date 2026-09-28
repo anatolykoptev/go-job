@@ -154,8 +154,9 @@ func TestRescoreJob_Success_CallsSetJobScore(t *testing.T) {
 // TestRescoreHandler_BadID verifies that a non-numeric id returns 400
 // before any DB call.
 func TestRescoreHandler_BadID(t *testing.T) {
-	// nil pool + nil store — expect 400 before any DB access.
-	handler := rescoreHandler(nil, nil)
+	// nil pool + nil store + denying resolver — expect 400 before any
+	// account or DB access (id parse fires first).
+	handler := rescoreHandler(nil, nil, denyAccount())
 
 	form := url.Values{}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/jobs/abc/rescore",

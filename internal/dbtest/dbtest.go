@@ -74,15 +74,16 @@ func RequireTestDB(tb testingTB, dsn string) string {
 
 // DropAccountTables drops the identity-schema tables so each test exercises
 // accounts.Bootstrap from the absent-table state — the same state a fresh
-// deploy faces. mcp_api_keys goes first — it FK-references panel_accounts.
-// The accounts schema is Bootstrap-owned (internal/accounts/mcp_api_keys.sql),
-// not a migration-runner file, so unlike the retired 014-era teardown NO
-// schema_migrations row needs clearing: the next Bootstrap recreates the
-// tables via CREATE TABLE IF NOT EXISTS.
+// deploy faces. account_job_scores and mcp_api_keys go first — they
+// FK-reference panel_accounts, which must drop last.
+// The accounts schema is Bootstrap-owned (internal/accounts/*.sql), not a
+// migration-runner file, so no schema_migrations row needs clearing: the next
+// Bootstrap recreates the tables via CREATE TABLE IF NOT EXISTS.
 func DropAccountTables(tb testingTB, pool *pgxpool.Pool) {
 	tb.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`DROP TABLE IF EXISTS mcp_api_keys;
+		`DROP TABLE IF EXISTS account_job_scores;
+		 DROP TABLE IF EXISTS mcp_api_keys;
 		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
 		 DROP TABLE IF EXISTS panel_accounts;`); err != nil {
 		tb.Fatalf("dbtest.DropAccountTables: %v", err)
