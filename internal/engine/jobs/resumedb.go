@@ -331,7 +331,7 @@ const masterResumeRebuildLockKey int64 = 0x52534D5F52424C44
 func (a *ResumeAccount) GetPerson(ctx context.Context, personID int) (*PersonRecord, error) {
 	var p PersonRecord
 	var linksJSON []byte
-	err := a.db.pool.QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,''),
 		        COALESCE(headline,''), COALESCE(hourly_rate,0)
 		 FROM resume_persons WHERE id = $1 AND account_id = $2`, personID, a.aid,

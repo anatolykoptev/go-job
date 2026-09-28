@@ -268,6 +268,12 @@ type MasterResumeBuildInput struct {
 	// this consent — the consent exists to stop an accidental/agent-replayed
 	// second run from running at all.
 	ReplacePersonID int `json:"replace_person_id,omitempty" jsonschema:"To replace an existing profile, pass the person_id of the profile you intend to destroy (the refuse error names it). A retry carrying a stale id fails once the profile id has changed. Omit/0 for a fresh build with no existing profile."`
+	// Merge=true folds the new document INTO the existing profile instead of
+	// rebuilding from scratch: the current profile is the authoritative
+	// baseline, so entities the new document omits and manual edits survive.
+	// Same consent/atomicity contract as a rebuild.
+	Merge bool `json:"merge,omitempty" jsonschema:"Fold the resume into the existing profile (preserves entities the document omits and manual edits) instead of rebuilding from scratch"`
+
 }
 
 // ResumeGenerateInput is the input for resume_generate.
