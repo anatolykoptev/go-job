@@ -11,6 +11,7 @@ import (
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 )
 
 // countingDashStore is a dashboardStore stub that counts every call to a
@@ -24,9 +25,11 @@ func (s *countingDashStore) CountOpenJobs(_ context.Context) int {
 	return 10
 }
 
-func (s *countingDashStore) CountScored(_ context.Context) int {
-	s.queries.Add(1)
-	return 7
+// ForAccount returns nil — the scored badge closure guards on nil (no pool
+// in unit tests) and renders "0"; the per-account count itself is
+// integration-tested at the hunt layer.
+func (s *countingDashStore) ForAccount(_ uuid.UUID) *hunt.AccountStore {
+	return nil
 }
 
 func (s *countingDashStore) CountShortlist(_ context.Context, _ string, _, _ []string) int {
@@ -69,7 +72,7 @@ func newDashTestPanel() *resource.Panel {
 func TestDashboardHandler_FourStatCards(t *testing.T) {
 	p := newDashTestPanel()
 	store := &countingDashStore{}
-	h := dashboardHandler(p, store, "admin")
+	h := dashboardHandler(p, store, "admin", fixedAccount(uuid.Nil))
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/dashboard", nil)
@@ -100,7 +103,7 @@ func TestDashboardHandler_FourStatCards(t *testing.T) {
 func TestDashboardHandler_CacheHit_ZeroCountsOnSecondRender(t *testing.T) {
 	p := newDashTestPanel()
 	store := &countingDashStore{}
-	h := dashboardHandler(p, store, "admin")
+	h := dashboardHandler(p, store, "admin", fixedAccount(uuid.Nil))
 
 	// First request: warm the cache.
 	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/dashboard", nil)

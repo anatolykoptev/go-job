@@ -64,8 +64,10 @@ var shortlistSpec = admintable.Spec{
 		// "Triage / Stage" renders triage + pipeline badges together (triageStageBadgesHTML).
 		// Sort applies to the pipeline axis (r.stage) only; triage has no separate sort key.
 		{Key: colKeyStage, Label: "Triage / Stage", Sortable: true, SQLExpr: sqlRStage, Width: colWidth8rem},
-		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "j.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
-		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE j.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
+		// Score columns come from account_job_scores (alias s) — joined by
+		// AccountStore.ListShortlist on the acting account.
+		{Key: colKeyFit, Label: "Fit", Sortable: true, SQLExpr: "s.fit_score", NullsLast: true, TieBreakSQLExpr: "j.company", Width: colWidth8rem},
+		{Key: "market", Label: "Market", Sortable: true, SQLExpr: "CASE s.success_band WHEN 'STRONG' THEN 3 WHEN 'MODERATE' THEN 2 WHEN 'LONGSHOT' THEN 1 ELSE 0 END", NullsLast: true, Width: "11rem"},
 		{Key: "comp", Label: "Comp", Sortable: false},
 		{Key: "docs", Label: "Docs", Sortable: false, Width: colWidth8rem},
 		{Key: "rated", Label: "Rated", Sortable: true, SQLExpr: "r.rated_at", Width: "6rem"},
@@ -84,7 +86,7 @@ var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
-func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) resource.Resource {
+func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   navIDShortlist,
 		Title:  "Shortlist",
@@ -99,7 +101,7 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 			}
 			return strconv.Itoa(n)
 		}),
-		Lister: shortlistLister(store, adminUser, authority, csrfKey),
+		Lister: shortlistLister(store, adminUser, authority, csrfKey, acctOf),
 	}
 }
 
@@ -109,9 +111,12 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 // unit test exercise the same query — no decoy gap. PDF-derived filter chips
 // (pack-ready, with-docs) cannot be expressed as SQL; they surface as Docs
 // badges per row instead.
-func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
-		storeRows, total, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
+		// Scores are per-account (account_job_scores) — the facade binds the
+		// acting account; a miss yields uuid.Nil, whose join matches nothing.
+		aid, _ := acctOf(ctx)
+		storeRows, total, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
 			User:         adminUser,
 			TriageValues: shortlistTriageValues,
 			StageValues:  shortlistPipelineValues,

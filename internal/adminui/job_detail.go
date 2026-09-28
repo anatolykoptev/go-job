@@ -19,25 +19,30 @@ import (
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// jobDetailQuery selects columns from hunt_jobs for a single row, including
-// score_rationale JSONB for fit-card rendering.
+// jobDetailQuery selects columns from hunt_jobs for a single row, with the
+// ACTING ACCOUNT's score joined from account_job_scores (alias s; $2 binds the
+// resolved account UUID). score_rationale comes from the same per-account row.
+// A missed account resolution binds uuid.Nil — the LEFT JOIN matches nothing
+// and the row renders unscored, never another account's judgment.
 const jobDetailQuery = `
-SELECT id, COALESCE(title,''), COALESCE(company,''), COALESCE(url,''),
-       COALESCE(source,''), COALESCE(location,''), COALESCE(remote,''),
-       COALESCE(job_type,''), COALESCE(experience,''),
-       salary_min, salary_max, COALESCE(salary_currency,''), COALESCE(salary_interval,''),
-       COALESCE(status,''),
-       fit_score, COALESCE(fit_band,''), COALESCE(success_band,''), COALESCE(over_under,''),
-       scored_at, posted_at, first_seen_at, last_seen_at,
-       COALESCE(description,''),
-       recommendation_rank, COALESCE(recommendation_tier,''), COALESCE(recommendation_note,''),
-       score_rationale
-  FROM hunt_jobs
- WHERE id = $1`
+SELECT j.id, COALESCE(j.title,''), COALESCE(j.company,''), COALESCE(j.url,''),
+       COALESCE(j.source,''), COALESCE(j.location,''), COALESCE(j.remote,''),
+       COALESCE(j.job_type,''), COALESCE(j.experience,''),
+       j.salary_min, j.salary_max, COALESCE(j.salary_currency,''), COALESCE(j.salary_interval,''),
+       COALESCE(j.status,''),
+       s.fit_score, COALESCE(s.fit_band,''), COALESCE(s.success_band,''), COALESCE(s.over_under,''),
+       s.scored_at, j.posted_at, j.first_seen_at, j.last_seen_at,
+       COALESCE(j.description,''),
+       j.recommendation_rank, COALESCE(j.recommendation_tier,''), COALESCE(j.recommendation_note,''),
+       s.score_rationale
+  FROM hunt_jobs j
+  LEFT JOIN account_job_scores s ON s.job_id = j.id AND s.account_id = $2
+ WHERE j.id = $1`
 
 // jobDetailRecord holds fields scanned from a hunt_jobs row.
 type jobDetailRecord struct {
@@ -160,14 +165,15 @@ type currentRating struct {
 //  4. Market Read — RawHTML market card
 //  5. Description — RawHTML rendered markdown
 //  6. Application — RawHTML rate form + download links
-func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte, authority *applications.Authority) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
+func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth.Authenticator, csrfKey []byte, authority *applications.Authority, acctOf accountResolver) func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 	return func(ctx context.Context, r *http.Request, id string) ([]resource.DetailSection, error) {
 		id64, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
 			return nil, resource.ErrDetailNotFound
 		}
 
-		rec, err := scanJobDetail(ctx, pool, id64)
+		aid, _ := acctOf(ctx)
+		rec, err := scanJobDetail(ctx, pool, id64, aid)
 		if err != nil {
 			if isJobNotFound(err) {
 				return nil, resource.ErrDetailNotFound
@@ -259,10 +265,12 @@ func jobDetailer(pool *pgxpool.Pool, store *hunt.Store, adminUser string, a auth
 	}
 }
 
-// scanJobDetail executes jobDetailQuery and scans the result into a jobDetailRecord.
-func scanJobDetail(ctx context.Context, pool *pgxpool.Pool, id64 int64) (jobDetailRecord, error) {
+// scanJobDetail executes jobDetailQuery and scans the result into a
+// jobDetailRecord. aid binds the account_job_scores join — pass uuid.Nil when
+// no account resolves (score columns then read NULL).
+func scanJobDetail(ctx context.Context, pool *pgxpool.Pool, id64 int64, aid uuid.UUID) (jobDetailRecord, error) {
 	var rec jobDetailRecord
-	row := pool.QueryRow(ctx, jobDetailQuery, id64)
+	row := pool.QueryRow(ctx, jobDetailQuery, id64, aid)
 	err := row.Scan(
 		&rec.ID, &rec.Title, &rec.Company, &rec.URL,
 		&rec.Source, &rec.Location, &rec.Remote,
@@ -365,8 +373,8 @@ func buildApplicationSectionHTML(id64 int64, csrfTok string, rating *currentRati
 		Rating:     rating,
 		HasResume:  hasResume,
 		HasCover:   hasCover,
-		TriageOpts: template.HTML(triageSelectOptionsHTML(curTriage)),    //nolint:gosec // G203: triageSelectOptionsHTML produces only author-constant triage strings; no user text.
-		StageOpts:  template.HTML(pipelineOptgroupHTML(curStage)),        //nolint:gosec // G203: pipelineOptgroupHTML produces only author-constant stage strings; no user text.
+		TriageOpts: template.HTML(triageSelectOptionsHTML(curTriage)), //nolint:gosec // G203: triageSelectOptionsHTML produces only author-constant triage strings; no user text.
+		StageOpts:  template.HTML(pipelineOptgroupHTML(curStage)),     //nolint:gosec // G203: pipelineOptgroupHTML produces only author-constant stage strings; no user text.
 	}
 	var buf bytes.Buffer
 	if err := applicationSectionTmpl.Execute(&buf, data); err != nil {

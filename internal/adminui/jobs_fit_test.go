@@ -451,7 +451,8 @@ func TestJobsLister_SmokeWithFitCols(t *testing.T) {
 	}
 	// authority=nil: docs column renders empty chips (no crash).
 	// csrfKey=nil: star toggle renders ☆ with an empty-session token.
-	rows, total, err := jobsLister(pool, "test_admin", nil, nil)(context.Background(), q)
+	// Real account id binds the account_job_scores join (schema ensured).
+	rows, total, err := jobsLister(pool, "test_admin", nil, nil, fixedAccount(newTestAccount(t, pool)))(context.Background(), q)
 	if err != nil {
 		t.Fatalf("jobsLister: %v", err)
 	}
