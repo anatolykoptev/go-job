@@ -809,6 +809,16 @@ func bootstrapAccounts(ctx context.Context, pool *pgxpool.Pool) (*auth.PgxAccoun
 		slog.Error("accounts bootstrap failed — bcrypt driver unavailable; AUTH_DRIVER=hmac still works", slog.Any("error", err))
 		return acctStore, ""
 	}
+	// P6.2 password invariant — server-level, NOT inside Bootstrap so the
+	// gojob-admin remediation verb (account set-password) can still run on a
+	// legacy DB carrying NULL rows. A refusal means the NOT NULL could not be
+	// applied yet: the constraint stays pending until the listed accounts get
+	// passwords and the service reboots — NULL rows cannot log in regardless,
+	// so the service keeps running (same degrade philosophy as above) and the
+	// gate re-fires on the next boot.
+	if err := accounts.EnsurePasswordRequired(ctx, pool); err != nil {
+		slog.Error("accounts password constraint refused — backfill then reboot", slog.Any("error", err))
+	}
 	if op != nil {
 		return acctStore, op.ID
 	}

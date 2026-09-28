@@ -1,7 +1,8 @@
 // cmd/gojob-admin is the operator-run account/key provisioning CLI (plan
 // ADR-12). It is invoked over ssh against DATABASE_URL and owns the
-// panel_accounts + mcp_api_keys lifecycle: there is no public registration
-// path and no HTTP surface — this binary is the only provisioning interface.
+// panel_accounts + mcp_api_keys lifecycle: activation/deactivation and
+// password backfill are operator-only; self-service registration and
+// password change live in the cabinet (P6).
 //
 // Usage:
 //
@@ -236,16 +237,17 @@ func genTempPassword() (string, error) {
 // for an existing account (operator recovery path; the in-cabinet self-serve
 // flow stays the user's own).
 func accountSetPassword(ctx context.Context, pool *pgxpool.Pool, out io.Writer, ref, password string) error {
+	generated := false
 	if password == "" {
-		generated, err := genTempPassword()
+		g, err := genTempPassword()
 		if err != nil {
 			return fmt.Errorf("account set-password: generate temp password: %w", err)
 		}
-		password = generated
-		fmt.Fprintf(out, "temporary password (shown once): %s\n", password)
+		password = g
+		generated = true
 	}
 	if len(password) < 10 || len(password) > 72 {
-		return errors.New("account set-password: password must be 10-72 characters")
+		return errors.New("account set-password: password must be 10-72 characters (bcrypt truncation boundary)")
 	}
 	id, err := accounts.ResolveAccountID(ctx, pool, ref)
 	if err != nil {
@@ -257,6 +259,11 @@ func accountSetPassword(ctx context.Context, pool *pgxpool.Pool, out io.Writer, 
 	}
 	if err := auth.NewPgxAccountStore(pool).UpdatePasswordHash(ctx, id.String(), hash); err != nil {
 		return fmt.Errorf("account set-password: %w", err)
+	}
+	if generated {
+		// Printed only after the update landed — a credential that was never
+		// stored must never reach the operator's terminal.
+		fmt.Fprintf(out, "temporary password (shown once — rotate in the cabinet or via account set-password): %s\n", password)
 	}
 	fmt.Fprintf(out, "password updated: %s\n", id)
 	return nil
@@ -304,15 +311,17 @@ func exactlyOneRef(cmd, a, b string) (string, error) {
 func accountCreate(ctx context.Context, pool *pgxpool.Pool, out, errOut io.Writer,
 	email, name, password, role string, notifyChatID int64) error {
 
+	generated := false
 	if password == "" {
-		generated, err := genTempPassword()
+		g, err := genTempPassword()
 		if err != nil {
 			return fmt.Errorf("account create: generate temp password: %w", err)
 		}
-		password = generated
-		// Printed to stderr — the operator relays it once; the account model
-		// has no key-only shape, so a password must always exist.
-		fmt.Fprintf(errOut, "temporary password (shown once — user must change it in the cabinet): %s\n", password)
+		password = g
+		generated = true
+	}
+	if len(password) < 10 || len(password) > 72 {
+		return errors.New("account create: password must be 10-72 characters (bcrypt truncation boundary)")
 	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
@@ -324,6 +333,11 @@ func accountCreate(ctx context.Context, pool *pgxpool.Pool, out, errOut io.Write
 	}
 	if !created {
 		fmt.Fprintf(errOut, "warning: account %s already exists (id %s) — left unchanged\n", email, id)
+	} else if generated {
+		// Printed to stdout exactly once — same credential convention as
+		// `key mint`. Gated on created: on conflict the stored row wins and
+		// this generated value was never recorded.
+		fmt.Fprintf(out, "temporary password (shown once — rotate in the cabinet or via account set-password): %s\n", password)
 	}
 	if notifyChatID != 0 {
 		stored, err := accounts.SetNotifyChatID(ctx, pool, id, notifyChatID)
