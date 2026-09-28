@@ -406,8 +406,9 @@ func BackfillLegacyHuntSettings(ctx context.Context, pool *pgxpool.Pool, account
 
 // seedOperator provisions the operator admin account from env (baseline plan
 // ADR-J). CreateAccount is ON CONFLICT DO NOTHING, so a restart never clobbers
-// the row; UpdatePasswordHash then re-syncs the hash from env on EVERY boot, so
-// rotating ADMIN_PASSWORD is a deploy-time env change, not a SQL update.
+// the row; UpdatePasswordHash then re-syncs the hash from env — but only when
+// it actually differs (verify-then-skip): every write stamps the credential
+// epoch that revokes sessions, so a same-password re-sync must be a no-op.
 //
 // Role is always 'admin', NEVER 'owner' — the role CHECK added above makes
 // 'owner' unwritable and RequireRole's super-bypass unreachable.
@@ -439,19 +440,27 @@ func seedOperator(ctx context.Context, pool *pgxpool.Pool, store *auth.PgxAccoun
 		// is the source of truth for the credential) while staying deactivated
 		// (env must not resurrect it).
 		var active bool
+		var storedHash *string // *string, not string: a legacy NULL row must not fail the scan — it counts as a mismatch and env wins
 		if err := pool.QueryRow(ctx,
-			"SELECT id, active FROM panel_accounts WHERE email = $1", seed.Email,
-		).Scan(&id, &active); err != nil {
+			"SELECT id, active, password_hash FROM panel_accounts WHERE email = $1", seed.Email,
+		).Scan(&id, &active, &storedHash); err != nil {
 			return nil, fmt.Errorf("resolve seeded operator id: %w", err)
 		}
 		if !active {
 			slog.Warn("accounts: seeded operator account exists but is deactivated — env password synced, account left inactive",
 				slog.String("email", seed.Email))
 		}
+		// Verify-then-skip: UpdatePasswordHash stamps password_changed_at on
+		// EVERY write — that stamp is the credential epoch liveSession
+		// revokes sessions against. Re-syncing an unchanged env password on
+		// every boot would therefore kick every live session each restart.
+		if storedHash == nil || !auth.VerifyPassword(seed.Password, *storedHash) {
+			if err := store.UpdatePasswordHash(ctx, id, hash); err != nil {
+				return nil, err
+			}
+		}
 	}
-	if err := store.UpdatePasswordHash(ctx, id, hash); err != nil {
-		return nil, err
-	}
+
 	acct, err := store.GetByID(ctx, id)
 	if err != nil {
 		return nil, err

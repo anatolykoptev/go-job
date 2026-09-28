@@ -14,8 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPasswordChange_HappyPath: current+new+confirm → "Password updated.",
-// the NEW password logs in, the OLD one no longer does.
+// TestPasswordChange_HappyPath: current+new+confirm → the credential epoch
+// bumps (password_changed_at stamp), every pre-rotation session — including
+// the caller's own — is revoked, the cookie is expired and the response
+// redirects to login. The NEW password logs in; the OLD one no longer does.
 func TestPasswordChange_HappyPath(t *testing.T) {
 	f := newSelfServeFixture(t)
 	newUserAccount(t, f.pool, "pw-user@t.example", "old-pass-12345")
@@ -26,8 +28,16 @@ func TestPasswordChange_HappyPath(t *testing.T) {
 		"new_password":     {"new-pass-67890"},
 		"confirm_password": {"new-pass-67890"},
 	})
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "Password updated.")
+	require.Equal(t, http.StatusSeeOther, w.Code, w.Body.String())
+	assert.Equal(t, adminBasePath+"/login", w.Header().Get("Location"),
+		"success must redirect to login — the rotation revoked this session too")
+
+	// The session cookie the request arrived on is dead: replayed on a
+	// guarded GET it must not resolve (redirect-to-login, not the page).
+	replayed := selfServeGet(f.handler, cookies, adminBasePath+"/password")
+	assert.Equal(t, http.StatusSeeOther, replayed.Code)
+	assert.Contains(t, replayed.Header().Get("Location"), "/login",
+		"pre-rotation session cookie must be revoked, got %d", replayed.Code)
 
 	// New credential logs in; the old one is dead.
 	selfServeLogin(t, f.handler, "pw-user@t.example", "new-pass-67890")

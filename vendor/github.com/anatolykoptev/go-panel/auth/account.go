@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -34,6 +35,11 @@ type Account struct {
 	Role         string
 	Active       bool
 	TOTPEnabled  bool
+	// PasswordChangedAt is the credential epoch stamp: UpdatePasswordHash
+	// sets it to now(). Sessions issued before it are revoked by the bcrypt
+	// driver's live-session recheck. NULL until the first rotation.
+	// Populated only by lookups that select it (GetByID).
+	PasswordChangedAt *time.Time
 }
 
 // AccountStore is the persistence seam for multi-user operator auth. The
