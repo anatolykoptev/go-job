@@ -60,7 +60,7 @@ func keysPage(p *resource.Panel, ks *accounts.KeyStore, acctOf accountResolver, 
 		shell.SecurityHeaders(w)
 		aid, ok := acctOf(r.Context())
 		if !ok {
-			renderKeysUnavailable(w, r, p)
+			renderSelfServeUnavailable(w, r, p, "MCP Keys", "keys", "keys")
 			return
 		}
 		keys, err := ks.ListKeys(r.Context(), aid)
@@ -83,7 +83,7 @@ func keysMint(p *resource.Panel, acctStore *auth.PgxAccountStore, ks *accounts.K
 		ctx := r.Context()
 		aid, ok := acctOf(ctx)
 		if !ok {
-			renderKeysUnavailable(w, r, p)
+			renderSelfServeUnavailable(w, r, p, "MCP Keys", "keys", "keys")
 			return
 		}
 		label := strings.TrimSpace(r.FormValue("label"))
@@ -133,7 +133,7 @@ func keysRevoke(p *resource.Panel, ks *accounts.KeyStore, acctOf accountResolver
 		ctx := r.Context()
 		aid, ok := acctOf(ctx)
 		if !ok {
-			renderKeysUnavailable(w, r, p)
+			renderSelfServeUnavailable(w, r, p, "MCP Keys", "keys", "keys")
 			return
 		}
 		keyID, err := uuid.Parse(r.PathValue("id"))
@@ -148,12 +148,12 @@ func keysRevoke(p *resource.Panel, ks *accounts.KeyStore, acctOf accountResolver
 	}
 }
 
-// renderKeysUnavailable is the hmac-pin/no-identity shape — the same answer
-// resumeEmptyHTML gives other account-less surfaces.
-func renderKeysUnavailable(w http.ResponseWriter, r *http.Request, p *resource.Panel) {
-	if err := p.RenderPageHTML(w, r, "MCP Keys", "keys",
-		resumeEmptyHTML("Account identity is unavailable on this session — keys cannot be managed.")); err != nil {
-		slog.Error("adminui: render keys unavailable", "err", err)
+// renderSelfServeUnavailable is the hmac-pin/no-identity shape — the same
+// answer resumeEmptyHTML gives other account-less surfaces.
+func renderSelfServeUnavailable(w http.ResponseWriter, r *http.Request, p *resource.Panel, title, navID, feature string) {
+	if err := p.RenderPageHTML(w, r, title, navID,
+		resumeEmptyHTML("Account identity is unavailable on this session — "+feature+" cannot be managed.")); err != nil {
+		slog.Error("adminui: render self-serve unavailable", "err", err)
 	}
 }
 

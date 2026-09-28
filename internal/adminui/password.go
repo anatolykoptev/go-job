@@ -36,10 +36,17 @@ const (
 	pwRateWindow = time.Minute
 )
 
-// passwordPage serves GET /admin/password/: the change form.
-func passwordPage(p *resource.Panel, csrfKey []byte, cookieName string) http.HandlerFunc {
+// passwordPage serves GET /admin/password/: the change form. Identity is
+// resolved even though the page is only a form — same contract as keysPage:
+// a session that cannot resolve an account sees the unavailable page, not a
+// dead-end form.
+func passwordPage(p *resource.Panel, acctOf accountResolver, csrfKey []byte, cookieName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		shell.SecurityHeaders(w)
+		if _, ok := acctOf(r.Context()); !ok {
+			renderSelfServeUnavailable(w, r, p, "Password", "password", "password")
+			return
+		}
 		renderPasswordPage(w, r, p, csrf.Issue(csrfKey, sessionValue(r, cookieName), csrf.DefaultTTL), "", "")
 	}
 }
@@ -53,7 +60,7 @@ func passwordChange(p *resource.Panel, acctStore *auth.PgxAccountStore, acctOf a
 		ctx := r.Context()
 		aid, ok := acctOf(ctx)
 		if !ok {
-			renderKeysUnavailable(w, r, p)
+			renderSelfServeUnavailable(w, r, p, "Password", "password", "password")
 			return
 		}
 		fail := func(msg string) {
