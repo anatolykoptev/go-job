@@ -329,12 +329,21 @@ type LoginIdentifier struct {
 	Autocomplete string // autocomplete hint, e.g. "username" or "email"
 }
 
+// LoginLink is an auxiliary link rendered under the login form's submit
+// button, e.g. "Request access" for a self-serve registration page or
+// "Forgot password". Auth configs thread them through (BcryptConfig.LoginLinks,
+// HMACConfig.LoginLinks); nil renders nothing.
+type LoginLink struct {
+	Label string // visible link text
+	URL   string // href — same-origin paths recommended; templ escapes it
+}
+
 // LoginPage renders the standalone admin login (no sidebar). It is the framework
 // default rendered by auth.HMACAuth when no LoginTempl override is set, so it
 // carries its own pm7 design tokens and stays visually consistent with the admin
 // chrome (and renders correctly even if pm7.css fails to load). basePath prefixes
 // the static-asset and form-action URLs, e.g. "/admin".
-templ LoginPage(basePath string, ident LoginIdentifier, errMsg string) {
+templ LoginPage(basePath string, ident LoginIdentifier, errMsg string, links []LoginLink) {
 	<!DOCTYPE html>
 	<html lang="en" class={ themeClass("") }>
 		<head>
@@ -372,6 +381,9 @@ templ LoginPage(basePath string, ident LoginIdentifier, errMsg string) {
 				.pw-toggle svg[hidden]{display:none}
 				.login-submit{width:100%;margin-top:.25rem;padding:.625rem;background:var(--accent);color:#fff;border:none;border-radius:.5rem;font-size:.875rem;font-weight:600;cursor:pointer;transition:background-color .15s}
 				.login-submit:hover{background:var(--pm7-primary-hover)}
+				.login-links{margin-top:1rem;display:flex;flex-direction:column;gap:.5rem;text-align:center}
+				.login-links a{color:var(--accent);font-size:.8125rem;text-decoration:none}
+				.login-links a:hover{text-decoration:underline}
 			</style>
 		</head>
 		<body>
@@ -404,6 +416,13 @@ templ LoginPage(basePath string, ident LoginIdentifier, errMsg string) {
 							</div>
 							<button type="submit" class="pm7-button pm7-button--primary login-submit">Sign in</button>
 						</form>
+						if len(links) > 0 {
+							<nav class="login-links">
+								for _, l := range links {
+									<a href={ templ.SafeURL(l.URL) }>{ l.Label }</a>
+								}
+							</nav>
+						}
 					</div>
 				</div>
 			</main>

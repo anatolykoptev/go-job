@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
@@ -182,4 +183,55 @@ func TestKeyStore_SeedEdgeToken_ShortRejected(t *testing.T) {
 		_, err := ks.SeedEdgeToken(ctx, uuid.New(), tok, "x")
 		require.Error(t, err, "token len %d must be rejected — key_prefix would hold the whole token", len(tok))
 	}
+}
+
+// TestKeyStore_RevokeForAccount pins the self-serve revoke scoping (P6):
+// account-scoped revocation touches only the caller's own keys — a foreign
+// key id collapses to the same "not found" as a nonexistent one (no
+// ownership oracle), and the victim's key stays live through the verifier.
+func TestKeyStore_RevokeForAccount(t *testing.T) {
+	ks, _, op, pool := openKeyStore(t, accounts.OperatorSeed{Email: "rev-self@t.example", Password: "pw-123456"})
+	ctx := context.Background()
+	owner := opUUID(t, op)
+
+	other, created, err := accounts.CreateAccount(ctx, pool, "rev-other@t.example", "other", nil, "user")
+	require.NoError(t, err)
+	require.True(t, created)
+
+	ownerTok, err := ks.Mint(ctx, owner, "mine")
+	require.NoError(t, err)
+	otherTok, err := ks.Mint(ctx, other, "theirs")
+	require.NoError(t, err)
+	var ownerKeyID, otherKeyID uuid.UUID
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT id FROM mcp_api_keys WHERE key_prefix = $1`, accounts.KeyPrefix(ownerTok)).Scan(&ownerKeyID))
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT id FROM mcp_api_keys WHERE key_prefix = $1`, accounts.KeyPrefix(otherTok)).Scan(&otherKeyID))
+
+	// Foreign id → identical error to nonexistent, and the victim row is
+	// untouched: it still verifies through the real bearer path.
+	err = ks.RevokeForAccount(ctx, owner, otherKeyID)
+	require.Error(t, err, "foreign revoke must fail")
+	require.Contains(t, err.Error(), "not found or already revoked")
+	if _, verr := verifyToken(t, ks, otherTok); verr != nil {
+		t.Fatalf("foreign revoke must not touch the victim's key, got %v", verr)
+	}
+	var revokedAt *time.Time
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT revoked_at FROM mcp_api_keys WHERE id = $1`, otherKeyID).Scan(&revokedAt))
+	require.Nil(t, revokedAt, "foreign key must stay unrevoked")
+
+	// Nonexistent id under own account → same single error shape.
+	err = ks.RevokeForAccount(ctx, owner, uuid.New())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found or already revoked")
+
+	// Own key → revoked, denied on next verify.
+	require.NoError(t, ks.RevokeForAccount(ctx, owner, ownerKeyID))
+	if _, verr := verifyToken(t, ks, ownerTok); !errors.Is(verr, sdkauth.ErrInvalidToken) {
+		t.Fatalf("own revoked key must be denied, got %v", verr)
+	}
+
+	// Re-revoke (idempotent no-op shape) → error again.
+	require.Error(t, ks.RevokeForAccount(ctx, owner, ownerKeyID))
 }
