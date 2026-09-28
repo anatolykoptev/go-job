@@ -211,6 +211,24 @@ func (k *KeyStore) Revoke(ctx context.Context, keyID uuid.UUID) error {
 	return nil
 }
 
+// RevokeForAccount is the self-serve revoke: the account predicate is part of
+// the WHERE clause so a caller can only ever touch keys owned by accountID —
+// passing another account's key id hits zero rows and returns the same
+// not-found error the single-tenant Revoke reports. Zero rows also covers
+// "already revoked" (idempotent UI).
+func (k *KeyStore) RevokeForAccount(ctx context.Context, accountID, keyID uuid.UUID) error {
+	ct, err := k.pool.Exec(ctx,
+		`UPDATE mcp_api_keys SET revoked_at = now()
+		 WHERE id = $2 AND account_id = $1 AND revoked_at IS NULL`, accountID, keyID)
+	if err != nil {
+		return fmt.Errorf("mcp key revoke: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return errors.New("mcp key revoke: key not found or already revoked")
+	}
+	return nil
+}
+
 // SeedEdgeToken folds a pre-existing plaintext token (the live Caddy map
 // token, delivered via MCP_LEGACY_TOKEN_SEED) into mcp_api_keys under
 // accountID — the ADR-4 zero-window cutover: the DB verifier accepts the edge

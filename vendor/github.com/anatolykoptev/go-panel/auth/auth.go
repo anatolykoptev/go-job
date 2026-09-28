@@ -89,6 +89,12 @@ type HMACConfig struct {
 	// LoginTempl is a templ component function for the login page.
 	// When nil, a minimal built-in HTML form is used.
 	LoginTempl func(errMsg string) http.Handler
+	// LoginLinks renders auxiliary links under the login form's submit
+	// button on the default shell.LoginPage (e.g. a self-serve
+	// registration link). Ignored when LoginTempl is set — a custom
+	// template owns the whole page. Nil renders nothing. Mirrors
+	// BcryptConfig.LoginLinks so both authenticators stay symmetric.
+	LoginLinks []shell.LoginLink
 }
 
 // HMACAuth is a single-user HMAC-cookie session authenticator.
@@ -283,7 +289,7 @@ func (a *HMACAuth) renderLogin(ctx context.Context, w http.ResponseWriter, errMs
 	// Default: the pm7 design-system login page. Keeping it in the framework
 	// means every consumer gets a styled, standards-consistent login without
 	// wiring LoginTempl. Override via cfg.LoginTempl for a custom page.
-	if err := shell.LoginPage(a.basePath, shell.LoginIdentifier{Label: "Username", Name: "username", Type: "text", Autocomplete: "username"}, errMsg).Render(ctx, w); err != nil {
+	if err := shell.LoginPage(a.basePath, shell.LoginIdentifier{Label: "Username", Name: "username", Type: "text", Autocomplete: "username"}, errMsg, a.cfg.LoginLinks).Render(ctx, w); err != nil {
 		slog.Error("auth: failed to render login page", "err", err)
 	}
 }

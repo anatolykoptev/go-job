@@ -36,6 +36,8 @@ type BcryptTOTPAuth struct {
 	mfaPendingTTL      time.Duration
 	secure             bool
 	loginTempl         func(errMsg string) http.Handler
+	loginLinks         []shell.LoginLink
+	loginFailHint      func(ctx context.Context, email string) (string, bool)
 	observer           Observer
 	revocationFailOpen bool
 	rateLimiter        RateLimiter
@@ -121,6 +123,23 @@ type BcryptConfig struct {
 	// NOT affect session validity, and rotating HMACKey does not affect
 	// TOTP secrets either.
 	TOTPEncryptionKey []byte
+	// LoginLinks renders auxiliary links under the login form's submit
+	// button on the default shell.LoginPage (e.g. {Label:"Request access",
+	// URL:"/admin/register"} for a self-serve registration page). Ignored
+	// when LoginTempl is set — a custom template owns the whole page.
+	// Nil renders nothing.
+	LoginLinks []shell.LoginLink
+	// LoginFailHint optionally substitutes the failure message shown on the
+	// unknown/inactive-email branch of verifyPassword — after the
+	// timing-equalizing dummy bcrypt compare has run, so the hook cannot
+	// become a timing oracle. It receives the normalized (lower-trimmed)
+	// email and returns (message, true) to display it, or (_, false) to
+	// keep the generic "Invalid email or password". Intended use: a
+	// pending-approval registration flow telling a fresh signup WHY login
+	// fails. Nil keeps the generic message. It is NOT called on the
+	// wrong-password-of-an-active-account branch — the hint must never
+	// distinguish a live account from a dead one.
+	LoginFailHint func(ctx context.Context, email string) (string, bool)
 }
 
 // NewBcryptTOTPAuth validates cfg and returns a BcryptTOTPAuth. Panics on a nil
@@ -162,6 +181,8 @@ func NewBcryptTOTPAuth(cfg BcryptConfig) *BcryptTOTPAuth {
 		mfaPendingTTL:      defaultMfaPendingTTL,
 		secure:             cfg.Secure,
 		loginTempl:         cfg.LoginTempl,
+		loginLinks:         cfg.LoginLinks,
+		loginFailHint:      cfg.LoginFailHint,
 		observer:           obs,
 		revocationFailOpen: cfg.RevocationFailOpen,
 		rateLimiter:        cfg.RateLimiter,
@@ -348,7 +369,7 @@ func (a *BcryptTOTPAuth) renderLogin(ctx context.Context, w http.ResponseWriter,
 	}
 	const emailField = "email"
 	ident := shell.LoginIdentifier{Label: "Email", Name: emailField, Type: emailField, Autocomplete: emailField}
-	if err := shell.LoginPage(a.basePath, ident, errMsg).Render(ctx, w); err != nil {
+	if err := shell.LoginPage(a.basePath, ident, errMsg, a.loginLinks).Render(ctx, w); err != nil {
 		slog.Error("auth: failed to render login page", "err", err)
 	}
 }
@@ -508,14 +529,25 @@ func (a *BcryptTOTPAuth) rejectThrottled(w http.ResponseWriter, r *http.Request,
 // to the caller.
 func (a *BcryptTOTPAuth) verifyPassword(w http.ResponseWriter, r *http.Request, email, password string) (*Account, bool) {
 	start := time.Now()
+	// Normalize the form value before the lookup: registrations store the
+	// lowercased address, so a login typed with different case or stray
+	// whitespace must still resolve. (Behavior change: logins are
+	// case-insensitive on email.)
+	email = strings.ToLower(strings.TrimSpace(email))
 	acct, err := a.store.GetByEmail(r.Context(), email)
 	if err != nil {
 		// Equalize timing with the verify path: an unknown/inactive email must
 		// cost the same bcrypt work as a wrong password (no enumeration oracle).
 		_ = VerifyPassword(password, dummyPasswordHash)
+		msg := "Invalid email or password"
+		if a.loginFailHint != nil {
+			if hint, ok := a.loginFailHint(r.Context(), email); ok {
+				msg = hint
+			}
+		}
 		a.observer.Observe(OpBcryptLogin, OutcomeInvalidCredentials, time.Since(start))
 		w.WriteHeader(http.StatusUnauthorized)
-		a.renderLogin(r.Context(), w, "Invalid email or password")
+		a.renderLogin(r.Context(), w, msg)
 		return nil, false
 	}
 	if !VerifyPassword(password, acct.PasswordHash) {

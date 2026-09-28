@@ -14,10 +14,16 @@ package adminui
 //	  never stamps an auth.Session, so account identity CANNOT come from the
 //	  request — every authenticated request resolves to the static operator
 //	  tenant pin (operator account UUID, or accounts.SingleOperatorSlug when no
-//	  account store exists). Consequence: no resource in this package may set
+//	  account store exists). Consequences: no resource in this package may set
 //	  RequiredRole — HMACAuth is not a RoleAuthenticator and
 //	  resource.Register panics fail-closed (the zero-RequiredRole fitness gate
-//	  in Makefile preflight asserts it stays so).
+//	  in Makefile preflight asserts it stays so) — and the P6 self-serve
+//	  surfaces (register/keys/accounts) are NEVER mounted: they resolve the
+//	  acting account via auth.SessionFrom/acctOf, which hmac cannot stamp, and
+//	  even the operator pin must not mint bearer keys without a password
+//	  step-up (ADR-17: no identity-dependent flows in rollback). Under hmac
+//	  every one of their URLs falls through to the panel catch-all →
+//	  404/login-redirect; the operator provisions via gojob-admin over ssh.
 
 import (
 	"context"
@@ -32,9 +38,11 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-panel/auth"
+	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -66,6 +74,11 @@ type driver struct {
 	resolver   tenant.Resolver
 	authorizer tenant.Authorizer
 	totpKey    []byte // non-nil only under bcrypt — feeds MountTOTPEnrollment
+	// selfServe marks the bcrypt driver: ONLY then does adminui.New mount the
+	// self-serve surfaces (public /admin/register, account /admin/keys,
+	// operator /admin/accounts). Named as the contract, not derived from
+	// implementation detail (totpKey presence) — the flag IS the spec.
+	selfServe bool
 	// accountOf resolves the acting account UUID for the data plane (P2 —
 	// account_job_scores and every later account-scoped read). bcrypt:
 	// session-stamped identity via accounts.AccountFrom; hmac: the pinned
@@ -82,12 +95,12 @@ type accountResolver func(ctx context.Context) (uuid.UUID, bool)
 // selectDriver builds the configured auth driver. Returns ok=false when the
 // selected driver's env/store requirements are unmet — admin disabled, never
 // silently half-configured.
-func selectDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey, password, adminUser string) (*driver, bool) {
+func selectDriver(acctStore *auth.PgxAccountStore, pool *pgxpool.Pool, operatorID, hmacKey, password, adminUser string) (*driver, bool) {
 	if os.Getenv("AUTH_DRIVER") == authDriverHMAC {
 		slog.Warn("adminui: AUTH_DRIVER=hmac — single-operator rollback mode (ADR-17); bcrypt+TOTP sessions and per-account identity are OFF")
 		return hmacDriver(hmacKey, password, adminUser, operatorID), true
 	}
-	return bcryptDriver(acctStore, operatorID, hmacKey)
+	return bcryptDriver(acctStore, pool, operatorID, hmacKey)
 }
 
 // bcryptDriver builds the default multi-account driver. Requires the account
@@ -95,7 +108,7 @@ func selectDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey, password
 // ADMIN_TOTP_ENC_KEY for secret-at-rest encryption (independent of the session
 // HMAC key — see BcryptConfig.TOTPEncryptionKey: rotating one must never
 // destroy the other).
-func bcryptDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey string) (*driver, bool) {
+func bcryptDriver(acctStore *auth.PgxAccountStore, pool *pgxpool.Pool, operatorID, hmacKey string) (*driver, bool) {
 	if acctStore == nil {
 		slog.Error("adminui: bcrypt driver requires panel_accounts — DATABASE_URL must be set and accounts.Bootstrap must have run; admin disabled")
 		return nil, false
@@ -138,12 +151,20 @@ func bcryptDriver(acctStore *auth.PgxAccountStore, operatorID, hmacKey string) (
 		TOTPRate:          auth.RateRule{Limit: totpRateLimit, Window: totpRateWindow},
 		ClientIP:          proxiedClientIP,
 		TOTPEncryptionKey: encKey,
+		// P6 self-serve: the login page links the public registration form,
+		// and a pending passworded account gets a why-login-fails hint
+		// instead of the generic error (narrow, accepted enumeration oracle —
+		// behind the same 5/min/IP throttle; never distinguishes live from
+		// nonexistent accounts).
+		LoginLinks:    []shell.LoginLink{{Label: "Request access", URL: adminBasePath + "/register"}},
+		LoginFailHint: accounts.PendingLoginHint(pool),
 	})
 	return &driver{
 		authn:      a,
 		resolver:   sessionTenantResolver{a: a},
 		authorizer: accountMatchAuthorizer{},
 		totpKey:    encKey,
+		selfServe:  true,
 		accountOf:  accounts.AccountFrom,
 	}, true
 }
@@ -163,6 +184,9 @@ func hmacDriver(hmacKey, password, adminUser, operatorID string) *driver {
 	// writes deny, consistent with ADR-17's auth-only fallback shape.
 	pinID, _ := uuid.Parse(slug)
 	return &driver{
+		// selfServe stays false: register/keys/accounts never mount under the
+		// rollback driver — see the header comment for the full contract.
+		selfServe: false,
 		authn: auth.NewHMACAuth(auth.HMACConfig{
 			Username:   adminUser,
 			Password:   password,

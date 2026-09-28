@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/go-panel/auth"
 	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/google/uuid"
@@ -216,4 +217,50 @@ func TestAccount_CreateNotifyChatIDStored(t *testing.T) {
 		id).Scan(&chatID, &enabled))
 	require.Equal(t, int64(-1001234), chatID, "notify_chat_id stored on the account row")
 	require.False(t, enabled, "provisioned settings row must stay disabled")
+}
+
+// TestAccount_Activate: pending (inactive) account → `account activate` flips
+// active so login-shape lookups see it; selector validation rejects zero/both
+// refs; unknown ref surfaces ErrAccountNotFound through the error.
+func TestAccount_Activate(t *testing.T) {
+	pool := openPool(t)
+	ctx := context.Background()
+	if _, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{}); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	// Seed a pending row the way the public register does.
+	hash := "irrelevant-for-activation"
+	created, err := accounts.RegisterPending(ctx, pool, "pend@t.dev", "Pend", hash)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	var active bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT active FROM panel_accounts WHERE email = 'pend@t.dev'`).Scan(&active))
+	require.False(t, active, "RegisterPending must land inactive")
+
+	out, _, err := runCLI(t, "account", "activate", "--email", "pend@t.dev")
+	require.NoError(t, err)
+	require.Contains(t, out, "activated:")
+
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT active FROM panel_accounts WHERE email = 'pend@t.dev'`).Scan(&active))
+	require.True(t, active, "activate must flip the row")
+
+	// Idempotent re-activate is a no-op success.
+	_, _, err = runCLI(t, "account", "activate", "--email", "pend@t.dev")
+	require.NoError(t, err)
+
+	// Selector validation: neither / both flags → error before any DB work.
+	_, _, err = runCLI(t, "account", "activate")
+	require.Error(t, err)
+	_, _, err = runCLI(t, "account", "activate", "--id", uuid.NewString(), "--email", "x@t.dev")
+	require.Error(t, err, "exactly one selector is required")
+
+	// Unknown ref → ErrAccountNotFound wrapped in the verb's context.
+	_, _, err = runCLI(t, "account", "activate", "--email", "ghost@t.dev")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrAccountNotFound) || strings.Contains(err.Error(), "not found"),
+		"unknown account must surface not-found, got %v", err)
 }

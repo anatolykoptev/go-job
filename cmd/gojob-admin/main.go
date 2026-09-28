@@ -7,6 +7,7 @@
 //
 //	DATABASE_URL=postgres://... gojob-admin account create --email E --name N [--password P] [--role user|admin] [--notify-chat-id ID]
 //	DATABASE_URL=postgres://... gojob-admin account list
+//	DATABASE_URL=postgres://... gojob-admin account activate (--id UUID | --email E)
 //	DATABASE_URL=postgres://... gojob-admin account deactivate (--id UUID | --email E)
 //	DATABASE_URL=postgres://... gojob-admin key mint --account ID_OR_EMAIL --label L
 //	DATABASE_URL=postgres://... gojob-admin key list [--account ID_OR_EMAIL]
@@ -56,7 +57,7 @@ func main() {
 func run(ctx context.Context, out, errOut io.Writer, args []string) error {
 	if len(args) < 2 {
 		usage(errOut)
-		return errors.New("expected a command: account create|list|deactivate | key mint|list|revoke")
+		return errors.New("expected a command: account create|list|activate|deactivate | key mint|list|revoke")
 	}
 
 	// Every handler gets its parsed FlagSet plus a closure over its validated
@@ -108,7 +109,21 @@ func run(ctx context.Context, out, errOut io.Writer, args []string) error {
 			return err
 		}
 		fn = func(ctx context.Context, pool *pgxpool.Pool, out, _ io.Writer) error {
-			return accountDeactivate(ctx, pool, out, ref)
+			return accountSetActiveCmd(ctx, pool, out, ref, false)
+		}
+	case "account activate":
+		fs := newFlagSet("account activate", errOut)
+		id := fs.String("id", "", "account UUID")
+		email := fs.String("email", "", "account email")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		ref, err := exactlyOneRef("account activate", *id, *email)
+		if err != nil {
+			return err
+		}
+		fn = func(ctx context.Context, pool *pgxpool.Pool, out, _ io.Writer) error {
+			return accountSetActiveCmd(ctx, pool, out, ref, true)
 		}
 	case "key mint":
 		fs := newFlagSet("key mint", errOut)
@@ -182,6 +197,7 @@ func usage(w io.Writer) {
 
   account create --email E --name N [--password P] [--role user|admin] [--notify-chat-id ID]
   account list
+  account activate (--id UUID | --email E)
   account deactivate (--id UUID | --email E)
   key mint --account ID_OR_EMAIL --label L     prints the token ONCE — store it
   key list [--account ID_OR_EMAIL]
@@ -265,15 +281,22 @@ func accountList(ctx context.Context, pool *pgxpool.Pool, out io.Writer) error {
 	return tw.Flush()
 }
 
-func accountDeactivate(ctx context.Context, pool *pgxpool.Pool, out io.Writer, ref string) error {
+// accountSetActiveCmd backs `account activate` and `account deactivate` —
+// both are SetActive on the resolved row. Idempotent: flipping an
+// already-in-that-state row is a no-op UPDATE (RowsAffected ≥1 all the same).
+func accountSetActiveCmd(ctx context.Context, pool *pgxpool.Pool, out io.Writer, ref string, active bool) error {
+	verb, past := "account deactivate", "deactivated"
+	if active {
+		verb, past = "account activate", "activated"
+	}
 	id, err := accounts.ResolveAccountID(ctx, pool, ref)
 	if err != nil {
-		return fmt.Errorf("account deactivate: %w", err)
+		return fmt.Errorf("%s: %w", verb, err)
 	}
-	if err := auth.NewPgxAccountStore(pool).SetActive(ctx, id.String(), false); err != nil {
-		return fmt.Errorf("account deactivate: %w", err)
+	if err := auth.NewPgxAccountStore(pool).SetActive(ctx, id.String(), active); err != nil {
+		return fmt.Errorf("%s: %w", verb, err)
 	}
-	fmt.Fprintf(out, "deactivated: %s\n", id)
+	fmt.Fprintf(out, "%s: %s\n", past, id)
 	return nil
 }
 
