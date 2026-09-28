@@ -65,6 +65,9 @@ preflight:
 	@! grep -rln 'account_hunt_settings' internal/hunt/schema/ 2>/dev/null || (echo "FAIL: account_hunt_settings DDL under internal/hunt/schema -- the table is accounts-owned and Bootstrap-applied (go:embed), never a migration-root file" && exit 1)
 	@grep -q "accountHuntSettingsSchema" internal/accounts/accounts.go && grep -q "account_hunt_settings" internal/accounts/account_hunt_settings.sql && echo "OK: account_hunt_settings is accounts-owned and Bootstrap-applied" || (echo "FAIL: account_hunt_settings embed/Bootstrap wiring missing"; exit 1)
 
+	@echo "==> constrain fitness: the P5 data gate runs in Bootstrap after all backfills (ADR-13) — NULL account_id rows refuse the boot, clean data gets SET NOT NULL + unconditional FKs"
+	@grep -q 'ConstrainAccountColumns(ctx' internal/accounts/accounts.go && grep -q 'SET NOT NULL' internal/accounts/constrain.go && grep -q 'account_id IS NULL' internal/accounts/constrain.go && echo "OK: ConstrainAccountColumns wired into Bootstrap (zero-NULL gate + SET NOT NULL)" || (echo "FAIL: ConstrainAccountColumns missing or not wired into Bootstrap -- the P5 data gate must refuse on NULL account_id and constrain clean data; final-state assertion lives in TestSchemaLint_AccountIDClassification (live information_schema)" && exit 1)
+
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...
 	@echo "==> go test -p $(GO_TEST_PARALLEL) ./internal/..."
