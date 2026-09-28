@@ -318,6 +318,52 @@ func TestRegister_RateLimit(t *testing.T) {
 	assert.Equal(t, 0, countAccounts(t, pool, "throttled@t.example"))
 }
 
+// TestRegister_HourWindow — the sustained window is a REAL bound, not just
+// declared: pre-seed reg:hour:<ip> to its cap, then a fully-valid POST
+// (min window still has headroom) must be denied by the hour window alone.
+// Deleting the second allow() call in post() turns this leg RED.
+func TestRegister_HourWindow(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	dbtest.RequireTestDB(t, dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	ctx := context.Background()
+	dbtest.DropAccountTables(t, pool)
+	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
+	require.NoError(t, err)
+
+	h := newRegisterHandler(pool, []byte("test-csrf-key-32bytes-minimum-here!"))
+	const testHourKey = "reg:hour:192.0.2.1"
+	for i := 0; i < regHourLimit; i++ {
+		allowed, err := h.limiter.Allow(ctx, testHourKey, regHourLimit, regHourWindow)
+		require.NoError(t, err)
+		require.True(t, allowed, "pre-seed hit %d must be inside the hour window", i)
+	}
+
+	gw := httptest.NewRecorder()
+	h.get(gw, httptest.NewRequest(http.MethodGet, adminBasePath+"/register", nil))
+	var nonce *http.Cookie
+	for _, c := range gw.Result().Cookies() {
+		if c.Name == regNonceCookie {
+			nonce = c
+		}
+	}
+	require.NotNil(t, nonce)
+	tok := csrf.Issue(h.csrfKey, nonce.Value, csrf.DefaultTTL)
+
+	form := url.Values{"email": {"hour-capped@t.example"}, "password": {"long-enough-pw"}}
+	form.Set(csrf.FormField, tok)
+	req := httptest.NewRequest(http.MethodPost, adminBasePath+"/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(nonce)
+	w := httptest.NewRecorder()
+	h.post(w, req)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code, "hour-capped POST must be throttled by the sustained window")
+	assert.Equal(t, 0, countAccounts(t, pool, "hour-capped@t.example"))
+}
+
 // TestRegister_HMACAbsent — spec leg register_hmac_absent: under
 // AUTH_DRIVER=hmac the route is not mounted; the URL falls through to the
 // panel catch-all → redirect/404, never a 200.
