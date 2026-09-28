@@ -47,7 +47,10 @@ const (
 
 // buildMasterResume is a test seam — same contract as var callLLM in
 // master_resume.go: capture args + fake results without an LLM.
-var buildMasterResume = jobs.BuildMasterResume
+var (
+	buildMasterResume = jobs.BuildMasterResume
+	mergeMasterResume = jobs.BuildMergedResume
+)
 
 type importView struct {
 	CSRF       string
@@ -174,7 +177,16 @@ func resumeImportPost(p *resource.Panel, acctOf accountResolver, csrfKey []byte,
 			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText))
 		bctx, cancel := context.WithTimeout(ctx, resumeImportBuildTTL)
 		defer cancel()
-		res, err := buildMasterResume(bctx, aid, resumeText, replaceID)
+		var res *jobs.MasterResumeBuildResult
+		switch mode := r.FormValue("mode"); mode {
+		case "merge":
+			res, err = mergeMasterResume(bctx, aid, resumeText, replaceID)
+		case "", "rebuild":
+			res, err = buildMasterResume(bctx, aid, resumeText, replaceID)
+		default:
+			http.Error(w, "unknown mode", http.StatusBadRequest)
+			return
+		}
 		if err != nil {
 			v := importView{ErrMsg: "Build failed: " + truncateErr(err), Text: text}
 			// TOCTOU: the profile id may have changed — surface the fresh id so
@@ -267,7 +279,8 @@ const resumeImportTmplSrc = `<style>
 {{if .PersonID}}
 <div class="kj-warn" role="alert">
   A profile already exists (person #{{.PersonID}}): {{.ExpCount}} experiences, {{.SkillCount}} skills, {{.ProjCount}} projects, {{.AchvCount}} achievements.
-  Rebuilding <strong>destroys</strong> it and rebuilds from the new text.
+  <strong>Merge</strong> keeps it and folds the new document in — manual edits survive.
+  <strong>Rebuild</strong> destroys it and rebuilds from the new text only.
 </div>
 {{end}}
 
@@ -286,10 +299,15 @@ const resumeImportTmplSrc = `<style>
     {{if .PersonID}}
     <div class="kj-check">
       <input type="checkbox" id="confirm_replace" name="confirm_replace" value="1" required/>
-      <label for="confirm_replace">Replace the existing profile (#{{.PersonID}})</label>
+      <label for="confirm_replace">Apply to the existing profile (#{{.PersonID}})</label>
     </div>
     {{end}}
-    <button type="submit" class="kj-btn">{{if .PersonID}}Rebuild{{else}}Build{{end}} master resume</button>
+    {{if .PersonID}}
+    <button type="submit" name="mode" value="merge" class="kj-btn">Merge updates</button>
+    <button type="submit" name="mode" value="rebuild" class="kj-btn" style="background:#7f1d1d;color:#fecaca">Rebuild from scratch</button>
+    {{else}}
+    <button type="submit" class="kj-btn">Build master resume</button>
+    {{end}}
   </form>
 </div>
 `

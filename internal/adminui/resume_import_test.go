@@ -286,3 +286,59 @@ func TestResumeImport_TenantScope(t *testing.T) {
 	require.Len(t, *calls, 1)
 	require.Equal(t, userID, (*calls)[0].aid)
 }
+
+// stubMerge swaps the merge seam for a recorder — same pattern as stubBuild.
+func stubMerge(t *testing.T, res *jobs.MasterResumeBuildResult, err error) *[]buildCall {
+	t.Helper()
+	calls := new([]buildCall)
+	prev := mergeMasterResume
+	mergeMasterResume = func(ctx context.Context, aid uuid.UUID, text string, pid int) (*jobs.MasterResumeBuildResult, error) {
+		*calls = append(*calls, buildCall{aid, text, pid})
+		return res, err
+	}
+	t.Cleanup(func() { mergeMasterResume = prev })
+	return calls
+}
+
+// TestResumeImport_MergeMode — mode=merge routes to the merge seam (never the
+// destructive build seam), still under the same consent + session identity.
+func TestResumeImport_MergeMode(t *testing.T) {
+	fx := newSelfServeFixture(t)
+	wireResumeDB(t)
+	mergeCalls := stubMerge(t, &jobs.MasterResumeBuildResult{PersonID: 7}, nil)
+	buildCalls := stubBuild(t, &jobs.MasterResumeBuildResult{PersonID: 7}, nil)
+	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
+
+	pid := seedPerson(t, uuid.MustParse(fx.op.ID))
+
+	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"resume_text": {"Jane Doe updated"}, "mode": {"merge"},
+			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, *mergeCalls, 1)
+	require.Equal(t, pid, (*mergeCalls)[0].pid)
+	require.Equal(t, uuid.MustParse(fx.op.ID), (*mergeCalls)[0].aid)
+	require.Empty(t, *buildCalls)
+
+	// mode=rebuild (or absent) still routes to the destructive seam
+	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"resume_text": {"Jane Doe full"}, "mode": {"rebuild"},
+			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, *buildCalls, 1)
+	require.Len(t, *mergeCalls, 1) // unchanged
+
+	// merge without consent → confirm page, no seam call
+	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"resume_text": {"Jane"}, "mode": {"merge"}})
+	require.Contains(t, w.Body.String(), "already exists")
+	require.Len(t, *mergeCalls, 1)
+
+	// unknown mode → 400, neither seam fires
+	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"resume_text": {"Jane"}, "mode": {"bogus"},
+			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Len(t, *mergeCalls, 1)
+	require.Len(t, *buildCalls, 1)
+}

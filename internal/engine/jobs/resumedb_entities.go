@@ -48,7 +48,7 @@ func (a *ResumeAccount) GetAllExperiences(ctx context.Context, personID int) ([]
 	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
-		        COALESCE(domain, '')
+		        COALESCE(domain, ''), team_size, budget_usd, COALESCE(is_volunteer, false)
 		 FROM resume_experiences
 		 WHERE person_id = $1
 		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
@@ -62,7 +62,8 @@ func (a *ResumeAccount) GetAllExperiences(ctx context.Context, personID int) ([]
 	for rows.Next() {
 		var r ExperienceRecord
 		if err := rows.Scan(&r.ID, &r.PersonID, &r.Title, &r.Company, &r.Location,
-			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain); err != nil {
+			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain,
+			&r.TeamSize, &r.BudgetUSD, &r.IsVolunteer); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -154,8 +155,9 @@ func (a *ResumeAccount) InsertSkill(ctx context.Context, personID int, s SkillRe
 }
 
 func (a *ResumeAccount) GetAllSkills(ctx context.Context, personID int) ([]SkillRecord, error) {
-	rows, err := a.db.pool.Query(ctx,
-		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, '')
+	rows, err := a.conn(ctx).Query(ctx,
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, ''),
+		        COALESCE(is_implicit, false), COALESCE(source, '')
 		 FROM resume_skills
 		 WHERE person_id = $1
 		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
@@ -168,7 +170,7 @@ func (a *ResumeAccount) GetAllSkills(ctx context.Context, personID int) ([]Skill
 	var results []SkillRecord
 	for rows.Next() {
 		var r SkillRecord
-		if err := rows.Scan(&r.ID, &r.PersonID, &r.Name, &r.Category, &r.Level); err != nil {
+		if err := rows.Scan(&r.ID, &r.PersonID, &r.Name, &r.Category, &r.Level, &r.IsImplicit, &r.Source); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -230,7 +232,8 @@ func (a *ResumeAccount) InsertProject(ctx context.Context, personID int, p Proje
 
 func (a *ResumeAccount) GetAllProjects(ctx context.Context, personID int) ([]ProjectRecord, error) {
 	rows, err := a.conn(ctx).Query(ctx,
-		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
+		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights,
+		        parent_experience_id
 		 FROM resume_projects
 		 WHERE person_id = $1
 		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
@@ -243,7 +246,8 @@ func (a *ResumeAccount) GetAllProjects(ctx context.Context, personID int) ([]Pro
 	var results []ProjectRecord
 	for rows.Next() {
 		var r ProjectRecord
-		if err := rows.Scan(&r.ID, &r.PersonID, &r.Name, &r.Description, &r.URL, &r.Tech, &r.Highlights); err != nil {
+		if err := rows.Scan(&r.ID, &r.PersonID, &r.Name, &r.Description, &r.URL, &r.Tech, &r.Highlights,
+			&r.ParentExperienceID); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -426,7 +430,7 @@ func (a *ResumeAccount) InsertEducation(ctx context.Context, personID int, e Edu
 }
 
 func (a *ResumeAccount) GetAllEducations(ctx context.Context, personID int) ([]EducationRecord, error) {
-	rows, err := a.db.pool.Query(ctx,
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), school, degree, COALESCE(field, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(gpa, ''), highlights
 		 FROM resume_educations
@@ -504,7 +508,7 @@ func (a *ResumeAccount) InsertCertification(ctx context.Context, personID int, c
 }
 
 func (a *ResumeAccount) GetAllCertifications(ctx context.Context, personID int) ([]CertificationRecord, error) {
-	rows, err := a.db.pool.Query(ctx,
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(issuer, ''), COALESCE(year, ''), COALESCE(url, '')
 		 FROM resume_certifications
 		 WHERE person_id = $1
@@ -573,7 +577,7 @@ func (a *ResumeAccount) InsertDomain(ctx context.Context, personID int, name str
 }
 
 func (a *ResumeAccount) GetAllDomains(ctx context.Context, personID int) ([]DomainRecord, error) {
-	rows, err := a.db.pool.Query(ctx,
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, name FROM public.resume_domains
 		 WHERE person_id = $1
 		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)

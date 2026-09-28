@@ -86,6 +86,7 @@ type parsedResume struct {
 		SubProjects []struct {
 			Name        string   `json:"name"`
 			Description string   `json:"description"`
+			URL         string   `json:"url"`
 			Tech        []string `json:"tech"`
 			Highlights  []string `json:"highlights"`
 		} `json:"sub_projects,omitempty"`
@@ -125,6 +126,7 @@ type parsedResume struct {
 		Name   string `json:"name"`
 		Issuer string `json:"issuer"`
 		Year   string `json:"year"`
+		URL    string `json:"url"`
 	} `json:"certifications"`
 	Domains       []string `json:"domains,omitempty"`
 	Methodologies []struct {
@@ -209,7 +211,7 @@ Return a JSON object with this exact structure:
       "budget_usd": null,
       "is_volunteer": false,
       "sub_projects": [
-        {"name": "...", "description": "...", "tech": [], "highlights": []}
+        {"name": "...", "description": "...", "url": "...", "tech": [], "highlights": []}
       ]
     }
   ],
@@ -226,7 +228,7 @@ Return a JSON object with this exact structure:
     {"text": "Sold 16K tickets with zero marketing budget", "metric": "tickets sold", "value": "16000", "context": "Festival Empire", "metric_numeric": 16000, "metric_unit": "tickets"}
   ],
   "certifications": [
-    {"name": "...", "issuer": "...", "year": "..."}
+    {"name": "...", "issuer": "...", "year": "...", "url": "..."}
   ],
   "domains": ["Event Production", "Digital Marketing"],
   "methodologies": [
@@ -323,7 +325,20 @@ Return ONLY the JSON object, no markdown, no explanation.`
 // advisory lock (pg_advisory_xact_lock). The in-tx re-read under the lock is
 // authoritative: two concurrent builds serialize on the lock, so the second
 // sees the first's committed id and its stale consent no longer matches.
-func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) { //nolint:funlen
+func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) {
+	return buildMasterResume(ctx, accountID, resumeText, replacePersonID, false)
+}
+
+// BuildMergedResume merges a new resume document into the existing profile
+// instead of rebuilding from scratch: the parse prompt carries the current
+// profile JSON as the authoritative baseline, so manual edits and entities the
+// new document omits survive. The write phase is the same atomic replace —
+// consent, advisory lock and rebuild-then-swap all apply unchanged.
+func BuildMergedResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) {
+	return buildMasterResume(ctx, accountID, resumeText, replacePersonID, true)
+}
+
+func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int, merge bool) (*MasterResumeBuildResult, error) { //nolint:funlen
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
@@ -343,6 +358,17 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 		slog.Warn("resume truncated before LLM parse", slog.Int("original_runes", origLen), slog.Int("limit", 12000))
 	}
 	prompt := fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)
+	var mergeBaseline string
+	if merge {
+		mp, bl, err := mergePrompt(ctx, rdb, resumeTrunc)
+		if err != nil {
+			return nil, err
+		}
+		if mp != "" {
+			prompt = mp
+			mergeBaseline = bl
+		}
+	}
 
 	raw, err := callLLM(ctx, prompt)
 	if err != nil {
@@ -403,8 +429,9 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	if exists {
 		if existingID != replacePersonID {
 			return nil, fmt.Errorf("master_resume_build: a profile already exists (person_id=%d)%s — "+
-				"rebuilding destroys it and all of its skills/projects/experiences/achievements/educations/"+
-				"certifications/domains/methodologies plus upwork_profile data (ON DELETE CASCADE). "+
+				"rebuilding replaces it — skills/projects/experiences/achievements/educations/"+
+				"certifications/domains/methodologies are rebuilt from the new text "+
+				"(upwork profile fields and headline/hourly_rate carry over). "+
 				"To consent to the replacement, name that profile's id in replace_person_id",
 				existingID, describeExistingProfile(ctx, rdb, existingID))
 		}
@@ -458,6 +485,36 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 		}
 	}
 
+	// Merge drift check: the profile must be byte-identical to the baseline the
+	// LLM saw. A manual edit committed during the LLM window is detected here
+	// and refuses the merge rather than being silently overwritten. Rebuild has
+	// no baseline — the consent above is its only gate.
+	if merge && mergeBaseline != "" {
+		cur, err := profileSnapshotJSON(ctx, rdb, replacePersonID)
+		if err != nil {
+			return nil, fmt.Errorf("master_resume_merge: in-tx profile re-check failed (refusing): %w", err)
+		}
+		if cur != mergeBaseline {
+			return nil, errors.New("master_resume_merge: the profile changed since the merge started — refusing to overwrite edits made in between; re-run the import")
+		}
+	}
+
+	// Capture manually-edited state the LLM output schema cannot round-trip
+	// (person headline/hourly_rate, upwork_* tables) BEFORE the cascade wipe —
+	// it is restored mechanically on the new person row below.
+	var preserved *preservedProfileState
+	inTxExists, inTxID, err := rdb.guardLatestPersonID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pre-rebuild state probe failed (refusing): %w", err)
+	}
+	if inTxExists {
+		pres, err := capturePreservedState(ctx, rdb, inTxID)
+		if err != nil {
+			return nil, fmt.Errorf("capture pre-rebuild state (refusing): %w", err)
+		}
+		preserved = pres
+	}
+
 	if err := rdb.ClearAllPersons(ctx); err != nil {
 		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
 	}
@@ -480,6 +537,12 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert person: %w", err)
+	}
+
+	if preserved != nil {
+		if err := restorePreservedState(ctx, rdb, personID, preserved); err != nil {
+			return nil, fmt.Errorf("restore pre-rebuild state: %w", err)
+		}
 	}
 
 	result := &MasterResumeBuildResult{PersonID: personID}
@@ -581,6 +644,7 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 			spID, err := rdb.InsertProjectWithParent(ctx, personID, &expID, ProjectRecord{
 				Name:        sp.Name,
 				Description: sp.Description,
+				URL:         sp.URL,
 				Tech:        sp.Tech,
 				Highlights:  sp.Highlights,
 			})
@@ -710,6 +774,7 @@ func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 			Name:   cert.Name,
 			Issuer: cert.Issuer,
 			Year:   cert.Year,
+			URL:    cert.URL,
 		})
 		if err != nil {
 			slog.Debug("insert certification failed", slog.String("name", cert.Name), slog.Any("error", err))
