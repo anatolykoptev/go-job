@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,12 +65,23 @@ CREATE INDEX IF NOT EXISTS idx_panel_totp_recovery_codes_account ON panel_totp_r
 
 // EnsureSchema creates the accounts table, the TOTP columns/tables, and
 // indexes if they do not exist. Idempotent; safe to call on every boot.
+// sessionEpochSchemaSQL is the additive DDL for credential-epoch session
+// revocation: password_changed_at is stamped by UpdatePasswordHash and read
+// by the bcrypt driver's live-session recheck (sessions issued before it are
+// denied). Separate constant per the totpSchemaSQL convention — a
+// self-contained diff against the prior schema.
+const sessionEpochSchemaSQL = `
+ALTER TABLE panel_accounts ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;`
+
 func (s *PgxAccountStore) EnsureSchema(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, accountSchemaSQL); err != nil {
 		return fmt.Errorf("auth: ensure account schema: %w", err)
 	}
 	if _, err := s.pool.Exec(ctx, totpSchemaSQL); err != nil {
 		return fmt.Errorf("auth: ensure totp schema: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, sessionEpochSchemaSQL); err != nil {
+		return fmt.Errorf("auth: ensure session-epoch schema: %w", err)
 	}
 	return nil
 }
@@ -94,14 +106,16 @@ func (s *PgxAccountStore) GetByEmail(ctx context.Context, email string) (*Accoun
 }
 
 const selectAccountByIDSQL = `
-SELECT id, email, name, role, active, totp_enabled
+SELECT id, email, name, role, active, totp_enabled, password_changed_at
 FROM panel_accounts WHERE id = $1`
 
-// GetByID implements AccountStore. It does not load the password hash.
+// GetByID implements AccountStore. It does not load the password hash, but
+// does load PasswordChangedAt — the session-recheck path needs the
+// credential epoch.
 func (s *PgxAccountStore) GetByID(ctx context.Context, id string) (*Account, error) {
 	var a Account
 	err := s.pool.QueryRow(ctx, selectAccountByIDSQL, id).
-		Scan(&a.ID, &a.Email, &a.Name, &a.Role, &a.Active, &a.TOTPEnabled)
+		Scan(&a.ID, &a.Email, &a.Name, &a.Role, &a.Active, &a.TOTPEnabled, &a.PasswordChangedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAccountNotFound
 	}
@@ -119,9 +133,16 @@ func (s *PgxAccountStore) UpdateLastLogin(ctx context.Context, id string) error 
 	return nil
 }
 
-// UpdatePasswordHash implements AccountStore.
+// UpdatePasswordHash implements AccountStore. Every write stamps
+// password_changed_at = now() — the credential epoch liveSession compares
+// session iat against — so rotating a password revokes all sessions issued
+// before the rotation. Callers doing a routine re-sync (e.g. an env-seeded
+// operator on every boot) MUST verify-then-skip: rewriting the same password
+// still bumps the epoch and would kick every live session.
 func (s *PgxAccountStore) UpdatePasswordHash(ctx context.Context, id, passwordHash string) error {
-	ct, err := s.pool.Exec(ctx, "UPDATE panel_accounts SET password_hash = $1 WHERE id = $2", passwordHash, id)
+	ct, err := s.pool.Exec(ctx,
+		"UPDATE panel_accounts SET password_hash = $1, password_changed_at = now() WHERE id = $2",
+		passwordHash, id)
 	if err != nil {
 		return fmt.Errorf("auth: update password hash: %w", err)
 	}
@@ -138,7 +159,12 @@ ON CONFLICT (email) DO NOTHING
 RETURNING id`
 
 // CreateAccount implements AccountStore. Idempotent on email conflict.
+// The email is canonicalized (lower + trim) at the write seam: the login
+// path lower-trims submitted input before GetByEmail, so a verbatim
+// mixed-case row would be unreachable — and a differently-cased duplicate
+// would slip past the case-sensitive unique index.
 func (s *PgxAccountStore) CreateAccount(ctx context.Context, email, name, passwordHash, role string) (string, bool, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	var id string
 	err := s.pool.QueryRow(ctx, insertAccountSQL, email, name, passwordHash, role).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
