@@ -156,6 +156,15 @@ func registerGET(t *testing.T, h http.Handler) (*http.Cookie, string) {
 		}
 	}
 	require.NotNil(t, nonce, "GET must set the anonymous nonce cookie")
+	// Cookie flags are the silent-failure surface of the anonymous-CSRF
+	// scheme: a dropped Secure/SameSite/Path narrows nothing visibly yet
+	// widens the nonce's reachability. Pin all of them.
+	require.True(t, nonce.HttpOnly, "nonce cookie must be HttpOnly")
+	require.True(t, nonce.Secure, "nonce cookie must be Secure")
+	require.Equal(t, http.SameSiteStrictMode, nonce.SameSite, "nonce cookie must be SameSite=Strict")
+	require.Equal(t, adminBasePath+"/register", nonce.Path, "nonce cookie must be scoped to /admin/register")
+	require.Equal(t, 3600, nonce.MaxAge, "nonce cookie Max-Age must stay 1h (shorter than csrf.DefaultTTL — fails closed)")
+	require.Len(t, nonce.Value, 64, "nonce is 32 random bytes hex-encoded")
 	m := regCSRFRe.FindStringSubmatch(w.Body.String())
 	require.NotNil(t, m, "form must embed a _csrf token")
 	return nonce, m[1]
