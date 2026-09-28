@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,7 +18,11 @@ func registerMasterResumeBuild(server *mcp.Server) {
 		if input.Resume == "" {
 			return nil, nil, errors.New("resume is required")
 		}
-		result, err := jobs.BuildMasterResume(ctx, input.Resume, input.ReplacePersonID)
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
+		result, err := jobs.BuildMasterResume(ctx, aid, input.Resume, input.ReplacePersonID)
 		if err != nil {
 			return nil, nil, err
 		}

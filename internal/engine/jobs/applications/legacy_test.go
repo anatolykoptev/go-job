@@ -15,6 +15,7 @@ package applications
 //   - Remove the submit/ branch in findApplicationPDF → TestFindApplicationPDF_SubmitSubdir fails.
 
 import (
+	"github.com/google/uuid"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,7 +145,9 @@ func TestFindApplicationSlugFromEntries_NoMatch(t *testing.T) {
 // TestAuthorityLegacyResolve_Found gates the detail-page links: true only when the PDF exists.
 // Replaces the old TestScanJobPDFs which tested the now-removed adminui.scanJobPDFs helper;
 // this test drives the same semantics through the Authority interface.
-// RED-on-revert: remove Authority.LegacyResolve and this test fails to compile.
+// P4 (plan ADR-11): LegacyResolve lives on the account-bound view and opens
+// only for the configured operator account.
+// RED-on-revert: remove AccountAuthority.LegacyResolve and this test fails to compile.
 func TestAuthorityLegacyResolve_Found(t *testing.T) {
 	root := t.TempDir()
 	submit := filepath.Join(root, "acme-platform", "submit")
@@ -155,7 +158,8 @@ func TestAuthorityLegacyResolve_Found(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	auth := New(nil, root)
+	opAID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	auth := New(nil, root, opAID).ForAccount(opAID)
 
 	if got := auth.LegacyResolve("Acme", "Platform Engineer", KindResume); got == "" {
 		t.Error("expected LegacyResolve to find resume, got empty")

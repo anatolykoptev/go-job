@@ -58,11 +58,18 @@ type totpEnrollment struct {
 }
 
 // MountTOTPEnrollment wires the TOTP self-service lifecycle (enroll, QR
-// image, confirm, disable, regenerate recovery codes -- 7 routes total,
-// disable and regenerate each answering both GET and POST at one Path) onto
-// p via MountPage -- the same guard/CSRF/chrome machinery every other page
-// in the framework uses. Call once at setup time, alongside Register calls,
-// before the first Handler() call.
+// image, confirm, disable, regenerate recovery codes -- 8 routes total,
+// enroll, disable and regenerate each answering both GET and POST at one
+// Path) onto p via MountPage -- the same guard/CSRF/chrome machinery every
+// other page in the framework uses. Call once at setup time, alongside
+// Register calls, before the first Handler() call.
+//
+// Step-up re-auth: every route that mints or mutates 2FA state requires the
+// current password IN ADDITION to the live session -- GET /enroll renders a
+// password gate (POSTing it returns the secret+QR page), /confirm takes the
+// code + password together, and disable/regenerate keep their original
+// GET-form → POST-verify shape. A stolen session cookie alone can never
+// mint, view, confirm, disable, or rotate TOTP material.
 //
 // Every route resolves the acting account from auth.SessionFrom(r.Context())
 // -- set by the SAME auth.Require the panel's own guard already runs --
@@ -82,6 +89,7 @@ func MountTOTPEnrollment(p *Panel, cfg TOTPEnrollmentConfig) {
 	e := newTOTPEnrollment(p, cfg)
 
 	p.MountPage(PageSpec{Path: e.path("enroll"), Handler: e.enrollStart, RequiredRole: e.requiredRole})
+	p.MountPage(PageSpec{Path: e.path("enroll"), Handler: e.enrollStart, RequiredRole: e.requiredRole, Method: http.MethodPost})
 	p.MountPage(PageSpec{Path: e.path("qr.png"), Handler: e.qrImage, RequiredRole: e.requiredRole})
 	p.MountPage(PageSpec{Path: e.path("confirm"), Handler: e.confirm, RequiredRole: e.requiredRole, Method: http.MethodPost})
 	p.MountPage(PageSpec{Path: e.path("disable"), Handler: e.disable, RequiredRole: e.requiredRole})

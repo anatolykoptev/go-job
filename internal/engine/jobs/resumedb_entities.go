@@ -4,6 +4,13 @@ import (
 	"context"
 )
 
+// Account ownership (plan ADR-6): every child-table statement carries a
+// person-ownership predicate — personOwnedBy* constants live in
+// resumedb_edit.go — or an explicit EXISTS bound to the caller's account, so a
+// foreign account's rows are unreachable: reads return empty/not-found,
+// inserts fail with ErrNoRows (the SELECT finds no owned parent), and
+// updates/deletes affect zero rows.
+
 // --- Experience CRUD ---
 
 type ExperienceRecord struct {
@@ -22,22 +29,30 @@ type ExperienceRecord struct {
 	IsVolunteer bool     `json:"is_volunteer,omitempty"`
 }
 
-func (db *ResumeDB) InsertExperience(ctx context.Context, personID int, e ExperienceRecord) (int, error) {
+func (a *ResumeAccount) InsertExperience(ctx context.Context, personID int, e ExperienceRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_experiences (person_id, title, company, location, start_date, end_date, description, highlights)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		personID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights,
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $9)
+		 RETURNING id`,
+		personID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]ExperienceRecord, error) {
-	rows, err := db.conn(ctx).Query(ctx,
+func (a *ResumeAccount) GetAllExperiences(ctx context.Context, personID int) ([]ExperienceRecord, error) {
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
 		        COALESCE(domain, '')
-		 FROM resume_experiences WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_experiences
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -55,15 +70,15 @@ func (db *ResumeDB) GetAllExperiences(ctx context.Context, personID int) ([]Expe
 	return results, rows.Err()
 }
 
-func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]ExperienceRecord, error) {
+func (a *ResumeAccount) GetExperiencesByIDs(ctx context.Context, ids []int) ([]ExperienceRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := db.pool.Query(ctx,
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
 		        COALESCE(domain, '')
-		 FROM resume_experiences WHERE id = ANY($1) ORDER BY id`, ids)
+		 FROM resume_experiences WHERE id = ANY($1) AND `+personOwnedBy2+` ORDER BY id`, ids, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -81,27 +96,32 @@ func (db *ResumeDB) GetExperiencesByIDs(ctx context.Context, ids []int) ([]Exper
 	return results, rows.Err()
 }
 
-// GetExperienceByID fetches a single experience row by primary key.
-func (db *ResumeDB) GetExperienceByID(ctx context.Context, expID int) (ExperienceRecord, error) {
+// GetExperienceByID fetches a single experience row by primary key — empty
+// result (ErrNoRows) when the row belongs to another account's person.
+func (a *ResumeAccount) GetExperienceByID(ctx context.Context, expID int) (ExperienceRecord, error) {
 	var r ExperienceRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), title, company, COALESCE(location, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(description, ''), highlights,
 		        COALESCE(domain, '')
-		 FROM resume_experiences WHERE id = $1`, expID).
+		 FROM resume_experiences WHERE id = $1 AND `+personOwnedBy2, expID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.Title, &r.Company, &r.Location,
 			&r.StartDate, &r.EndDate, &r.Description, &r.Highlights, &r.Domain)
 	return r, err
 }
 
-// UpdateExperience updates the editable columns of an experience row.
-func (db *ResumeDB) UpdateExperience(ctx context.Context, expID int, e ExperienceRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateExperience updates the editable columns of an experience row owned by
+// the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateExperience(ctx context.Context, expID int, e ExperienceRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_experiences
 		 SET title = $2, company = $3, location = $4, start_date = $5, end_date = $6, description = $7,
 		     highlights = $8, updated_at = now()
-		 WHERE id = $1`,
-		expID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights)
+		 WHERE id = $1 AND `+personOwnedBy2,
+		expID, e.Title, e.Company, e.Location, e.StartDate, e.EndDate, e.Description, e.Highlights, a.aid)
 	return err
 }
 
@@ -117,22 +137,29 @@ type SkillRecord struct {
 	Source     string `json:"source,omitempty"` // "resume", "inferred", "enrichment"
 }
 
-func (db *ResumeDB) InsertSkill(ctx context.Context, personID int, s SkillRecord) (int, error) {
+func (a *ResumeAccount) InsertSkill(ctx context.Context, personID int, s SkillRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.pool.QueryRow(ctx,
+	err := a.db.pool.QueryRow(ctx,
 		`INSERT INTO resume_skills (person_id, name, category, level)
-		 VALUES ($1, $2, $3, $4)
+		 SELECT $1, $2, $3, $4
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $5)
 		 ON CONFLICT (person_id, name) DO UPDATE SET category = EXCLUDED.category, level = EXCLUDED.level
 		 RETURNING id`,
-		personID, s.Name, s.Category, s.Level,
+		personID, s.Name, s.Category, s.Level, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllSkills(ctx context.Context, personID int) ([]SkillRecord, error) {
-	rows, err := db.pool.Query(ctx,
+func (a *ResumeAccount) GetAllSkills(ctx context.Context, personID int) ([]SkillRecord, error) {
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, '')
-		 FROM resume_skills WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_skills
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -149,22 +176,27 @@ func (db *ResumeDB) GetAllSkills(ctx context.Context, personID int) ([]SkillReco
 	return results, rows.Err()
 }
 
-// GetSkillByID fetches a single skill row by primary key.
-func (db *ResumeDB) GetSkillByID(ctx context.Context, skillID int) (SkillRecord, error) {
+// GetSkillByID fetches a single skill row by primary key — ErrNoRows when the
+// row belongs to another account's person.
+func (a *ResumeAccount) GetSkillByID(ctx context.Context, skillID int) (SkillRecord, error) {
 	var r SkillRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(category, ''), COALESCE(level, '')
-		 FROM resume_skills WHERE id = $1`, skillID).
+		 FROM resume_skills WHERE id = $1 AND `+personOwnedBy2, skillID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.Name, &r.Category, &r.Level)
 	return r, err
 }
 
-// UpdateSkill updates the editable columns of a skill row.
-func (db *ResumeDB) UpdateSkill(ctx context.Context, skillID int, s SkillRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateSkill updates the editable columns of a skill row owned by the bound
+// account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateSkill(ctx context.Context, skillID int, s SkillRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_skills SET name = $2, category = $3, level = $4, updated_at = now()
-		 WHERE id = $1`,
-		skillID, s.Name, s.Category, s.Level)
+		 WHERE id = $1 AND `+personOwnedBy5,
+		skillID, s.Name, s.Category, s.Level, a.aid)
 	return err
 }
 
@@ -181,20 +213,28 @@ type ProjectRecord struct {
 	ParentExperienceID *int     `json:"parent_experience_id,omitempty"`
 }
 
-func (db *ResumeDB) InsertProject(ctx context.Context, personID int, p ProjectRecord) (int, error) {
+func (a *ResumeAccount) InsertProject(ctx context.Context, personID int, p ProjectRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_projects (person_id, name, description, url, tech, highlights)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights,
+		 SELECT $1, $2, $3, $4, $5, $6
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $7)
+		 RETURNING id`,
+		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllProjects(ctx context.Context, personID int) ([]ProjectRecord, error) {
-	rows, err := db.conn(ctx).Query(ctx,
+func (a *ResumeAccount) GetAllProjects(ctx context.Context, personID int) ([]ProjectRecord, error) {
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
-		 FROM resume_projects WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_projects
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -211,13 +251,13 @@ func (db *ResumeDB) GetAllProjects(ctx context.Context, personID int) ([]Project
 	return results, rows.Err()
 }
 
-func (db *ResumeDB) GetProjectsByIDs(ctx context.Context, ids []int) ([]ProjectRecord, error) {
+func (a *ResumeAccount) GetProjectsByIDs(ctx context.Context, ids []int) ([]ProjectRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := db.pool.Query(ctx,
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
-		 FROM resume_projects WHERE id = ANY($1) ORDER BY id`, ids)
+		 FROM resume_projects WHERE id = ANY($1) AND `+personOwnedBy2+` ORDER BY id`, ids, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -234,22 +274,27 @@ func (db *ResumeDB) GetProjectsByIDs(ctx context.Context, ids []int) ([]ProjectR
 	return results, rows.Err()
 }
 
-// GetProjectByID fetches a single project row by primary key.
-func (db *ResumeDB) GetProjectByID(ctx context.Context, projectID int) (ProjectRecord, error) {
+// GetProjectByID fetches a single project row by primary key — ErrNoRows when
+// the row belongs to another account's person.
+func (a *ResumeAccount) GetProjectByID(ctx context.Context, projectID int) (ProjectRecord, error) {
 	var r ProjectRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(description, ''), COALESCE(url, ''), tech, highlights
-		 FROM resume_projects WHERE id = $1`, projectID).
+		 FROM resume_projects WHERE id = $1 AND `+personOwnedBy2, projectID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.Name, &r.Description, &r.URL, &r.Tech, &r.Highlights)
 	return r, err
 }
 
-// UpdateProject updates the editable columns of a project row.
-func (db *ResumeDB) UpdateProject(ctx context.Context, projectID int, p ProjectRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateProject updates the editable columns of a project row owned by the
+// bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateProject(ctx context.Context, projectID int, p ProjectRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_projects SET name = $2, description = $3, url = $4, tech = $5, highlights = $6, updated_at = now()
-		 WHERE id = $1`,
-		projectID, p.Name, p.Description, p.URL, p.Tech, p.Highlights)
+		 WHERE id = $1 AND `+personOwnedBy7,
+		projectID, p.Name, p.Description, p.URL, p.Tech, p.Highlights, a.aid)
 	return err
 }
 
@@ -266,20 +311,28 @@ type AchievementRecord struct {
 	MetricUnit    string   `json:"metric_unit,omitempty"`
 }
 
-func (db *ResumeDB) InsertAchievement(ctx context.Context, personID int, a AchievementRecord) (int, error) {
+func (a *ResumeAccount) InsertAchievement(ctx context.Context, personID int, ach AchievementRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_achievements (person_id, text, metric, value, context)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		personID, a.Text, a.Metric, a.Value, a.Context,
+		 SELECT $1, $2, $3, $4, $5
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $6)
+		 RETURNING id`,
+		personID, ach.Text, ach.Metric, ach.Value, ach.Context, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllAchievements(ctx context.Context, personID int) ([]AchievementRecord, error) {
-	rows, err := db.conn(ctx).Query(ctx,
+func (a *ResumeAccount) GetAllAchievements(ctx context.Context, personID int) ([]AchievementRecord, error) {
+	rows, err := a.conn(ctx).Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
-		 FROM resume_achievements WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_achievements
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -296,13 +349,13 @@ func (db *ResumeDB) GetAllAchievements(ctx context.Context, personID int) ([]Ach
 	return results, rows.Err()
 }
 
-func (db *ResumeDB) GetAchievementsByIDs(ctx context.Context, ids []int) ([]AchievementRecord, error) {
+func (a *ResumeAccount) GetAchievementsByIDs(ctx context.Context, ids []int) ([]AchievementRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := db.pool.Query(ctx,
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
-		 FROM resume_achievements WHERE id = ANY($1) ORDER BY id`, ids)
+		 FROM resume_achievements WHERE id = ANY($1) AND `+personOwnedBy2+` ORDER BY id`, ids, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -319,22 +372,27 @@ func (db *ResumeDB) GetAchievementsByIDs(ctx context.Context, ids []int) ([]Achi
 	return results, rows.Err()
 }
 
-// GetAchievementByID fetches a single achievement row by primary key.
-func (db *ResumeDB) GetAchievementByID(ctx context.Context, achvID int) (AchievementRecord, error) {
+// GetAchievementByID fetches a single achievement row by primary key —
+// ErrNoRows when the row belongs to another account's person.
+func (a *ResumeAccount) GetAchievementByID(ctx context.Context, achvID int) (AchievementRecord, error) {
 	var r AchievementRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), text, COALESCE(metric, ''), COALESCE(value, ''), COALESCE(context, '')
-		 FROM resume_achievements WHERE id = $1`, achvID).
+		 FROM resume_achievements WHERE id = $1 AND `+personOwnedBy2, achvID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.Text, &r.Metric, &r.Value, &r.Context)
 	return r, err
 }
 
-// UpdateAchievement updates the editable columns of an achievement row.
-func (db *ResumeDB) UpdateAchievement(ctx context.Context, achvID int, a AchievementRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateAchievement updates the editable columns of an achievement row owned
+// by the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateAchievement(ctx context.Context, achvID int, ach AchievementRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_achievements SET text = $2, metric = $3, value = $4, context = $5, updated_at = now()
-		 WHERE id = $1`,
-		achvID, a.Text, a.Metric, a.Value, a.Context)
+		 WHERE id = $1 AND `+personOwnedBy6,
+		achvID, ach.Text, ach.Metric, ach.Value, ach.Context, a.aid)
 	return err
 }
 
@@ -352,21 +410,29 @@ type EducationRecord struct {
 	Highlights []string `json:"highlights"`
 }
 
-func (db *ResumeDB) InsertEducation(ctx context.Context, personID int, e EducationRecord) (int, error) {
+func (a *ResumeAccount) InsertEducation(ctx context.Context, personID int, e EducationRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_educations (person_id, school, degree, field, start_date, end_date, gpa, highlights)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		personID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights,
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $9)
+		 RETURNING id`,
+		personID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllEducations(ctx context.Context, personID int) ([]EducationRecord, error) {
-	rows, err := db.pool.Query(ctx,
+func (a *ResumeAccount) GetAllEducations(ctx context.Context, personID int) ([]EducationRecord, error) {
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), school, degree, COALESCE(field, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(gpa, ''), highlights
-		 FROM resume_educations WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_educations
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -384,25 +450,30 @@ func (db *ResumeDB) GetAllEducations(ctx context.Context, personID int) ([]Educa
 	return results, rows.Err()
 }
 
-// GetEducationByID fetches a single education row by primary key.
-func (db *ResumeDB) GetEducationByID(ctx context.Context, eduID int) (EducationRecord, error) {
+// GetEducationByID fetches a single education row by primary key — ErrNoRows
+// when the row belongs to another account's person.
+func (a *ResumeAccount) GetEducationByID(ctx context.Context, eduID int) (EducationRecord, error) {
 	var r EducationRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), school, degree, COALESCE(field, ''),
 		        COALESCE(start_date, ''), COALESCE(end_date, ''), COALESCE(gpa, ''), highlights
-		 FROM resume_educations WHERE id = $1`, eduID).
+		 FROM resume_educations WHERE id = $1 AND `+personOwnedBy2, eduID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.School, &r.Degree, &r.Field,
 			&r.StartDate, &r.EndDate, &r.GPA, &r.Highlights)
 	return r, err
 }
 
-// UpdateEducation updates the editable columns of an education row.
-func (db *ResumeDB) UpdateEducation(ctx context.Context, eduID int, e EducationRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateEducation updates the editable columns of an education row owned by
+// the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateEducation(ctx context.Context, eduID int, e EducationRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_educations SET school = $2, degree = $3, field = $4, start_date = $5, end_date = $6,
 		     gpa = $7, highlights = $8, updated_at = now()
-		 WHERE id = $1`,
-		eduID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights)
+		 WHERE id = $1 AND `+personOwnedBy9,
+		eduID, e.School, e.Degree, e.Field, e.StartDate, e.EndDate, e.GPA, e.Highlights, a.aid)
 	return err
 }
 
@@ -417,20 +488,28 @@ type CertificationRecord struct {
 	URL      string `json:"url"`
 }
 
-func (db *ResumeDB) InsertCertification(ctx context.Context, personID int, c CertificationRecord) (int, error) {
+func (a *ResumeAccount) InsertCertification(ctx context.Context, personID int, c CertificationRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_certifications (person_id, name, issuer, year, url)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		personID, c.Name, c.Issuer, c.Year, c.URL,
+		 SELECT $1, $2, $3, $4, $5
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $6)
+		 RETURNING id`,
+		personID, c.Name, c.Issuer, c.Year, c.URL, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllCertifications(ctx context.Context, personID int) ([]CertificationRecord, error) {
-	rows, err := db.pool.Query(ctx,
+func (a *ResumeAccount) GetAllCertifications(ctx context.Context, personID int) ([]CertificationRecord, error) {
+	rows, err := a.db.pool.Query(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(issuer, ''), COALESCE(year, ''), COALESCE(url, '')
-		 FROM resume_certifications WHERE person_id = $1 ORDER BY id`, personID)
+		 FROM resume_certifications
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -447,22 +526,27 @@ func (db *ResumeDB) GetAllCertifications(ctx context.Context, personID int) ([]C
 	return results, rows.Err()
 }
 
-// GetCertificationByID fetches a single certification row by primary key.
-func (db *ResumeDB) GetCertificationByID(ctx context.Context, certID int) (CertificationRecord, error) {
+// GetCertificationByID fetches a single certification row by primary key —
+// ErrNoRows when the row belongs to another account's person.
+func (a *ResumeAccount) GetCertificationByID(ctx context.Context, certID int) (CertificationRecord, error) {
 	var r CertificationRecord
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`SELECT id, COALESCE(person_id, 0), name, COALESCE(issuer, ''), COALESCE(year, ''), COALESCE(url, '')
-		 FROM resume_certifications WHERE id = $1`, certID).
+		 FROM resume_certifications WHERE id = $1 AND `+personOwnedBy2, certID, a.aid).
 		Scan(&r.ID, &r.PersonID, &r.Name, &r.Issuer, &r.Year, &r.URL)
 	return r, err
 }
 
-// UpdateCertification updates the editable columns of a certification row.
-func (db *ResumeDB) UpdateCertification(ctx context.Context, certID int, c CertificationRecord) error {
-	_, err := db.conn(ctx).Exec(ctx,
+// UpdateCertification updates the editable columns of a certification row
+// owned by the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateCertification(ctx context.Context, certID int, c CertificationRecord) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
 		`UPDATE resume_certifications SET name = $2, issuer = $3, year = $4, url = $5, updated_at = now()
-		 WHERE id = $1`,
-		certID, c.Name, c.Issuer, c.Year, c.URL)
+		 WHERE id = $1 AND `+personOwnedBy6,
+		certID, c.Name, c.Issuer, c.Year, c.URL, a.aid)
 	return err
 }
 
@@ -473,20 +557,27 @@ type DomainRecord struct {
 	Name string `json:"name"`
 }
 
-func (db *ResumeDB) InsertDomain(ctx context.Context, personID int, name string) (int, error) {
+func (a *ResumeAccount) InsertDomain(ctx context.Context, personID int, name string) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
-		`INSERT INTO public.resume_domains (person_id, name) VALUES ($1, $2)
+	err := a.conn(ctx).QueryRow(ctx,
+		`INSERT INTO public.resume_domains (person_id, name)
+		 SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $3)
 		 ON CONFLICT (person_id, name) DO UPDATE SET name = EXCLUDED.name
 		 RETURNING id`,
-		personID, name,
+		personID, name, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllDomains(ctx context.Context, personID int) ([]DomainRecord, error) {
-	rows, err := db.pool.Query(ctx,
-		`SELECT id, name FROM public.resume_domains WHERE person_id = $1 ORDER BY id`, personID)
+func (a *ResumeAccount) GetAllDomains(ctx context.Context, personID int) ([]DomainRecord, error) {
+	rows, err := a.db.pool.Query(ctx,
+		`SELECT id, name FROM public.resume_domains
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -502,20 +593,25 @@ func (db *ResumeDB) GetAllDomains(ctx context.Context, personID int) ([]DomainRe
 	return results, rows.Err()
 }
 
-// GetDomainByID fetches a single domain row by primary key.
-func (db *ResumeDB) GetDomainByID(ctx context.Context, domainID int) (DomainRecord, error) {
+// GetDomainByID fetches a single domain row by primary key — ErrNoRows when
+// the row belongs to another account's person.
+func (a *ResumeAccount) GetDomainByID(ctx context.Context, domainID int) (DomainRecord, error) {
 	var r DomainRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, name FROM public.resume_domains WHERE id = $1`, domainID).
+	err := a.conn(ctx).QueryRow(ctx,
+		`SELECT id, name FROM public.resume_domains WHERE id = $1 AND `+personOwnedBy2, domainID, a.aid).
 		Scan(&r.ID, &r.Name)
 	return r, err
 }
 
-// UpdateDomain updates the name of a domain row.
-func (db *ResumeDB) UpdateDomain(ctx context.Context, domainID int, name string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE public.resume_domains SET name = $2 WHERE id = $1`,
-		domainID, name)
+// UpdateDomain updates the name of a domain row owned by the bound account; a
+// foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateDomain(ctx context.Context, domainID int, name string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE public.resume_domains SET name = $2 WHERE id = $1 AND `+personOwnedBy3,
+		domainID, name, a.aid)
 	return err
 }
 
@@ -527,20 +623,27 @@ type MethodologyRecord struct {
 	Description string `json:"description,omitempty"`
 }
 
-func (db *ResumeDB) InsertMethodology(ctx context.Context, personID int, name, desc string) (int, error) {
+func (a *ResumeAccount) InsertMethodology(ctx context.Context, personID int, name, desc string) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
-		`INSERT INTO public.resume_methodologies (person_id, name, description) VALUES ($1, $2, $3)
+	err := a.conn(ctx).QueryRow(ctx,
+		`INSERT INTO public.resume_methodologies (person_id, name, description)
+		 SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $4)
 		 ON CONFLICT (person_id, name) DO UPDATE SET description = EXCLUDED.description
 		 RETURNING id`,
-		personID, name, desc,
+		personID, name, desc, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-func (db *ResumeDB) GetAllMethodologies(ctx context.Context, personID int) ([]MethodologyRecord, error) {
-	rows, err := db.conn(ctx).Query(ctx,
-		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies WHERE person_id = $1 ORDER BY id`, personID)
+func (a *ResumeAccount) GetAllMethodologies(ctx context.Context, personID int) ([]MethodologyRecord, error) {
+	rows, err := a.conn(ctx).Query(ctx,
+		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies
+		 WHERE person_id = $1
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $2)
+		 ORDER BY id`, personID, a.aid)
 	if err != nil {
 		return nil, err
 	}
@@ -556,72 +659,102 @@ func (db *ResumeDB) GetAllMethodologies(ctx context.Context, personID int) ([]Me
 	return results, rows.Err()
 }
 
-// GetMethodologyByID fetches a single methodology row by primary key.
-func (db *ResumeDB) GetMethodologyByID(ctx context.Context, methodID int) (MethodologyRecord, error) {
+// GetMethodologyByID fetches a single methodology row by primary key —
+// ErrNoRows when the row belongs to another account's person.
+func (a *ResumeAccount) GetMethodologyByID(ctx context.Context, methodID int) (MethodologyRecord, error) {
 	var r MethodologyRecord
-	err := db.conn(ctx).QueryRow(ctx,
-		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies WHERE id = $1`, methodID).
+	err := a.conn(ctx).QueryRow(ctx,
+		`SELECT id, name, COALESCE(description, '') FROM public.resume_methodologies WHERE id = $1 AND `+personOwnedBy2, methodID, a.aid).
 		Scan(&r.ID, &r.Name, &r.Description)
 	return r, err
 }
 
-// UpdateMethodology updates the name and description of a methodology row.
-func (db *ResumeDB) UpdateMethodology(ctx context.Context, methodID int, name, desc string) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE public.resume_methodologies SET name = $2, description = $3 WHERE id = $1`,
-		methodID, name, desc)
+// UpdateMethodology updates the name and description of a methodology row
+// owned by the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateMethodology(ctx context.Context, methodID int, name, desc string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE public.resume_methodologies SET name = $2, description = $3 WHERE id = $1 AND `+personOwnedBy4,
+		methodID, name, desc, a.aid)
 	return err
 }
 
 // --- Extended mutations ---
 
-// UpdateExperienceMeta updates the extended metadata on an experience row.
-func (db *ResumeDB) UpdateExperienceMeta(ctx context.Context, expID int, teamSize, budgetUSD *int, domain string, isVolunteer bool) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_experiences SET team_size = $2, budget_usd = $3, domain = $4, is_volunteer = $5 WHERE id = $1`,
-		expID, teamSize, budgetUSD, domain, isVolunteer,
+// UpdateExperienceMeta updates the extended metadata on an experience row
+// owned by the bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) UpdateExperienceMeta(ctx context.Context, expID int, teamSize, budgetUSD *int, domain string, isVolunteer bool) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE resume_experiences SET team_size = $2, budget_usd = $3, domain = $4, is_volunteer = $5
+		 WHERE id = $1 AND `+personOwnedBy6,
+		expID, teamSize, budgetUSD, domain, isVolunteer, a.aid,
 	)
 	return err
 }
 
 // InsertProjectWithParent inserts a project linked to a parent experience.
-func (db *ResumeDB) InsertProjectWithParent(ctx context.Context, personID int, parentExpID *int, p ProjectRecord) (int, error) {
+// parent_experience_id keeps its ON DELETE SET NULL semantics; the person_id
+// predicate proves the bound account owns the parent person.
+func (a *ResumeAccount) InsertProjectWithParent(ctx context.Context, personID int, parentExpID *int, p ProjectRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_projects (person_id, name, description, url, tech, highlights, parent_experience_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights, parentExpID,
+		 SELECT $1, $2, $3, $4, $5, $6, $7
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $8)
+		 RETURNING id`,
+		personID, p.Name, p.Description, p.URL, p.Tech, p.Highlights, parentExpID, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
-// MarkPersonEnriched sets the enriched_at timestamp on a person.
-func (db *ResumeDB) MarkPersonEnriched(ctx context.Context, personID int) error {
-	_, err := db.conn(ctx).Exec(ctx,
-		`UPDATE resume_persons SET enriched_at = now() WHERE id = $1`, personID)
+// MarkPersonEnriched sets the enriched_at timestamp on a person owned by the
+// bound account; a foreign id is a silent no-op.
+func (a *ResumeAccount) MarkPersonEnriched(ctx context.Context, personID int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
+		`UPDATE resume_persons SET enriched_at = now() WHERE id = $1 AND account_id = $2`, personID, a.aid)
 	return err
 }
 
 // InsertSkillExtended inserts a skill with implicit/source tracking.
-func (db *ResumeDB) InsertSkillExtended(ctx context.Context, personID int, s SkillRecord) (int, error) {
+func (a *ResumeAccount) InsertSkillExtended(ctx context.Context, personID int, s SkillRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_skills (person_id, name, category, level, is_implicit, source)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		 SELECT $1, $2, $3, $4, $5, $6
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $7)
 		 ON CONFLICT (person_id, name) DO UPDATE SET category = EXCLUDED.category, level = EXCLUDED.level, is_implicit = EXCLUDED.is_implicit, source = EXCLUDED.source
 		 RETURNING id`,
-		personID, s.Name, s.Category, s.Level, s.IsImplicit, s.Source,
+		personID, s.Name, s.Category, s.Level, s.IsImplicit, s.Source, a.aid,
 	).Scan(&id)
 	return id, err
 }
 
 // InsertAchievementExtended inserts an achievement with parsed metric fields.
-func (db *ResumeDB) InsertAchievementExtended(ctx context.Context, personID int, a AchievementRecord) (int, error) {
+func (a *ResumeAccount) InsertAchievementExtended(ctx context.Context, personID int, ach AchievementRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
+	err := a.conn(ctx).QueryRow(ctx,
 		`INSERT INTO resume_achievements (person_id, text, metric, value, context, metric_numeric, metric_unit)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		personID, a.Text, a.Metric, a.Value, a.Context, a.MetricNumeric, a.MetricUnit,
+		 SELECT $1, $2, $3, $4, $5, $6, $7
+		 WHERE EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $8)
+		 RETURNING id`,
+		personID, ach.Text, ach.Metric, ach.Value, ach.Context, ach.MetricNumeric, ach.MetricUnit, a.aid,
 	).Scan(&id)
 	return id, err
 }

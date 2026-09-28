@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -54,12 +55,19 @@ func registerOversize(server *mcp.Server) {
 		if store == nil {
 			return toolErrorResult("oversize store not configured (DATABASE_URL not set)"), nil, nil
 		}
+		// All oversize ops are account-scoped (plan ADR-10): a foreign
+		// account's rows are indistinguishable from absent.
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return toolErrorResult("account identity required"), nil, nil
+		}
+		astore := store.ForAccount(aid)
 		switch input.Op {
 		case "get":
 			if input.ID <= 0 {
 				return nil, nil, errors.New("id is required for op=get")
 			}
-			entry, err := store.Get(ctx, input.ID)
+			entry, err := astore.Get(ctx, input.ID)
 			if err != nil {
 				if errors.Is(err, oversize.ErrNotFound) {
 					return toolErrorResult(fmt.Sprintf("id %d not found", input.ID)), nil, nil
@@ -79,7 +87,7 @@ func registerOversize(server *mcp.Server) {
 				}
 				f.Since = t
 			}
-			entries, err := store.List(ctx, f)
+			entries, err := astore.List(ctx, f)
 			if err != nil {
 				return nil, nil, fmt.Errorf("oversize list: %w", err)
 			}
@@ -102,7 +110,7 @@ func registerOversize(server *mcp.Server) {
 				return nil, nil, errors.New("older_than_days must be at least 1")
 			}
 			before := time.Now().Add(-time.Duration(input.OlderThanDays) * 24 * time.Hour)
-			deleted, err := store.Purge(ctx, before)
+			deleted, err := astore.Purge(ctx, before)
 			if err != nil {
 				return nil, nil, fmt.Errorf("oversize purge: %w", err)
 			}

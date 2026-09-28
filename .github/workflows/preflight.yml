@@ -168,8 +168,8 @@ jobs:
       - name: make preflight
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/gojob_test?sslmode=disable
-          # GitHub-hosted ARM runners have 4 cores; -p 2 is safe here and
-          # ~30% faster than -p 1. The Makefile defaults to -p 1 for the
-          # 4-core prod box where contention inflates per-test times ~30x.
-          GO_TEST_PARALLEL: 2
+          # Serialized: all packages share the single ephemeral gojob_test DB.
+          # -p 2 raced package fixtures (DropAccountTables/TRUNCATE) against each
+          # other - auth/account tests flaked. -p 1 until per-package DBs exist.
+          GO_TEST_PARALLEL: 1
         run: make preflight

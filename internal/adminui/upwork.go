@@ -32,15 +32,15 @@ type upworkPageData struct {
 	Employment  []upworkEmploymentItem
 	Portfolio   []upworkPortfolioItem
 	// Edit-form data (Upwork-specific tables).
-	CSRFToken     string
-	UWSkills      []jobs.UpworkSkillRecord
-	UWCatalog     []jobs.UpworkCatalogItem // catalog items from upwork_catalog_items
-	UWPasteBlocks []jobs.UpworkPasteBlock
-	UWMissing     bool
-	UWRate        string   // pre-formatted for edit form: "150.00" or ""
-	UWAvailability string  // pre-filled availability from upwork_profile
-	UWCategories  []string // current categories from upwork_profile (read-only display)
-	UWCopyBlocks  []CopyBlockVM // Phase 3: paste blocks rendered via shared copyBlock partial
+	CSRFToken      string
+	UWSkills       []jobs.UpworkSkillRecord
+	UWCatalog      []jobs.UpworkCatalogItem // catalog items from upwork_catalog_items
+	UWPasteBlocks  []jobs.UpworkPasteBlock
+	UWMissing      bool
+	UWRate         string        // pre-formatted for edit form: "150.00" or ""
+	UWAvailability string        // pre-filled availability from upwork_profile
+	UWCategories   []string      // current categories from upwork_profile (read-only display)
+	UWCopyBlocks   []CopyBlockVM // Phase 3: paste blocks rendered via shared copyBlock partial
 }
 
 type upworkEmploymentItem struct {
@@ -134,28 +134,29 @@ func formatCentsToDollars(cents int64) string {
 
 // upworkHandler renders the Upwork profile page.
 // It accepts auth + csrfKey so it can issue a CSRF token for the edit sub-forms.
-func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http.HandlerFunc {
+func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte, acctOf accountResolver) http.HandlerFunc {
 	tmpl := template.Must(
 		template.New("upwork").Funcs(adminuiFuncMap).Parse(sharedPartialsSrc),
 	)
 	template.Must(tmpl.Parse(upworkTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		db := jobs.GetResumeDB()
-		if db == nil {
-			if err := p.RenderPageHTML(w, r, "Upwork", navIDUpwork, resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
+		ctx := r.Context()
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
+			if err := p.RenderPageHTML(w, r, "Upwork", navIDUpwork, resumeEmptyHTML("Resume database not configured or no account identity.")); err != nil {
 				slog.Error("adminui: render upwork", "err", err)
 			}
 			return
 		}
-		personID := db.GetLatestPersonID(r.Context())
+		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
 			if err := p.RenderPageHTML(w, r, "Upwork", navIDUpwork, resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
 				slog.Error("adminui: render upwork", "err", err)
 			}
 			return
 		}
-		profile, err := jobs.GetResumeProfile(r.Context(), "")
+		profile, err := jobs.GetResumeProfile(ctx, rdb.AccountID(), "")
 		if err != nil {
 			slog.Warn("upworkHandler: GetResumeProfile", "err", err)
 			if err2 := p.RenderPageHTML(w, r, "Upwork", navIDUpwork, resumeEmptyHTML("Could not load profile: "+err.Error())); err2 != nil {
@@ -170,7 +171,7 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 		// availability, and categories. The read-only preview (Title/Rate sections)
 		// also draws from upwork_profile when a row exists, overriding the
 		// resume_persons fields shown before the Upwork profile is created.
-		uwProfile, uwErr := db.GetUpworkProfile(r.Context(), personID)
+		uwProfile, uwErr := rdb.GetUpworkProfile(r.Context(), personID)
 		if uwErr != nil {
 			slog.Warn("upworkHandler: GetUpworkProfile", "err", uwErr)
 		} else {
@@ -227,6 +228,7 @@ func upworkHandler(p *resource.Panel, a auth.Authenticator, csrfKey []byte) http
 // resume_persons.headline/hourly_rate remain the general resume fields.
 // Categories are read-modify-write: existing values are preserved unless
 // a future categories editor is added.
+//
 //nolint:gosec // upworkTmplSrc is an HTML/CSS template, not a credential
 const upworkTmplSrc = `<style>
   .uw-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
@@ -428,10 +430,10 @@ const upworkTmplSrc = `<style>
 // upworkCatalogReorderHandler handles POST /admin/upwork/catalog/reorder.
 // Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
 // Normalizes upwork_catalog_items positions to contiguous 1..N per person.
-func upworkCatalogReorderHandler() http.HandlerFunc {
+func upworkCatalogReorderHandler(acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
+		rdb, personID, ok := requireResumeDB(w, r, acctOf)
 		if !ok {
 			return
 		}
@@ -444,7 +446,7 @@ func upworkCatalogReorderHandler() http.HandlerFunc {
 			http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
 			return
 		}
-		if err := db.ReorderUpworkCatalogItems(r.Context(), personID, ids); err != nil {
+		if err := rdb.ReorderUpworkCatalogItems(r.Context(), personID, ids); err != nil {
 			slog.Error("upworkCatalogReorderHandler: ReorderUpworkCatalogItems", "err", err)
 			http.Error(w, "reorder failed", http.StatusInternalServerError)
 			return
@@ -456,10 +458,10 @@ func upworkCatalogReorderHandler() http.HandlerFunc {
 // upworkSkillReorderHandler handles POST /admin/upwork/skill/reorder.
 // Accepts repeated "id" form fields in desired display order (or comma-sep "order" field).
 // Normalizes upwork_skills positions to contiguous 1..N per person.
-func upworkSkillReorderHandler() http.HandlerFunc {
+func upworkSkillReorderHandler(acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
+		rdb, personID, ok := requireResumeDB(w, r, acctOf)
 		if !ok {
 			return
 		}
@@ -472,7 +474,7 @@ func upworkSkillReorderHandler() http.HandlerFunc {
 			http.Redirect(w, r, "/admin/upwork", http.StatusSeeOther)
 			return
 		}
-		if err := db.ReorderUpworkSkills(r.Context(), personID, ids); err != nil {
+		if err := rdb.ReorderUpworkSkills(r.Context(), personID, ids); err != nil {
 			slog.Error("upworkSkillReorderHandler: ReorderUpworkSkills", "err", err)
 			http.Error(w, "reorder failed", http.StatusInternalServerError)
 			return
@@ -485,16 +487,16 @@ func upworkSkillReorderHandler() http.HandlerFunc {
 // Read-modify-write: preserves existing title/overview/hourly_rate/availability
 // and does a full-replace of categories from repeated "category" form fields.
 // This is the single source of truth for categories (#118 invariant).
-func upworkCategoriesEditHandler() http.HandlerFunc {
+func upworkCategoriesEditHandler(acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
-		db, personID, ok := requireResumeDB(w, r)
+		rdb, personID, ok := requireResumeDB(w, r, acctOf)
 		if !ok {
 			return
 		}
 
 		// Read existing profile to preserve title/overview/hourly_rate/availability.
-		existing, err := db.GetUpworkProfile(r.Context(), personID)
+		existing, err := rdb.GetUpworkProfile(r.Context(), personID)
 		if err != nil {
 			slog.Error("upworkCategoriesEditHandler: GetUpworkProfile", "err", err)
 			http.Error(w, "load failed", http.StatusInternalServerError)
@@ -519,7 +521,7 @@ func upworkCategoriesEditHandler() http.HandlerFunc {
 			}
 		}
 
-		if err := db.UpsertUpworkProfile(r.Context(), personID, title, overview, hourlyRate, categories, availability); err != nil {
+		if err := rdb.UpsertUpworkProfile(r.Context(), personID, title, overview, hourlyRate, categories, availability); err != nil {
 			slog.Error("upworkCategoriesEditHandler: UpsertUpworkProfile", "err", err)
 			http.Error(w, "update failed", http.StatusInternalServerError)
 			return

@@ -3,9 +3,11 @@ package jobserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/oversize"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -44,7 +46,15 @@ func spillIfOversize[T any](ctx context.Context, toolName string, payload T) (*m
 		return nil, false, nil
 	}
 
-	spilled, err := oversize.MaybeSpill(ctx, store, toolName, payload)
+	// Spills are account-owned (plan ADR-10): the row must be written under
+	// the acting account or not at all. No account identity → fail closed
+	// (callers fall back to the inline payload via handleSpill).
+	aid, ok := accounts.AccountFrom(ctx)
+	if !ok {
+		return nil, false, errors.New("oversize spill: no account identity in context")
+	}
+
+	spilled, err := oversize.MaybeSpill(ctx, store.ForAccount(aid), toolName, payload)
 	if err != nil {
 		return nil, false, err
 	}

@@ -15,22 +15,23 @@ import (
 //
 // Empty-state: when no resume data exists (no person row), renders a
 // friendly message instead of a 500.
-func resumeHandler(p *resource.Panel) http.HandlerFunc {
+func resumeHandler(p *resource.Panel, acctOf accountResolver) http.HandlerFunc {
 	tmpl := template.Must(template.New("resume").Funcs(template.FuncMap{
 		"join":            resumeJoin,
 		"skillCategories": resumeSkillCategories,
 	}).Parse(resumeTmplSrc))
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		db := jobs.GetResumeDB()
-		if db == nil {
-			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Resume database not configured (set DATABASE_URL).")); err != nil {
+		ctx := r.Context()
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
+			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Resume database not configured or no account identity.")); err != nil {
 				slog.Error("adminui: render resume", "err", err)
 			}
 			return
 		}
 
-		personID := db.GetLatestPersonID(r.Context())
+		personID := rdb.GetLatestPersonID(ctx)
 		if personID == 0 {
 			if err := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("No resume data yet — run master_resume_build first.")); err != nil {
 				slog.Error("adminui: render resume", "err", err)
@@ -39,7 +40,7 @@ func resumeHandler(p *resource.Panel) http.HandlerFunc {
 		}
 
 		// GetResumeProfile handles all section loading; section="" = full profile.
-		profile, err := jobs.GetResumeProfile(r.Context(), "")
+		profile, err := jobs.GetResumeProfile(ctx, rdb.AccountID(), "")
 		if err != nil {
 			slog.Warn("resumeHandler: GetResumeProfile", "err", err)
 			if err2 := p.RenderPageHTML(w, r, "Resume", "resume", resumeEmptyHTML("Could not load resume: "+err.Error())); err2 != nil {

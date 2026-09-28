@@ -5,6 +5,7 @@
 package dbtest
 
 import (
+	"context"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,4 +70,38 @@ func RequireTestDB(tb testingTB, dsn string) string {
 		return ""
 	}
 	return name
+}
+
+// DropAccountTables drops the identity-schema tables so each test exercises
+// accounts.Bootstrap from the absent-table state — the same state a fresh
+// deploy faces. account_job_scores and mcp_api_keys go first — they
+// FK-reference panel_accounts, which must drop last.
+// The accounts schema is Bootstrap-owned (internal/accounts/*.sql), not a
+// migration-runner file, so no schema_migrations row needs clearing: the next
+// Bootstrap recreates the tables via CREATE TABLE IF NOT EXISTS.
+func DropAccountTables(tb testingTB, pool *pgxpool.Pool) {
+	tb.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`DROP TABLE IF EXISTS account_hunt_settings;
+		 DROP TABLE IF EXISTS account_job_scores;
+		 DROP TABLE IF EXISTS mcp_api_keys;
+		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
+		 -- hunt_ratings survives the account drop (hunt-owned table), but its
+		 -- account_id FK must go first or panel_accounts won't drop.
+		 -- Bootstrap's EnsureHuntRatingsAccountScope re-adds it on the next
+		 -- test, matching the guarded DO block in hunt schema 014.
+		 ALTER TABLE IF EXISTS hunt_ratings
+		   DROP CONSTRAINT IF EXISTS hunt_ratings_account_id_fkey;
+		 -- P4: same shape for the resume hub + vectors and the oversize
+		 -- spill table (Bootstrap's EnsureResumeAccountScope /
+		 -- EnsureOversizeAccountScope re-add them).
+		 ALTER TABLE IF EXISTS resume_persons
+		   DROP CONSTRAINT IF EXISTS resume_persons_account_id_fkey;
+		 ALTER TABLE IF EXISTS resume_vectors
+		   DROP CONSTRAINT IF EXISTS resume_vectors_account_id_fkey;
+		 ALTER TABLE IF EXISTS oversize_responses
+		   DROP CONSTRAINT IF EXISTS oversize_responses_account_id_fkey;
+		 DROP TABLE IF EXISTS panel_accounts;`); err != nil {
+		tb.Fatalf("dbtest.DropAccountTables: %v", err)
+	}
 }

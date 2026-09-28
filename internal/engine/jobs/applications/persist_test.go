@@ -10,8 +10,13 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// testAID is the fixed account every persist test binds — artifacts land
+// under applications/<testAID>/<id>/ (P4 account-scoped layout, plan ADR-11).
+var testAID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
 // stubRenderer is a test double for applications.Renderer.
 type stubRenderer struct {
@@ -54,7 +59,7 @@ func TestExists_NoMkdir(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("UPLOADS_ROOT", root)
 
-	auth := applications.New(nil, "")
+	auth := applications.New(nil, "", testAID).ForAccount(testAID)
 	id := int64(9001) // never persisted
 
 	exists := auth.Exists(id, applications.KindResume)
@@ -64,7 +69,7 @@ func TestExists_NoMkdir(t *testing.T) {
 	}
 
 	// The directory MUST NOT have been created by the read-path.
-	appDir := filepath.Join(root, "go-job", "applications", strconv.FormatInt(id, 10))
+	appDir := filepath.Join(root, "go-job", "applications", testAID.String(), strconv.FormatInt(id, 10))
 	if _, statErr := os.Stat(appDir); !os.IsNotExist(statErr) {
 		t.Errorf("Exists must not create %q — got err=%v", appDir, statErr)
 	}
@@ -77,7 +82,7 @@ func TestPersist_NilRenderer_OkMdOnly(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("UPLOADS_ROOT", root)
 
-	auth := applications.New(nil, "")
+	auth := applications.New(nil, "", testAID).ForAccount(testAID)
 	before := persistCounter(t, "ok_md_only")
 
 	res, err := auth.Persist(context.Background(), 1, "# Resume", "# Cover")
@@ -118,7 +123,7 @@ func TestPersist_WritePDFError(t *testing.T) {
 	t.Setenv("UPLOADS_ROOT", root)
 
 	id := int64(7777)
-	appDir := filepath.Join(root, "go-job", "applications", strconv.FormatInt(id, 10))
+	appDir := filepath.Join(root, "go-job", "applications", testAID.String(), strconv.FormatInt(id, 10))
 
 	// Pre-create the directory and MD files while the dir is writable.
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -141,7 +146,7 @@ func TestPersist_WritePDFError(t *testing.T) {
 	}
 
 	renderer := &stubRenderer{pdf: []byte("%PDF-1.4 stub")}
-	auth := applications.New(renderer, "")
+	auth := applications.New(renderer, "", testAID).ForAccount(testAID)
 
 	beforeWrite := persistCounter(t, "error_pdf_write")
 	beforeMdOnly := persistCounter(t, "ok_md_only")
@@ -180,13 +185,13 @@ func TestPersist_FileMode0644(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("UPLOADS_ROOT", root)
 
-	auth := applications.New(nil, "")
+	auth := applications.New(nil, "", testAID).ForAccount(testAID)
 	if _, err := auth.Persist(context.Background(), 42, "# Resume", "# Cover"); err != nil {
 		t.Fatalf("Persist: %v", err)
 	}
 
 	for _, name := range []string{"resume.md", "cover.md", "meta.json"} {
-		p := filepath.Join(root, "go-job", "applications", "42", name)
+		p := filepath.Join(root, "go-job", "applications", testAID.String(), "42", name)
 		info, statErr := os.Stat(p)
 		if statErr != nil {
 			t.Fatalf("stat %s: %v", name, statErr)
@@ -205,7 +210,7 @@ func TestPersist_PDFMode0644(t *testing.T) {
 	t.Setenv("UPLOADS_ROOT", root)
 
 	renderer := &stubRenderer{pdf: []byte("%PDF-1.4 stub")}
-	auth := applications.New(renderer, "")
+	auth := applications.New(renderer, "", testAID).ForAccount(testAID)
 	res, err := auth.Persist(context.Background(), 43, "# Resume", "# Cover")
 	if err != nil {
 		t.Fatalf("Persist: %v", err)
@@ -215,7 +220,7 @@ func TestPersist_PDFMode0644(t *testing.T) {
 	}
 
 	for _, name := range []string{"resume.md", "cover.md", "meta.json", "resume.pdf", "cover.pdf"} {
-		p := filepath.Join(root, "go-job", "applications", "43", name)
+		p := filepath.Join(root, "go-job", "applications", testAID.String(), "43", name)
 		info, statErr := os.Stat(p)
 		if statErr != nil {
 			t.Fatalf("stat %s: %v", name, statErr)

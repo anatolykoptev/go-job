@@ -23,11 +23,23 @@ var validDownloadKinds = map[string]bool{
 // GET /admin/jobs/{id}/download/{kind}
 // Wrap with a.Require() before mounting on the mux.
 //
-// Resolution order:
-//  1. uploads-first: canonical $UPLOADS_ROOT/go-job/applications/<id>/<kind>.pdf
-//  2. legacy fallback: fuzzy slug match under APPLICATIONS_DIR (transition only)
-func downloadHandler(pool *pgxpool.Pool, authority *applications.Authority) http.HandlerFunc {
+// Resolution order (all under the ACTING account, plan ADR-11):
+//  1. uploads-first: canonical $UPLOADS_ROOT/go-job/applications/<account>/<id>/<kind>.pdf
+//     (+ the pre-P4 account-less location when the acting account is the operator)
+//  2. legacy fallback: fuzzy slug match under APPLICATIONS_DIR — operator
+//     account only; every other account gets a bare 404 (cross-account fetch
+//     with a known path/job id is denied by construction).
+func downloadHandler(pool *pgxpool.Pool, authority *applications.Authority, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// No account identity → the download is not found. Fail-closed: a
+		// missing/malformed session must not fall back to the operator's tree.
+		aid, acctOK := acctOf(r.Context())
+		if !acctOK || authority == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		acct := authority.ForAccount(aid)
+
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
 		if err != nil || id64 <= 0 {
@@ -41,8 +53,9 @@ func downloadHandler(pool *pgxpool.Pool, authority *applications.Authority) http
 			return
 		}
 
-		// 1. Uploads-first: direct stat on canonical path.
-		if pdfPath, ok := authority.Resolve(id64, kind); ok {
+		// 1. Uploads-first: direct stat on the account-scoped canonical path
+		//    (operator also reads the pre-P4 account-less location).
+		if pdfPath, ok := acct.Resolve(id64, kind); ok {
 			uploadsRoot := uploads.Root()
 			if !ValidatePathUnderRoot(uploadsRoot, pdfPath) {
 				slog.Error("downloadHandler: uploads path traversal", "path", pdfPath, "root", uploadsRoot)
@@ -55,7 +68,8 @@ func downloadHandler(pool *pgxpool.Pool, authority *applications.Authority) http
 			return
 		}
 
-		// 2. Legacy fallback: load company+title from DB then fuzzy-match slug.
+		// 2. Legacy fallback (operator only — enforced inside LegacyResolve):
+		//    load company+title from DB then fuzzy-match slug.
 		if authority.LegacyDir() == "" {
 			http.Error(w, kind+" PDF not found", http.StatusNotFound)
 			return
@@ -75,7 +89,7 @@ func downloadHandler(pool *pgxpool.Pool, authority *applications.Authority) http
 			return
 		}
 
-		legacyPath := authority.LegacyResolve(company, title, kind)
+		legacyPath := acct.LegacyResolve(company, title, kind)
 		if legacyPath == "" {
 			http.Error(w, "no prepared application for this job", http.StatusNotFound)
 			return

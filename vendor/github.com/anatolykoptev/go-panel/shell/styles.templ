@@ -287,21 +287,120 @@ templ layoutStyles() {
 		.htmx-request .htmx-indicator{display:inline-block}
 		.crm-th-sort{display:inline-flex;align-items:center;gap:.25rem;color:var(--text-secondary);text-decoration:none;transition:color .12s}
 		.crm-th-sort:hover,.crm-th-sort.active{color:var(--text-primary)}
+		/* Notice — page-level message block (components/notice.templ). Full border +
+		   tinted background rather than a coloured left stripe: the stripe carries
+		   nothing to a screen reader and reads as an accident at narrow widths. */
+		.notice{padding:.625rem .875rem;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-surface);color:var(--text-secondary);font-size:.8125rem;line-height:1.5;margin:1rem 0}
+		.notice strong{color:var(--text-primary);font-weight:600}
+		.notice-info{border-color:var(--accent-dim);background:var(--accent-glow)}
+		.notice-warn{border-color:var(--yellow-dim);background:rgba(245,158,11,.08);color:#fcd34d}
+		.notice-warn strong{color:#fde68a}
+		.notice-danger{border-color:var(--red-dim);background:rgba(239,68,68,.08);color:#fca5a5}
+		.notice-danger strong{color:#fecaca}
+		.notice-muted{border-color:var(--border-subtle);background:transparent;color:var(--text-muted);font-size:.75rem}
 		.badge{display:inline-flex;align-items:center;padding:.1875rem .5rem;border-radius:.25rem;font-family:var(--font-mono);font-size:.6875rem;font-weight:500;letter-spacing:.02em;white-space:nowrap;background:var(--bg-elevated);color:var(--text-secondary)}
 		.badge-blue{background:var(--accent-dim);color:var(--accent-light)}
 		.badge-green{background:var(--green-dim);color:var(--green-light)}
 		.badge-red{background:var(--red-dim);color:var(--red-light)}
 		.badge-gray{background:var(--bg-elevated);color:var(--badge-gray-fg);border:1px solid var(--border-subtle)}
+		/* A resource with many columns produces a table wider than the
+		   viewport — the header row alone sets a floor, because every th is
+		   white-space:nowrap and cannot wrap. Without a scroll container that
+		   width propagates to the document and the WHOLE PAGE scrolls
+		   sideways, carrying the sidebar and header off-screen with it.
+		   Measured on go-grad /admin/leads: 14 columns, page scrolled.
+		   The container keeps the overflow inside the table's own box.
+		   Note overflow-x:auto computes overflow-y to auto as well; the table
+		   has nothing that overflows vertically, so nothing is clipped. */
+		.crm-table-scroll{overflow-x:auto}
+		/* Delete-with-undo. The deleted row keeps the table's rhythm — same
+		   height, same borders — so the rows below do not jump while the undo
+		   window is open; only the ink changes. */
+		.row-delete{background:none;border:none;padding:0 0 0 .75rem;cursor:pointer;
+			font-family:inherit;font-size:.75rem;color:var(--text-muted)}
+		.row-delete:hover{color:var(--red)}
+		.crm-table tbody tr.row-deleted{cursor:default;background:var(--bg-deep)}
+		.crm-table tbody tr.row-deleted:hover>td{background:var(--bg-deep)}
+		.row-deleted-label{color:var(--text-muted);font-style:italic}
+		.row-undo{background:none;border:1px solid var(--border);border-radius:var(--radius);
+			padding:.2rem .6rem;cursor:pointer;font-family:inherit;font-size:.75rem;
+			color:var(--accent-link)}
+		.row-undo:hover{border-color:var(--accent)}
+		.undo-toast{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;
+			padding:.6rem .9rem;background:var(--bg-surface);border:1px solid var(--border);
+			border-radius:var(--radius-lg);color:var(--text-secondary);font-size:.8125rem}
+		.undo-toast form{margin:0}
+		/* A trash section whose lister failed. Loud on purpose: the alternative
+		   is a section that renders as empty, which is the same picture as "you
+		   deleted nothing here" — and the row the operator came to recover is
+		   exactly the one they would then stop looking for. */
+		.trash-unreadable{padding:.6rem .9rem;border:1px solid var(--red);
+			border-radius:var(--radius);color:var(--red);font-size:.8125rem}
+		/* The fade is the only motion: prefers-reduced-motion callers get the
+		   removal without it, which is still correct. */
+		.undo-expired{opacity:0;transition:opacity .18s ease-out}
+		@media (prefers-reduced-motion: reduce){.undo-expired{transition:none}}
 		.crm-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
 		.crm-table thead th{text-align:left;padding:.5rem 1rem;color:var(--text-muted);font-family:var(--font-mono);font-size:.625rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border);background:var(--bg-deep);white-space:nowrap}
 		.crm-table thead th:first-child{padding-left:1.25rem}
 		.crm-table tbody tr{cursor:pointer;transition:background .08s}
 		.crm-table tbody tr:hover>td{background:var(--row-hover-bg)}
-		.crm-table td{padding:.625rem 1rem;border-bottom:1px solid var(--border-subtle);vertical-align:middle}
+		/* overflow-wrap:anywhere, not break-word: only `anywhere` is taken
+		   into account when the browser computes the table's min-content
+		   width, so a long unbreakable token stops widening its column
+		   instead of merely being allowed to break once the width is set.
+		   Measured on go-grad /admin/leads: a 90-character page URL. */
+		.crm-table td{padding:.625rem 1rem;border-bottom:1px solid var(--border-subtle);vertical-align:middle;overflow-wrap:anywhere}
 		.crm-table td:first-child{padding-left:1.25rem}
 		.crm-table tbody tr:last-child td{border-bottom:none}
 		.crm-table a{color:var(--text-primary);text-decoration:none}
 		.crm-table a:hover{text-decoration:underline}
+		/* .crm-table--static — a detail-page table whose rows do NOT navigate.
+		   The base .crm-table sets cursor:pointer and an accent-tinted row hover
+		   because LIST rows link to a detail page. A detail-table row that does
+		   nothing but display data inherits both, and a pointer cursor on a row
+		   that does nothing is a lie the operator only discovers by clicking it.
+		   The hover tint on a non-interactive row is the same lie, quieter. */
+		.crm-table--static tbody tr{cursor:default}
+		.crm-table--static tbody tr:hover>td{background:transparent}
+		/* ── A table inside a card does not draw a card ──────────────────
+		   .crm-table paints --bg-surface, a 1px --border and --radius-lg. So
+		   does .detail-section. So does .pm7-card. Nest one in the other and
+		   the page gets two outlines a few pixels apart on an identical
+		   background: the inner line reads as a rendering artefact, not a
+		   boundary, and only the containers that happen to hold a table get
+		   it, so they look heavier than their neighbours for no reason a
+		   reader could name.
+
+		   The condition is STRUCTURAL — "am I already inside something that
+		   drew the card" — so the selector is, too. It deliberately does NOT
+		   hang off .crm-table--static: that modifier means "these rows do not
+		   navigate", which is a different question, and a consumer dropping a
+		   plain .crm-table into a .pm7-card (a dashboard summary, a cabinet
+		   overview, a billing preview) would keep the doubled frame while
+		   having done nothing wrong.
+
+		   CSS cannot say "any ancestor that draws a border", so the two card
+		   containers are named. A third one has to be added here — which is
+		   the trade for not asking every consumer to remember a modifier.
+
+		   Keep prose out of this file's identifiers: styles.templ is inlined
+		   into every page, and resource/nav_filter_test.go asserts nav labels
+		   are ABSENT with strings.Contains over the WHOLE body. A comment that
+		   happens to name a resource fails it. */
+		.detail-section .crm-table,.pm7-card .crm-table{background:transparent;border:0;border-radius:0}
+		.detail-section .crm-table td:first-child,.detail-section .crm-table thead th:first-child,.pm7-card .crm-table td:first-child,.pm7-card .crm-table thead th:first-child{padding-left:0}
+		.detail-section .crm-table td:last-child,.detail-section .crm-table thead th:last-child,.pm7-card .crm-table td:last-child,.pm7-card .crm-table thead th:last-child{padding-right:0}
+		.detail-section .crm-table tbody tr:last-child>td,.pm7-card .crm-table tbody tr:last-child>td{border-bottom:0}
+		/* The header strip goes too. --bg-deep behind a thead reads as a bar
+		   once the table has no frame to clip it; the columns are already
+		   mono/uppercase/--text-muted, which is exactly how .detail-item-label
+		   is set, so an underline is the whole separation needed and the table
+		   header stops looking like a different component. */
+		.detail-section .crm-table thead th,.pm7-card .crm-table thead th{background:transparent}
+		/* A section can carry Items AND a Table. Without this the thead sits
+		   directly against the last label-value row. */
+		.detail-items+.crm-table-scroll{margin-top:.75rem}
 		.row-name{font-weight:600;font-size:.875rem;color:var(--text-primary)}
 		.row-sub{font-size:.6875rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:.1rem;display:block}
 		.page-header{margin-bottom:1.25rem}

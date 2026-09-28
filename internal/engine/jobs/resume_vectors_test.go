@@ -46,26 +46,26 @@ func TestVectorLiteral_Format(t *testing.T) {
 }
 
 func TestVectorContentHash_Deterministic(t *testing.T) {
-	h1 := vectorContentHash("gojob", "note", nil, "my career goal")
-	h2 := vectorContentHash("gojob", "note", nil, "my career goal")
+	h1 := vectorContentHash("11111111-1111-1111-1111-111111111111", "note", nil, "my career goal")
+	h2 := vectorContentHash("11111111-1111-1111-1111-111111111111", "note", nil, "my career goal")
 	if h1 != h2 {
 		t.Errorf("hash not deterministic: %q vs %q", h1, h2)
 	}
 }
 
 func TestVectorContentHash_Distinct(t *testing.T) {
-	base := vectorContentHash("gojob", "note", nil, "same content")
+	base := vectorContentHash("11111111-1111-1111-1111-111111111111", "note", nil, "same content")
 	if vectorContentHash("other", "note", nil, "same content") == base {
 		t.Error("different user_name should produce different hash")
 	}
-	if vectorContentHash("gojob", "goal", nil, "same content") == base {
+	if vectorContentHash("11111111-1111-1111-1111-111111111111", "goal", nil, "same content") == base {
 		t.Error("different mem_type should produce different hash")
 	}
-	if vectorContentHash("gojob", "note", nil, "different content") == base {
+	if vectorContentHash("11111111-1111-1111-1111-111111111111", "note", nil, "different content") == base {
 		t.Error("different content should produce different hash")
 	}
 	rid := int64(42)
-	if vectorContentHash("gojob", "note", &rid, "same content") == base {
+	if vectorContentHash("11111111-1111-1111-1111-111111111111", "note", &rid, "same content") == base {
 		t.Error("non-nil ref_id should produce different hash")
 	}
 }
@@ -176,17 +176,29 @@ func TestFitness_F1_NoEmbedCallsInVectorFile(t *testing.T) {
 	})
 }
 
-// --- Fitness function F3: resumeVectorUser appears once as a const decl ---
+// --- Fitness function F3: no account literal in account-scoped vector code ---
 
-func TestFitness_F3_SingleSourceCubeKey(t *testing.T) {
-	const path = "const.go"
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	occurrences := strings.Count(string(data), `resumeVectorUser = "gojob"`)
-	if occurrences != 1 {
-		t.Errorf("F3: resumeVectorUser declared %d times in const.go (want exactly 1)", occurrences)
+// F3 (P4, plan ADR-9): resume_vectors is keyed by account_id via the bound
+// ResumeAccount — a hard-coded user key ('gojob'/resumeVectorUser) silently
+// re-opens the shared namespace. Assert the literal is gone from the scoped
+// files; the Makefile grep-gate covers the rest of the tree.
+// RED-on-revert: reintroducing resumeVectorUser = "gojob" (or any "gojob"
+// literal) in the scoped vector path fails this test.
+func TestFitness_F3_NoAccountLiteral(t *testing.T) {
+	for _, path := range []string{
+		"const.go",
+		"resume_vectors.go",
+		"resume_memory.go",
+		"resume_profile_sync.go",
+		"master_resume.go",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if strings.Contains(string(data), "resumeVectorUser") || strings.Contains(string(data), `"gojob"`) {
+			t.Errorf("F3: %s carries a hard-coded account literal — the account binds via ResumeAccount.ForAccount", path)
+		}
 	}
 }
 
@@ -199,9 +211,9 @@ func TestFitness_F3_SingleSourceCubeKey(t *testing.T) {
 // tests from deleting rows in a production database.  If you have a dedicated
 // test instance, set DATABASE_URL with a name like "gojob_test".
 // Background: UpsertVector always writes source='agent'; the cleanup that follows
-// deletes ALL such rows for resumeVectorUser — on a prod DB this wipes the
+// deletes ALL such rows for the bound test account — on a prod DB this wipes the
 // operator's entire vector store (oxpulse TEST_DATABASE_URL→prod isolation class).
-func testResumeDB(t *testing.T) *ResumeDB {
+func testResumeDB(t *testing.T) (*ResumeDB, *ResumeAccount) {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	dbtest.RequireTestDB(t, dbURL)
@@ -213,21 +225,23 @@ func testResumeDB(t *testing.T) *ResumeDB {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Purge rows written by tests to keep them idempotent.
+	rdb := newResumeTestAccount(t, db)
+
+	// Purge THIS test account's agent rows to keep tests idempotent.
 	if _, err := db.pool.Exec(ctx,
-		`DELETE FROM resume_vectors WHERE user_name = $1 AND source = 'agent'`,
-		resumeVectorUser,
+		`DELETE FROM resume_vectors WHERE account_id = $1 AND source = 'agent'`,
+		rdb.AccountID(),
 	); err != nil {
 		t.Fatalf("cleanup resume_vectors: %v", err)
 	}
-	return db
+	return db, rdb
 }
 
 // TestResumeMemory_AddSearch_FTSPath exercises the full add→search round-trip
 // via the public ops API with no embedder (FTS path).
 // Falsification: removing the resume_vectors storage path breaks this test at the DB write.
 func TestResumeMemory_AddSearch_FTSPath(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	SetResumeDB(db)
 	t.Cleanup(func() { SetResumeDB(nil) })
 
@@ -237,7 +251,7 @@ func TestResumeMemory_AddSearch_FTSPath(t *testing.T) {
 
 	ctx := context.Background()
 
-	addResult, err := AddResumeMemory(ctx, "wrote distributed systems in Rust", "note")
+	addResult, err := AddResumeMemory(ctx, rdb.AccountID(), "wrote distributed systems in Rust", "note")
 	if err != nil {
 		t.Fatalf("AddResumeMemory: %v", err)
 	}
@@ -248,7 +262,7 @@ func TestResumeMemory_AddSearch_FTSPath(t *testing.T) {
 		t.Errorf("type = %q, want %q", addResult.Type, "note")
 	}
 
-	result, err := SearchResumeMemory(ctx, "Rust distributed systems", 5)
+	result, err := SearchResumeMemory(ctx, rdb.AccountID(), "Rust distributed systems", 5)
 	if err != nil {
 		t.Fatalf("SearchResumeMemory: %v", err)
 	}
@@ -274,7 +288,7 @@ func TestResumeMemory_AddSearch_FTSPath(t *testing.T) {
 // TestResumeMemory_IdempotentUpsert verifies that double-adding the same content
 // produces one row (ON CONFLICT DO UPDATE).
 func TestResumeMemory_IdempotentUpsert(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	SetResumeDB(db)
 	t.Cleanup(func() { SetResumeDB(nil) })
 	SetEmbedClient(nil)
@@ -282,17 +296,17 @@ func TestResumeMemory_IdempotentUpsert(t *testing.T) {
 	ctx := context.Background()
 	content := "idempotent note for dedup test"
 
-	if _, err := AddResumeMemory(ctx, content, "note"); err != nil {
+	if _, err := AddResumeMemory(ctx, rdb.AccountID(), content, "note"); err != nil {
 		t.Fatalf("first add: %v", err)
 	}
-	if _, err := AddResumeMemory(ctx, content, "note"); err != nil {
+	if _, err := AddResumeMemory(ctx, rdb.AccountID(), content, "note"); err != nil {
 		t.Fatalf("second add: %v", err)
 	}
 
 	var count int
 	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content=$2`,
-		resumeVectorUser, content,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content=$2`,
+		rdb.AccountID(), content,
 	).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -304,18 +318,18 @@ func TestResumeMemory_IdempotentUpsert(t *testing.T) {
 // TestResumeMemory_Update verifies that UpdateResumeMemory atomically mutates
 // the row and preserves the row id (memory_id unchanged after update).
 func TestResumeMemory_Update(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	SetResumeDB(db)
 	t.Cleanup(func() { SetResumeDB(nil) })
 	SetEmbedClient(nil)
 
 	ctx := context.Background()
 
-	if _, err := AddResumeMemory(ctx, "original content for update test", "goal"); err != nil {
+	if _, err := AddResumeMemory(ctx, rdb.AccountID(), "original content for update test", "goal"); err != nil {
 		t.Fatalf("AddResumeMemory: %v", err)
 	}
 
-	result, err := SearchResumeMemory(ctx, "original content for update test", 5)
+	result, err := SearchResumeMemory(ctx, rdb.AccountID(), "original content for update test", 5)
 	if err != nil {
 		t.Fatalf("SearchResumeMemory: %v", err)
 	}
@@ -324,7 +338,7 @@ func TestResumeMemory_Update(t *testing.T) {
 	}
 	memoryID := result.Results[0].MemoryID
 
-	updateResult, err := UpdateResumeMemory(ctx, memoryID, "updated content after mutation")
+	updateResult, err := UpdateResumeMemory(ctx, rdb.AccountID(), memoryID, "updated content after mutation")
 	if err != nil {
 		t.Fatalf("UpdateResumeMemory: %v", err)
 	}
@@ -337,12 +351,12 @@ func TestResumeMemory_Update(t *testing.T) {
 
 	var oldCount, newCount int
 	_ = db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='original content for update test'`,
-		resumeVectorUser,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content='original content for update test'`,
+		rdb.AccountID(),
 	).Scan(&oldCount)
 	_ = db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='updated content after mutation'`,
-		resumeVectorUser,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content='updated content after mutation'`,
+		rdb.AccountID(),
 	).Scan(&newCount)
 
 	if oldCount != 0 {
@@ -356,7 +370,7 @@ func TestResumeMemory_Update(t *testing.T) {
 // TestResumeDB_DimMismatch_FTSFallback calls UpsertVector directly with a
 // wrong-dim vector and verifies embedding is stored as NULL (FTS-only row).
 func TestResumeDB_DimMismatch_FTSFallback(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	if !db.HasEmbedding() {
 		t.Skip("embedding column absent (005 migration not applied on test DB) — skipping dim-mismatch test")
 	}
@@ -366,14 +380,14 @@ func TestResumeDB_DimMismatch_FTSFallback(t *testing.T) {
 
 	// Wrong dim: 3 instead of 1024.
 	shortVec := make([]float32, 3)
-	if _, err := db.UpsertVector(ctx, content, "note", shortVec); err != nil {
+	if _, err := rdb.UpsertVector(ctx, content, "note", shortVec); err != nil {
 		t.Fatalf("UpsertVector with wrong dim: %v", err)
 	}
 
 	var embeddingIsNull bool
 	if err := db.pool.QueryRow(ctx,
-		`SELECT embedding IS NULL FROM resume_vectors WHERE user_name=$1 AND content=$2`,
-		resumeVectorUser, content,
+		`SELECT embedding IS NULL FROM resume_vectors WHERE account_id=$1 AND content=$2`,
+		rdb.AccountID(), content,
 	).Scan(&embeddingIsNull); err != nil {
 		t.Fatalf("query embedding: %v", err)
 	}
@@ -385,7 +399,7 @@ func TestResumeDB_DimMismatch_FTSFallback(t *testing.T) {
 // TestResumeDB_VectorPath calls UpsertVector and SearchByVector directly to
 // verify the pgvector code path (no embed client needed — vec is precomputed).
 func TestResumeDB_VectorPath(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	if !db.HasEmbedding() {
 		t.Skip("embedding column absent (005 migration not applied on test DB) — skipping vector-path test")
 	}
@@ -397,7 +411,7 @@ func TestResumeDB_VectorPath(t *testing.T) {
 	vec := make([]float32, expectedEmbedDim)
 	vec[0] = 1.0
 
-	id, err := db.UpsertVector(ctx, content, "note", vec)
+	id, err := rdb.UpsertVector(ctx, content, "note", vec)
 	if err != nil {
 		t.Fatalf("UpsertVector: %v", err)
 	}
@@ -418,7 +432,7 @@ func TestResumeDB_VectorPath(t *testing.T) {
 	}
 
 	// SearchByVector must return the row (cosine similarity to itself = 1.0).
-	rows, err := db.SearchByVector(ctx, vec, 5)
+	rows, err := rdb.SearchByVector(ctx, vec, 5)
 	if err != nil {
 		t.Fatalf("SearchByVector: %v", err)
 	}
@@ -449,27 +463,27 @@ func TestResumeDB_VectorPath(t *testing.T) {
 // user_name only) causes the "other_type" row to be wiped, so the final count
 // assertion fails (got 0, want 1).
 func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	// Insert one source='profile' row with the type to be cleared and one that must survive.
-	if _, err := db.UpsertVectorWithSource(ctx, "clear target", memTypeResumeExp, nil, nil, sourceProfile); err != nil {
+	if _, err := rdb.UpsertVectorWithSource(ctx, "clear target", memTypeResumeExp, nil, nil, sourceProfile); err != nil {
 		t.Fatalf("UpsertVectorWithSource target: %v", err)
 	}
-	if _, err := db.UpsertVectorWithSource(ctx, "must survive", memTypeEnrichProj, nil, nil, sourceProfile); err != nil {
+	if _, err := rdb.UpsertVectorWithSource(ctx, "must survive", memTypeEnrichProj, nil, nil, sourceProfile); err != nil {
 		t.Fatalf("UpsertVectorWithSource survivor: %v", err)
 	}
 
 	// Clear only the resume_experience type.
-	if err := db.ClearVectors(ctx, memTypeResumeExp); err != nil {
+	if err := rdb.ClearVectors(ctx, memTypeResumeExp); err != nil {
 		t.Fatalf("ClearVectors: %v", err)
 	}
 
 	// resume_experience row must be gone.
 	var cleared int
 	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='clear target'`,
-		resumeVectorUser,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content='clear target'`,
+		rdb.AccountID(),
 	).Scan(&cleared); err != nil {
 		t.Fatalf("query cleared: %v", err)
 	}
@@ -480,8 +494,8 @@ func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
 	// enrich_project row must survive.
 	var survived int
 	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='must survive'`,
-		resumeVectorUser,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content='must survive'`,
+		rdb.AccountID(),
 	).Scan(&survived); err != nil {
 		t.Fatalf("query survived: %v", err)
 	}
@@ -497,21 +511,21 @@ func TestResumeDB_ClearVectors_Scoped(t *testing.T) {
 // destroyed such a manual row on every rebuild.
 //
 // Mutant — drop the `source = $2` filter from ClearVectors (back to
-// `WHERE user_name=$1 AND mem_type=ANY($2)`) → the manual resume_experience
+// `WHERE account_id=$1 AND mem_type=ANY($2)`) → the manual resume_experience
 // row is deleted → RED.
 func TestResumeDB_ClearVectors_PreservesAgentRows(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	// Manual memory sharing a derived mem_type but source='agent', ref_id=NULL —
 	// the row a rebuild must never destroy.
-	manualID, err := db.UpsertVector(ctx, "manual agent resume_experience memory", memTypeResumeExp, nil)
+	manualID, err := rdb.UpsertVector(ctx, "manual agent resume_experience memory", memTypeResumeExp, nil)
 	if err != nil {
 		t.Fatalf("UpsertVector manual: %v", err)
 	}
 
 	// The exact call BuildMasterResume makes before re-deriving.
-	if err := db.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+	if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
 		t.Fatalf("ClearVectors: %v", err)
 	}
 
@@ -544,19 +558,19 @@ func TestResumeDB_ClearVectors_PreservesAgentRows(t *testing.T) {
 // the mem_type filter) causes the "wrong type" row to appear in results, so the
 // assertion that only the matching row was returned fails.
 func TestResumeDB_SearchByTextScoped_MemTypeFilter(t *testing.T) {
-	db := testResumeDB(t)
+	_, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	// Insert two rows with different mem_types but identical keywords.
-	if _, err := db.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeExp, nil); err != nil {
+	if _, err := rdb.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeExp, nil); err != nil {
 		t.Fatalf("UpsertVector resume_experience: %v", err)
 	}
-	if _, err := db.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeAchv, nil); err != nil {
+	if _, err := rdb.UpsertVector(ctx, "golang distributed systems engineer", memTypeResumeAchv, nil); err != nil {
 		t.Fatalf("UpsertVector resume_achievement: %v", err)
 	}
 
 	// Search scoped to resume_experience only.
-	rows, err := db.SearchByTextScoped(ctx, "golang distributed systems", 10, []string{memTypeResumeExp})
+	rows, err := rdb.SearchByTextScoped(ctx, "golang distributed systems", 10, []string{memTypeResumeExp})
 	if err != nil {
 		t.Fatalf("SearchByTextScoped: %v", err)
 	}
@@ -582,11 +596,11 @@ func TestResumeDB_SearchByTextScoped_MemTypeFilter(t *testing.T) {
 // a row is inserted with source='agent' and non-nil ref_id → the assertion
 // that the call returned an error fails → RED.
 func TestUpsertVectorWithSource_RejectsAgentWithRefID(t *testing.T) {
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	ctx := context.Background()
 
 	refID := int64(12345)
-	_, err := db.UpsertVectorWithSource(ctx, "forbidden pairing test", "note", &refID, nil, sourceAgent)
+	_, err := rdb.UpsertVectorWithSource(ctx, "forbidden pairing test", "note", &refID, nil, sourceAgent)
 	if err == nil {
 		t.Fatal("UpsertVectorWithSource accepted source='agent' with non-nil ref_id — " +
 			"the invariant must be mechanically enforced, not just documented")
@@ -595,8 +609,8 @@ func TestUpsertVectorWithSource_RejectsAgentWithRefID(t *testing.T) {
 	// Verify no row was inserted.
 	var count int
 	if err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND content='forbidden pairing test'`,
-		resumeVectorUser,
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND content='forbidden pairing test'`,
+		rdb.AccountID(),
 	).Scan(&count); err != nil {
 		t.Fatal(err)
 	}

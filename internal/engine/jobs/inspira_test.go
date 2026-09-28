@@ -71,7 +71,7 @@ func TestSearchInspiraJobs_Fixture(t *testing.T) {
 	// We can't const-override, so use a temporary HTTP client redirect.
 	origClient := engine.Cfg.HTTPClient
 	engine.Cfg.HTTPClient = &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
 		Transport: &redirectTransport{target: srv.URL},
 	}
 	t.Cleanup(func() { engine.Cfg.HTTPClient = origClient })

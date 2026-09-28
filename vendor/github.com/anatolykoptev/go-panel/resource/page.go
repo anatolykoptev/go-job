@@ -84,6 +84,9 @@ func (p *Panel) MountPage(spec PageSpec) {
 	method := mountMethod(spec.Method)
 
 	suffix := strings.Trim(spec.Path, "/")
+	if suffix != "" {
+		p.pagePaths = append(p.pagePaths, suffix)
+	}
 	if suffix == "" {
 		if spec.Method != "" {
 			panic(`resource: MountPage Path:"" (index) must not set Method — the index route is always GET`)
@@ -101,6 +104,7 @@ func (p *Panel) MountPage(spec PageSpec) {
 		if a == "" {
 			panic("resource: MountPage alias must not be empty")
 		}
+		p.pagePaths = append(p.pagePaths, a)
 		p.mux.HandleFunc(method+" "+p.basePath+"/"+a, guarded)
 	}
 }
@@ -128,6 +132,14 @@ func (p *Panel) finalize() {
 			h = p.guard("", p.handleIndex)
 		}
 		p.mux.HandleFunc("GET "+p.basePath+"/{$}", h)
+		// finalized BEFORE mountTrash, which can panic on a route collision.
+		// sync.Once marks the call done even when it panics, so a consumer that
+		// recovers that panic would otherwise hold a Panel whose mux is frozen
+		// while finalized still said false — MountPage would keep accepting
+		// mounts that finalize() will never look at again.
 		p.finalized = true
+		// After the index, and only here: the Trash page fans out over every
+		// registered resource, so it cannot be mounted from Register.
+		p.mountTrash()
 	})
 }

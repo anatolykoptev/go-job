@@ -16,10 +16,10 @@ func TestCoverLetterToneNormalization(t *testing.T) {
 		{"professional", "professional"},
 		{"friendly", "friendly"},
 		{"concise", "concise"},
-		{"", "professional"},           // default
+		{"", "professional"},             // default
 		{"PROFESSIONAL", "professional"}, // case-insensitive
-		{"invalid", "professional"},    // unknown → default
-		{"casual", "professional"},     // unknown → default
+		{"invalid", "professional"},      // unknown → default
+		{"casual", "professional"},       // unknown → default
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
