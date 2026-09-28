@@ -244,6 +244,9 @@ github.com/klauspost/compress/internal/le
 github.com/klauspost/compress/internal/snapref
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
+# github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
+## explicit; go 1.24.1
+github.com/ledongthuc/pdf
 # github.com/markusmobius/go-dateparser v1.2.4
 ## explicit; go 1.24.1
 github.com/markusmobius/go-dateparser
