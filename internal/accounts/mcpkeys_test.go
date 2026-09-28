@@ -194,7 +194,7 @@ func TestKeyStore_RevokeForAccount(t *testing.T) {
 	ctx := context.Background()
 	owner := opUUID(t, op)
 
-	other, created, err := accounts.CreateAccount(ctx, pool, "rev-other@t.example", "other", nil, "user")
+	other, created, err := accounts.CreateAccount(ctx, pool, "rev-other@t.example", "other", "test-hash", "user")
 	require.NoError(t, err)
 	require.True(t, created)
 

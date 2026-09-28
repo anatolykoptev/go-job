@@ -71,7 +71,7 @@ func seedResumeProfile(t *testing.T, pool *pgxpool.Pool, skills [][3]string, dom
 	require.NoError(t, err, "probe panel_accounts")
 	if reg != nil {
 		accountID, _, err = accounts.CreateAccount(ctx, pool,
-			"score-profile-"+uuid.NewString()[:12]+"@example.com", "score test", nil, "user")
+			"score-profile-"+uuid.NewString()[:12]+"@example.com", "score test", "test-hash", "user")
 		require.NoError(t, err, "seed fixture account")
 	} else {
 		accountID = uuid.New()

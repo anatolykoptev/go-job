@@ -1,14 +1,17 @@
 // cmd/gojob-admin is the operator-run account/key provisioning CLI (plan
 // ADR-12). It is invoked over ssh against DATABASE_URL and owns the
-// panel_accounts + mcp_api_keys lifecycle: there is no public registration
-// path and no HTTP surface — this binary is the only provisioning interface.
+// panel_accounts + mcp_api_keys lifecycle: activation/deactivation and
+// password backfill are operator-only; self-service registration and
+// password change live in the cabinet (P6).
 //
 // Usage:
 //
 //	DATABASE_URL=postgres://... gojob-admin account create --email E --name N [--password P] [--role user|admin] [--notify-chat-id ID]
+//	                                             (omit --password to generate a temporary one, printed once)
 //	DATABASE_URL=postgres://... gojob-admin account list
 //	DATABASE_URL=postgres://... gojob-admin account activate (--id UUID | --email E)
 //	DATABASE_URL=postgres://... gojob-admin account deactivate (--id UUID | --email E)
+//	DATABASE_URL=postgres://... gojob-admin account set-password (--id UUID | --email E) [--password P]
 //	DATABASE_URL=postgres://... gojob-admin key mint --account ID_OR_EMAIL --label L
 //	DATABASE_URL=postgres://... gojob-admin key list [--account ID_OR_EMAIL]
 //	DATABASE_URL=postgres://... gojob-admin key revoke (--id UUID | --prefix P)
@@ -20,7 +23,8 @@
 //
 // Secret hygiene: `key mint` prints the plaintext token to stdout exactly once
 // — it is the only place a usable credential ever appears (the table stores
-// sha256 + an 8-char prefix). Nothing here logs through slog, and no list
+// sha256 + an 8-char prefix). Generated account passwords print to stderr once
+// the same way; the table stores only bcrypt hashes. Nothing here logs through slog, and no list
 // command selects password_hash or key_hash.
 //
 // Scaffolding: stdlib flag subcommands, matching the repo's other cmd/
@@ -30,6 +34,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -57,7 +63,7 @@ func main() {
 func run(ctx context.Context, out, errOut io.Writer, args []string) error {
 	if len(args) < 2 {
 		usage(errOut)
-		return errors.New("expected a command: account create|list|activate|deactivate | key mint|list|revoke")
+		return errors.New("expected a command: account create|list|activate|deactivate|set-password | key mint|list|revoke")
 	}
 
 	// Every handler gets its parsed FlagSet plus a closure over its validated
@@ -72,7 +78,7 @@ func run(ctx context.Context, out, errOut io.Writer, args []string) error {
 		email := fs.String("email", "", "account email — the bcrypt-login identifier (required)")
 		name := fs.String("name", "", "display name")
 		password := fs.String("password", "",
-			"bcrypt-login password; omit for a key-only account (password_hash stays NULL)")
+			"bcrypt-login password; omit to auto-generate a temporary one (printed once — the user rotates it in the cabinet)")
 		role := fs.String("role", "user",
 			"account role: 'user' or 'admin'; 'owner' is never assignable — the panel_accounts CHECK rejects it")
 		notifyChat := fs.Int64("notify-chat-id", 0,
@@ -124,6 +130,14 @@ func run(ctx context.Context, out, errOut io.Writer, args []string) error {
 		}
 		fn = func(ctx context.Context, pool *pgxpool.Pool, out, _ io.Writer) error {
 			return accountSetActiveCmd(ctx, pool, out, ref, true)
+		}
+	case "account set-password":
+		ref, password, err := setPasswordFlags(args[2:], errOut)
+		if err != nil {
+			return err
+		}
+		fn = func(ctx context.Context, pool *pgxpool.Pool, out, errOut io.Writer) error {
+			return accountSetPassword(ctx, pool, out, ref, password)
 		}
 	case "key mint":
 		fs := newFlagSet("key mint", errOut)
@@ -192,13 +206,78 @@ func newFlagSet(name string, errOut io.Writer) *flag.FlagSet {
 	return fs
 }
 
+// setPasswordFlags parses `account set-password` flags: (--id UUID | --email E)
+// plus an optional --password (omitted -> a temporary one is generated).
+func setPasswordFlags(args []string, errOut io.Writer) (ref, password string, err error) {
+	fs := newFlagSet("account set-password", errOut)
+	id := fs.String("id", "", "account UUID")
+	email := fs.String("email", "", "account email")
+	pw := fs.String("password", "", "new bcrypt-login password (omit -> generate a temporary one)")
+	if err := fs.Parse(args); err != nil {
+		return "", "", err
+	}
+	ref, err = exactlyOneRef("account set-password", *id, *email)
+	if err != nil {
+		return "", "", err
+	}
+	return ref, *pw, nil
+}
+
+// genTempPassword returns a 24-char URL-safe random password — long enough
+// for the 10..72 policy with margin, short enough to relay in chat.
+func genTempPassword() (string, error) {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// accountSetPassword backs `account set-password` — rotates the bcrypt hash
+// for an existing account (operator recovery path; the in-cabinet self-serve
+// flow stays the user's own).
+func accountSetPassword(ctx context.Context, pool *pgxpool.Pool, out io.Writer, ref, password string) error {
+	generated := false
+	if password == "" {
+		g, err := genTempPassword()
+		if err != nil {
+			return fmt.Errorf("account set-password: generate temp password: %w", err)
+		}
+		password = g
+		generated = true
+	}
+	if len(password) < 10 || len(password) > 72 {
+		return errors.New("account set-password: password must be 10-72 characters (bcrypt truncation boundary)")
+	}
+	id, err := accounts.ResolveAccountID(ctx, pool, ref)
+	if err != nil {
+		return fmt.Errorf("account set-password: %w", err)
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("account set-password: hash: %w", err)
+	}
+	if err := auth.NewPgxAccountStore(pool).UpdatePasswordHash(ctx, id.String(), hash); err != nil {
+		return fmt.Errorf("account set-password: %w", err)
+	}
+	if generated {
+		// Printed only after the update landed — a credential that was never
+		// stored must never reach the operator's terminal.
+		fmt.Fprintf(out, "temporary password (shown once — rotate in the cabinet or via account set-password): %s\n", password)
+	}
+	fmt.Fprintf(out, "password updated: %s\n", id)
+	return nil
+}
+
 func usage(w io.Writer) {
 	fmt.Fprint(w, `gojob-admin — operator account/key provisioning (reads DATABASE_URL)
 
   account create --email E --name N [--password P] [--role user|admin] [--notify-chat-id ID]
+                                          omit --password to generate a temporary one (printed once)
   account list
   account activate (--id UUID | --email E)
   account deactivate (--id UUID | --email E)
+  account set-password (--id UUID | --email E) [--password P]   omit to generate
   key mint --account ID_OR_EMAIL --label L     prints the token ONCE — store it
   key list [--account ID_OR_EMAIL]
   key revoke (--id UUID | --prefix P)
@@ -232,13 +311,21 @@ func exactlyOneRef(cmd, a, b string) (string, error) {
 func accountCreate(ctx context.Context, pool *pgxpool.Pool, out, errOut io.Writer,
 	email, name, password, role string, notifyChatID int64) error {
 
-	var hash *string
-	if password != "" {
-		h, err := auth.HashPassword(password)
+	generated := false
+	if password == "" {
+		g, err := genTempPassword()
 		if err != nil {
-			return fmt.Errorf("account create: hash password: %w", err)
+			return fmt.Errorf("account create: generate temp password: %w", err)
 		}
-		hash = &h
+		password = g
+		generated = true
+	}
+	if len(password) < 10 || len(password) > 72 {
+		return errors.New("account create: password must be 10-72 characters (bcrypt truncation boundary)")
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("account create: hash password: %w", err)
 	}
 	id, created, err := accounts.CreateAccount(ctx, pool, email, name, hash, role)
 	if err != nil {
@@ -246,6 +333,11 @@ func accountCreate(ctx context.Context, pool *pgxpool.Pool, out, errOut io.Write
 	}
 	if !created {
 		fmt.Fprintf(errOut, "warning: account %s already exists (id %s) — left unchanged\n", email, id)
+	} else if generated {
+		// Printed to stdout exactly once — same credential convention as
+		// `key mint`. Gated on created: on conflict the stored row wins and
+		// this generated value was never recorded.
+		fmt.Fprintf(out, "temporary password (shown once — rotate in the cabinet or via account set-password): %s\n", password)
 	}
 	if notifyChatID != 0 {
 		stored, err := accounts.SetNotifyChatID(ctx, pool, id, notifyChatID)
