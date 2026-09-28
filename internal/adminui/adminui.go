@@ -124,7 +124,6 @@ func New(store *hunt.Store, authority *applications.Authority, acctStore *auth.P
 	p.AddNav(shell.NavItem{ID: navIDDashboard, Label: "Dashboard", URL: adminBasePath + "/dashboard"})
 	p.AddNav(shell.NavItem{Group: "Profile"})
 	p.AddNav(shell.NavItem{ID: "resume", Label: "Resume", Icon: "📄", URL: "/admin/resume"})
-	p.AddNav(shell.NavItem{ID: "resume-import", Label: "Import", Icon: "📥", URL: "/admin/resume/import"})
 	if d.selfServe && keyStore != nil {
 		p.AddNav(shell.NavItem{ID: "keys", Label: "MCP Keys", Icon: "🔑", URL: "/admin/keys/"})
 	}

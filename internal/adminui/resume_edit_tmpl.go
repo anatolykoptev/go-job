@@ -32,6 +32,7 @@ const resumeEditTmplSrc = `<style>
 <div class="re">
   <div class="re-nav">
     <a href="/admin/resume">&larr; View resume</a>
+    <a href="/admin/resume/import">&#x1F4E5; Import / Update</a>
     <span style="color:#334155">|</span>
     <span style="color:#94a3b8;font-size:.85rem">Edit Resume</span>
   </div>

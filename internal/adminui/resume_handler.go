@@ -144,7 +144,7 @@ const resumeTmplSrc = `<style>
     {{end}}
   </div>
 
-  <div style="margin-bottom:1rem"><a href="/admin/resume/edit" style="display:inline-block;padding:.3rem .75rem;background:#1e293b;border:1px solid #334155;border-radius:.375rem;color:#60a5fa;text-decoration:none;font-size:.85rem">&#x270E; Edit resume</a></div>
+  <div style="margin-bottom:1rem;display:flex;gap:.5rem"><a href="/admin/resume/edit" style="display:inline-block;padding:.3rem .75rem;background:#1e293b;border:1px solid #334155;border-radius:.375rem;color:#60a5fa;text-decoration:none;font-size:.85rem">&#x270E; Edit resume</a><a href="/admin/resume/import" style="display:inline-block;padding:.3rem .75rem;background:#1e293b;border:1px solid #334155;border-radius:.375rem;color:#60a5fa;text-decoration:none;font-size:.85rem">&#x1F4E5; Import / Update</a></div>
   <div class="stat-bar">
     <div><span>Experiences</span><strong>{{.Stats.TotalExperiences}}</strong></div>
     <div><span>Skills</span><strong>{{.Stats.TotalSkills}}</strong></div>
