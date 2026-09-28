@@ -44,7 +44,7 @@ func testAccount(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	aid, _, err := accounts.CreateAccount(ctx, pool,
-		"oversize-test-"+uuid.NewString()[:12]+"@example.com", "oversize test", nil, "user")
+		"oversize-test-"+uuid.NewString()[:12]+"@example.com", "oversize test", "test-hash", "user")
 	require.NoError(t, err, "accounts.CreateAccount")
 	return aid
 }

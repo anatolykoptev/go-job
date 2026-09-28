@@ -47,7 +47,7 @@ func newWorkerAccount(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	aid, _, err := accounts.CreateAccount(ctx, pool,
-		"worker-test-"+uuid.NewString()[:12]+"@example.com", "worker test", nil, "user")
+		"worker-test-"+uuid.NewString()[:12]+"@example.com", "worker test", "test-hash", "user")
 	require.NoError(t, err, "accounts.CreateAccount")
 	return aid
 }

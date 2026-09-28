@@ -95,18 +95,6 @@ func TestPendingLoginHint(t *testing.T) {
 	require.True(t, ok, "pending passworded account must hint")
 	assert.Contains(t, msg, "not yet active")
 
-	// inactive + passwordless (key-only) → generic. accounts.CreateAccount
-	// (the *string-hash variant) stores a real NULL — auth.PgxAccountStore's
-	// own CreateAccount takes string and could only store '' (which IS NOT
-	// NULL and would wrongly hint).
-	keyID, created, err := accounts.CreateAccount(ctx, pool, "keyonly@t.example", "k", nil, "user")
-	require.NoError(t, err)
-	require.True(t, created)
-	require.NoError(t, acctStore.SetActive(ctx, keyID.String(), false))
-	msg, ok = hint(ctx, "keyonly@t.example")
-	assert.False(t, ok)
-	assert.Empty(t, msg)
-
 	// active + passworded → generic (the hint never fires for a live
 	// account — production won't even reach it, but the function must not
 	// leak "this email exists" when probed directly).
@@ -137,7 +125,7 @@ func TestCreateAccount_NormalizesEmail(t *testing.T) {
 	assert.Equal(t, "op.seed@t.example", email, "seeded operator email must be normalized at the write seam")
 
 	hash := "h"
-	id, created, err := accounts.CreateAccount(ctx, pool, "Mixed.Case@T.example", "m", &hash, "user")
+	id, created, err := accounts.CreateAccount(ctx, pool, "Mixed.Case@T.example", "m", hash, "user")
 	require.NoError(t, err)
 	require.True(t, created)
 	require.NoError(t, pool.QueryRow(ctx,
@@ -148,4 +136,55 @@ func TestCreateAccount_NormalizesEmail(t *testing.T) {
 	acct, err := acctStore.GetByID(ctx, id.String())
 	require.NoError(t, err)
 	require.NotNil(t, acct)
+}
+
+// TestCreateAccount_PasswordRequired: the account model has no key-only
+// shape — CreateAccount rejects an empty hash at the API layer and the
+// server-boot gate (EnsurePasswordRequired) constrains
+// panel_accounts.password_hash NOT NULL + CHECK <> ” once no NULL rows
+// survive. The gate deliberately lives outside Bootstrap so gojob-admin can
+// remediate a legacy DB.
+func TestCreateAccount_PasswordRequired(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	dbtest.DropAccountTables(t, pool)
+	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
+	require.NoError(t, err)
+
+	_, _, err = accounts.CreateAccount(ctx, pool, "nopw@t.example", "n", "", "user")
+	require.Error(t, err, "empty password hash must be rejected")
+
+	// Legacy NULL row → the gate refuses and names the remediation verb +
+	// affected email (gojob-admin runs Bootstrap only, so the verb is never
+	// deadlocked).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO panel_accounts (email, name, role) VALUES ('legacy-null@t.example','x','user')`)
+	require.NoError(t, err)
+	err = accounts.EnsurePasswordRequired(ctx, pool)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "set-password")
+	assert.Contains(t, err.Error(), "legacy-null@t.example")
+
+	// Backfill via the same primitive set-password uses → gate then applies
+	// NOT NULL + the non-empty CHECK, and stays idempotent on re-run.
+	_, err = pool.Exec(ctx,
+		`UPDATE panel_accounts SET password_hash = 'h' WHERE email = 'legacy-null@t.example'`)
+	require.NoError(t, err)
+	require.NoError(t, accounts.EnsurePasswordRequired(ctx, pool))
+	require.NoError(t, accounts.EnsurePasswordRequired(ctx, pool), "gate must be idempotent")
+
+	var nullable string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT is_nullable FROM information_schema.columns
+		 WHERE table_name = 'panel_accounts' AND column_name = 'password_hash'`).Scan(&nullable))
+	assert.Equal(t, "NO", nullable, "password_hash must be NOT NULL after the gate")
+
+	var checks int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_constraint WHERE conname = 'panel_accounts_password_nonempty'`).Scan(&checks))
+	assert.Equal(t, 1, checks, "non-empty CHECK must exist")
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO panel_accounts (email, name, role, password_hash) VALUES ('emptypw@t.example','x','user','')`)
+	require.Error(t, err, "empty-string hash must violate the CHECK")
 }

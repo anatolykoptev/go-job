@@ -131,7 +131,7 @@ func newUserAccount(t *testing.T, pool *pgxpool.Pool, email, pw string) uuid.UUI
 	t.Helper()
 	hash, err := auth.HashPassword(pw)
 	require.NoError(t, err)
-	id, created, err := accounts.CreateAccount(context.Background(), pool, email, "test user", &hash, "user")
+	id, created, err := accounts.CreateAccount(context.Background(), pool, email, "test user", hash, "user")
 	require.NoError(t, err)
 	require.True(t, created)
 	return id

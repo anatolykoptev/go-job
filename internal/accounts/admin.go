@@ -40,17 +40,21 @@ func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// CreateAccount inserts a panel_accounts row with an explicitly NULL-able
-// password hash (nil hash → NULL: a key-only account must not satisfy
-// GetByEmail's password_hash IS NOT NULL filter). Email conflict returns
+// CreateAccount inserts a panel_accounts row. Every account carries a
+// password hash — the SaaS model has no key-only accounts (the operator
+// CLI auto-generates a temporary password when --password is omitted, and
+// Bootstrap constrains the column NOT NULL). Email conflict returns
 // created=false with the existing row's id — idempotent, matching the
 // framework CreateAccount contract.
 //
 // The role argument is NOT validated here — the CLI validates against
 // {user,admin} before calling and the panel_accounts_role_check CHECK
 // constraint (Bootstrap) makes anything else unwritable at the DB layer.
-func CreateAccount(ctx context.Context, pool *pgxpool.Pool, email, name string, passwordHash *string, role string) (uuid.UUID, bool, error) {
+func CreateAccount(ctx context.Context, pool *pgxpool.Pool, email, name, passwordHash string, role string) (uuid.UUID, bool, error) {
 	email = normalizeEmail(email)
+	if passwordHash == "" {
+		return uuid.Nil, false, errors.New("accounts: password hash is required — every account must be login-capable")
+	}
 	var id uuid.UUID
 	err := pool.QueryRow(ctx, `
 		INSERT INTO panel_accounts (email, name, password_hash, role, active)

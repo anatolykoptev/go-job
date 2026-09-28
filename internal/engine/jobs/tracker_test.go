@@ -126,7 +126,7 @@ func TestTracker_SavedToApplied_TransitionVisibleInList(t *testing.T) {
 		t.Fatalf("accounts bootstrap: %v", err)
 	}
 	aid, _, err := accounts.CreateAccount(baseCtx, pool,
-		"tracker-test-"+t.Name()+"@example.com", "tracker test", nil, "user")
+		"tracker-test-"+t.Name()+"@example.com", "tracker test", "test-hash", "user")
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}

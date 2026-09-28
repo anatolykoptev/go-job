@@ -244,3 +244,68 @@ END $$;
 	}
 	return nil
 }
+
+// EnsurePasswordRequired enforces the P6.2 invariant on the SERVER boot path
+// (bootstrapAccounts calls it after Bootstrap): panel_accounts.password_hash
+// must be NOT NULL and non-empty — every account is login-capable, the
+// key-only shape is gone.
+//
+// It deliberately lives OUTSIDE Bootstrap: gojob-admin must keep working on a
+// legacy DB carrying NULL rows — `account set-password` is the remediation
+// verb the refusal error names, and it could not run if Bootstrap refused.
+// A surviving NULL rows set → loud error listing the emails (operator
+// backfills via `gojob-admin account set-password`, then reboots); clean →
+// SET NOT NULL. The CHECK (password_hash <> ”) closes the ”-versus-NULL
+// hole: ” satisfies NOT NULL but can never authenticate (bcrypt compare
+// fails), so it is rejected at the schema layer too.
+//
+// Idempotent: the is_nullable probe short-circuits the ALTER on re-runs and
+// the CHECK is added via a pg_constraint-existence DO block.
+func EnsurePasswordRequired(ctx context.Context, pool *pgxpool.Pool) error {
+	var nullable string
+	if err := pool.QueryRow(ctx, `
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'panel_accounts' AND column_name = 'password_hash'`).Scan(&nullable); err != nil {
+		return fmt.Errorf("constrain panel_accounts.password_hash: probe: %w", err)
+	}
+	if nullable == "YES" {
+		var emails []string
+		rows, err := pool.Query(ctx,
+			`SELECT email FROM panel_accounts WHERE password_hash IS NULL OR password_hash = '' ORDER BY email LIMIT 20`)
+		if err != nil {
+			return fmt.Errorf("constrain panel_accounts.password_hash: list passwordless: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e string
+			if err := rows.Scan(&e); err != nil {
+				return fmt.Errorf("constrain panel_accounts.password_hash: scan: %w", err)
+			}
+			emails = append(emails, e)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("constrain panel_accounts.password_hash: list: %w", err)
+		}
+		if len(emails) > 0 {
+			return fmt.Errorf("constrain refused: %d account(s) have no usable password_hash %v — "+
+				"key-only accounts were removed; set a password via "+
+				"`gojob-admin account set-password` (or delete the account), then reboot", len(emails), emails)
+		}
+		if _, err := pool.Exec(ctx,
+			`ALTER TABLE panel_accounts ALTER COLUMN password_hash SET NOT NULL`); err != nil {
+			return fmt.Errorf("constrain panel_accounts.password_hash: %w", err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'panel_accounts_password_nonempty') THEN
+		ALTER TABLE panel_accounts ADD CONSTRAINT panel_accounts_password_nonempty
+			CHECK (password_hash <> '');
+	END IF;
+END $$`); err != nil {
+		return fmt.Errorf("constrain panel_accounts.password_hash: nonempty check: %w", err)
+	}
+	return nil
+}

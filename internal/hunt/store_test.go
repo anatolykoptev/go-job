@@ -182,7 +182,7 @@ func newScoreAccount(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	_, _, err := accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	aid, _, err := accounts.CreateAccount(ctx, pool,
-		"hunt-test-"+uuid.NewString()[:12]+"@example.com", "hunt test", nil, "user")
+		"hunt-test-"+uuid.NewString()[:12]+"@example.com", "hunt test", "test-hash", "user")
 	require.NoError(t, err, "accounts.CreateAccount")
 	return aid
 }

@@ -282,7 +282,7 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	testAccountID, _, err := accounts.CreateAccount(ctx, pool,
-		"mig-json-"+uuid.NewString()[:12]+"@example.com", "mig json test", nil, "user")
+		"mig-json-"+uuid.NewString()[:12]+"@example.com", "mig json test", "test-hash", "user")
 	require.NoError(t, err, "accounts.CreateAccount")
 	acct := store.ForAccount(testAccountID)
 

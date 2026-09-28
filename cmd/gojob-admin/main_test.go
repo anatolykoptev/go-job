@@ -77,7 +77,7 @@ func TestAccount_CreateThenList(t *testing.T) {
 	pool := openPool(t)
 
 	out, _, err := runCLI(t, "account", "create",
-		"--email", "roundtrip@t.dev", "--name", "Round Trip", "--password", "s3cret-pw")
+		"--email", "roundtrip@t.dev", "--name", "Round Trip", "--password", "s3cret-pw-long")
 	require.NoError(t, err)
 	id := fieldLine(t, out, "id")
 	_, perr := uuid.Parse(id)
@@ -263,4 +263,67 @@ func TestAccount_Activate(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, auth.ErrAccountNotFound) || strings.Contains(err.Error(), "not found"),
 		"unknown account must surface not-found, got %v", err)
+}
+
+// TestAccount_CreateGeneratedPassword: omitting --password mints a temporary
+// one (stdout, shown once) that actually verifies against the stored hash —
+// and a repeat create on the same email prints NO password (the stored row
+// wins; a never-stored credential must not reach the terminal).
+func TestAccount_CreateGeneratedPassword(t *testing.T) {
+	pool := openPool(t)
+
+	out, _, err := runCLI(t, "account", "create", "--email", "gen@t.dev", "--name", "G")
+	require.NoError(t, err)
+	pw := printedPassword(t, out)
+	require.GreaterOrEqual(t, len(pw), 10)
+
+	require.True(t,
+		auth.VerifyAccountPassword(context.Background(), auth.NewPgxAccountStore(pool), "gen@t.dev", pw),
+		"generated password must verify against the stored hash")
+
+	out, _, err = runCLI(t, "account", "create", "--email", "gen@t.dev", "--name", "G")
+	require.NoError(t, err)
+	require.Contains(t, out, "exists: true")
+	require.NotContains(t, out, "temporary password",
+		"conflict path must never print a credential that was not stored")
+}
+
+// TestAccount_SetPassword: resolve by email, explicit + generated legs,
+// length policy, unknown ref. The updated hash must verify immediately.
+func TestAccount_SetPassword(t *testing.T) {
+	pool := openPool(t)
+
+	_, _, err := runCLI(t, "account", "create",
+		"--email", "sp@t.dev", "--name", "S", "--password", "first-password-1")
+	require.NoError(t, err)
+
+	_, _, err = runCLI(t, "account", "set-password", "--email", "sp@t.dev", "--password", "short")
+	require.Error(t, err, "below-minimum password must be rejected")
+
+	_, _, err = runCLI(t, "account", "set-password", "--email", "nobody@t.dev", "--password", "valid-password-1")
+	require.Error(t, err, "unknown account must error")
+
+	out, _, err := runCLI(t, "account", "set-password", "--email", "sp@t.dev")
+	require.NoError(t, err)
+	pw := printedPassword(t, out)
+	require.True(t,
+		auth.VerifyAccountPassword(context.Background(), auth.NewPgxAccountStore(pool), "sp@t.dev", pw),
+		"generated set-password must verify against the stored hash")
+
+	_, _, err = runCLI(t, "account", "set-password", "--email", "sp@t.dev", "--password", "second-password-2")
+	require.NoError(t, err)
+	require.True(t,
+		auth.VerifyAccountPassword(context.Background(), auth.NewPgxAccountStore(pool), "sp@t.dev", "second-password-2"))
+	require.False(t,
+		auth.VerifyAccountPassword(context.Background(), auth.NewPgxAccountStore(pool), "sp@t.dev", pw),
+		"superseded generated password must no longer verify")
+}
+
+// printedPassword extracts the one-shot credential from CLI output — the
+// "temporary password (shown once…): <pw>" line shared by create/set-password.
+func printedPassword(t *testing.T, output string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^temporary password.*:\s*(\S+)\s*$`).FindStringSubmatch(output)
+	require.NotNil(t, m, "output must print a temporary password line, got:\n%s", output)
+	return m[1]
 }
