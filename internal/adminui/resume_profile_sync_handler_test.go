@@ -16,14 +16,18 @@ import (
 	"github.com/anatolykoptev/go-panel/tenant"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // openResumeSyncTestDB connects to DATABASE_URL (must be *_test), publishes the
 // pool as the package-level ResumeDB (so the handler's jobs.GetResumeDB() and
-// the sync see it), purges test rows, and inserts a fresh person. Returns the
-// person id. Cleans up on test end.
-func openResumeSyncTestDB(t *testing.T) (personID int) {
+// the sync see it), creates a fresh panel_accounts row (P4: every resume write
+// is account-owned — the account is the bound identity, replacing the legacy
+// user_name scope), purges that account's test rows, and inserts a fresh
+// person OWNED BY that account. Returns (accountID, personID). Cleans up on
+// test end.
+func openResumeSyncTestDB(t *testing.T) (aid uuid.UUID, personID int) {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	dbtest.RequireTestDB(t, dsn)
@@ -40,19 +44,22 @@ func openResumeSyncTestDB(t *testing.T) (personID int) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Purge any rows left by a previous run.
+	aid = newTestAccount(t, pool)
+	rdb := db.ForAccount(aid)
+
+	// Purge this account's rows left by a previous run.
 	if _, err := db.Pool().Exec(ctx,
-		`DELETE FROM resume_vectors WHERE user_name = $1`, jobs.ResumeVectorUser(),
+		`DELETE FROM resume_vectors WHERE account_id = $1`, aid,
 	); err != nil {
 		t.Fatalf("purge resume_vectors: %v", err)
 	}
 
-	pid, err := db.InsertPerson(ctx, jobs.PersonRecord{Name: "Handler Sync Test"})
+	pid, err := rdb.InsertPerson(ctx, jobs.PersonRecord{Name: "Handler Sync Test"})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = db.Pool().Exec(ctx, `DELETE FROM resume_vectors WHERE user_name = $1`, jobs.ResumeVectorUser())
+		_, _ = db.Pool().Exec(ctx, `DELETE FROM resume_vectors WHERE account_id = $1`, aid)
 		_, _ = db.Pool().Exec(ctx, `DELETE FROM resume_achievements WHERE person_id = $1`, pid)
 		_, _ = db.Pool().Exec(ctx, `DELETE FROM resume_projects WHERE person_id = $1`, pid)
 		_, _ = db.Pool().Exec(ctx, `DELETE FROM resume_experiences WHERE person_id = $1`, pid)
@@ -67,7 +74,7 @@ func openResumeSyncTestDB(t *testing.T) (personID int) {
 	jobs.SetEmbedClient(nil)
 	t.Cleanup(func() { jobs.SetEmbedClient(prev) })
 
-	return pid
+	return aid, pid
 }
 
 // TestResumeExperienceWriterSave_SyncsVectors proves the experiences Writer's
@@ -77,10 +84,11 @@ func openResumeSyncTestDB(t *testing.T) (personID int) {
 //
 // Mutant — remove the AfterSave hook from the Writer → no derived row → RED.
 func TestResumeExperienceWriterSave_SyncsVectors(t *testing.T) {
-	pid := openResumeSyncTestDB(t)
+	aid, _ := openResumeSyncTestDB(t)
 
-	// Build the experiences resource and extract its Writer Save + AfterSave.
-	res := experiencesResource(nil) // pool not needed — Lister uses GetResumeDB
+	// Build the experiences resource bound to the test account and extract
+	// its Writer Save + AfterSave.
+	res := experiencesResource(nil, fixedAccount(aid)) // pool not needed — Lister uses GetResumeDB
 	if res.Writer == nil || res.Writer.Save == nil {
 		t.Fatal("experiences resource Writer or Save is nil")
 	}
@@ -112,9 +120,9 @@ func TestResumeExperienceWriterSave_SyncsVectors(t *testing.T) {
 	)
 	if err := pool.QueryRow(context.Background(),
 		`SELECT source, ref_id FROM resume_vectors
-		 WHERE user_name = $1 AND source = $2 AND mem_type = $3 AND ref_id IS NOT NULL
+		 WHERE account_id = $1 AND source = $2 AND mem_type = $3 AND ref_id IS NOT NULL
 		 LIMIT 1`,
-		jobs.ResumeVectorUser(), jobs.SourceProfile(), "resume_experience",
+		aid, jobs.SourceProfile(), "resume_experience",
 	).Scan(&source, &refID); err != nil {
 		t.Fatalf("no source='profile' derived row found after Writer.Save + AfterSave — "+
 			"the hook must invoke the profile vector sync (mutation→sync): %v", err)
@@ -127,8 +135,8 @@ func TestResumeExperienceWriterSave_SyncsVectors(t *testing.T) {
 	}
 
 	_ = pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM resume_vectors WHERE user_name=$1 AND source=$2 AND mem_type=$3`,
-		jobs.ResumeVectorUser(), jobs.SourceProfile(), "resume_experience",
+		`SELECT count(*) FROM resume_vectors WHERE account_id=$1 AND source=$2 AND mem_type=$3`,
+		aid, jobs.SourceProfile(), "resume_experience",
 	).Scan(&rowCount)
 	if rowCount != 1 {
 		t.Errorf("expected exactly 1 derived experience row, got %d (no duplicates)", rowCount)
@@ -138,5 +146,4 @@ func TestResumeExperienceWriterSave_SyncsVectors(t *testing.T) {
 	if int(*refID) == 0 {
 		t.Errorf("ref_id = %v, want a positive experience id", *refID)
 	}
-	_ = pid
 }

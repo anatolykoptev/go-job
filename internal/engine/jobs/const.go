@@ -50,10 +50,6 @@ const (
 // Tone options.
 const toneConcise = "concise"
 
-// resumeVectorUser is the single-source user key for all resume_vectors rows.
-// Single place per fitness function F3.
-const resumeVectorUser = "gojob"
-
 // Craigslist city slug.
 const craigslistCityNewYork = "newyork"
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -128,7 +129,12 @@ func registerHuntList(server *mcp.Server) {
 				Limit:         limit,
 				Offset:        in.Offset,
 			}
-			entries, err := store.ListBounties(ctx, f)
+			// Account-bound read: BountyFilter.Stage joins hunt_ratings, which
+			// is per-account. A ctx without a verified account → uuid.Nil →
+			// stage-filtered results are empty (fail-closed), corpus rows
+			// themselves stay global.
+			aid, _ := accounts.AccountFrom(ctx)
+			entries, err := store.ForAccount(aid).ListBounties(ctx, f)
 			if err != nil {
 				return nil, huntListOutput{}, fmt.Errorf("hunt_list bounties: %w", err)
 			}

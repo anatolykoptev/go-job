@@ -1,22 +1,29 @@
 // cmd/migrate-application-pdfs is a one-shot migration that copies
 // application PDFs from the legacy slug-based directory (APPLICATIONS_DIR)
-// into the canonical uploads layout (go-kit/uploads, keyed by hunt_jobs.id).
+// into the canonical uploads layout (go-kit/uploads, keyed by
+// <account_uuid>/<hunt_jobs.id> since P4 — plan ADR-11).
 //
 // Usage:
 //
 //	APPLICATIONS_DIR=/data/applications \
 //	DATABASE_URL=postgres://... \
-//	    go run ./cmd/migrate-application-pdfs [--dry-run]
+//	    go run ./cmd/migrate-application-pdfs -account <operator-uuid> [--dry-run]
 //
 // The migrator:
 //  1. Reads every hunt_jobs row (id, company, title).
 //  2. For each job: fuzzy-matches a slug dir under APPLICATIONS_DIR.
-//  3. For each of {resume, cover}: copies the found PDF to the uploads path
-//     when the destination does not already exist (idempotent).
+//  3. For each of {resume, cover}: copies the found PDF to the account-scoped
+//     uploads path when the destination does not already exist (idempotent).
 //  4. Logs every outcome and exits non-zero on any hard error.
 //
-// Run once after an operator deploy that includes go-kit/uploads wiring.
-// Re-running is safe — skip_exists prevents double-copy.
+// The -account flag is REQUIRED: legacy artifacts belong to the operator
+// account, so the destination namespace must be named explicitly — the tool
+// refuses to guess an owner (uuid.Nil writes are rejected by Authority).
+// The operator UUID is printed by `gojob-admin account list`.
+//
+// Relocation is COPY-not-move: legacy files are never deleted, and the
+// pre-P4 account-less uploads location keeps resolving for the operator via
+// the legacy fallback — re-running is safe (skip_exists prevents double-copy).
 package main
 
 import (
@@ -29,14 +36,16 @@ import (
 	"os"
 
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "print planned copies without writing")
+	account := flag.String("account", "", "REQUIRED — UUID of the account that owns the legacy artifacts (the operator account; see `gojob-admin account list`)")
 	flag.Parse()
 
-	if err := run(context.Background(), *dryRun); err != nil {
+	if err := run(context.Background(), *dryRun, *account); err != nil {
 		slog.Error("migration failed", "err", err)
 		os.Exit(1)
 	}
@@ -44,7 +53,7 @@ func main() {
 
 // run is extracted so defer statements execute on all exit paths.
 // main() calls os.Exit based on the returned error.
-func run(ctx context.Context, dryRun bool) error {
+func run(ctx context.Context, dryRun bool, account string) error {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		return errors.New("DATABASE_URL not set")
@@ -60,8 +69,15 @@ func run(ctx context.Context, dryRun bool) error {
 	}
 	defer pool.Close()
 
-	// authority without a renderer — used only for path resolution.
-	auth := applications.New(nil, legacyDir)
+	aid, err := uuid.Parse(account)
+	if err != nil || aid == uuid.Nil {
+		return fmt.Errorf("invalid -account %q — must be the owning account's UUID", account)
+	}
+
+	// Authority without a renderer — used only for path resolution. The
+	// account is bound as BOTH the legacy owner and the destination account:
+	// the operator's fuzzy tree resolves only through the operator view.
+	auth := applications.New(nil, legacyDir, aid).ForAccount(aid)
 	legacyEntries := auth.LegacyEntries()
 	if len(legacyEntries) == 0 {
 		slog.Warn("no legacy entries found; APPLICATIONS_DIR may be empty or missing", "dir", legacyDir)
@@ -93,7 +109,7 @@ func run(ctx context.Context, dryRun bool) error {
 				continue
 			}
 
-			dst, pathErr := applications.Path(id, kind)
+			dst, pathErr := applications.Path(aid, id, kind)
 			if pathErr != nil {
 				slog.Error("canonical path", "id", id, "kind", kind, "err", pathErr)
 				errCount++
@@ -152,7 +168,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close() //nolint:errcheck
+		out.Close()    //nolint:errcheck
 		os.Remove(tmp) //nolint:errcheck
 		return err
 	}

@@ -1,0 +1,94 @@
+package components
+
+// Notice is a page-level message block: a warning that a total is incomplete, a
+// caveat that a figure is an estimate, a banner saying an action is blocked.
+//
+// It exists because the same block was being hand-written in every consumer,
+// each time as a pm7-card with an inline `border-left:3px solid var(--red)`.
+// Three copies had already drifted apart (go-grad's dashboard billing banner,
+// its billing-preview canary, and a revenue report) and a fourth was on its way.
+// A message block is framework furniture; nobody should be choosing its border.
+//
+// The side stripe is deliberately NOT reproduced. A coloured left border is a
+// decoration that carries no meaning to a screen reader and reads as an accident
+// at narrow widths. This renders a full 1px border over a tinted background from
+// the -dim token pair, which states the same severity with the whole element.
+type Notice struct {
+	// Level selects the colour pair. The zero value is NoticeInfo.
+	Level NoticeLevel
+	// Title is an optional bold lead, rendered before Text.
+	Title string
+	// Text is the message body. Required — a Notice with no Text renders
+	// nothing at all, so a caller computing an empty message cannot leave an
+	// empty coloured box on the page.
+	Text string
+	// LinkHref and LinkText render an optional trailing link. Both must be
+	// non-empty for the link to appear.
+	//
+	// LinkHref is passed to templ as a plain string, NOT wrapped in
+	// templ.SafeURL: templ then sanitises it, so a javascript: or data: URL
+	// from a computed value is neutralised rather than trusted. Wrapping it
+	// would be asserting a safety this component cannot check.
+	LinkHref string
+	LinkText string
+}
+
+// NoticeLevel is the severity of a [Notice]. It selects a colour pair only; it
+// never changes the wording or whether the notice renders.
+type NoticeLevel int
+
+const (
+	// NoticeInfo is neutral context. The zero value.
+	NoticeInfo NoticeLevel = iota
+	// NoticeWarn is something the operator should know before acting.
+	NoticeWarn
+	// NoticeDanger is something wrong right now — a blocked action, a total
+	// that is missing money, a canary mismatch.
+	NoticeDanger
+	// NoticeMuted is a footnote: a caveat that qualifies a number without
+	// claiming anything is wrong. Use it for "this is an estimate".
+	NoticeMuted
+)
+
+// noticeClass maps a level to its modifier class. An unknown level falls back
+// to info rather than rendering an unstyled block.
+func noticeClass(l NoticeLevel) string {
+	switch l {
+	case NoticeWarn:
+		return "notice notice-warn"
+	case NoticeDanger:
+		return "notice notice-danger"
+	case NoticeMuted:
+		return "notice notice-muted"
+	default:
+		return "notice notice-info"
+	}
+}
+
+// noticeRole returns the ARIA role for a level. Danger and warn are announced;
+// info and muted are not, so a footnote does not interrupt a screen reader.
+func noticeRole(l NoticeLevel) string {
+	switch l {
+	case NoticeWarn, NoticeDanger:
+		return "alert"
+	default:
+		return "note"
+	}
+}
+
+// NoticeView renders one Notice. Renders NOTHING when Text is empty — a caller
+// that computes its message conditionally gets no empty box, and does not need
+// its own guard.
+templ NoticeView(n Notice) {
+	if n.Text != "" {
+		<div class={ noticeClass(n.Level) } role={ noticeRole(n.Level) }>
+			if n.Title != "" {
+				<strong>{ n.Title }</strong>{ " " }
+			}
+			{ n.Text }
+			if n.LinkHref != "" && n.LinkText != "" {
+				{ " " }<a href={ n.LinkHref }>{ n.LinkText }</a>
+			}
+		</div>
+	}
+}

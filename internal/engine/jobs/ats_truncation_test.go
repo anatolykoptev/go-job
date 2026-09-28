@@ -60,7 +60,7 @@ func largeLeverFixture() []byte {
 		DescriptionPlain string `json:"descriptionPlain"`
 	}
 	pad := strings.Repeat("x", 900) // ~900 B padding
-	const count = 3500               // 3500 × ~900 B ≈ 3.15 MB
+	const count = 3500              // 3500 × ~900 B ≈ 3.15 MB
 	postings := make([]paddedPosting, count)
 	for i := range postings {
 		postings[i] = paddedPosting{

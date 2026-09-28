@@ -8,23 +8,25 @@ import (
 
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // rateForTest is a test-only helper that routes a logical status value to the
-// correct DB axis (triage vs stage) and calls Store.Rate. Mirrors the axis-routing
-// logic in trackerRate and the adminui handlers so tests exercise the real code path.
+// correct DB axis (triage vs stage) and calls AccountStore.Rate. Mirrors the
+// axis-routing logic in trackerRate and the adminui handlers so tests exercise
+// the real code path.
 //
 // Triage-axis values (hunt.TriageStages): written to triage column, stage="".
 // Pipeline-axis values (hunt.PipelineStages): written to stage column, triage="".
-func rateForTest(ctx context.Context, store *hunt.Store, kind string, id int64, user, value, note string) error {
+func rateForTest(ctx context.Context, acct *hunt.AccountStore, kind string, id int64, value, note string) error {
 	switch value {
 	case hunt.StageInteresting, hunt.StageSaved, hunt.StageDiscarded:
-		return store.Rate(ctx, kind, id, user, value, "", note)
+		return acct.Rate(ctx, kind, id, value, "", note)
 	default:
-		return store.Rate(ctx, kind, id, user, "", value, note)
+		return acct.Rate(ctx, kind, id, "", value, note)
 	}
 }
 
@@ -42,7 +44,8 @@ func openShortlistPool(t *testing.T) *pgxpool.Pool {
 
 func truncateShortlistData(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(), "DELETE FROM hunt_ratings WHERE user_name = 'test_sl'")
+	_, err := pool.Exec(context.Background(),
+		"DELETE FROM hunt_ratings WHERE entry_kind='job' AND entry_id IN (SELECT id FROM hunt_jobs WHERE source='test_sl')")
 	if err != nil {
 		t.Fatalf("truncate ratings: %v", err)
 	}
@@ -52,19 +55,22 @@ func truncateShortlistData(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// insertTestJob inserts a minimal hunt_jobs row for shortlist tests and returns its id.
-func insertTestJob(t *testing.T, pool *pgxpool.Pool, company, title string, fitScore *int, fitBand, postedAt string) int64 {
+// insertTestJob inserts a minimal hunt_jobs row for shortlist tests and
+// returns its id. Scores are per-account: fitScore!=nil additionally upserts
+// the account_job_scores row under aid (the corpus row itself stays
+// score-free — the legacy hunt_jobs.fit_* columns are dead).
+func insertTestJob(t *testing.T, pool *pgxpool.Pool, aid uuid.UUID, company, title string, fitScore *int, fitBand, postedAt string) int64 {
 	t.Helper()
 	h := hunt.DedupHash("https://test.example/" + company + "/" + title)
 	var id int64
 	var err error
 	if fitScore != nil && postedAt != "" {
 		err = pool.QueryRow(context.Background(), `
-			INSERT INTO hunt_jobs (dedup_hash, title, company, url, source, fit_score, fit_band, success_band, over_under, posted_at, scored_at)
-			VALUES ($1, $2, $3, $4, 'test_sl', $5, $6, 'STRONG', 'well_matched', $7::date, NOW())
-			ON CONFLICT (dedup_hash) DO UPDATE SET title=$2, company=$3, source='test_sl', fit_score=$5, fit_band=$6, posted_at=$7::date, scored_at=NOW()
+			INSERT INTO hunt_jobs (dedup_hash, title, company, url, source, posted_at)
+			VALUES ($1, $2, $3, $4, 'test_sl', $5::date)
+			ON CONFLICT (dedup_hash) DO UPDATE SET title=$2, company=$3, source='test_sl', posted_at=$5::date
 			RETURNING id`,
-			h, title, company, "https://test.example/"+company+"/"+title, *fitScore, fitBand, postedAt,
+			h, title, company, "https://test.example/"+company+"/"+title, postedAt,
 		).Scan(&id)
 	} else {
 		err = pool.QueryRow(context.Background(), `
@@ -77,6 +83,19 @@ func insertTestJob(t *testing.T, pool *pgxpool.Pool, company, title string, fitS
 	}
 	if err != nil {
 		t.Fatalf("insertTestJob %s/%s: %v", company, title, err)
+	}
+	if fitScore != nil {
+		if _, err := pool.Exec(context.Background(), `
+			INSERT INTO account_job_scores
+				(account_id, job_id, fit_score, fit_band, success_band, over_under, scored_at)
+			VALUES ($1, $2, $3, $4, 'STRONG', 'well_matched', NOW())
+			ON CONFLICT (account_id, job_id) DO UPDATE
+			SET fit_score = EXCLUDED.fit_score, fit_band = EXCLUDED.fit_band,
+			    scored_at = EXCLUDED.scored_at`,
+			aid, id, *fitScore, fitBand,
+		); err != nil {
+			t.Fatalf("insertTestJob score %s/%s: %v", company, title, err)
+		}
 	}
 	return id
 }
@@ -93,26 +112,26 @@ func TestShortlistPG_ListShortlist(t *testing.T) {
 	t.Cleanup(func() { truncateShortlistData(t, pool) })
 
 	store := hunt.NewStore(pool)
+	aid := newTestAccount(t, pool)
 	score := 85
-	idA := insertTestJob(t, pool, "Acme", "Staff Eng", &score, "strong", "2026-01-15")
+	idA := insertTestJob(t, pool, aid, "Acme", "Staff Eng", &score, "strong", "2026-01-15")
 	score2 := 60
-	idB := insertTestJob(t, pool, "Beta", "SWE II", &score2, "moderate", "2026-02-01")
-	idC := insertTestJob(t, pool, "Gamma", "Reject Me", nil, "", "")
+	idB := insertTestJob(t, pool, aid, "Beta", "SWE II", &score2, "moderate", "2026-02-01")
+	idC := insertTestJob(t, pool, aid, "Gamma", "Reject Me", nil, "", "")
 
 	// Rate A as "saved" (triage axis), B as "interesting" (triage axis),
 	// C as "discarded" (triage axis, excluded from shortlist by shortlistTriageValues).
-	if err := rateForTest(ctx, store, "job", idA, "test_sl", hunt.StageSaved, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idA, hunt.StageSaved, ""); err != nil {
 		t.Fatalf("rate A: %v", err)
 	}
-	if err := rateForTest(ctx, store, "job", idB, "test_sl", hunt.StageInteresting, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idB, hunt.StageInteresting, ""); err != nil {
 		t.Fatalf("rate B: %v", err)
 	}
-	if err := rateForTest(ctx, store, "job", idC, "test_sl", hunt.StageDiscarded, ""); err != nil {
+	if err := rateForTest(ctx, store.ForAccount(aid), "job", idC, hunt.StageDiscarded, ""); err != nil {
 		t.Fatalf("rate C: %v", err)
 	}
 
-	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
-		User:         "test_sl",
+	rows, _, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
 		TriageValues: shortlistTriageValues,
 		StageValues:  shortlistPipelineValues,
 	})
@@ -164,6 +183,7 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 	t.Cleanup(func() { truncateShortlistData(t, pool) })
 
 	store := hunt.NewStore(pool)
+	aid := newTestAccount(t, pool)
 
 	// Active values (should appear).
 	activeTriageValues := []string{hunt.StageInteresting, hunt.StageSaved}
@@ -171,28 +191,27 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 	totalActive := len(activeTriageValues) + len(activePipelineValues)
 
 	for _, v := range activeTriageValues {
-		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate triage=%s: %v", v, err)
 		}
 	}
 	for _, v := range activePipelineValues {
-		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate stage=%s: %v", v, err)
 		}
 	}
 
 	// Excluded values (must not appear).
 	for _, v := range []string{hunt.StageDiscarded, hunt.StageRejected} {
-		id := insertTestJob(t, pool, v+"-co", v+"-role", nil, "", "")
-		if err := rateForTest(ctx, store, "job", id, "test_sl", v, ""); err != nil {
+		id := insertTestJob(t, pool, aid, v+"-co", v+"-role", nil, "", "")
+		if err := rateForTest(ctx, store.ForAccount(aid), "job", id, v, ""); err != nil {
 			t.Fatalf("rate excluded=%s: %v", v, err)
 		}
 	}
 
-	rows, _, err := store.ListShortlist(ctx, hunt.ShortlistQuery{
-		User:         "test_sl",
+	rows, _, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
 		TriageValues: shortlistTriageValues,
 		StageValues:  shortlistPipelineValues,
 	})
@@ -219,13 +238,13 @@ func TestShortlistPG_AllActiveStagesIncluded(t *testing.T) {
 // Red-on-revert: removing stageBadgeClass map → wrong/missing CSS class → fails.
 func TestStageBadgeHTML(t *testing.T) {
 	cases := []struct {
-		value   string
-		want    string // expected substring in output
+		value    string
+		want     string // expected substring in output
 		nonEmpty bool   // if true, output must be non-empty
 	}{
 		// Triage-axis badges.
 		{hunt.StageInteresting, "badge-blue", true},
-		{hunt.StageSaved, `class="badge"`, true},               // saved → plain badge (no extra modifier)
+		{hunt.StageSaved, `class="badge"`, true},                // saved → plain badge (no extra modifier)
 		{hunt.StageDiscarded, `class="badge badge-gray"`, true}, // discarded → gray (MEDIUM-1 fix; visually distinct)
 		// Pipeline-axis badges.
 		{hunt.StageClaimed, "badge-blue", true},
@@ -233,9 +252,9 @@ func TestStageBadgeHTML(t *testing.T) {
 		{hunt.StageInterview, "badge-green", true},
 		{hunt.StageOffer, "badge-green", true},
 		// Unknown / empty.
-		{"unknown-stage", `class="badge"`, true},          // unknown → plain badge
-		{"<script>xss</script>", "&lt;script&gt;", true},  // must escape user-visible text
-		{"", "", false},                                    // empty → no output
+		{"unknown-stage", `class="badge"`, true},         // unknown → plain badge
+		{"<script>xss</script>", "&lt;script&gt;", true}, // must escape user-visible text
+		{"", "", false}, // empty → no output
 	}
 	for _, tc := range cases {
 		got := stageBadgeHTML(tc.value)

@@ -3,7 +3,7 @@ SET search_path TO public;
 
 CREATE TABLE IF NOT EXISTS resume_vectors (
     id           BIGSERIAL    PRIMARY KEY,
-    user_name    TEXT         NOT NULL DEFAULT 'gojob',            -- cube key == resumeVectorUser
+    user_name    TEXT         NOT NULL DEFAULT 'gojob',            -- legacy scope key; dead since 008 (account_id scopes; column drops post-soak, ADR-13)
     content      TEXT         NOT NULL,
     mem_type     TEXT         NOT NULL DEFAULT 'note',             -- resume_memory free-text: note|goal|preference
                                                                     -- master_resume: resume_experience|resume_project|resume_achievement

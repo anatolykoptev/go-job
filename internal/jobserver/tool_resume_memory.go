@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -23,12 +24,16 @@ func registerResumeMemory(server *mcp.Server) {
 		Name:        "resume_memory",
 		Description: "Manage resume memory in postgres (pgvector + FTS). op=search finds relevant experiences/projects/skills by query; op=add stores a new note/goal/preference; op=update replaces an existing memory by memory_id.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input resumeMemoryInput) (*mcp.CallToolResult, any, error) {
+		aid, ok := accounts.AccountFrom(ctx)
+		if !ok {
+			return nil, nil, errNoAccountIdentity
+		}
 		switch input.Op {
 		case "search":
 			if input.Query == "" {
 				return nil, nil, errors.New("query is required for op=search")
 			}
-			result, err := jobs.SearchResumeMemory(ctx, input.Query, input.TopK)
+			result, err := jobs.SearchResumeMemory(ctx, aid, input.Query, input.TopK)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -37,7 +42,7 @@ func registerResumeMemory(server *mcp.Server) {
 			if input.Content == "" {
 				return nil, nil, errors.New("content is required for op=add")
 			}
-			result, err := jobs.AddResumeMemory(ctx, input.Content, input.Type)
+			result, err := jobs.AddResumeMemory(ctx, aid, input.Content, input.Type)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -49,7 +54,7 @@ func registerResumeMemory(server *mcp.Server) {
 			if input.Content == "" {
 				return nil, nil, errors.New("content is required for op=update")
 			}
-			result, err := jobs.UpdateResumeMemory(ctx, input.MemoryID, input.Content)
+			result, err := jobs.UpdateResumeMemory(ctx, aid, input.MemoryID, input.Content)
 			if err != nil {
 				return nil, nil, err
 			}

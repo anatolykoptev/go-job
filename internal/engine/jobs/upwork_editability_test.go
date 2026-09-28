@@ -12,7 +12,7 @@ import (
 
 // openTestDB returns a ConnectResumeDB connected to DATABASE_URL, or skips;
 // fatals if DATABASE_URL points at a non-_test database.
-func openTestDB(t *testing.T) *ResumeDB {
+func openTestDB(t *testing.T) *ResumeAccount {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	dbtest.RequireTestDB(t, dsn)
@@ -21,17 +21,17 @@ func openTestDB(t *testing.T) *ResumeDB {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
-	return db
+	return newResumeTestAccount(t, db)
 }
 
 // insertTestPerson inserts a synthetic person and registers cleanup.
-func insertTestPerson(t *testing.T, db *ResumeDB, name, email string) int {
+func insertTestPerson(t *testing.T, rdb *ResumeAccount, name, email string) int {
 	t.Helper()
-	id, err := db.InsertPerson(context.Background(), PersonRecord{Name: name, Email: email})
+	id, err := rdb.InsertPerson(context.Background(), PersonRecord{Name: name, Email: email})
 	if err != nil {
 		t.Fatalf("InsertPerson(%q): %v", name, err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(context.Background(), id) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(context.Background(), id) })
 	return id
 }
 
@@ -39,12 +39,12 @@ func insertTestPerson(t *testing.T, db *ResumeDB, name, email string) int {
 // persists a catalog item and GetUpworkProfile reads it back with id > 0.
 // Red-on-revert: remove insertUpworkCatalogItemSQL or RETURNING id → test fails.
 func TestInsertUpworkCatalogItem_RoundTrip(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Acme Catalog Test", "acme-catalog-test@example.com")
+	personID := insertTestPerson(t, rdb, "Acme Catalog Test", "acme-catalog-test@example.com")
 
-	id, err := db.InsertUpworkCatalogItem(ctx, personID, "Go Microservices", "High-throughput gRPC backend")
+	id, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Go Microservices", "High-throughput gRPC backend")
 	if err != nil {
 		t.Fatalf("InsertUpworkCatalogItem: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestInsertUpworkCatalogItem_RoundTrip(t *testing.T) {
 		t.Fatalf("InsertUpworkCatalogItem: expected id > 0, got %d", id)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile: %v", err)
 	}
@@ -74,26 +74,26 @@ func TestInsertUpworkCatalogItem_RoundTrip(t *testing.T) {
 // the targeted item and only the targeted item.
 // Red-on-revert: remove person_id from WHERE → cross-person delete passes silently.
 func TestDeleteUpworkCatalogItem_RoundTrip(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Acme Delete Test", "acme-delete-test@example.com")
+	personID := insertTestPerson(t, rdb, "Acme Delete Test", "acme-delete-test@example.com")
 
-	id1, err := db.InsertUpworkCatalogItem(ctx, personID, "Item One", "placeholder one")
+	id1, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Item One", "placeholder one")
 	if err != nil {
 		t.Fatalf("InsertUpworkCatalogItem #1: %v", err)
 	}
-	id2, err := db.InsertUpworkCatalogItem(ctx, personID, "Item Two", "placeholder two")
+	id2, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Item Two", "placeholder two")
 	if err != nil {
 		t.Fatalf("InsertUpworkCatalogItem #2: %v", err)
 	}
 
 	// Delete item 1 only.
-	if err := db.DeleteUpworkCatalogItem(ctx, personID, id1); err != nil {
+	if err := rdb.DeleteUpworkCatalogItem(ctx, personID, id1); err != nil {
 		t.Fatalf("DeleteUpworkCatalogItem: %v", err)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile after delete: %v", err)
 	}
@@ -109,31 +109,31 @@ func TestDeleteUpworkCatalogItem_RoundTrip(t *testing.T) {
 // produces contiguous 1..N positions with no duplicates after reorder.
 // Red-on-revert: break transaction or position logic → positions not contiguous → test fails.
 func TestReorderUpworkCatalogItems_RoundTrip(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Acme Reorder Test", "acme-reorder-test@example.com")
+	personID := insertTestPerson(t, rdb, "Acme Reorder Test", "acme-reorder-test@example.com")
 
 	// Insert 3 items (positions will be 1, 2, 3 in insertion order).
-	id1, err := db.InsertUpworkCatalogItem(ctx, personID, "Alpha", "first")
+	id1, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Alpha", "first")
 	if err != nil {
 		t.Fatalf("insert alpha: %v", err)
 	}
-	id2, err := db.InsertUpworkCatalogItem(ctx, personID, "Beta", "second")
+	id2, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Beta", "second")
 	if err != nil {
 		t.Fatalf("insert beta: %v", err)
 	}
-	id3, err := db.InsertUpworkCatalogItem(ctx, personID, "Gamma", "third")
+	id3, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Gamma", "third")
 	if err != nil {
 		t.Fatalf("insert gamma: %v", err)
 	}
 
 	// Reorder: Gamma first, then Alpha, then Beta.
-	if err := db.ReorderUpworkCatalogItems(ctx, personID, []int{id3, id1, id2}); err != nil {
+	if err := rdb.ReorderUpworkCatalogItems(ctx, personID, []int{id3, id1, id2}); err != nil {
 		t.Fatalf("ReorderUpworkCatalogItems: %v", err)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile after reorder: %v", err)
 	}
@@ -177,30 +177,30 @@ func TestReorderUpworkCatalogItems_RoundTrip(t *testing.T) {
 // contiguous 1..N positions after reorder.
 // Red-on-revert: break skill reorder logic → positions not contiguous → test fails.
 func TestReorderUpworkSkills_RoundTrip(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Acme Skill Reorder", "acme-skill-reorder@example.com")
+	personID := insertTestPerson(t, rdb, "Acme Skill Reorder", "acme-skill-reorder@example.com")
 
-	idGo, err := db.InsertUpworkSkill(ctx, personID, "Go")
+	idGo, err := rdb.InsertUpworkSkill(ctx, personID, "Go")
 	if err != nil || idGo == 0 {
 		t.Fatalf("InsertUpworkSkill Go: %v id=%d", err, idGo)
 	}
-	idRust, err := db.InsertUpworkSkill(ctx, personID, "Rust")
+	idRust, err := rdb.InsertUpworkSkill(ctx, personID, "Rust")
 	if err != nil || idRust == 0 {
 		t.Fatalf("InsertUpworkSkill Rust: %v id=%d", err, idRust)
 	}
-	idTS, err := db.InsertUpworkSkill(ctx, personID, "TypeScript")
+	idTS, err := rdb.InsertUpworkSkill(ctx, personID, "TypeScript")
 	if err != nil || idTS == 0 {
 		t.Fatalf("InsertUpworkSkill TypeScript: %v id=%d", err, idTS)
 	}
 
 	// Reorder: TypeScript first, Go second, Rust third.
-	if err := db.ReorderUpworkSkills(ctx, personID, []int{idTS, idGo, idRust}); err != nil {
+	if err := rdb.ReorderUpworkSkills(ctx, personID, []int{idTS, idGo, idRust}); err != nil {
 		t.Fatalf("ReorderUpworkSkills: %v", err)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile after skill reorder: %v", err)
 	}
@@ -233,31 +233,31 @@ func TestReorderUpworkSkills_RoundTrip(t *testing.T) {
 // delete/reorder operations do not affect person A's catalog items.
 // Red-on-revert: remove AND person_id from deleteUpworkCatalogItemSQL → A's items deleted.
 func TestUpworkCatalogItem_CrossPersonIsolation(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personA := insertTestPerson(t, db, "Acme Person A", "acme-person-a@example.com")
-	personB := insertTestPerson(t, db, "Acme Person B", "acme-person-b@example.com")
+	personA := insertTestPerson(t, rdb, "Acme Person A", "acme-person-a@example.com")
+	personB := insertTestPerson(t, rdb, "Acme Person B", "acme-person-b@example.com")
 
 	// Insert item for A.
-	idA, err := db.InsertUpworkCatalogItem(ctx, personA, "A Item", "A placeholder")
+	idA, err := rdb.InsertUpworkCatalogItem(ctx, personA, "A Item", "A placeholder")
 	if err != nil {
 		t.Fatalf("InsertUpworkCatalogItem for A: %v", err)
 	}
 	// Insert item for B.
-	idB, err := db.InsertUpworkCatalogItem(ctx, personB, "B Item", "B placeholder")
+	idB, err := rdb.InsertUpworkCatalogItem(ctx, personB, "B Item", "B placeholder")
 	if err != nil {
 		t.Fatalf("InsertUpworkCatalogItem for B: %v", err)
 	}
 
 	// B tries to delete A's item using A's item ID but B's person_id.
 	// Should be a no-op (WHERE id = $1 AND person_id = $2 filters it out).
-	if err := db.DeleteUpworkCatalogItem(ctx, personB, idA); err != nil {
+	if err := rdb.DeleteUpworkCatalogItem(ctx, personB, idA); err != nil {
 		t.Fatalf("DeleteUpworkCatalogItem (B on A's id): %v", err)
 	}
 
 	// A's item must still exist.
-	resultA, err := db.GetUpworkProfile(ctx, personA)
+	resultA, err := rdb.GetUpworkProfile(ctx, personA)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile A: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestUpworkCatalogItem_CrossPersonIsolation(t *testing.T) {
 	}
 
 	// B still has their own item.
-	resultB, err := db.GetUpworkProfile(ctx, personB)
+	resultB, err := rdb.GetUpworkProfile(ctx, personB)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile B: %v", err)
 	}
@@ -280,10 +280,10 @@ func TestUpworkCatalogItem_CrossPersonIsolation(t *testing.T) {
 // hourly_rate, and availability from the existing row.
 // Red-on-revert: remove read-modify-write in handler or this test → fields zeroed.
 func TestUpworkCategoriesEdit_PreservesFields(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Acme Preserve Test", "acme-preserve-test@example.com")
+	personID := insertTestPerson(t, rdb, "Acme Preserve Test", "acme-preserve-test@example.com")
 
 	// Set initial profile.
 	const wantTitle = "Go + Rust Backend Engineer"
@@ -292,19 +292,19 @@ func TestUpworkCategoriesEdit_PreservesFields(t *testing.T) {
 	const wantRate int64 = 17500
 	initialCats := []string{"Software Development", "Backend"}
 
-	if err := db.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, initialCats, wantAvailability); err != nil {
+	if err := rdb.UpsertUpworkProfile(ctx, personID, wantTitle, wantOverview, wantRate, initialCats, wantAvailability); err != nil {
 		t.Fatalf("UpsertUpworkProfile (initial): %v", err)
 	}
 
 	// Simulate the categories handler: read existing, then upsert with new categories
 	// but preserving all other fields (this is exactly what upworkCategoriesEditHandler does).
-	existing, err := db.GetUpworkProfile(ctx, personID)
+	existing, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile: %v", err)
 	}
 
 	newCategories := []string{"Distributed Systems", "Performance Engineering"}
-	if err := db.UpsertUpworkProfile(ctx, personID,
+	if err := rdb.UpsertUpworkProfile(ctx, personID,
 		existing.Profile.Title,
 		existing.Profile.Overview,
 		existing.Profile.HourlyRate,
@@ -315,7 +315,7 @@ func TestUpworkCategoriesEdit_PreservesFields(t *testing.T) {
 	}
 
 	// Read back and verify all fields preserved.
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile (after categories update): %v", err)
 	}
@@ -382,26 +382,26 @@ func TestNewSQLConstants_Structure(t *testing.T) {
 // attempt on person A's skill (using A's skill ID but B's personID) is a no-op.
 // Red-on-revert: remove AND person_id from deleteUpworkSkillPersonSQL -> A's skill deleted.
 func TestDeleteUpworkSkill_CrossPersonIsolation(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personA := insertTestPerson(t, db, "Skill Iso A", "skill-iso-a@example.com")
-	personB := insertTestPerson(t, db, "Skill Iso B", "skill-iso-b@example.com")
+	personA := insertTestPerson(t, rdb, "Skill Iso A", "skill-iso-a@example.com")
+	personB := insertTestPerson(t, rdb, "Skill Iso B", "skill-iso-b@example.com")
 
 	// Insert a skill for person A.
-	idA, err := db.InsertUpworkSkill(ctx, personA, "Go")
+	idA, err := rdb.InsertUpworkSkill(ctx, personA, "Go")
 	if err != nil || idA == 0 {
 		t.Fatalf("InsertUpworkSkill for A: %v id=%d", err, idA)
 	}
 
 	// Person B attempts to delete person A's skill using A's skill ID but B's personID.
 	// Should be a no-op (WHERE id = $1 AND person_id = $2 filters it out).
-	if err := db.DeleteUpworkSkill(ctx, personB, idA); err != nil {
+	if err := rdb.DeleteUpworkSkill(ctx, personB, idA); err != nil {
 		t.Fatalf("DeleteUpworkSkill (B on A's id): %v", err)
 	}
 
 	// A's skill must still exist.
-	resultA, err := db.GetUpworkProfile(ctx, personA)
+	resultA, err := rdb.GetUpworkProfile(ctx, personA)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile A: %v", err)
 	}
@@ -418,31 +418,31 @@ func TestDeleteUpworkSkill_CrossPersonIsolation(t *testing.T) {
 // the omitted ID at the end — no gaps, no duplicates across the full set.
 // Red-on-revert: remove full-set fetch logic -> omitted skill gets position 0 or gap.
 func TestReorderUpworkSkills_SubsetNormalization(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
 
-	personID := insertTestPerson(t, db, "Subset Reorder Test", "subset-reorder-test@example.com")
+	personID := insertTestPerson(t, rdb, "Subset Reorder Test", "subset-reorder-test@example.com")
 
-	id1, err := db.InsertUpworkSkill(ctx, personID, "Go")
+	id1, err := rdb.InsertUpworkSkill(ctx, personID, "Go")
 	if err != nil || id1 == 0 {
 		t.Fatalf("InsertUpworkSkill Go: %v id=%d", err, id1)
 	}
-	id2, err := db.InsertUpworkSkill(ctx, personID, "Rust")
+	id2, err := rdb.InsertUpworkSkill(ctx, personID, "Rust")
 	if err != nil || id2 == 0 {
 		t.Fatalf("InsertUpworkSkill Rust: %v id=%d", err, id2)
 	}
-	id3, err := db.InsertUpworkSkill(ctx, personID, "TypeScript")
+	id3, err := rdb.InsertUpworkSkill(ctx, personID, "TypeScript")
 	if err != nil || id3 == 0 {
 		t.Fatalf("InsertUpworkSkill TypeScript: %v id=%d", err, id3)
 	}
 
 	// Reorder with only [id2, id1] — omitting id3.
 	// Expected: id2=pos1, id1=pos2, id3=pos3 (appended stable by old position).
-	if err := db.ReorderUpworkSkills(ctx, personID, []int{id2, id1}); err != nil {
+	if err := rdb.ReorderUpworkSkills(ctx, personID, []int{id2, id1}); err != nil {
 		t.Fatalf("ReorderUpworkSkills subset: %v", err)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile after subset reorder: %v", err)
 	}
@@ -482,18 +482,18 @@ func TestReorderUpworkSkills_SubsetNormalization(t *testing.T) {
 // they exist independently of the profile row. Red-on-revert: restore the early
 // "return result, nil" in the pgx.ErrNoRows branch -> this fails with 0 skills/catalog.
 func TestGetUpworkProfile_LoadsSkillsCatalogWithoutProfileRow(t *testing.T) {
-	db := openTestDB(t)
+	rdb := openTestDB(t)
 	ctx := context.Background()
-	personID := insertTestPerson(t, db, "Acme NoProfile", "acme-noprofile@example.com")
+	personID := insertTestPerson(t, rdb, "Acme NoProfile", "acme-noprofile@example.com")
 
-	if _, err := db.InsertUpworkSkill(ctx, personID, "Go"); err != nil {
+	if _, err := rdb.InsertUpworkSkill(ctx, personID, "Go"); err != nil {
 		t.Fatalf("InsertUpworkSkill: %v", err)
 	}
-	if _, err := db.InsertUpworkCatalogItem(ctx, personID, "Backend API", "gRPC service"); err != nil {
+	if _, err := rdb.InsertUpworkCatalogItem(ctx, personID, "Backend API", "gRPC service"); err != nil {
 		t.Fatalf("InsertUpworkCatalogItem: %v", err)
 	}
 
-	result, err := db.GetUpworkProfile(ctx, personID)
+	result, err := rdb.GetUpworkProfile(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetUpworkProfile: %v", err)
 	}

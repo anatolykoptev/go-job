@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"time"
 
 	"github.com/anatolykoptev/go-mcpserver"
@@ -65,6 +66,18 @@ type Config struct {
 
 	// BearerAuth gates /mcp. nil = no auth (localhost-only deployments only).
 	BearerAuth *mcpserver.BearerAuth
+
+	// TenantResolver, when non-nil, resolves the tenant for EVERY tool call
+	// from the call's ctx — the seam a multi-account consumer uses to pin the
+	// tenant from the verified bearer identity (mcpserver.TokenInfoFromContext)
+	// instead of the fail-open global default that tenant.From(ctx) returns.
+	// A resolver returning (zero Tenant, false) DENIES the call fail-closed.
+	//
+	// nil preserves the legacy single-tenant behavior: tenant.From(ctx), which
+	// is the global default whenever nothing stamped a tenant. The tools also
+	// stamp the resolved tenant back onto the ctx handed to Listers/Detailers,
+	// so detailers reading tenant.From(req.Context()) see the pinned value.
+	TenantResolver func(ctx context.Context) (tenant.Tenant, bool)
 
 	// Logger. nil = slog.Default().
 	Logger *slog.Logger
@@ -92,7 +105,7 @@ func Run(cfg Config) error {
 
 	mcpCfg := mcpserver.Config{
 		Name:                       "go-panel",
-		Version:                    "0.1.0",
+		Version:                    moduleVersion(),
 		Port:                       cfg.Port,
 		KeepAlive:                  30 * time.Second,
 		SchemaCache:                mcp.NewSchemaCache(),
@@ -106,24 +119,85 @@ func Run(cfg Config) error {
 	}
 	return mcpserver.Serve(&mcp.Implementation{
 		Name:    "go-panel",
-		Version: "0.1.0",
+		Version: moduleVersion(),
 	}, mcpCfg, func(s *mcp.Server) {
-		registerResourceTools(s, cfg.Panel.Resources(), logger)
+		registerResourceTools(s, cfg.Panel.Resources(), logger, cfg.TenantResolver)
 	})
 }
 
+// modulePath is go-panel's own import path — the key its version is filed
+// under in a consumer's build info.
+const modulePath = "github.com/anatolykoptev/go-panel"
+
+// moduleVersion reports the go-panel release a binary was built against, read
+// out of the build info the toolchain stamps from the go.mod requirement.
+//
+// It exists because the two version fields below it used to hold the literal
+// "0.1.0". Nothing referenced that number, so nothing ever went red when it
+// drifted, and by v0.22.2 every MCP client had been told go-panel was at 0.1.0
+// for twenty-two releases. release-please owns the version; a second copy
+// maintained by hand can only ever be wrong.
+//
+// Three cases, in the order they occur:
+//   - go-panel is a dependency: the version comes from Deps, or from Replace
+//     when a consumer points the requirement elsewhere (a replace directive is
+//     what actually gets built, so it is what gets reported).
+//   - go-panel is the main module — its own tests, or `go run ./...` — where
+//     the toolchain has no released version to stamp. "(devel)" is the
+//     toolchain's own word for that, not an error.
+//   - no build info at all, which a normally-built binary never hits.
+func moduleVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "(unknown)"
+	}
+	for _, d := range bi.Deps {
+		if d.Path != modulePath {
+			continue
+		}
+		if d.Replace != nil && d.Replace.Version != "" {
+			return d.Replace.Version
+		}
+		if d.Version != "" {
+			return d.Version
+		}
+	}
+	if bi.Main.Path == modulePath && bi.Main.Version != "" {
+		return bi.Main.Version
+	}
+	return "(devel)"
+}
+
 // registerResourceTools creates MCP list/get tools for each Resource.
-func registerResourceTools(server *mcp.Server, resources []resource.Resource, logger *slog.Logger) {
+func registerResourceTools(server *mcp.Server, resources []resource.Resource, logger *slog.Logger, tr func(context.Context) (tenant.Tenant, bool)) {
 	for _, r := range resources {
-		registerListTool(server, r, logger)
+		registerListTool(server, r, logger, tr)
 		// EffectiveDetailer returns the hand-written Detailer OR a synthesized
 		// auto-Detailer built from Sort.Columns + FetchRow. This keeps MCP's
 		// {resource}_get tool in sync with the HTTP detail route (which is
 		// mounted whenever Detailer OR FetchRow is non-nil — see resource.Register).
 		if resource.EffectiveDetailer(r) != nil {
-			registerGetTool(server, r, logger)
+			registerGetTool(server, r, logger, tr)
 		}
 	}
+}
+
+// callTenant resolves the tenant for one tool call. A nil resolver keeps the
+// legacy behavior — tenant.From(ctx), which fails OPEN to the global default
+// (fine for the single-tenant deployments panelmcp was built for). A set
+// resolver is authoritative: (tenant, true) pins, (_, false) denies fail-closed.
+// On a successful resolve the ctx is stamped (tenant.WithTenant) so both the
+// Lister's ListQuery.Tenant and anything reading tenant.From(ctx) downstream —
+// the detailer's request context included — observe the SAME pinned tenant.
+func callTenant(ctx context.Context, tr func(context.Context) (tenant.Tenant, bool)) (context.Context, tenant.Tenant, bool) {
+	if tr == nil {
+		return ctx, tenant.From(ctx), true
+	}
+	t, ok := tr(ctx)
+	if !ok {
+		return ctx, tenant.Tenant{}, false
+	}
+	return tenant.WithTenant(ctx, t), t, true
 }
 
 // --- list tool ---
@@ -154,7 +228,7 @@ type cellJSON struct {
 	HTML  bool   `json:"html"`
 }
 
-func registerListTool(server *mcp.Server, r resource.Resource, logger *slog.Logger) {
+func registerListTool(server *mcp.Server, r resource.Resource, logger *slog.Logger, tr func(context.Context) (tenant.Tenant, bool)) {
 	toolName := r.Name + "_list"
 	tool := &mcp.Tool{
 		Name:        toolName,
@@ -173,8 +247,11 @@ func registerListTool(server *mcp.Server, r resource.Resource, logger *slog.Logg
 			offset = 0
 		}
 		sortState := r.Sort.Resolve(in.SortKey, in.SortDir)
-		tenantVal := tenant.From(ctx) // global default when no tenant on ctx
-		rows, total, err := r.Lister(ctx, resource.ListQuery{
+		lctx, tenantVal, ok := callTenant(ctx, tr)
+		if !ok {
+			return nil, listOutput{}, fmt.Errorf("%s: tenant resolution denied", toolName)
+		}
+		rows, total, err := r.Lister(lctx, resource.ListQuery{
 			Sort:       sortState,
 			WhereConds: "", // no filter for MCP list (future: expose FilterSpec)
 			WhereArgs:  nil,
@@ -220,7 +297,7 @@ type itemJSON struct {
 	HTML  bool   `json:"html"`
 }
 
-func registerGetTool(server *mcp.Server, r resource.Resource, logger *slog.Logger) {
+func registerGetTool(server *mcp.Server, r resource.Resource, logger *slog.Logger, tr func(context.Context) (tenant.Tenant, bool)) {
 	toolName := r.Name + "_get"
 	tool := &mcp.Tool{
 		Name:        toolName,
@@ -230,14 +307,21 @@ func registerGetTool(server *mcp.Server, r resource.Resource, logger *slog.Logge
 		if in.ID == "" {
 			return nil, getOutput{}, fmt.Errorf("%s: id is required", toolName)
 		}
-		req, err := http.NewRequestWithContext(tenant.WithTenant(ctx, tenant.From(ctx)), http.MethodGet, "/", nil)
+		dctx, tenantVal, ok := callTenant(ctx, tr)
+		if !ok {
+			return nil, getOutput{}, fmt.Errorf("%s: tenant resolution denied", toolName)
+		}
+		req, err := http.NewRequestWithContext(tenant.WithTenant(dctx, tenantVal), http.MethodGet, "/", nil)
 		if err != nil {
 			return nil, getOutput{}, fmt.Errorf("%s: internal request build failed: %w", toolName, err)
 		}
 		// EffectiveDetailer handles both hand-written Detailer and the
-		// FetchRow-backed auto-Detailer (see resource.EffectiveDetailer).
+		// FetchRow-backed auto-Detailer (see resource.EffectiveDetailer). The
+		// detailer receives dctx — with the resolved tenant stamped on it when a
+		// TenantResolver is configured — so tenant.From works identically whether
+		// it reads the ctx or the request.
 		detailer := resource.EffectiveDetailer(r)
-		sections, err := detailer(ctx, req, in.ID)
+		sections, err := detailer(dctx, req, in.ID)
 		if err != nil {
 			return nil, getOutput{}, fmt.Errorf("%s: detail failed: %w", toolName, err)
 		}

@@ -38,3 +38,27 @@ func CrossLinkCell(basePath, resourceName, id, label string) string {
 func CrossLinkCellInt(basePath, resourceName string, id int64, label string) string {
 	return CrossLinkCell(basePath, resourceName, strconv.FormatInt(id, 10), label)
 }
+
+// FilterLinkCell renders an XSS-safe anchor to a resource's LIST page with one
+// filter pre-applied. CrossLinkCell links to one ROW; this links to a filtered
+// SET — the "see all leads for this merchant" affordance that go-grad was
+// hand-writing as <a href="/admin/billable_leads?merchant_id=..."> with
+// "/admin" hardcoded. basePath comes from the panel, never a hardcoded path.
+//
+// Security: the href is {basePath}/{resource}?{key}={value} where basePath and
+// label are HTML-escaped for text context, resourceName is URL-path-escaped,
+// and the query key AND value are url.QueryEscape'd. This is the same
+// context-split CrossLinkCell documents and for the same reason: text-context
+// escaping applied to a URL corrupts legitimate values and leaves injection
+// payloads un-neutralized. Do NOT concatenate the query string without
+// escaping the value — a filter value of `1"><script>` must not reach the href
+// as raw markup.
+func FilterLinkCell(basePath, resourceName, filterKey, filterValue, label string) string {
+	return fmt.Sprintf(`<a href="%s/%s?%s=%s">%s</a>`,
+		html.EscapeString(basePath),
+		url.PathEscape(resourceName),
+		url.QueryEscape(filterKey),
+		url.QueryEscape(filterValue),
+		html.EscapeString(label),
+	)
+}

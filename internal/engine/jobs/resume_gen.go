@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/google/uuid"
 )
 
 // ResumeGenerateResult is the structured output of resume_generate.
@@ -220,20 +221,21 @@ func loadCompanyContext(ctx context.Context, company string) string {
 }
 
 // GenerateResume queries the master resume graph + vectors against a JD and assembles an ATS-optimized resume.
-func GenerateResume(ctx context.Context, jobDescription, company, format string) (*ResumeGenerateResult, error) {
+func GenerateResume(ctx context.Context, accountID uuid.UUID, jobDescription, company, format string) (*ResumeGenerateResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
+	rdb := db.ForAccount(accountID)
 
-	personID := db.GetLatestPersonID(ctx)
+	personID := rdb.GetLatestPersonID(ctx)
 	if personID == 0 {
 		return nil, errors.New("no master resume found — run master_resume_build first")
 	}
 
 	// The header (name, headline, contacts) is assembled in Go from the profile
 	// DB, so the person record is required even for the body-only LLM call.
-	person, err := db.GetPerson(ctx, personID)
+	person, err := rdb.GetPerson(ctx, personID)
 	if err != nil {
 		return nil, fmt.Errorf("resume_generate load person: %w", err)
 	}
@@ -271,26 +273,26 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	allSkills = append(allSkills, jd.NiceToHave...)
 	for _, skill := range allSkills {
 		// Experience by direct skill
-		expIDs, err := db.QueryExperienceIDsBySkill(ctx, skill)
+		expIDs, err := rdb.QueryExperienceIDsBySkill(ctx, skill)
 		if err != nil {
 			slog.Debug("graph query exp by skill failed", slog.String("skill", skill), slog.Any("error", err))
 		}
 		for _, id := range expIDs {
 			expIDSet[id] = true
 			// Achievements linked to this experience
-			achvIDs, _ := db.QueryAchievementIDsByExperience(ctx, id)
+			achvIDs, _ := rdb.QueryAchievementIDsByExperience(ctx, id)
 			for _, aid := range achvIDs {
 				achvIDSet[aid] = true
 			}
 			// Sub-projects linked to this experience via PART_OF
-			subProjIDs, _ := db.QuerySubProjectIDs(ctx, id)
+			subProjIDs, _ := rdb.QuerySubProjectIDs(ctx, id)
 			for _, spid := range subProjIDs {
 				projIDSet[spid] = true
 			}
 		}
 
 		// Projects by skill
-		projIDs, err := db.QueryProjectIDsBySkill(ctx, skill)
+		projIDs, err := rdb.QueryProjectIDsBySkill(ctx, skill)
 		if err != nil {
 			slog.Debug("graph query proj by skill failed", slog.String("skill", skill), slog.Any("error", err))
 		}
@@ -299,15 +301,15 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 		}
 
 		// Traverse IMPLIES_SKILL: find experiences/projects via adjacent skills
-		skillID := db.QuerySkillIDByName(ctx, personID, skill)
+		skillID := rdb.QuerySkillIDByName(ctx, personID, skill)
 		if skillID > 0 {
-			impliedIDs, _ := db.QueryImpliedSkillIDs(ctx, skillID)
+			impliedIDs, _ := rdb.QueryImpliedSkillIDs(ctx, skillID)
 			for _, impliedID := range impliedIDs {
 				// Experiences using the implied skill
-				iExpIDs, _ := db.QueryExperienceIDsBySkill(ctx, skill)
+				iExpIDs, _ := rdb.QueryExperienceIDsBySkill(ctx, skill)
 				_ = iExpIDs // implied skills don't have name here, query by ID not possible directly
 				// Use a Cypher query to find experiences via implied skill ID
-				iExpIDs2, _ := queryExperienceIDsBySkillID(ctx, db, impliedID)
+				iExpIDs2, _ := queryExperienceIDsBySkillID(ctx, rdb, impliedID)
 				for _, id := range iExpIDs2 {
 					expIDSet[id] = true
 				}
@@ -316,7 +318,7 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	}
 
 	// 3. Vector search for semantic matches (resume_vectors)
-	if rdb := GetResumeDB(); rdb != nil {
+	{
 		scoped := []string{memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv, memTypeEnrichProj}
 		results, err := searchVectorsScoped(ctx, rdb, jdTrunc, 15, 0.6, scoped)
 		if err != nil {
@@ -347,27 +349,27 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	projIDs := intSetToSlice(projIDSet)
 	achvIDs := intSetToSlice(achvIDSet)
 
-	experiences, _ := db.GetExperiencesByIDs(ctx, expIDs)
-	projects, _ := db.GetProjectsByIDs(ctx, projIDs)
-	achievements, _ := db.GetAchievementsByIDs(ctx, achvIDs)
+	experiences, _ := rdb.GetExperiencesByIDs(ctx, expIDs)
+	projects, _ := rdb.GetProjectsByIDs(ctx, projIDs)
+	achievements, _ := rdb.GetAchievementsByIDs(ctx, achvIDs)
 
 	// If graph/vector returned nothing, fall back to all data
 	if len(experiences) == 0 {
-		experiences, _ = db.GetAllExperiences(ctx, personID)
+		experiences, _ = rdb.GetAllExperiences(ctx, personID)
 	}
 	if len(projects) == 0 {
-		projects, _ = db.GetAllProjects(ctx, personID)
+		projects, _ = rdb.GetAllProjects(ctx, personID)
 	}
 	if len(achievements) == 0 {
-		achievements, _ = db.GetAllAchievements(ctx, personID)
+		achievements, _ = rdb.GetAllAchievements(ctx, personID)
 	}
 
 	// Always include education, skills, certifications, domains, methodologies
-	educations, _ := db.GetAllEducations(ctx, personID)
-	skills, _ := db.GetAllSkills(ctx, personID)
-	certifications, _ := db.GetAllCertifications(ctx, personID)
-	domains, _ := db.GetAllDomains(ctx, personID)
-	methodologies, _ := db.GetAllMethodologies(ctx, personID)
+	educations, _ := rdb.GetAllEducations(ctx, personID)
+	skills, _ := rdb.GetAllSkills(ctx, personID)
+	certifications, _ := rdb.GetAllCertifications(ctx, personID)
+	domains, _ := rdb.GetAllDomains(ctx, personID)
+	methodologies, _ := rdb.GetAllMethodologies(ctx, personID)
 
 	// 5. Format candidate data for LLM
 	candidateData := formatCandidateData(experiences, projects, achievements, educations, skills, certifications, domains, methodologies)
@@ -454,9 +456,10 @@ func GenerateResume(ctx context.Context, jobDescription, company, format string)
 	return result, nil
 }
 
-// queryExperienceIDsBySkillID finds experience IDs linked to a skill by its ID.
-func queryExperienceIDsBySkillID(ctx context.Context, db *ResumeDB, skillID int) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// queryExperienceIDsBySkillID finds the bound account's experience IDs linked
+// to a skill by its ID (account-scoped, plan ADR-8).
+func queryExperienceIDsBySkillID(ctx context.Context, rdb *ResumeAccount, skillID int) ([]int, error) {
+	conn, err := rdb.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -468,9 +471,9 @@ func queryExperienceIDsBySkillID(ctx context.Context, db *ResumeDB, skillID int)
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (e:Exp)-[:USED_SKILL]->(s:Skill {id: %d})
+			MATCH (e:Exp {aid: '%s'})-[:USED_SKILL]->(s:Skill {id: %d, aid: '%s'})
 			RETURN e.id
-		$$) AS (id ag_catalog.agtype)`, skillID)
+		$$) AS (id ag_catalog.agtype)`, rdb.aidStr(), skillID, rdb.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {

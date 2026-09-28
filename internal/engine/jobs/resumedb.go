@@ -224,53 +224,70 @@ type PersonRecord struct {
 	HourlyRateCents int64             `json:"hourly_rate_cents,omitempty"`
 }
 
-func (db *ResumeDB) InsertPerson(ctx context.Context, p PersonRecord) (int, error) {
+func (a *ResumeAccount) InsertPerson(ctx context.Context, p PersonRecord) (int, error) {
+	if !a.writable() {
+		return 0, ErrNoAccountScope
+	}
 	linksJSON, _ := json.Marshal(p.Links)
 	var id int
-	err := db.conn(ctx).QueryRow(ctx,
-		`INSERT INTO resume_persons (name, email, phone, location, links, summary)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary,
+	err := a.conn(ctx).QueryRow(ctx,
+		`INSERT INTO resume_persons (name, email, phone, location, links, summary, account_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		p.Name, p.Email, p.Phone, p.Location, linksJSON, p.Summary, a.aid,
 	).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
-	// A new person changes what GetLatestPersonID returns — drop the craigslist
-	// profile-location cache so the connector picks up the new latest person.
-	invalidateProfileLocationCache()
+	// A new person changes what GetLatestPersonID returns for this account —
+	// drop its craigslist profile-location cache entry.
+	invalidateProfileLocationCache(a.aid)
 	return id, nil
 }
 
-func (db *ResumeDB) ClearPerson(ctx context.Context, personID int) error {
-	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE id = $1`, personID)
+// ClearPerson deletes one person owned by the bound account. A foreign or
+// missing person is a no-op (DELETE matches nothing) — no distinguishable leak.
+func (a *ResumeAccount) ClearPerson(ctx context.Context, personID int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx,
+		`DELETE FROM resume_persons WHERE id = $1 AND account_id = $2`, personID, a.aid)
 	if err != nil {
 		return err
 	}
-	// Clearing a person changes what GetLatestPersonID returns — drop the
-	// craigslist profile-location cache so the connector does not keep serving
-	// a deleted person's location until the next successful rebuild.
-	invalidateProfileLocationCache()
+	// Clearing a person changes what GetLatestPersonID returns for this
+	// account — drop its profile-location cache entry so the connector does
+	// not keep serving a deleted person's location.
+	invalidateProfileLocationCache(a.aid)
 	return nil
 }
 
-// ClearAllPersons deletes all resume data (single-user system, rebuild from scratch).
-func (db *ResumeDB) ClearAllPersons(ctx context.Context) error {
-	_, err := db.conn(ctx).Exec(ctx, `DELETE FROM resume_persons`)
+// ClearAllPersons deletes all resume data OWNED BY THE BOUND ACCOUNT (plan
+// ADR-6 — the destructive rebuild path; another account's persons survive).
+func (a *ResumeAccount) ClearAllPersons(ctx context.Context) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	_, err := a.conn(ctx).Exec(ctx, `DELETE FROM resume_persons WHERE account_id = $1`, a.aid)
 	if err != nil {
 		return err
 	}
-	invalidateProfileLocationCache()
+	invalidateProfileLocationCache(a.aid)
 	return nil
 }
 
-// GetLatestPersonID returns the ID of the most recently created person, or 0 if none.
+// GetLatestPersonID returns the ID of the most recently created person owned
+// by the bound account, or 0 if none (a foreign account's persons are
+// invisible; a Nil account matches nothing → 0).
 // It collapses "no rows" and "query failed" into the same 0 return, which is safe
 // for read-only callers (no profile → nothing to read) but NOT for a destructive
 // surface, where a transient pool error must not read as "no profile". Destructive
 // callers use GetLatestPersonIDChecked instead.
-func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
+func (a *ResumeAccount) GetLatestPersonID(ctx context.Context) int {
 	var id int
-	err := db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
+	err := a.conn(ctx).QueryRow(ctx,
+		`SELECT id FROM resume_persons WHERE account_id = $1 ORDER BY id DESC LIMIT 1`, a.aid,
+	).Scan(&id)
 	if err != nil {
 		return 0
 	}
@@ -286,8 +303,10 @@ func (db *ResumeDB) GetLatestPersonID(ctx context.Context) int {
 // On a destructive surface the zero value is the safe one: a caller that treats
 // (exists=false) as "nothing to destroy" only destroys data when the query
 // succeeded and genuinely found no rows, never when it failed.
-func (db *ResumeDB) GetLatestPersonIDChecked(ctx context.Context) (exists bool, id int, err error) {
-	err = db.conn(ctx).QueryRow(ctx, `SELECT id FROM resume_persons ORDER BY id DESC LIMIT 1`).Scan(&id)
+func (a *ResumeAccount) GetLatestPersonIDChecked(ctx context.Context) (exists bool, id int, err error) {
+	err = a.conn(ctx).QueryRow(ctx,
+		`SELECT id FROM resume_persons WHERE account_id = $1 ORDER BY id DESC LIMIT 1`, a.aid,
+	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, 0, nil
@@ -307,14 +326,15 @@ func (db *ResumeDB) GetLatestPersonIDChecked(ctx context.Context) (exists bool, 
 // ASCII "RSM_RBLD" → 0x52534D5F52424C44.
 const masterResumeRebuildLockKey int64 = 0x52534D5F52424C44
 
-// GetPerson returns the person record for the given ID.
-func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord, error) {
+// GetPerson returns the person record for the given ID when the bound
+// account owns it; a foreign person reads as not-found (ErrNoRows).
+func (a *ResumeAccount) GetPerson(ctx context.Context, personID int) (*PersonRecord, error) {
 	var p PersonRecord
 	var linksJSON []byte
-	err := db.pool.QueryRow(ctx,
+	err := a.db.pool.QueryRow(ctx,
 		`SELECT id, name, COALESCE(email,''), COALESCE(phone,''), COALESCE(location,''), COALESCE(links,'{}'), COALESCE(summary,''),
 		        COALESCE(headline,''), COALESCE(hourly_rate,0)
-		 FROM resume_persons WHERE id = $1`, personID,
+		 FROM resume_persons WHERE id = $1 AND account_id = $2`, personID, a.aid,
 	).Scan(&p.ID, &p.Name, &p.Email, &p.Phone, &p.Location, &linksJSON, &p.Summary, &p.Headline, &p.HourlyRateCents)
 	if err != nil {
 		return nil, err
@@ -323,11 +343,12 @@ func (db *ResumeDB) GetPerson(ctx context.Context, personID int) (*PersonRecord,
 	return &p, nil
 }
 
-// GetPersonEnrichedAt returns the enriched_at timestamp as a string, or empty if not enriched.
-func (db *ResumeDB) GetPersonEnrichedAt(ctx context.Context, personID int) string {
+// GetPersonEnrichedAt returns the enriched_at timestamp as a string, or empty
+// if not enriched — and empty when the person belongs to another account.
+func (a *ResumeAccount) GetPersonEnrichedAt(ctx context.Context, personID int) string {
 	var enrichedAt *string
-	err := db.pool.QueryRow(ctx,
-		`SELECT enriched_at::text FROM resume_persons WHERE id = $1`, personID,
+	err := a.db.pool.QueryRow(ctx,
+		`SELECT enriched_at::text FROM resume_persons WHERE id = $1 AND account_id = $2`, personID, a.aid,
 	).Scan(&enrichedAt)
 	if err != nil || enrichedAt == nil {
 		return ""

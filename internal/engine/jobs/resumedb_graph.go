@@ -8,10 +8,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// --- AGE Graph Helpers ---
+// --- AGE Graph Helpers (account-scoped, plan ADR-8) ---
+//
+// Every resume_graph node and edge carries an `aid` property bound to the
+// owning panel_accounts.id. The bound account's UUID is interpolated via
+// a.aidStr() — uuid.UUID renders in a fixed canonical format, so no quoting
+// risk; readable/writable account scoping is guaranteed by the type system
+// (all methods hang off ResumeAccount, never ResumeDB). MERGE keys include
+// `aid`, so nodes from another account are unreachable and an account-scoped
+// ClearGraph can never delete a neighbour's subgraph.
 
-func (db *ResumeDB) UpsertGraphNode(ctx context.Context, label string, id int, props map[string]string) error {
-	conn, err := db.pool.Acquire(ctx)
+// UpsertGraphNode merges (label, id) under the bound account: the MERGE key
+// includes aid so a same-labelled node belonging to another account is a
+// distinct vertex.
+func (a *ResumeAccount) UpsertGraphNode(ctx context.Context, label string, id int, props map[string]string) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)
 	}
@@ -32,11 +46,11 @@ func (db *ResumeDB) UpsertGraphNode(ctx context.Context, label string, id int, p
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MERGE (n:%s {id: %d})
+			MERGE (n:%s {id: %d, aid: '%s'})
 			%s
 			RETURN n
 		$$) AS (n ag_catalog.agtype)`,
-		label, id, setClause,
+		label, id, a.aidStr(), setClause,
 	)
 	if _, err := conn.Exec(ctx, cypher); err != nil {
 		return fmt.Errorf("upsert node %s:%d: %w", label, id, err)
@@ -44,8 +58,13 @@ func (db *ResumeDB) UpsertGraphNode(ctx context.Context, label string, id int, p
 	return nil
 }
 
-func (db *ResumeDB) UpsertGraphEdge(ctx context.Context, fromLabel string, fromID int, edgeLabel string, toLabel string, toID int) error {
-	conn, err := db.pool.Acquire(ctx)
+// UpsertGraphEdge merges an edge between two of the bound account's nodes and
+// stamps the edge's aid property; endpoints outside the account do not match.
+func (a *ResumeAccount) UpsertGraphEdge(ctx context.Context, fromLabel string, fromID int, edgeLabel string, toLabel string, toID int) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)
 	}
@@ -57,10 +76,11 @@ func (db *ResumeDB) UpsertGraphEdge(ctx context.Context, fromLabel string, fromI
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (a:%s {id: %d}), (b:%s {id: %d})
-			MERGE (a)-[:%s]->(b)
+			MATCH (a:%s {id: %d, aid: '%s'}), (b:%s {id: %d, aid: '%s'})
+			MERGE (a)-[e:%s]->(b)
+			SET e.aid = '%s'
 		$$) AS (result ag_catalog.agtype)`,
-		fromLabel, fromID, toLabel, toID, edgeLabel,
+		fromLabel, fromID, a.aidStr(), toLabel, toID, a.aidStr(), edgeLabel, a.aidStr(),
 	)
 	if _, err := conn.Exec(ctx, cypher); err != nil {
 		return fmt.Errorf("upsert edge %s:%d->%s->%s:%d: %w", fromLabel, fromID, edgeLabel, toLabel, toID, err)
@@ -68,9 +88,14 @@ func (db *ResumeDB) UpsertGraphEdge(ctx context.Context, fromLabel string, fromI
 	return nil
 }
 
-// ClearGraph removes all nodes and edges from the resume_graph.
-func (db *ResumeDB) ClearGraph(ctx context.Context) error {
-	conn, err := db.pool.Acquire(ctx)
+// ClearGraph deletes only the bound account's subgraph (nodes tagged aid and
+// their edges). Another account's graph — and any never-migrated aid-less
+// legacy vertices — survive untouched.
+func (a *ResumeAccount) ClearGraph(ctx context.Context) error {
+	if !a.writable() {
+		return ErrNoAccountScope
+	}
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)
 	}
@@ -80,16 +105,17 @@ func (db *ResumeDB) ClearGraph(ctx context.Context) error {
 		return fmt.Errorf("age setup: %w", err)
 	}
 
-	cypher := `SELECT * FROM ag_catalog.cypher('resume_graph', $$
-		MATCH (n) DETACH DELETE n
-	$$) AS (result ag_catalog.agtype)`
+	cypher := fmt.Sprintf(`SELECT * FROM ag_catalog.cypher('resume_graph', $$
+		MATCH (n) WHERE n.aid = '%s' DETACH DELETE n
+	$$) AS (result ag_catalog.agtype)`, a.aidStr())
 	_, err = conn.Exec(ctx, cypher)
 	return err
 }
 
-// QueryExperienceIDsBySkill finds experience IDs linked to a skill name via the graph.
-func (db *ResumeDB) QueryExperienceIDsBySkill(ctx context.Context, skillName string) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryExperienceIDsBySkill finds the bound account's experience IDs linked to
+// a skill name via the graph.
+func (a *ResumeAccount) QueryExperienceIDsBySkill(ctx context.Context, skillName string) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -101,9 +127,9 @@ func (db *ResumeDB) QueryExperienceIDsBySkill(ctx context.Context, skillName str
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (e:Exp)-[:USED_SKILL]->(s:Skill {name: '%s'})
+			MATCH (e:Exp {aid: '%s'})-[:USED_SKILL]->(s:Skill {name: '%s', aid: '%s'})
 			RETURN e.id
-		$$) AS (id ag_catalog.agtype)`, escapeCypher(skillName))
+		$$) AS (id ag_catalog.agtype)`, a.aidStr(), escapeCypher(skillName), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -114,9 +140,10 @@ func (db *ResumeDB) QueryExperienceIDsBySkill(ctx context.Context, skillName str
 	return scanAGEIntIDs(rows)
 }
 
-// QueryProjectIDsBySkill finds project IDs linked to a skill name via the graph.
-func (db *ResumeDB) QueryProjectIDsBySkill(ctx context.Context, skillName string) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryProjectIDsBySkill finds the bound account's project IDs linked to a
+// skill name via the graph.
+func (a *ResumeAccount) QueryProjectIDsBySkill(ctx context.Context, skillName string) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -128,9 +155,9 @@ func (db *ResumeDB) QueryProjectIDsBySkill(ctx context.Context, skillName string
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (p:Proj)-[:USED_SKILL]->(s:Skill {name: '%s'})
+			MATCH (p:Proj {aid: '%s'})-[:USED_SKILL]->(s:Skill {name: '%s', aid: '%s'})
 			RETURN p.id
-		$$) AS (id ag_catalog.agtype)`, escapeCypher(skillName))
+		$$) AS (id ag_catalog.agtype)`, a.aidStr(), escapeCypher(skillName), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -141,9 +168,10 @@ func (db *ResumeDB) QueryProjectIDsBySkill(ctx context.Context, skillName string
 	return scanAGEIntIDs(rows)
 }
 
-// QueryAchievementIDsByExperience finds achievement IDs produced by an experience.
-func (db *ResumeDB) QueryAchievementIDsByExperience(ctx context.Context, expID int) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryAchievementIDsByExperience finds achievement IDs produced by one of the
+// bound account's experiences.
+func (a *ResumeAccount) QueryAchievementIDsByExperience(ctx context.Context, expID int) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -155,9 +183,9 @@ func (db *ResumeDB) QueryAchievementIDsByExperience(ctx context.Context, expID i
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (e:Exp {id: %d})-[:PRODUCED]->(a:Achv)
-			RETURN a.id
-		$$) AS (id ag_catalog.agtype)`, expID)
+			MATCH (e:Exp {id: %d, aid: '%s'})-[:PRODUCED]->(ach:Achv {aid: '%s'})
+			RETURN ach.id
+		$$) AS (id ag_catalog.agtype)`, expID, a.aidStr(), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -170,9 +198,10 @@ func (db *ResumeDB) QueryAchievementIDsByExperience(ctx context.Context, expID i
 
 // --- Extended Graph Queries ---
 
-// QueryExperienceIDsByDomain finds experience IDs linked to a domain via the graph.
-func (db *ResumeDB) QueryExperienceIDsByDomain(ctx context.Context, domain string) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryExperienceIDsByDomain finds the bound account's experience IDs linked
+// to a domain via the graph.
+func (a *ResumeAccount) QueryExperienceIDsByDomain(ctx context.Context, domain string) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -184,9 +213,9 @@ func (db *ResumeDB) QueryExperienceIDsByDomain(ctx context.Context, domain strin
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (e:Exp)-[:IN_DOMAIN]->(d:Domain {name: '%s'})
+			MATCH (e:Exp {aid: '%s'})-[:IN_DOMAIN]->(d:Domain {name: '%s', aid: '%s'})
 			RETURN e.id
-		$$) AS (id ag_catalog.agtype)`, escapeCypher(domain))
+		$$) AS (id ag_catalog.agtype)`, a.aidStr(), escapeCypher(domain), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -196,9 +225,10 @@ func (db *ResumeDB) QueryExperienceIDsByDomain(ctx context.Context, domain strin
 	return scanAGEIntIDs(rows)
 }
 
-// QueryImpliedSkillIDs returns skill IDs reachable via 1-hop IMPLIES_SKILL from skillID.
-func (db *ResumeDB) QueryImpliedSkillIDs(ctx context.Context, skillID int) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryImpliedSkillIDs returns the bound account's skill IDs reachable via
+// 1-hop IMPLIES_SKILL from skillID.
+func (a *ResumeAccount) QueryImpliedSkillIDs(ctx context.Context, skillID int) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -210,9 +240,9 @@ func (db *ResumeDB) QueryImpliedSkillIDs(ctx context.Context, skillID int) ([]in
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (s:Skill {id: %d})-[:IMPLIES_SKILL]->(t:Skill)
+			MATCH (s:Skill {id: %d, aid: '%s'})-[:IMPLIES_SKILL]->(t:Skill {aid: '%s'})
 			RETURN t.id
-		$$) AS (id ag_catalog.agtype)`, skillID)
+		$$) AS (id ag_catalog.agtype)`, skillID, a.aidStr(), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -222,9 +252,10 @@ func (db *ResumeDB) QueryImpliedSkillIDs(ctx context.Context, skillID int) ([]in
 	return scanAGEIntIDs(rows)
 }
 
-// QuerySubProjectIDs returns project IDs linked to an experience via PART_OF.
-func (db *ResumeDB) QuerySubProjectIDs(ctx context.Context, expID int) ([]int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QuerySubProjectIDs returns the bound account's project IDs linked to an
+// experience via PART_OF.
+func (a *ResumeAccount) QuerySubProjectIDs(ctx context.Context, expID int) ([]int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -236,9 +267,9 @@ func (db *ResumeDB) QuerySubProjectIDs(ctx context.Context, expID int) ([]int, e
 
 	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (p:Proj)-[:PART_OF]->(e:Exp {id: %d})
+			MATCH (p:Proj {aid: '%s'})-[:PART_OF]->(e:Exp {id: %d, aid: '%s'})
 			RETURN p.id
-		$$) AS (id ag_catalog.agtype)`, expID)
+		$$) AS (id ag_catalog.agtype)`, a.aidStr(), expID, a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -256,9 +287,10 @@ type TrajectoryEdge struct {
 	ToTitle   string `json:"to_title"`
 }
 
-// QueryCareerTrajectory returns EVOLVED_TO edges for a person's career graph.
-func (db *ResumeDB) QueryCareerTrajectory(ctx context.Context, personID int) ([]TrajectoryEdge, error) {
-	conn, err := db.pool.Acquire(ctx)
+// QueryCareerTrajectory returns EVOLVED_TO edges inside the bound account's
+// career graph.
+func (a *ResumeAccount) QueryCareerTrajectory(ctx context.Context, personID int) ([]TrajectoryEdge, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
 	}
@@ -268,11 +300,12 @@ func (db *ResumeDB) QueryCareerTrajectory(ctx context.Context, personID int) ([]
 		return nil, fmt.Errorf("age setup: %w", err)
 	}
 
-	cypher := `
+	cypher := fmt.Sprintf(`
 		SELECT * FROM ag_catalog.cypher('resume_graph', $$
-			MATCH (a:Exp)-[:EVOLVED_TO]->(b:Exp)
-			RETURN a.id, b.id, a.title, b.title
-		$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, from_title ag_catalog.agtype, to_title ag_catalog.agtype)`
+			MATCH (x:Exp {aid: '%s'})-[:EVOLVED_TO]->(y:Exp {aid: '%s'})
+			RETURN x.id, y.id, x.title, y.title
+		$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, from_title ag_catalog.agtype, to_title ag_catalog.agtype)`,
+		a.aidStr(), a.aidStr())
 
 	rows, err := conn.Query(ctx, cypher)
 	if err != nil {
@@ -296,12 +329,15 @@ func (db *ResumeDB) QueryCareerTrajectory(ctx context.Context, personID int) ([]
 	return edges, rows.Err()
 }
 
-// QuerySkillIDByName returns the skill ID for a given name, or 0 if not found.
-func (db *ResumeDB) QuerySkillIDByName(ctx context.Context, personID int, skillName string) int {
+// QuerySkillIDByName returns the skill ID for a given name under a person
+// owned by the bound account, or 0 if not found / foreign / Nil account.
+func (a *ResumeAccount) QuerySkillIDByName(ctx context.Context, personID int, skillName string) int {
 	var id int
-	err := db.pool.QueryRow(ctx,
-		`SELECT id FROM resume_skills WHERE person_id = $1 AND LOWER(name) = LOWER($2)`,
-		personID, skillName,
+	err := a.db.pool.QueryRow(ctx,
+		`SELECT s.id FROM resume_skills s
+		 WHERE s.person_id = $1 AND LOWER(s.name) = LOWER($2)
+		   AND EXISTS (SELECT 1 FROM resume_persons WHERE id = $1 AND account_id = $3)`,
+		personID, skillName, a.aid,
 	).Scan(&id)
 	if err != nil {
 		return 0
@@ -309,9 +345,9 @@ func (db *ResumeDB) QuerySkillIDByName(ctx context.Context, personID int, skillN
 	return id
 }
 
-// CountGraphNodes returns the total number of nodes in the resume graph.
-func (db *ResumeDB) CountGraphNodes(ctx context.Context) (int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// CountGraphNodes returns the number of nodes owned by the bound account.
+func (a *ResumeAccount) CountGraphNodes(ctx context.Context) (int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -321,9 +357,9 @@ func (db *ResumeDB) CountGraphNodes(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	cypher := `SELECT * FROM ag_catalog.cypher('resume_graph', $$
-		MATCH (n) RETURN count(n)
-	$$) AS (count ag_catalog.agtype)`
+	cypher := fmt.Sprintf(`SELECT * FROM ag_catalog.cypher('resume_graph', $$
+		MATCH (n) WHERE n.aid = '%s' RETURN count(n)
+	$$) AS (count ag_catalog.agtype)`, a.aidStr())
 
 	var raw string
 	if err := conn.QueryRow(ctx, cypher).Scan(&raw); err != nil {
@@ -334,9 +370,9 @@ func (db *ResumeDB) CountGraphNodes(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// CountGraphEdges returns the total number of edges in the resume graph.
-func (db *ResumeDB) CountGraphEdges(ctx context.Context) (int, error) {
-	conn, err := db.pool.Acquire(ctx)
+// CountGraphEdges returns the number of edges owned by the bound account.
+func (a *ResumeAccount) CountGraphEdges(ctx context.Context) (int, error) {
+	conn, err := a.db.pool.Acquire(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -346,9 +382,9 @@ func (db *ResumeDB) CountGraphEdges(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	cypher := `SELECT * FROM ag_catalog.cypher('resume_graph', $$
-		MATCH ()-[r]->() RETURN count(r)
-	$$) AS (count ag_catalog.agtype)`
+	cypher := fmt.Sprintf(`SELECT * FROM ag_catalog.cypher('resume_graph', $$
+		MATCH ()-[r]->() WHERE r.aid = '%s' RETURN count(r)
+	$$) AS (count ag_catalog.agtype)`, a.aidStr())
 
 	var raw string
 	if err := conn.QueryRow(ctx, cypher).Scan(&raw); err != nil {
@@ -376,6 +412,8 @@ func scanAGEIntIDs(rows pgx.Rows) ([]int, error) {
 }
 
 // escapeCypher escapes a string for safe use in a single-quoted Cypher literal.
+// Account ids are NOT passed through here — they are uuid.UUID values rendered
+// by aidStr(), whose canonical format cannot inject cypher syntax.
 func escapeCypher(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)

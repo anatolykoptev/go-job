@@ -71,7 +71,7 @@ func TestValidStageAllowlists(t *testing.T) {
 
 // TestRateHandler_BadID verifies that a non-numeric id returns 400.
 func TestRateHandler_BadID(t *testing.T) {
-	handler := rateHandler(nil, "admin")
+	handler := rateHandler(nil, denyAccount())
 
 	form := url.Values{}
 	form.Set("stage", "saved")

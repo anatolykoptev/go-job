@@ -62,8 +62,8 @@ func TestFreelanceToOpportunity(t *testing.T) {
 		SalaryMin: 80000,
 		SalaryMax: 120000,
 		Source:    "remoteok",
-		Tags:     []string{"golang", "postgres"},
-		Posted:   "2026-03-01",
+		Tags:      []string{"golang", "postgres"},
+		Posted:    "2026-03-01",
 	}
 
 	o := freelanceToOpportunity(f)

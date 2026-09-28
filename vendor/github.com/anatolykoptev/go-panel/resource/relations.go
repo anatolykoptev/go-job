@@ -28,6 +28,35 @@ type Relation struct {
 	ForeignKey    string
 	DisplayKey    string
 	ResolveLabels func(ctx context.Context, ids []string) (map[string]string, error)
+
+	// ResolveTargets is ResolveLabels for the case where the foreign key is
+	// NOT the target resource's ID.
+	//
+	// ResolveLabels only answers "what do I call this row", and the link is
+	// then built from the foreign-key value itself — which silently assumes
+	// the FK and the target's primary key are the same string. Where they are
+	// not, the label resolves correctly and the href points at nothing: the
+	// cell reads as a working link and 404s on click, which is worse than no
+	// link because it looks finished.
+	//
+	// Measured on go-grad: five resources referenced a business by its
+	// integer merchant_id while the clients resource is keyed by an org UUID,
+	// so every one of those cells linked to /admin/clients/1.
+	//
+	// Wins over ResolveLabels when both are set. A target whose ID comes back
+	// empty renders as PLAIN TEXT carrying the label — the FK resolved to a
+	// name but to no row worth linking, and a href to "" is not an improvement
+	// on saying so.
+	ResolveTargets func(ctx context.Context, ids []string) (map[string]RelationTarget, error)
+}
+
+// RelationTarget is the row a foreign key points at: the target resource's own
+// ID, which is what the link needs, and the label an operator reads.
+//
+// An empty ID means "resolved to a name, but there is no row to link to".
+type RelationTarget struct {
+	ID    string
+	Label string
 }
 
 // FALLBACK_CAP bounds the total number of FetchRow invocations across all
@@ -63,8 +92,8 @@ func resolveOneRelation(ctx context.Context, p *Panel, r *Resource, rows []Row, 
 	if len(refs) == 0 {
 		return
 	}
-	labels := resolveLabels(ctx, p, r, rel, ids, fallbackCalls)
-	replaceFKCells(rows, refs, fkIdx, labels, p, rel)
+	targets := resolveTargets(ctx, p, r, rel, ids, fallbackCalls)
+	replaceFKCells(rows, refs, fkIdx, targets, p, rel)
 }
 
 // findForeignKeyIndex returns the cell index for rel.ForeignKey on r, or -1.
@@ -105,18 +134,45 @@ func collectFKRefs(rows []Row, fkIdx int) (refs []rowRef, ids []string) {
 	return refs, ids
 }
 
-// resolveLabels returns id-to-display-value map. PRIMARY path is rel.ResolveLabels
-// (batch, ADR-2). Fallback path uses target.FetchRow gated by ADR-3.
-func resolveLabels(ctx context.Context, p *Panel, r *Resource, rel Relation, ids []string, fallbackCalls *int) map[string]string {
-	if rel.ResolveLabels != nil {
-		got, err := rel.ResolveLabels(ctx, ids)
+// resolveTargets maps each foreign-key value to the row it points at. Three
+// paths, in precedence order:
+//
+//  1. rel.ResolveTargets — the FK is not the target's ID, so the consumer
+//     hands back both.
+//  2. rel.ResolveLabels — the FK IS the target's ID (the common case), so the
+//     ID is the FK itself and only the label needs resolving (batch, ADR-2).
+//  3. target.FetchRow — ADR-3 gated fallback, same identity assumption as (2).
+func resolveTargets(ctx context.Context, p *Panel, r *Resource, rel Relation, ids []string, fallbackCalls *int) map[string]RelationTarget {
+	if rel.ResolveTargets != nil {
+		got, err := rel.ResolveTargets(ctx, ids)
 		if err != nil {
 			slog.Warn("resource: resolve relation failed", "resource", r.Name, "relation", rel.Resource, "err", err)
 			return nil
 		}
 		return got
 	}
-	return resolveViaFetchRow(ctx, p, r, rel, ids, fallbackCalls)
+	if rel.ResolveLabels != nil {
+		got, err := rel.ResolveLabels(ctx, ids)
+		if err != nil {
+			slog.Warn("resource: resolve relation failed", "resource", r.Name, "relation", rel.Resource, "err", err)
+			return nil
+		}
+		return identityTargets(got)
+	}
+	return identityTargets(resolveViaFetchRow(ctx, p, r, rel, ids, fallbackCalls))
+}
+
+// identityTargets lifts an id-to-label map into targets for the case the old
+// contract assumed: the foreign key IS the target's ID.
+func identityTargets(labels map[string]string) map[string]RelationTarget {
+	if labels == nil {
+		return nil
+	}
+	out := make(map[string]RelationTarget, len(labels))
+	for id, label := range labels {
+		out[id] = RelationTarget{ID: id, Label: label}
+	}
+	return out
 }
 
 // resolveViaFetchRow is the ADR-3 gated fallback: target must have non-empty
@@ -155,17 +211,27 @@ func resolveViaFetchRow(ctx context.Context, p *Panel, r *Resource, rel Relation
 	return labels
 }
 
-// replaceFKCells mutates rows: for each ref with a resolved display value,
-// replaces the FK cell with a CrossLinkCell anchor (Cell.HTML=true). Missing
-// display values leave the raw FK in place (ADR-9 graceful degradation).
-func replaceFKCells(rows []Row, refs []rowRef, fkIdx int, labels map[string]string, p *Panel, rel Relation) {
+// replaceFKCells mutates rows: for each ref with a resolved target, replaces
+// the FK cell with a CrossLinkCell anchor (Cell.HTML=true).
+//
+// Two degradations, both deliberate:
+//   - no label at all: the raw FK stays (ADR-9 graceful degradation) — an
+//     unresolvable id is still more use to an operator than a blank.
+//   - a label but no ID: the label renders as PLAIN TEXT. There is a name to
+//     show and no row to open, and an anchor to nowhere reads as a working
+//     link until someone clicks it.
+func replaceFKCells(rows []Row, refs []rowRef, fkIdx int, targets map[string]RelationTarget, p *Panel, rel Relation) {
 	for _, ref := range refs {
-		disp, ok := labels[ref.fkID]
-		if !ok || disp == "" {
+		t, ok := targets[ref.fkID]
+		if !ok || t.Label == "" {
+			continue
+		}
+		if t.ID == "" {
+			rows[ref.rowIdx].Cells[fkIdx] = Cell{Value: t.Label}
 			continue
 		}
 		rows[ref.rowIdx].Cells[fkIdx] = Cell{
-			Value: CrossLinkCell(p.basePath, rel.Resource, ref.fkID, disp),
+			Value: CrossLinkCell(p.basePath, rel.Resource, t.ID, t.Label),
 			HTML:  true,
 		}
 	}

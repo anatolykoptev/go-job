@@ -26,27 +26,28 @@ func TestUpdatePersonUpworkFields_RoundTrip(t *testing.T) {
 		t.Fatalf("ConnectResumeDB: %v", err)
 	}
 	t.Cleanup(db.Close)
+	rdb := newResumeTestAccount(t, db)
 
 	// Insert a test person.
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:  "Upwork Test Person",
 		Email: "upwork-test@example.com",
 	})
 	if err != nil {
 		t.Fatalf("InsertPerson: %v", err)
 	}
-	t.Cleanup(func() { _ = db.ClearPerson(ctx, personID) })
+	t.Cleanup(func() { _ = rdb.ClearPerson(ctx, personID) })
 
 	// Call the function under test.
 	const wantHeadline = "Staff Software Engineer | Go + Rust"
 	const wantRate int64 = 17500 // $175.00/hr
 
-	if err := db.UpdatePersonUpworkFields(ctx, personID, wantHeadline, wantRate); err != nil {
+	if err := rdb.UpdatePersonUpworkFields(ctx, personID, wantHeadline, wantRate); err != nil {
 		t.Fatalf("UpdatePersonUpworkFields: %v", err)
 	}
 
 	// Read back via GetPerson — this is the real code path the handler uses.
-	person, err := db.GetPerson(ctx, personID)
+	person, err := rdb.GetPerson(ctx, personID)
 	if err != nil {
 		t.Fatalf("GetPerson: %v", err)
 	}

@@ -55,7 +55,9 @@ func TestJobDetailer_Smoke(t *testing.T) {
 	csrfKey := []byte("00000000000000000000000000000000")
 	hs := hunt.NewStore(pool)
 	a := testDetailAuth()
-	detailer := jobDetailer(pool, hs, "admin", a, csrfKey, applications.New(nil, t.TempDir()))
+	detailAID := newTestAccount(t, pool)
+	detailer := jobDetailer(pool, hs, a, csrfKey, applications.New(nil, t.TempDir(), detailAID),
+		fixedAccount(detailAID))
 
 	t.Run("existing_id_section_shapes", func(t *testing.T) {
 		var id int64

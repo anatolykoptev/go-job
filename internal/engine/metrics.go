@@ -108,18 +108,18 @@ const (
 
 	// Shared bounded-label values reused across metric incrementors and the flat
 	// text endpoint (extracted to satisfy goconst min-occurrences=4).
-	outcomeOK          = "ok"
-	outcomeEmpty       = "empty"
-	outcomeTimeout     = "timeout"
-	outcomeError       = "error"
-	outcomeNoKey       = "no_key"
-	outcomeParseFail   = "parse_fail"
-	outcomeUnparseable = "unparseable"
+	outcomeOK             = "ok"
+	outcomeEmpty          = "empty"
+	outcomeTimeout        = "timeout"
+	outcomeError          = "error"
+	outcomeNoKey          = "no_key"
+	outcomeParseFail      = "parse_fail"
+	outcomeUnparseable    = "unparseable"
 	outcomeLLMUnavailable = "llm_unavailable" // LLM error/unparseable — unavailable path taken (listings may or may not have survived)
-	kindJobs           = "jobs"
-	kindBounties       = "bounties"
-	kindFreelance      = "freelance"
-	kindSecurity       = "security"
+	kindJobs              = "jobs"
+	kindBounties          = "bounties"
+	kindFreelance         = "freelance"
+	kindSecurity          = "security"
 
 	// Fit-scoring filter stage labels (hunt_score_filtered_total{stage}).
 	// Extracted to satisfy goconst (appear ≥3 times across allowlist + FormatMetrics).
@@ -558,30 +558,30 @@ var validRelevanceOutcomes = map[string]bool{
 // indistinguishable under the single "timeout" label (#452). canceled is a
 // client disconnect (context.Canceled), distinct from any deadline expiring.
 const (
-	RelevanceReasonNotConfigured  = "not_configured"
-	RelevanceReasonEmbedError     = "embed_error"
-	RelevanceReasonCircuitOpen    = "circuit_open"
-	RelevanceReasonTimeoutGate    = "timeout_gate"
-	RelevanceReasonTimeoutParent  = "timeout_parent"
-	RelevanceReasonTimeoutClient  = "timeout_client"
-	RelevanceReasonCanceled       = "canceled"
-	RelevanceReasonEmptyVectors   = "empty_vectors"
-	RelevanceReasonTruncated      = "truncated"
+	RelevanceReasonNotConfigured = "not_configured"
+	RelevanceReasonEmbedError    = "embed_error"
+	RelevanceReasonCircuitOpen   = "circuit_open"
+	RelevanceReasonTimeoutGate   = "timeout_gate"
+	RelevanceReasonTimeoutParent = "timeout_parent"
+	RelevanceReasonTimeoutClient = "timeout_client"
+	RelevanceReasonCanceled      = "canceled"
+	RelevanceReasonEmptyVectors  = "empty_vectors"
+	RelevanceReasonTruncated     = "truncated"
 )
 
 // validRelevanceDegradedReasons bounds the reason label for
 // job_search_relevance_degraded_total. Unrecognised values are dropped silently
 // (cardinality guard — no free-form strings, no query text).
 var validRelevanceDegradedReasons = map[string]bool{
-	RelevanceReasonNotConfigured:  true,
-	RelevanceReasonEmbedError:     true,
-	RelevanceReasonCircuitOpen:    true,
-	RelevanceReasonTimeoutGate:    true,
-	RelevanceReasonTimeoutParent:  true,
-	RelevanceReasonTimeoutClient:  true,
-	RelevanceReasonCanceled:       true,
-	RelevanceReasonEmptyVectors:   true,
-	RelevanceReasonTruncated:      true,
+	RelevanceReasonNotConfigured: true,
+	RelevanceReasonEmbedError:    true,
+	RelevanceReasonCircuitOpen:   true,
+	RelevanceReasonTimeoutGate:   true,
+	RelevanceReasonTimeoutParent: true,
+	RelevanceReasonTimeoutClient: true,
+	RelevanceReasonCanceled:      true,
+	RelevanceReasonEmptyVectors:  true,
+	RelevanceReasonTruncated:     true,
 }
 
 // Cross-encoder shadow agreement outcome label values
@@ -883,10 +883,10 @@ func FormatMetrics() string {
 	for _, result := range []string{"ok", "weak", "skipped_store"} {
 		keys = append(keys, MetricVacancyIngest+"{result="+result+"}")
 	}
-	// ESC-2 observability gauges pre-touched at 0 so they appear on the flat
-	// text endpoint before the first sweep/cycle. No labels — single series each.
-	keys = append(keys, MetricHuntUnscoredJobsCount)
-	keys = append(keys, MetricHuntUnscoredJobsMaxAge)
+	// ESC-2 observability gauges: the unscored-jobs gauges carry the
+	// per-account {account} label since P3 — series are created on first Set,
+	// not pre-touched (the account set is dynamic). scoring_degraded stays
+	// unlabelled and pre-touched.
 	keys = append(keys, MetricHuntScoringDegraded)
 	// Degraded reason counters pre-touched so rate()-floor alerts see 0.
 	// 3 reasons = 3 series (bounded enum).
@@ -1321,13 +1321,9 @@ func warmAlertBoundedMetrics() {
 	// cycle_reset call since scoringDegradedState initializes false), so
 	// without this pre-registration the gauge is absent from Prometheus
 	// until a real 0→1 transition — the alert sees "no data", not 0.
-	// The unscored-jobs gauges don't have the early-return bug (their
-	// setters always call reg.Gauge().Set()), but pre-registering them
-	// too is defense-in-depth: if the sweep cycle is delayed or skipped,
-	// the gauges are still present at 0.
+	// The unscored-jobs gauges carry the per-account {account} label since
+	// P3 — they are created on first Set per account, not pre-registered.
 	reg.Gauge(MetricHuntScoringDegraded).Set(0)
-	reg.Gauge(MetricHuntUnscoredJobsCount).Set(0)
-	reg.Gauge(MetricHuntUnscoredJobsMaxAge).Set(0)
 }
 
 // IncrPlatformResults bumps gojob_platform_results_total{platform=<p>,outcome=<o>}.
@@ -1670,25 +1666,30 @@ func SetHuntNotifyHealth(healthy bool) {
 	reg.Gauge(MetricHuntNotifyHealth).Set(v)
 }
 
-// SetHuntUnscoredJobsCount sets gojob_hunt_unscored_jobs_count to val.
-// Called by the hunt worker's unscored sweep after fetching UnscoredOpenJobs
-// (aggregated from the result in Go — no extra SQL query).
+// SetHuntUnscoredJobsCount sets gojob_hunt_unscored_jobs_count{account} to
+// val — P3: the unscored pool is per-account (account_job_scores), so the
+// gauge carries the account UUID label and each account's backlog is tracked
+// independently (the alert aggregates with max() over accounts).
+// Called by the hunt worker's per-account unscored sweep after fetching
+// UnscoredOpenJobs (aggregated from the result in Go — no extra SQL query).
 // No-op before engine.Init() (reg is nil; Gauge is nil-safe).
-func SetHuntUnscoredJobsCount(val float64) {
+func SetHuntUnscoredJobsCount(account string, val float64) {
 	if reg == nil {
 		return
 	}
-	reg.Gauge(MetricHuntUnscoredJobsCount).Set(val)
+	reg.Gauge(MetricHuntUnscoredJobsCount + "{account=" + account + "}").Set(val)
 }
 
-// SetHuntUnscoredJobsMaxAge sets gojob_hunt_unscored_jobs_max_age_seconds to val.
-// Called by the hunt worker's unscored sweep with the age (in seconds) of the
-// oldest unscored open job. No-op before engine.Init() (reg is nil; Gauge is nil-safe).
-func SetHuntUnscoredJobsMaxAge(val float64) {
+// SetHuntUnscoredJobsMaxAge sets
+// gojob_hunt_unscored_jobs_max_age_seconds{account} to val.
+// Called by the hunt worker's per-account unscored sweep with the age (in
+// seconds) of the oldest unscored open job FOR THAT ACCOUNT.
+// No-op before engine.Init() (reg is nil; Gauge is nil-safe).
+func SetHuntUnscoredJobsMaxAge(account string, val float64) {
 	if reg == nil {
 		return
 	}
-	reg.Gauge(MetricHuntUnscoredJobsMaxAge).Set(val)
+	reg.Gauge(MetricHuntUnscoredJobsMaxAge + "{account=" + account + "}").Set(val)
 }
 
 // validHuntScoringDegradedReasons bounds the reason label for

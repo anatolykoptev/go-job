@@ -16,7 +16,7 @@ import (
 
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/pgutil"
-	"github.com/jackc/pgx/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -42,6 +42,7 @@ func SetPurgeMetricHooks(deletedFn func(int64), errorFn func()) {
 // Entry is a stored oversize response.
 type Entry struct {
 	ID        int64           `json:"id"`
+	AccountID uuid.UUID       `json:"account_id,omitempty"`
 	ToolName  string          `json:"tool_name"`
 	QueryHash string          `json:"query_hash,omitempty"`
 	Payload   json.RawMessage `json:"payload"`
@@ -128,55 +129,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 	})
 }
 
-// Save inserts an entry, returns generated id.
-func (s *Store) Save(ctx context.Context, e Entry) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO oversize_responses
-			(tool_name, query_hash, payload, size_bytes, sha256, sample, item_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id`,
-		e.ToolName,
-		e.QueryHash,
-		[]byte(e.Payload),
-		e.SizeBytes,
-		e.SHA256,
-		nullableJSON(e.Sample),
-		e.ItemCount,
-	).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("oversize: save: %w", err)
-	}
-	return id, nil
-}
-
-// Get returns entry by id; ErrNotFound if missing or soft-deleted.
-// BH-9: filters deleted_at IS NULL so purged entries are invisible to
-// concurrent reads even before the hard purge removes the row.
-func (s *Store) Get(ctx context.Context, id int64) (*Entry, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
-		FROM oversize_responses
-		WHERE id = $1 AND deleted_at IS NULL`, id)
-
-	var e Entry
-	var sample []byte
-	err := row.Scan(
-		&e.ID, &e.ToolName, &e.QueryHash,
-		&e.Payload, &e.SizeBytes, &e.SHA256,
-		&sample, &e.ItemCount, &e.CreatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("oversize: get: %w", err)
-	}
-	if len(sample) > 0 {
-		e.Sample = json.RawMessage(sample)
-	}
-	return &e, nil
-}
+// Get/List/Save live on AccountStore (ForAccount) — every oversize row is
+// account-owned (plan ADR-10); unscoped reads/writes are unreachable.
 
 // ListFilter narrows List results.
 type ListFilter struct {
@@ -185,81 +139,9 @@ type ListFilter struct {
 	Limit    int // default 20, max 200
 }
 
-// List returns recent entries newest-first.
-func (s *Store) List(ctx context.Context, f ListFilter) ([]Entry, error) {
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 200 {
-		limit = 200
-	}
-
-	var (
-		rows pgx.Rows
-		err  error
-	)
-
-	hasTool := f.ToolName != ""
-	hasSince := !f.Since.IsZero()
-	switch {
-	case hasTool && hasSince:
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
-			FROM oversize_responses
-			WHERE tool_name = $1 AND created_at > $2 AND deleted_at IS NULL
-			ORDER BY created_at DESC
-			LIMIT $3`, f.ToolName, f.Since, limit)
-	case hasTool:
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
-			FROM oversize_responses
-			WHERE tool_name = $1 AND deleted_at IS NULL
-			ORDER BY created_at DESC
-			LIMIT $2`, f.ToolName, limit)
-	case hasSince:
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
-			FROM oversize_responses
-			WHERE created_at > $1 AND deleted_at IS NULL
-			ORDER BY created_at DESC
-			LIMIT $2`, f.Since, limit)
-	default:
-		rows, err = s.pool.Query(ctx, `
-			SELECT id, tool_name, query_hash, payload, size_bytes, sha256, sample, item_count, created_at
-			FROM oversize_responses
-			WHERE deleted_at IS NULL
-			ORDER BY created_at DESC
-			LIMIT $1`, limit)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("oversize: list query: %w", err)
-	}
-	defer rows.Close()
-
-	var result []Entry
-	for rows.Next() {
-		var e Entry
-		var sample []byte
-		if err := rows.Scan(
-			&e.ID, &e.ToolName, &e.QueryHash,
-			&e.Payload, &e.SizeBytes, &e.SHA256,
-			&sample, &e.ItemCount, &e.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("oversize: list scan: %w", err)
-		}
-		if len(sample) > 0 {
-			e.Sample = json.RawMessage(sample)
-		}
-		result = append(result, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("oversize: list rows: %w", err)
-	}
-	return result, nil
-}
-
-// Purge soft-deletes entries older than `before` by setting deleted_at=NOW().
+// Purge soft-deletes ALL accounts' entries older than `before` — fleet-wide
+// retention job (StartAutoPurge). Interactive per-account purges go through
+// AccountStore.Purge (account-scoped, plan ADR-10).
 // BH-9: soft delete prevents races with concurrent Get/List reads — a
 // hard DELETE can execute before or during a read, causing ErrNotFound.
 // HardPurge removes rows with deleted_at older than 24h.

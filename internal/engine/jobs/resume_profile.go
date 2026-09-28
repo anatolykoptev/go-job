@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // --- Output types ---
@@ -95,18 +97,19 @@ type ResumeProfileResult struct {
 
 // GetResumeProfile reads the full resume profile from PostgreSQL.
 // If section is non-empty, only that section is loaded.
-func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult, error) {
+func GetResumeProfile(ctx context.Context, accountID uuid.UUID, section string) (*ResumeProfileResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
+	rdb := db.ForAccount(accountID)
 
-	personID := db.GetLatestPersonID(ctx)
+	personID := rdb.GetLatestPersonID(ctx)
 	if personID == 0 {
 		return nil, errors.New("no resume found — use master_resume_build first")
 	}
 
-	person, err := db.GetPerson(ctx, personID)
+	person, err := rdb.GetPerson(ctx, personID)
 	if err != nil {
 		return nil, errors.New("no resume found — use master_resume_build first")
 	}
@@ -118,7 +121,7 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 		Location:        person.Location,
 		Links:           person.Links,
 		Summary:         person.Summary,
-		EnrichedAt:      db.GetPersonEnrichedAt(ctx, personID),
+		EnrichedAt:      rdb.GetPersonEnrichedAt(ctx, personID),
 		Headline:        person.Headline,
 		HourlyRateCents: person.HourlyRateCents,
 	}
@@ -126,51 +129,48 @@ func GetResumeProfile(ctx context.Context, section string) (*ResumeProfileResult
 	sec := strings.ToLower(strings.TrimSpace(section))
 
 	if sec == "" || sec == "experiences" {
-		result.Experiences = loadExperiences(ctx, db, personID)
+		result.Experiences = loadExperiences(ctx, rdb, personID)
 		result.Stats.TotalExperiences = len(result.Experiences)
 	}
 	if sec == "" || sec == "skills" {
-		result.Skills = loadSkills(ctx, db, personID)
+		result.Skills = loadSkills(ctx, rdb, personID)
 		result.Stats.TotalSkills = len(result.Skills)
 	}
 	if sec == "" || sec == "projects" {
-		result.Projects = loadProjects(ctx, db, personID)
+		result.Projects = loadProjects(ctx, rdb, personID)
 		result.Stats.TotalProjects = len(result.Projects)
 	}
 	if sec == "" || sec == "achievements" {
-		result.Achievements = loadAchievements(ctx, db, personID)
+		result.Achievements = loadAchievements(ctx, rdb, personID)
 	}
 	if sec == "" || sec == "educations" {
-		result.Educations = loadEducations(ctx, db, personID)
+		result.Educations = loadEducations(ctx, rdb, personID)
 	}
 	if sec == "" || sec == "certifications" {
-		result.Certifications = loadCertifications(ctx, db, personID)
+		result.Certifications = loadCertifications(ctx, rdb, personID)
 	}
 	if sec == "" || sec == "domains" {
-		result.Domains = loadDomains(ctx, db, personID)
+		result.Domains = loadDomains(ctx, rdb, personID)
 	}
 	if sec == "" || sec == "methodologies" {
-		result.Methodologies = loadMethodologies(ctx, db, personID)
+		result.Methodologies = loadMethodologies(ctx, rdb, personID)
 	}
 
 	// Count structured vectors (experience/project/achievement/enrich_project only).
 	// Does NOT include free-text resume_memory rows (mem_type='note' etc.) — intentional:
 	// VectorsStored reflects SQL-entity-linked vectors, not total row count.
 	if sec == "" {
-		if rdb := GetResumeDB(); rdb != nil {
-			n, err := rdb.CountVectors(ctx,
-				memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv, memTypeEnrichProj)
-			if err == nil {
-				result.Stats.VectorsStored = n
-			}
+		if n, err := rdb.CountVectors(ctx,
+			memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv, memTypeEnrichProj); err == nil {
+			result.Stats.VectorsStored = n
 		}
 	}
 
 	return result, nil
 }
 
-func loadExperiences(ctx context.Context, db *ResumeDB, personID int) []ExperienceSummary {
-	records, err := db.GetAllExperiences(ctx, personID)
+func loadExperiences(ctx context.Context, rdb *ResumeAccount, personID int) []ExperienceSummary {
+	records, err := rdb.GetAllExperiences(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load experiences failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -192,8 +192,8 @@ func loadExperiences(ctx context.Context, db *ResumeDB, personID int) []Experien
 	return out
 }
 
-func loadSkills(ctx context.Context, db *ResumeDB, personID int) []SkillSummary {
-	records, err := db.GetAllSkills(ctx, personID)
+func loadSkills(ctx context.Context, rdb *ResumeAccount, personID int) []SkillSummary {
+	records, err := rdb.GetAllSkills(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load skills failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -211,8 +211,8 @@ func loadSkills(ctx context.Context, db *ResumeDB, personID int) []SkillSummary 
 	return out
 }
 
-func loadProjects(ctx context.Context, db *ResumeDB, personID int) []ProjectSummary {
-	records, err := db.GetAllProjects(ctx, personID)
+func loadProjects(ctx context.Context, rdb *ResumeAccount, personID int) []ProjectSummary {
+	records, err := rdb.GetAllProjects(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load projects failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -230,8 +230,8 @@ func loadProjects(ctx context.Context, db *ResumeDB, personID int) []ProjectSumm
 	return out
 }
 
-func loadAchievements(ctx context.Context, db *ResumeDB, personID int) []AchievementSummary {
-	records, err := db.GetAllAchievements(ctx, personID)
+func loadAchievements(ctx context.Context, rdb *ResumeAccount, personID int) []AchievementSummary {
+	records, err := rdb.GetAllAchievements(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load achievements failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -250,8 +250,8 @@ func loadAchievements(ctx context.Context, db *ResumeDB, personID int) []Achieve
 	return out
 }
 
-func loadEducations(ctx context.Context, db *ResumeDB, personID int) []EducationSummary {
-	records, err := db.GetAllEducations(ctx, personID)
+func loadEducations(ctx context.Context, rdb *ResumeAccount, personID int) []EducationSummary {
+	records, err := rdb.GetAllEducations(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load educations failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -271,8 +271,8 @@ func loadEducations(ctx context.Context, db *ResumeDB, personID int) []Education
 	return out
 }
 
-func loadCertifications(ctx context.Context, db *ResumeDB, personID int) []CertificationSummary {
-	records, err := db.GetAllCertifications(ctx, personID)
+func loadCertifications(ctx context.Context, rdb *ResumeAccount, personID int) []CertificationSummary {
+	records, err := rdb.GetAllCertifications(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load certifications failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -290,8 +290,8 @@ func loadCertifications(ctx context.Context, db *ResumeDB, personID int) []Certi
 	return out
 }
 
-func loadDomains(ctx context.Context, db *ResumeDB, personID int) []string {
-	records, err := db.GetAllDomains(ctx, personID)
+func loadDomains(ctx context.Context, rdb *ResumeAccount, personID int) []string {
+	records, err := rdb.GetAllDomains(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load domains failed",
 			slog.Int("person_id", personID), slog.Any("error", err))
@@ -304,8 +304,8 @@ func loadDomains(ctx context.Context, db *ResumeDB, personID int) []string {
 	return out
 }
 
-func loadMethodologies(ctx context.Context, db *ResumeDB, personID int) []string {
-	records, err := db.GetAllMethodologies(ctx, personID)
+func loadMethodologies(ctx context.Context, rdb *ResumeAccount, personID int) []string {
+	records, err := rdb.GetAllMethodologies(ctx, personID)
 	if err != nil {
 		slog.Error("resume_profile: load methodologies failed",
 			slog.Int("person_id", personID), slog.Any("error", err))

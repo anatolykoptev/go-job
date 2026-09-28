@@ -31,7 +31,7 @@ var upworkOverviewSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func upworkOverviewResource(pool *pgxpool.Pool) resource.Resource {
+func upworkOverviewResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "upwork_overview",
 		Title:  "Upwork Overview",
@@ -39,17 +39,17 @@ func upworkOverviewResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpUpwork,
 		Sort:   upworkOverviewSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: upworkOverviewLister(pool),
+		Lister: upworkOverviewLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			pid := db.GetLatestPersonID(ctx)
+			pid := rdb.GetLatestPersonID(ctx)
 			if pid == 0 {
 				return nil, resource.ErrDetailNotFound
 			}
-			result, err := db.GetUpworkProfile(ctx, pid)
+			result, err := rdb.GetUpworkProfile(ctx, pid)
 			if err != nil || result == nil || result.Missing {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -64,26 +64,26 @@ func upworkOverviewResource(pool *pgxpool.Pool) resource.Resource {
 				{Key: "availability", Label: "Availability", Kind: resource.FieldText, Help: "e.g. Full-time, Part-time"},
 			}},
 			Load: func(ctx context.Context, _ tenant.Tenant, _ string) (map[string]string, error) {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return nil, resource.ErrDetailNotFound
 				}
-				result, err := db.GetUpworkProfile(ctx, pid)
+				result, err := rdb.GetUpworkProfile(ctx, pid)
 				if err != nil || result == nil || result.Missing {
 					return nil, resource.ErrDetailNotFound
 				}
 				return upworkOverviewToMap(result.Profile), nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, _ string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("title", "resume database not configured")
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return resource.NewSaveError("title", "no resume person found")
 				}
@@ -92,7 +92,7 @@ func upworkOverviewResource(pool *pgxpool.Pool) resource.Resource {
 					return resource.NewSaveError("hourly_rate", rateErr.Error())
 				}
 				categories := parseHighlights(v["categories"])
-				return db.UpsertUpworkProfile(ctx, pid, v["title"], v["overview"], hourlyRateCents, categories, v["availability"])
+				return rdb.UpsertUpworkProfile(ctx, pid, v["title"], v["overview"], hourlyRateCents, categories, v["availability"])
 			},
 			RedirectAfterSave: func(_ context.Context, _ string) string { return upworkEditRedirect },
 		},
@@ -100,17 +100,17 @@ func upworkOverviewResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other listers
-func upworkOverviewLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func upworkOverviewLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		result, err := db.GetUpworkProfile(ctx, pid)
+		result, err := rdb.GetUpworkProfile(ctx, pid)
 		if err != nil || result == nil || result.Missing || result.Profile == nil {
 			return nil, 0, nil
 		}
@@ -140,11 +140,11 @@ func upworkOverviewToMap(p *jobs.UpworkProfile) map[string]string {
 		hourlyRate = formatCentsToDollars(p.HourlyRate)
 	}
 	return map[string]string{
-		"title":         p.Title,
-		"overview":      p.Overview,
-		"hourly_rate":   hourlyRate,
-		"categories":    categoriesJSON,
-		"availability":  p.Availability,
+		"title":        p.Title,
+		"overview":     p.Overview,
+		"hourly_rate":  hourlyRate,
+		"categories":   categoriesJSON,
+		"availability": p.Availability,
 	}
 }
 
@@ -158,7 +158,7 @@ var upworkSkillsSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func upworkSkillsResource(pool *pgxpool.Pool) resource.Resource {
+func upworkSkillsResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "upwork_skills",
 		Title:  "Upwork Skills",
@@ -166,17 +166,17 @@ func upworkSkillsResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpUpwork,
 		Sort:   upworkSkillsSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: upworkSkillsLister(pool),
+		Lister: upworkSkillsLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			sid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			s, err := db.GetUpworkSkillByID(ctx, sid)
+			s, err := rdb.GetUpworkSkillByID(ctx, sid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -191,50 +191,50 @@ func upworkSkillsResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				s, err := db.GetUpworkSkillByID(ctx, sid)
+				s, err := rdb.GetUpworkSkillByID(ctx, sid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"name": s.Name}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return resource.NewSaveError("name", "no resume person found")
 				}
 				name := v["name"]
 				if id == "" {
-					_, err := db.InsertUpworkSkill(ctx, pid, name)
+					_, err := rdb.InsertUpworkSkill(ctx, pid, name)
 					return err
 				}
 				sid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				return db.UpdateUpworkSkill(ctx, sid, name)
+				return rdb.UpdateUpworkSkill(ctx, sid, name)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				sid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("name", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("name", "resume database not configured")
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return resource.NewSaveError("name", "no resume person found")
 				}
-				return db.DeleteUpworkSkill(ctx, pid, sid)
+				return rdb.DeleteUpworkSkill(ctx, pid, sid)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return upworkEditRedirect },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return upworkEditRedirect },
@@ -243,17 +243,17 @@ func upworkSkillsResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other listers
-func upworkSkillsLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func upworkSkillsLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		result, err := db.GetUpworkProfile(ctx, pid)
+		result, err := rdb.GetUpworkProfile(ctx, pid)
 		if err != nil || result == nil {
 			return nil, 0, nil
 		}
@@ -280,7 +280,7 @@ var upworkCatalogSpec = admintable.Spec{
 	DefaultDir: admintable.Asc,
 }
 
-func upworkCatalogResource(pool *pgxpool.Pool) resource.Resource {
+func upworkCatalogResource(pool *pgxpool.Pool, acctOf accountResolver) resource.Resource {
 	return resource.Resource{
 		Name:   "upwork_catalog",
 		Title:  "Portfolio Items",
@@ -288,17 +288,17 @@ func upworkCatalogResource(pool *pgxpool.Pool) resource.Resource {
 		Group:  grpUpwork,
 		Sort:   upworkCatalogSpec,
 		Filter: admintable.FilterSpec{},
-		Lister: upworkCatalogLister(pool),
+		Lister: upworkCatalogLister(pool, acctOf),
 		FetchRow: func(ctx context.Context, id string) (map[string]string, error) {
 			cid, err := strconv.Atoi(id)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
-			db := jobs.GetResumeDB()
-			if db == nil {
+			rdb, acctOK := resumeScopedDB(ctx, acctOf)
+			if !acctOK {
 				return nil, resource.ErrDetailNotFound
 			}
-			c, err := db.GetUpworkCatalogItemByID(ctx, cid)
+			c, err := rdb.GetUpworkCatalogItemByID(ctx, cid)
 			if err != nil {
 				return nil, resource.ErrDetailNotFound
 			}
@@ -314,50 +314,50 @@ func upworkCatalogResource(pool *pgxpool.Pool) resource.Resource {
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return nil, resource.ErrDetailNotFound
 				}
-				c, err := db.GetUpworkCatalogItemByID(ctx, cid)
+				c, err := rdb.GetUpworkCatalogItemByID(ctx, cid)
 				if err != nil {
 					return nil, resource.ErrDetailNotFound
 				}
 				return map[string]string{"title": c.Title, "description": c.Description}, nil
 			},
 			Save: func(ctx context.Context, _ tenant.Tenant, id string, v map[string]string) error {
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("title", "resume database not configured")
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return resource.NewSaveError("title", "no resume person found")
 				}
 				title, desc := v["title"], v["description"]
 				if id == "" {
-					_, err := db.InsertUpworkCatalogItem(ctx, pid, title, desc)
+					_, err := rdb.InsertUpworkCatalogItem(ctx, pid, title, desc)
 					return err
 				}
 				cid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("title", "invalid ID")
 				}
-				return db.UpdateUpworkCatalogItem(ctx, cid, title, desc)
+				return rdb.UpdateUpworkCatalogItem(ctx, cid, title, desc)
 			},
 			Delete: func(ctx context.Context, _ tenant.Tenant, id string) error {
 				cid, err := strconv.Atoi(id)
 				if err != nil {
 					return resource.NewSaveError("title", "invalid ID")
 				}
-				db := jobs.GetResumeDB()
-				if db == nil {
+				rdb, acctOK := resumeScopedDB(ctx, acctOf)
+				if !acctOK {
 					return resource.NewSaveError("title", "resume database not configured")
 				}
-				pid := db.GetLatestPersonID(ctx)
+				pid := rdb.GetLatestPersonID(ctx)
 				if pid == 0 {
 					return resource.NewSaveError("title", "no resume person found")
 				}
-				return db.DeleteUpworkCatalogItem(ctx, pid, cid)
+				return rdb.DeleteUpworkCatalogItem(ctx, pid, cid)
 			},
 			RedirectAfterSave:   func(_ context.Context, _ string) string { return upworkEditRedirect },
 			RedirectAfterDelete: func(_ context.Context, _ string) string { return upworkEditRedirect },
@@ -366,17 +366,17 @@ func upworkCatalogResource(pool *pgxpool.Pool) resource.Resource {
 }
 
 //nolint:dupl // structurally identical to other listers
-func upworkCatalogLister(pool *pgxpool.Pool) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func upworkCatalogLister(pool *pgxpool.Pool, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, _ resource.ListQuery) ([]resource.Row, int, error) {
-		db := jobs.GetResumeDB()
-		if db == nil {
+		rdb, acctOK := resumeScopedDB(ctx, acctOf)
+		if !acctOK {
 			return nil, 0, nil
 		}
-		pid := db.GetLatestPersonID(ctx)
+		pid := rdb.GetLatestPersonID(ctx)
 		if pid == 0 {
 			return nil, 0, nil
 		}
-		result, err := db.GetUpworkProfile(ctx, pid)
+		result, err := rdb.GetUpworkProfile(ctx, pid)
 		if err != nil || result == nil {
 			slog.Error("upworkCatalogLister", "err", err)
 			return nil, 0, err

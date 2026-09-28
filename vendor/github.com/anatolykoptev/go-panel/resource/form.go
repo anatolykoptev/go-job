@@ -205,6 +205,26 @@ type Writer struct {
 	// AfterDelete is called after Delete completes, regardless of error.
 	// Same contract as AfterSave. Nil = no hook.
 	AfterDelete func(ctx context.Context, id string, err error)
+
+	// Restore undoes a Delete. Set it only when Delete is recoverable — a
+	// soft delete that clears deleted_at, typically. id is the row primary key.
+	//
+	// Setting it changes the delete AFFORDANCE, not just the route:
+	//
+	//   Restore == nil  the row is deleted from its detail page only, behind a
+	//                   confirm dialog, because there is no way back.
+	//   Restore != nil  the list gains a one-click Delete per row; the row dims
+	//                   in place and offers Вернуть for a few seconds. No
+	//                   confirm — the undo replaces it.
+	//
+	// That coupling is deliberate. One-click delete is safe exactly when it is
+	// reversible, so a resource earns the affordance by providing the way back
+	// rather than by remembering to ask for it.
+	//
+	// Restore must be idempotent-safe: restoring a row that is not deleted
+	// should report an error rather than succeed silently, or a double-clicked
+	// undo claims to have restored something it did not.
+	Restore func(ctx context.Context, t tenant.Tenant, id string) error
 	// RedirectAfterSave returns the URL to redirect to after a successful save.
 	// nil = redirect to the resource list page (default behaviour).
 	// Only used on success — error paths (validation, 500) do not redirect.

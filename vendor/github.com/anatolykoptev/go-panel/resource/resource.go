@@ -95,13 +95,52 @@ type DetailItem struct {
 	HTML  bool // when true, Value is rendered via templ.Raw — caller guarantees safety
 }
 
+// DetailColumn is one column header of a DetailTable.
+type DetailColumn struct {
+	Label string
+	Align string // "", "center", or "right" — mirrors admintable.Column.Align
+}
+
+// DetailCell is one cell of a DetailTable row. Value is ALWAYS rendered as
+// escaped text. Href, when non-empty, wraps it in an anchor.
+//
+// Href is passed to templ as a PLAIN STRING so templ's own URL sanitiser runs
+// on it, rewriting a dangerous scheme to about:invalid#TemplFailedSanitizationURL.
+// Never wrap it in templ.SafeURL: that type is not a sanitiser, it is the
+// opt-OUT from the sanitiser, and a cell Href is consumer data built from a
+// database row. Measured — with the SafeURL cast, javascript:alert(1) reached
+// the rendered anchor verbatim.
+//
+// There is deliberately NO per-cell HTML flag: the whole point of DetailTable
+// is to give tabular detail data a structured home so it stops reaching for the
+// RawHTML hatch. A cell that needs a link uses Href; anything richer belongs on
+// a dedicated component, not a third escape mode here.
+type DetailCell struct {
+	Value string
+	Href  string
+}
+
+// DetailTable is a multi-column row list inside a DetailSection. It renders as
+// a .crm-table--static (non-navigating) table with escaped text cells and
+// optional per-cell anchors. Use it for the tabular data a detail page carries
+// alongside its label/value summary — invoices, payments, per-page breakdowns.
+type DetailTable struct {
+	Columns []DetailColumn
+	Rows    [][]DetailCell
+}
+
 // DetailSection is one logical card / group on the Detail page.
-// A section has an optional title and either a list of Items or a RawHTML block.
-// RawHTML is for consumer-supplied pre-rendered HTML panels (e.g. a two-column
-// fit-card); it must never contain raw DB/user text — escape before embedding.
+// A section has an optional title and any of: a list of Items, a Table, or a
+// RawHTML block. RawHTML takes precedence: when non-empty it wins and NEITHER
+// Items nor Table render. Otherwise Items render first (the existing
+// label/value summary) and then the Table — a summary line above its table is
+// the intended shape. RawHTML is for consumer-supplied pre-rendered HTML panels
+// (e.g. a two-column fit-card); it must never contain raw DB/user text — escape
+// before embedding.
 type DetailSection struct {
 	Title   string
 	Items   []DetailItem
+	Table   DetailTable
 	RawHTML string // consumer-supplied HTML; must be safe (XSS-free) before use
 }
 
@@ -119,6 +158,32 @@ type ListQuery struct {
 	Tenant     tenant.Tenant
 	Limit      int
 	Offset     int
+
+	// View is the selected [Resource.Views] key, or "" when the resource
+	// declares none. It is ALWAYS one of the declared keys: the framework
+	// resolves the URL value against the closed set and falls back to the first
+	// view, so a Lister may switch on it without validating.
+	//
+	// This exists because some resources have MODES that a WHERE clause cannot
+	// express — most obviously an aggregate whose GROUP BY grain the operator
+	// picks (per week / per month / per quarter). Before Views, such a page had
+	// to be hand-built outside the framework, losing the table, the sorting,
+	// the chips and the stylesheet with it. The rule above ("never build SQL
+	// from the raw request") is what makes that tempting and Views is the
+	// sanctioned way out: the key is declared by the author, validated by the
+	// framework, and reaches the Lister as data.
+	//
+	// A view NEVER carries a SQL fragment. Map the key to author-owned SQL
+	// inside the Lister, the same way a Filter maps to an author-owned SQLExpr.
+	View string
+}
+
+// View is one named mode of a resource, rendered as a filter chip and passed to
+// the Lister as [ListQuery.View]. The set is closed and author-declared: a URL
+// value outside it never reaches the Lister.
+type View struct {
+	Key   string // URL value, e.g. "week". Must be non-empty and unique within the resource.
+	Label string // chip label, e.g. "This week". Falls back to Key when empty.
 }
 
 // Resource is the declarative contract for one admin entity.
@@ -136,6 +201,21 @@ type Resource struct {
 	Filter admintable.FilterSpec
 	Scope  tenant.Scope // city_slug scope; empty = global
 
+	// Views is an optional closed set of modes for this resource, rendered as
+	// filter chips beside the other filters and delivered to the Lister as
+	// [ListQuery.View]. The FIRST entry is the default. Empty (the common case)
+	// means the resource has one mode and ListQuery.View is always "".
+	//
+	// Use it for a mode a WHERE clause cannot express — an aggregate's GROUP BY
+	// grain is the motivating case. Do NOT use it for something Filter already
+	// does: a view is not a filter, it changes what a row MEANS.
+	//
+	// Register panics on an empty or duplicate Key (fail-fast at startup).
+	Views []View
+
+	// ViewsLabel is the caption shown beside the view chips. Defaults to "view".
+	ViewsLabel string
+
 	// RequiredRole is the SOLE authorization lever for this resource, applied
 	// uniformly to every route — read (list, detail) AND write (new/edit/save).
 	// Only a session whose role equals RequiredRole (or the "owner" super-role)
@@ -152,6 +232,40 @@ type Resource struct {
 	// Lister fetches one page of rows. The kit hands it a safe ListQuery;
 	// the app owns the row type + scan. go-panel never assumes a schema.
 	Lister func(ctx context.Context, q ListQuery) (rows []Row, total int, err error)
+
+	// TrashLister fetches this resource's DELETED rows for the panel-wide Trash
+	// page, newest-deleted first. Nil (default) = this resource contributes
+	// nothing to the trash and, if no resource sets it, no Trash page exists at
+	// all.
+	//
+	// It is a second reader rather than a flag on Lister because the two answer
+	// different questions and must not share a query: Lister reads whatever
+	// live view the consumer built (in go-grad, live_lead), while TrashLister
+	// deliberately reads the base table with the filter INVERTED. Folding both
+	// into one closure behind a boolean is how a caller ends up passing the
+	// wrong one — the mistake every ORM in the survey shipped at least once.
+	//
+	// Only Limit and Tenant of the ListQuery are populated; ordering is the
+	// consumer's, because only it knows which column records the deletion.
+	//
+	// Applying q.Tenant is the CONSUMER'S OBLIGATION and is easy to miss here
+	// specifically: Lister usually reads a view that already carries the tenant
+	// predicate, while TrashLister reads the base table on purpose — so it drops
+	// exactly the scoping the view was supplying. A TrashLister that ignores
+	// q.Tenant shows one tenant's deleted rows to another.
+	//
+	// RequiredRole is the only authorization lever the Trash page honours. A
+	// resource gated by anything else — a reverse-proxy path rule, middleware
+	// outside the panel — is off-contract (see RequiredRole), and the Trash
+	// aggregates its rows onto a page that gate never sees.
+	// total is every deleted row, not just the returned page — the Trash page
+	// prints it beside what it drew, so a cap is never mistaken for the whole
+	// set.
+	//
+	// Register panics when TrashLister is set without Writer.Delete AND
+	// Writer.Restore: a trash you cannot restore from is a dead end, and one
+	// nothing can put rows into is furniture.
+	TrashLister func(ctx context.Context, q ListQuery) (rows []Row, total int, err error)
 
 	// Detailer enables a per-row Detail (Show) view at GET {basePath}/{name}/{id}.
 	// Nil = no detail page (default — preserves existing behaviour).
@@ -177,6 +291,8 @@ type Resource struct {
 	FetchRow func(ctx context.Context, id string) (map[string]string, error)
 
 	// Writer enables create/edit forms. Nil = read-only (Phase 1 behaviour, default).
+	// Its Load/Save/Delete/Restore closures may return ErrDetailNotFound for an
+	// id that names no row; the framework answers 404 rather than 500.
 	// When non-nil, CSRFKey must be set in Config (panic at Register if missing or < 32 bytes — fail-closed).
 	Writer *Writer
 
@@ -244,6 +360,14 @@ type Panel struct {
 	locales     locale.Set          // configured i18n locales; zero value = single-locale
 	profileCfg  shell.ProfileConfig // static defaults for the sidebar profile block
 	resources   []Resource          // registered Resources, in Register order
+	// pagePaths holds every URL suffix MountPage has claimed (Path and each
+	// Alias), so a route mounted LATER can tell whether it would shadow one.
+	// Needed because MountPage runs during setup while finalize() runs after
+	// it: the panel-wide Trash cannot see a conflicting page any other way,
+	// and net/http only rejects a byte-identical pattern — MountPage's
+	// "{suffix}/{$}" and the Trash's bare "/trash" do not collide in the mux,
+	// so the consumer's page is silently shadowed instead.
+	pagePaths []string
 
 	// indexOverride is set once via MountPage(PageSpec{Path: ""}) before the
 	// mux is finalized; it replaces the default handleIndex at GET {basePath}/{$}.
@@ -304,6 +428,11 @@ type sessionCookier interface {
 // An authenticator that does not implement this interface cannot back a Resource
 // with a non-empty RequiredRole: Register panics at startup (fail-closed) rather
 // than mount the resource ungated.
+// NOTE: HasRole is no longer nav-only. The panel-wide Trash page uses it to
+// decide which resources' DELETED ROW BODIES are rendered to this session
+// (trashResourcesFor), so an implementation whose HasRole is looser than its
+// RequireRole shows rows behind a Вернуть button that then 403s — present,
+// plausible, and never once working. Keep the two predicates in agreement.
 type RoleAuthenticator interface {
 	RequireRole(role string, next http.HandlerFunc) http.HandlerFunc
 	HasRole(ctx context.Context, role string) bool
@@ -400,7 +529,43 @@ func New(cfg Config) *Panel {
 // tenant a request names.
 func (p *Panel) Handler() http.Handler {
 	p.finalize()
-	return withTenantResolution(p.resolver, p.mux)
+	return withBasePath(p.basePath, withTenantResolution(p.resolver, p.mux))
+}
+
+// basePathCtxKey carries the panel's mount prefix on the request context.
+type basePathCtxKey struct{}
+
+// BasePathFrom returns the mount prefix of the panel serving this request —
+// "/admin" by default, or whatever Config.BasePath was set to. It returns ""
+// for a context that did not come from a panel request.
+//
+// This exists because CrossLinkCell and FilterLinkCell both take a basePath
+// and their docs tell consumers to pass the panel's "rather than a hardcoded
+// /admin so the link stays correct under custom mounts" — while a Lister,
+// Detailer or Writer had no way to obtain it. Every consumer therefore
+// hardcoded "/admin", which is exactly the bug CrossLinkCell was promoted into
+// this framework to fix. Asking for a value the framework does not hand out is
+// not a rule, it is a trap.
+//
+// Read it from the ctx those closures already receive:
+//
+//	Detailer: func(ctx context.Context, _ *http.Request, id string) ([]DetailSection, error) {
+//	    href := FilterLinkCell(BasePathFrom(ctx), "orders", "client_id", id, "Orders")
+//	    …
+//	}
+func BasePathFrom(ctx context.Context) string {
+	v, _ := ctx.Value(basePathCtxKey{}).(string)
+	return v
+}
+
+// withBasePath stores the panel's mount prefix on every request it serves.
+// Wrapped OUTSIDE tenant resolution so the value is present no matter which
+// route or middleware runs next — the basePath is a property of the panel, not
+// of the request, and nothing downstream can change it.
+func withBasePath(bp string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), basePathCtxKey{}, bp)))
+	})
 }
 
 // Resources returns the registered Resources in registration order.
@@ -504,8 +669,20 @@ func (p *Panel) NavItems() []shell.NavItem {
 // at setup time (not concurrently with other Panel mutations) and after
 // the relevant Register calls if the caller wants the item to appear after
 // resource entries. To place an item under a named group that isn't already
-// present, emit a group-header NavItem{Group: "X"} before the link item(s) —
-// the same convention Register uses.
+// present, emit a group-header NavItem{Group: "X"} before the link item(s).
+//
+// A header is recognised STRUCTURALLY — a Group with no URL — so the bare form
+// above is enough. Register additionally stamps ID "group:<name>" on the
+// headers it creates, which is what lets addNavLink find and reuse an existing
+// group; a hand-rolled header without that ID renders identically but will not
+// be reused, so a later Register for the same Group opens a second heading.
+// Set ID: "group:"+name if you want a Register'd resource to join your group.
+//
+// Do NOT set both Group and URL on one item. shell.toNavGroups opens a new
+// section for anything carrying a Group and files only Group-less items into a
+// section's links, so such an item renders as a heading and its URL is silently
+// discarded. A link that should sit under a section carries no Group of its
+// own — its placement comes from following that section's header.
 func (p *Panel) AddNav(item shell.NavItem) {
 	p.nav = append(p.nav, item)
 }
@@ -551,6 +728,8 @@ func Register(p *Panel, r Resource) {
 		panic(fmt.Sprintf("resource.Register %q: SingleRow requires Writer to be non-nil", r.Name))
 	}
 	validateRoleConfig(p, r)
+	validateViewsConfig(r)
+	validateTrashConfig(r)
 	validateRelationsConfig(&r)
 	p.resources = append(p.resources, r)
 
@@ -571,6 +750,25 @@ func Register(p *Panel, r Resource) {
 	// Writer routes — only mounted when Writer is configured.
 	if r.Writer != nil {
 		mountWriterRoutes(p, r)
+	}
+}
+
+// validateTrashConfig fails closed on a trash that cannot work.
+//
+// A TrashLister without a Restore renders rows behind a button that 403s — the
+// exact shape of the bug this panel spent a week on, where the affordance was
+// present, looked right, and had never once run. Without a Delete nothing can
+// put a row into the trash in the first place, so the section can only ever be
+// empty. Both are startup mistakes, so both are startup panics.
+func validateTrashConfig(r Resource) {
+	if r.TrashLister == nil {
+		return
+	}
+	if r.Writer == nil || r.Writer.Delete == nil {
+		panic(fmt.Sprintf("resource.Register %q: TrashLister requires Writer.Delete (nothing can fill the trash otherwise)", r.Name))
+	}
+	if r.Writer.Restore == nil {
+		panic(fmt.Sprintf("resource.Register %q: TrashLister requires Writer.Restore (the trash would have no way back)", r.Name))
 	}
 }
 
@@ -603,21 +801,32 @@ func addNavEntry(p *Panel, r Resource) {
 		Visible:      r.Visible,
 		RequiredRole: r.RequiredRole,
 	}
-	if r.Group == "" {
+	addNavLink(p, link, r.Group)
+}
+
+// addNavLink places link under group, creating the group header when the group
+// is new and inserting after the group's existing members when it is not.
+//
+// Extracted from addNavEntry so the panel-wide Trash link goes through the SAME
+// rule as a resource's. A second insertion path is exactly how the Trash grew
+// its own duplicate "System" heading beside an identically-named group a
+// consumer had already declared.
+func addNavLink(p *Panel, link shell.NavItem, group string) {
+	if group == "" {
 		p.nav = append(p.nav, link)
 		return
 	}
-	groupKey := "group:" + r.Group
+	groupKey := "group:" + group
 	headerIdx := -1
 	for i, n := range p.nav {
-		if n.Group == r.Group && n.ID == groupKey {
+		if n.Group == group && n.ID == groupKey {
 			headerIdx = i
 			break
 		}
 	}
 	if headerIdx < 0 {
 		// New group: append header then link at end — same as today.
-		p.nav = append(p.nav, shell.NavItem{ID: groupKey, Group: r.Group}, link)
+		p.nav = append(p.nav, shell.NavItem{ID: groupKey, Group: group}, link)
 		return
 	}
 	// Header exists: insert the link after the group's existing members.
@@ -802,7 +1011,13 @@ func (p *Panel) requireTenant(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// ErrDetailNotFound may be returned by Detailer to signal a 404.
+// ErrDetailNotFound signals that the id names no row: the framework answers
+// 404 instead of 500.
+//
+// Honoured on EVERY id-addressed route — Detailer/FetchRow, and a Writer's
+// Load, Save, Delete and Restore. The write routes used to map every error to
+// 500, so a consumer could not distinguish "this row is gone" from "the store
+// broke" and a stale /edit link read as an outage.
 var ErrDetailNotFound = errors.New("resource: detail not found")
 
 // mountDetailRoute mounts the GET {basePath}/{name}/{id} handler for a Detailer-enabled resource.
@@ -921,6 +1136,12 @@ func mountWriterRoutes(p *Panel, r Resource) {
 		deletePath := p.basePath + "/" + r.Name + "/{id}/delete"
 		p.mux.HandleFunc("POST "+deletePath, p.guard(r.RequiredRole, deleteHandler(p, r)))
 	}
+	// Mounted only alongside a Delete it can undo. A restore route without a
+	// delete would be an endpoint nothing can reach.
+	if r.Writer.Delete != nil && r.Writer.Restore != nil {
+		restorePath := p.basePath + "/" + r.Name + "/{id}/restore"
+		p.mux.HandleFunc("POST "+restorePath, p.guard(r.RequiredRole, restoreHandler(p, r)))
+	}
 }
 
 // withResolvedForm returns a shallow copy of r whose Writer.Form has all
@@ -1006,6 +1227,14 @@ func editFormHandler(p *Panel, r Resource) http.HandlerFunc {
 		t := tenant.From(ctx)
 		values, err := r.Writer.Load(ctx, t, id)
 		if err != nil {
+			// An id that names no row is NOT FOUND, the same as on the detail
+			// route. Until this existed a Writer had no way to say so: every
+			// Load error became "load failed" 500, so a stale /edit link told
+			// the operator the server had broken.
+			if errors.Is(err, ErrDetailNotFound) {
+				http.NotFound(w, req)
+				return
+			}
 			slog.Error("resource: load for edit", "resource", r.Name, "err", err)
 			http.Error(w, "load failed", http.StatusInternalServerError)
 			return
@@ -1157,10 +1386,16 @@ func handleSaveError(w http.ResponseWriter, req *http.Request, p *Panel, r Resou
 		renderValidationErrors(w, req, p, r, id, loc, values, formErrors{se.Field: se.Message})
 		return true
 	}
-	slog.Error("resource: save failed", "resource", r.Name, "err", saveErr)
 	if r.Writer.AfterSave != nil {
 		r.Writer.AfterSave(ctx, id, saveErr)
 	}
+	// Saving a row that is gone is NOT FOUND, not a server failure. The hook
+	// still fires: it is told what happened either way.
+	if errors.Is(saveErr, ErrDetailNotFound) {
+		http.NotFound(w, req)
+		return true
+	}
+	slog.Error("resource: save failed", "resource", r.Name, "err", saveErr)
 	http.Error(w, "save failed", http.StatusInternalServerError)
 	return true
 }
@@ -1217,9 +1452,110 @@ func deleteHandler(p *Panel, r Resource) http.HandlerFunc {
 			r.Writer.AfterDelete(ctx, id, nil)
 		}
 
+		// A recoverable delete from the table swaps the row in place: it dims
+		// and offers the way back where Delete was. Anything else keeps the
+		// original PRG behaviour, so a resource without Restore is untouched.
+		if r.Writer.Restore != nil && render.IsHTMX(req) {
+			renderDeletedRow(w, req, p, r, id)
+			return
+		}
+		// From a detail page, hand the list the id so it can offer the same undo
+		// as a toast. Only when the consumer has not chosen its own destination.
+		if r.Writer.Restore != nil && r.Writer.RedirectAfterDelete == nil {
+			http.Redirect(w, req, p.basePath+"/"+r.Name+"?restorable="+url.QueryEscape(id), http.StatusSeeOther)
+			return
+		}
 		// Redirect (PRG pattern). Custom redirect URL via RedirectAfterDelete,
 		// or default to the resource list page.
 		postWriteRedirect(w, req, p, r, ctx, id, r.Writer.RedirectAfterDelete)
+	}
+}
+
+// renderDeletedRow replaces the swapped-out <tr> with its deleted placeholder.
+// A fresh CSRF token is issued for the undo button: the one that authorised the
+// delete has been spent from the operator's point of view, and the restore is a
+// separate state-changing POST that must carry its own.
+func renderDeletedRow(w http.ResponseWriter, req *http.Request, p *Panel, r Resource, id string) {
+	d := listPageData{
+		Resource:  r,
+		BasePath:  p.basePath,
+		CSRFToken: csrf.Issue(p.csrfKey, p.sessionValue(req), csrf.DefaultTTL),
+	}
+	if err := deletedRow(d, id, r.Title).Render(req.Context(), w); err != nil {
+		slog.Error("resource: render deleted row", "resource", r.Name, "id", sanitizeForLog(id), "err", err)
+		http.Error(w, "render failed", http.StatusInternalServerError)
+	}
+}
+
+// restoreHandler returns the handler for POST /{name}/{id}/restore.
+// Only mounted when both Writer.Delete and Writer.Restore are non-nil.
+func restoreHandler(p *Panel, r Resource) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		shell.SecurityHeaders(w)
+		const maxFormBytes = 1 << 20 // 1 MB
+		req.Body = http.MaxBytesReader(w, req.Body, maxFormBytes)
+		if err := req.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !p.verifyCSRFToken(w, req, "resource: CSRF verification failed on restore", "resource", r.Name) {
+			return
+		}
+		id := req.PathValue("id")
+		if id == "" || id == idNew {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		ctx := req.Context()
+		if err := r.Writer.Restore(ctx, tenant.From(ctx), id); err != nil {
+			if errors.Is(err, ErrDetailNotFound) {
+				http.NotFound(w, req)
+				return
+			}
+			slog.Error("resource: restore failed", "resource", r.Name, "id", sanitizeForLog(id), "err", err)
+			http.Error(w, "restore failed", http.StatusInternalServerError)
+			return
+		}
+		// Re-render rather than reconstruct the row. Rebuilding one row here
+		// would need a single-row read the framework does not have, and would
+		// be a second rendering path to keep in step with the list. Undo is
+		// rare; a refresh is cheap and cannot drift.
+		if render.IsHTMX(req) {
+			w.Header().Set("HX-Refresh", "true")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, req, p.basePath+"/"+r.Name, http.StatusSeeOther)
+	}
+}
+
+// restorableIDParam sanitises the ?restorable= value before it reaches a URL in
+// the rendered toast. Anything that is not a plain id is dropped rather than
+// escaped: the parameter exists to name a row this admin just deleted, and a
+// value that does not look like one is not worth rendering.
+func restorableIDParam(v string) string {
+	if v == "" || len(v) > 64 {
+		return ""
+	}
+	for _, c := range v {
+		if !isIDRune(c) {
+			return ""
+		}
+	}
+	return v
+}
+
+// isIDRune reports whether c may appear in a row id. Deliberately an allowlist:
+// a blocklist of "dangerous" characters is the shape that keeps being one
+// character short.
+func isIDRune(c rune) bool {
+	switch {
+	case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		return true
+	case c == '-' || c == '_':
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1230,10 +1566,16 @@ func handleDeleteError(w http.ResponseWriter, r Resource, ctx context.Context, i
 	if deleteErr == nil {
 		return false
 	}
-	slog.Error("resource: delete failed", "resource", r.Name, "id", sanitizeForLog(id), "err", deleteErr)
 	if r.Writer.AfterDelete != nil {
 		r.Writer.AfterDelete(ctx, id, deleteErr)
 	}
+	// handleDeleteError has no *http.Request, so write the status directly;
+	// http.NotFound only needs the request to decide nothing here.
+	if errors.Is(deleteErr, ErrDetailNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return true
+	}
+	slog.Error("resource: delete failed", "resource", r.Name, "id", sanitizeForLog(id), "err", deleteErr)
 	http.Error(w, "delete failed", http.StatusInternalServerError)
 	return true
 }
@@ -1347,37 +1689,127 @@ func (p *Panel) navItemsFor(ctx context.Context, activeID string) []shell.NavIte
 	// at Register panics otherwise), so nil is safe — those items pass through.
 	ra, _ := p.auth.(RoleAuthenticator)
 
+	// One pass, deciding each LINK exactly once. Visible is consumer code with
+	// no caching helper — unlike Badge, which the docs tell you to wrap in
+	// shell.CachedBadge — so asking a header to re-derive its members' state
+	// would call every consumer closure once per group as well as once for
+	// itself. Measured before this pass existed: 4 calls per render where main
+	// made 1.
+	visible := make([]bool, len(p.nav))
+	for i, item := range p.nav {
+		if isNavHeader(item) {
+			continue // decided below, from its members
+		}
+		visible[i] = navLinkVisible(ctx, item, ra)
+	}
+
 	out := make([]shell.NavItem, 0, len(p.nav))
-	for _, item := range p.nav {
-		// Group headers are structural — never filtered.
-		if item.Group != "" && item.URL == "" {
+	for i, item := range p.nav {
+		// A header whose every member was filtered out is dropped with them.
+		// Before the Trash nothing could empty a group, because a group existed
+		// only if a resource declared it; the Trash is the first nav item whose
+		// whole group can vanish for one operator, and a bare heading over
+		// nothing reads as a section that failed to load.
+		if isNavHeader(item) {
+			if !headerHasVisibleMember(p.nav, visible, i) {
+				continue
+			}
 			out = append(out, item)
 			continue
 		}
-
-		// RequiredRole-derived nav-hide.
-		if item.RequiredRole != "" {
-			if ra == nil || !ra.HasRole(ctx, item.RequiredRole) {
-				continue // item is invisible to this session
-			}
-		}
-
-		// Visible cosmetic predicate.
-		if item.Visible != nil && !item.Visible(ctx) {
+		if !visible[i] {
 			continue
 		}
-
-		// Mark active.
 		item.Active = item.ID == activeID
 		out = append(out, item)
 	}
 	return out
 }
 
+// isNavHeader reports whether item is a group header: a Group with no URL.
+//
+// Structural, NOT by ID. Register's headers carry ID "group:<name>" but
+// AddNav's documented shape — NavItem{Group: "X"} — carries none, and matching
+// on the ID silently deleted every hand-rolled heading while leaving its links
+// behind to be absorbed into the preceding group. This is the same shape
+// navItemsFor has always used to recognise a header.
+func isNavHeader(item shell.NavItem) bool {
+	return item.Group != "" && item.URL == ""
+}
+
+// navLinkVisible applies the two nav filters to one link: the RequiredRole gate
+// and the cosmetic Visible predicate.
+func navLinkVisible(ctx context.Context, item shell.NavItem, ra RoleAuthenticator) bool {
+	if item.RequiredRole != "" && (ra == nil || !ra.HasRole(ctx, item.RequiredRole)) {
+		return false
+	}
+	if item.Visible != nil && !item.Visible(ctx) {
+		return false
+	}
+	return true
+}
+
+// headerHasVisibleMember reports whether any link filed under the header at idx
+// survived this session's filters.
+//
+// The member run ends at the next item carrying a Group — the SAME test
+// shell.toNavGroups uses to open a new bucket, and deliberately NOT isNavHeader's.
+// The two disagree for an item carrying both a Group and a URL: isNavHeader calls
+// it a link, because it has one, while toNavGroups opens a bucket for it and then
+// files it into no bucket at all. Counting such an item as a member would keep the
+// previous heading alive on the strength of something that renders elsewhere —
+// measured, that left a heading with nothing beneath it, which is the exact
+// picture this rule exists to prevent.
+//
+// Agreeing with toNavGroups is what makes the rule correct rather than merely
+// plausible: a heading survives exactly when something will render under it.
+func headerHasVisibleMember(nav []shell.NavItem, visible []bool, idx int) bool {
+	for i := idx + 1; i < len(nav) && nav[i].Group == ""; i++ {
+		if visible[i] {
+			return true
+		}
+	}
+	return false
+}
+
 // activeNav returns a context-filtered, active-marked copy of the nav list.
 // Uses navItemsFor so role-gated and Visible-hidden items are excluded.
 func (p *Panel) activeNav(ctx context.Context, activeID string) []shell.NavItem {
 	return p.navItemsFor(ctx, activeID)
+}
+
+// validateViewsConfig fails fast on a malformed Views set. An empty key would
+// render a chip that resolves to the default (so the chip would look selectable
+// and do nothing), and a duplicate key makes the second chip unreachable —
+// neither errors at runtime, both are silently wrong on screen, which is exactly
+// the class Register's startup panics exist to convert into a boot failure.
+func validateViewsConfig(r Resource) {
+	seen := make(map[string]bool, len(r.Views))
+	for i, v := range r.Views {
+		if v.Key == "" {
+			panic(fmt.Sprintf("resource.Register %q: Views[%d] has an empty Key", r.Name, i))
+		}
+		if seen[v.Key] {
+			panic(fmt.Sprintf("resource.Register %q: Views[%d] duplicates Key %q", r.Name, i, v.Key))
+		}
+		seen[v.Key] = true
+	}
+}
+
+// resolveView maps a raw URL value to one of r.Views' keys. An unknown or empty
+// value resolves to the FIRST declared view, so a Lister never has to handle an
+// unexpected key and a hand-edited URL degrades instead of erroring. Returns ""
+// when the resource declares no views.
+func (r Resource) resolveView(raw string) string {
+	if len(r.Views) == 0 {
+		return ""
+	}
+	for _, v := range r.Views {
+		if v.Key == raw {
+			return v.Key
+		}
+	}
+	return r.Views[0].Key
 }
 
 // makeListHandler builds the handler func for a resource's list page.
@@ -1413,6 +1845,8 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 		pageSize := clampInt(parseIntParam(q.Get("per_page"), defaultPageSize), 1, maxPageSize)
 		offset := (page - 1) * pageSize
 
+		view := r.resolveView(q.Get("view"))
+
 		lq := ListQuery{
 			Sort:       sortState,
 			WhereConds: finalConds,
@@ -1420,6 +1854,7 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 			Tenant:     t,
 			Limit:      pageSize,
 			Offset:     offset,
+			View:       view,
 		}
 
 		rows, total, err := r.Lister(ctx, lq)
@@ -1453,6 +1888,16 @@ func (p *Panel) makeListHandler(r Resource) func(http.ResponseWriter, *http.Requ
 			TotalPages:  totalPages,
 			BasePath:    p.basePath,
 			QueryString: req.URL.RawQuery,
+			ActiveView:  view,
+			Selected:    q,
+		}
+		// The row-level Delete and the undo toast exist only where a delete can
+		// be taken back. Issuing the token is what enables them: the templates
+		// render nothing when it is empty, so this single condition governs the
+		// whole affordance and there is no second place to keep in step.
+		if r.Writer != nil && r.Writer.Delete != nil && r.Writer.Restore != nil {
+			data.CSRFToken = csrf.Issue(p.csrfKey, p.sessionValue(req), csrf.DefaultTTL)
+			data.RestorableID = restorableIDParam(q.Get("restorable"))
 		}
 
 		if fragmentOnly || render.IsHTMX(req) {

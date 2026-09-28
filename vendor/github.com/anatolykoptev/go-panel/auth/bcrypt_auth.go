@@ -781,6 +781,25 @@ func (a *BcryptTOTPAuth) liveSession(r *http.Request) *sessionData {
 	return sd
 }
 
+// SessionFromRequest returns the validated, revocation-checked Session for r —
+// the SAME decision Require makes, but read straight from the request instead of
+// from request context. It exists for callers that run BEFORE Require stamps the
+// session into ctx — e.g. a tenant Resolver wired into resource.Config.Resolver,
+// which executes at panel dispatch time, upstream of the per-route Require that
+// is the only writer SessionFrom(ctx) can see.
+//
+// (nil, false) whenever there is no valid live session (no cookie, bad MAC,
+// expired, revoked/inactive/role-drifted account) — the same deny set Require
+// rejects. Costs one indexed AccountStore.GetByID per call, same as Require;
+// callers composing per-request work should call once and thread the result.
+func (a *BcryptTOTPAuth) SessionFromRequest(r *http.Request) (*Session, bool) {
+	sd := a.liveSession(r)
+	if sd == nil {
+		return nil, false
+	}
+	return &Session{UserID: sd.UserID, Role: sd.Role}, true
+}
+
 func (a *BcryptTOTPAuth) reject(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", a.basePath+"/login")
@@ -822,8 +841,11 @@ func (a *BcryptTOTPAuth) RequireRole(role string, next http.HandlerFunc) http.Ha
 
 // HasRole reports whether the session on ctx satisfies role: an exact role match
 // or the "owner" super-role. It is the read-only derivation behind nav-hiding and
-// must never be used as a route gate — RequireRole is the authority. Returns
-// false (never panics) when ctx carries no session.
+// go-panel's Trash-page content filter, and must never be used as a route gate —
+// RequireRole is the authority. It is deliberately the SAME predicate as
+// RequireRole here, which is what keeps the Trash from rendering a row whose
+// restore button would 403. Returns false (never panics) when ctx carries no
+// session.
 func (a *BcryptTOTPAuth) HasRole(ctx context.Context, role string) bool {
 	s, ok := SessionFrom(ctx)
 	return ok && (s.Role == role || s.Role == RoleOwner)

@@ -15,7 +15,7 @@ import (
 )
 
 // jobScoreSetter is the narrow interface used to persist a ScoreResult.
-// *hunt.Store satisfies this; tests inject a spy.
+// *hunt.AccountStore (via store.ForAccount) satisfies this; tests inject a spy.
 type jobScoreSetter interface {
 	SetJobScore(ctx context.Context, id int64, sr hunt.ScoreResult) error
 }
@@ -80,7 +80,10 @@ func rescoreJob(
 // On transient LLM fail-open: prior score preserved, operator redirected back.
 //
 // Mount via p.MountAction (auth guard + CSRF verify + form parse).
-func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter) http.HandlerFunc {
+// acctOf resolves the account the rescored result persists under — the
+// write goes through store.ForAccount(aid); a miss denies (403), since a
+// score with no owning account has nowhere to land.
+func rescoreHandler(pool *pgxpool.Pool, store *hunt.Store, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -92,8 +95,15 @@ func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter) http.HandlerFunc {
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
 		ctx := r.Context()
 
+		// Score writes are per-account — no resolvable account, no rescore.
+		aid, ok := acctOf(ctx)
+		if !ok {
+			http.Error(w, "no resolvable account", http.StatusForbidden)
+			return
+		}
+
 		// Load the job row using the same query as the detail page.
-		rec, loadErr := scanJobDetail(ctx, pool, id64)
+		rec, loadErr := scanJobDetail(ctx, pool, id64, aid)
 		if loadErr != nil {
 			if isJobNotFound(loadErr) {
 				http.Error(w, "job not found", http.StatusNotFound)
@@ -151,7 +161,7 @@ func rescoreHandler(pool *pgxpool.Pool, store jobScoreSetter) http.HandlerFunc {
 		}
 
 		// Force-score with guard: transient LLM fail → prior score preserved, still redirect.
-		_, _, persistErr := rescoreJob(ctx, id64, job, prof, deps, store)
+		_, _, persistErr := rescoreJob(ctx, id64, job, prof, deps, store.ForAccount(aid))
 		if persistErr != nil {
 			slog.ErrorContext(ctx, "rescoreHandler: SetJobScore failed", "id", id64, "err", persistErr)
 			http.Error(w, "persist failed", http.StatusInternalServerError)

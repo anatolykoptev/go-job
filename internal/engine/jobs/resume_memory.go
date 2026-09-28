@@ -7,6 +7,8 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/google/uuid"
+
 	kitembed "github.com/anatolykoptev/go-kit/embed"
 )
 
@@ -50,11 +52,12 @@ type ResumeMemorySearchResult struct {
 // SearchResumeMemory queries resume_vectors for resume-related memories.
 // Uses pgvector cosine search when an embedder is configured and the embedding
 // column exists; falls back to tsvector FTS when either is absent.
-func SearchResumeMemory(ctx context.Context, query string, topK int) (*ResumeMemorySearchResult, error) {
+func SearchResumeMemory(ctx context.Context, accountID uuid.UUID, query string, topK int) (*ResumeMemorySearchResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume DB not configured (set DATABASE_URL)")
 	}
+	rdb := db.ForAccount(accountID)
 
 	if topK <= 0 {
 		topK = defaultTopK
@@ -64,8 +67,8 @@ func SearchResumeMemory(ctx context.Context, query string, topK int) (*ResumeMem
 	}
 
 	rows, backend, err := embedOrFTS(ctx, db, query, "resume_memory",
-		func(qvec []float32) ([]VectorRow, error) { return db.SearchByVector(ctx, qvec, topK) },
-		func() ([]VectorRow, error) { return db.SearchByText(ctx, query, topK) },
+		func(qvec []float32) ([]VectorRow, error) { return rdb.SearchByVector(ctx, qvec, topK) },
+		func() ([]VectorRow, error) { return rdb.SearchByText(ctx, query, topK) },
 	)
 	if err != nil {
 		return nil, err
@@ -106,11 +109,15 @@ type ResumeMemoryAddResult struct {
 // AddResumeMemory stores a new free-text memory in resume_vectors.
 // Embeds the content when an embedder is configured and the embedding column exists;
 // stores FTS-only (embedding=NULL) otherwise.
-func AddResumeMemory(ctx context.Context, content, memType string) (*ResumeMemoryAddResult, error) {
+func AddResumeMemory(ctx context.Context, accountID uuid.UUID, content, memType string) (*ResumeMemoryAddResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume DB not configured (set DATABASE_URL)")
 	}
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
 	if memType == "" {
 		memType = defaultMemoryType
@@ -118,7 +125,7 @@ func AddResumeMemory(ctx context.Context, content, memType string) (*ResumeMemor
 
 	embedding, backend := embedPassage(ctx, db, content, "resume_memory add")
 
-	if _, err := db.UpsertVector(ctx, content, memType, embedding); err != nil {
+	if _, err := rdb.UpsertVector(ctx, content, memType, embedding); err != nil {
 		return nil, err
 	}
 
@@ -141,11 +148,15 @@ type ResumeMemoryUpdateResult struct {
 // UpdateResumeMemory replaces the content (and re-embeds) an existing memory by its row id.
 // This is an atomic UPDATE preserving the row id —
 // so a cached memory_id stays valid after the update.
-func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeMemoryUpdateResult, error) {
+func UpdateResumeMemory(ctx context.Context, accountID uuid.UUID, memoryID, content string) (*ResumeMemoryUpdateResult, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume DB not configured (set DATABASE_URL)")
 	}
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
 	id, err := strconv.ParseInt(memoryID, 10, 64)
 	if err != nil {
@@ -153,16 +164,16 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 	}
 
 	// Fetch existing row's mem_type and ref_id to correctly recompute the content_hash.
-	memType, refID, err := db.FetchVectorMeta(ctx, id)
+	memType, refID, err := rdb.FetchVectorMeta(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	newHash := vectorContentHash(resumeVectorUser, memType, refID, content)
+	newHash := vectorContentHash(accountID.String(), memType, refID, content)
 
 	embedding, backend := embedPassage(ctx, db, content, "resume_memory update")
 
-	if err := db.UpdateVector(ctx, id, content, newHash, embedding); err != nil {
+	if err := rdb.UpdateVector(ctx, id, content, newHash, embedding); err != nil {
 		return nil, err
 	}
 
@@ -181,15 +192,15 @@ func UpdateResumeMemory(ctx context.Context, memoryID, content string) (*ResumeM
 // to FTS otherwise.  minScore is the cosine-similarity floor applied to the
 // vector path only; the FTS fallback intentionally ignores it because ts_rank
 // is not numerically comparable to cosine similarity.
-func searchVectorsScoped(ctx context.Context, db *ResumeDB, query string, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
-	rows, _, err := embedOrFTS(ctx, db, query, "resume_vectors_scoped",
+func searchVectorsScoped(ctx context.Context, rdb *ResumeAccount, query string, topK int, minScore float64, memTypes []string) ([]VectorRow, error) {
+	rows, _, err := embedOrFTS(ctx, rdb.db, query, "resume_vectors_scoped",
 		func(qvec []float32) ([]VectorRow, error) {
-			return db.SearchByVectorScoped(ctx, qvec, topK, minScore, memTypes)
+			return rdb.SearchByVectorScoped(ctx, qvec, topK, minScore, memTypes)
 		},
 		func() ([]VectorRow, error) {
 			// minScore not applied on the FTS path: ts_rank and cosine similarity
 			// are incomparable scales, so a numeric floor here would be misleading.
-			return db.SearchByTextScoped(ctx, query, topK, memTypes)
+			return rdb.SearchByTextScoped(ctx, query, topK, memTypes)
 		},
 	)
 	return rows, err

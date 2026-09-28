@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -322,11 +323,18 @@ Return ONLY the JSON object, no markdown, no explanation.`
 // advisory lock (pg_advisory_xact_lock). The in-tx re-read under the lock is
 // authoritative: two concurrent builds serialize on the lock, so the second
 // sees the first's committed id and its stale consent no longer matches.
-func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) { //nolint:funlen
+func BuildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int) (*MasterResumeBuildResult, error) { //nolint:funlen
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
 	}
+	// The build is a destructive rebuild of ONE account's resume namespace
+	// (plan ADR-6): a Nil/missing account must refuse before the LLM calls
+	// and before the consent guard, never silently widening to global.
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	rdb := db.ForAccount(accountID)
 
 	// 1. Parse resume via LLM (call #1)
 	isTruncated, origLen := checkResumeTruncation(resumeText, 12000)
@@ -388,7 +396,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	// The consent is re-checked inside the transaction under an advisory lock
 	// (step 5) to close the TOCTOU; this pre-tx check only avoids opening a
 	// transaction when consent is clearly missing.
-	exists, existingID, err := db.guardLatestPersonID(ctx)
+	exists, existingID, err := rdb.guardLatestPersonID(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("master_resume_build: destructive-consent guard failed (refusing to touch the profile): %w", err)
 	}
@@ -398,7 +406,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 				"rebuilding destroys it and all of its skills/projects/experiences/achievements/educations/"+
 				"certifications/domains/methodologies plus upwork_profile data (ON DELETE CASCADE). "+
 				"To consent to the replacement, name that profile's id in replace_person_id",
-				existingID, describeExistingProfile(ctx, db, existingID))
+				existingID, describeExistingProfile(ctx, rdb, existingID))
 		}
 		slog.Warn("master_resume_build: replacing existing profile", slog.Int("person_id", existingID))
 	}
@@ -439,7 +447,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	// longer matches → refuse (rollback releases the lock). This is the
 	// authoritative check; the pre-tx check was only an early refuse.
 	{
-		inTxExists, inTxID, err := db.guardLatestPersonID(ctx)
+		inTxExists, inTxID, err := rdb.guardLatestPersonID(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("master_resume_build: in-tx consent re-check failed (refusing): %w", err)
 		}
@@ -450,19 +458,19 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		}
 	}
 
-	if err := db.ClearAllPersons(ctx); err != nil {
+	if err := rdb.ClearAllPersons(ctx); err != nil {
 		return nil, fmt.Errorf("clear persons failed before rebuild: %w", err)
 	}
 
 	// Clear source='profile' derived resume_vectors rows for the mem_types master_resume
 	// re-derives (resume_experience/project/achievement). Scoped to source='profile' so
 	// manual source='agent' memories and enrich_project rows are preserved.
-	if err := db.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
+	if err := rdb.ClearVectors(ctx, memTypeResumeExp, memTypeResumeProj, memTypeResumeAchv); err != nil {
 		return nil, fmt.Errorf("clear resume vectors failed before rebuild: %w", err)
 	}
 
 	// 6. Insert person
-	personID, err := db.InsertPerson(ctx, PersonRecord{
+	personID, err := rdb.InsertPerson(ctx, PersonRecord{
 		Name:     parsed.Person.Name,
 		Email:    parsed.Person.Email,
 		Phone:    parsed.Person.Phone,
@@ -499,7 +507,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		if source == "" {
 			source = "resume"
 		}
-		sid, err := db.InsertSkillExtended(ctx, personID, SkillRecord{
+		sid, err := rdb.InsertSkillExtended(ctx, personID, SkillRecord{
 			Name:       s.Name,
 			Category:   s.Category,
 			Level:      s.Level,
@@ -519,7 +527,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 	// 6. Insert experiences + graph nodes/edges
 	for _, exp := range parsed.Experiences {
-		expID, err := db.InsertExperience(ctx, personID, ExperienceRecord{
+		expID, err := rdb.InsertExperience(ctx, personID, ExperienceRecord{
 			Title:       exp.Title,
 			Company:     exp.Company,
 			Location:    exp.Location,
@@ -537,7 +545,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 		// Update extended metadata
 		if exp.Domain != "" || exp.TeamSize != nil || exp.BudgetUSD != nil || exp.IsVolunteer {
-			if err := db.UpdateExperienceMeta(ctx, expID, exp.TeamSize, exp.BudgetUSD, exp.Domain, exp.IsVolunteer); err != nil {
+			if err := rdb.UpdateExperienceMeta(ctx, expID, exp.TeamSize, exp.BudgetUSD, exp.Domain, exp.IsVolunteer); err != nil {
 				slog.Debug("update experience meta failed", slog.Int("exp_id", expID), slog.Any("error", err))
 			}
 		}
@@ -550,7 +558,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 		// Graph: skill edges
 		for _, skillName := range exp.Skills {
-			sid := ensureSkill(ctx, db, personID, skillName, "other", "intermediate", false, "resume", skillIDs, result)
+			sid := ensureSkill(ctx, rdb, personID, skillName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
 				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: skillName})
 				graphBuf.addEdge("Exp", expID, "USED_SKILL", "Skill", sid)
@@ -559,7 +567,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 		// Graph: domain edge
 		if exp.Domain != "" {
-			domID, err := db.InsertDomain(ctx, personID, exp.Domain)
+			domID, err := rdb.InsertDomain(ctx, personID, exp.Domain)
 			if err != nil {
 				slog.Warn("insert exp domain failed", slog.String("domain", exp.Domain), slog.Any("error", err))
 			} else {
@@ -570,7 +578,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 		// Insert sub-projects from parse
 		for _, sp := range exp.SubProjects {
-			spID, err := db.InsertProjectWithParent(ctx, personID, &expID, ProjectRecord{
+			spID, err := rdb.InsertProjectWithParent(ctx, personID, &expID, ProjectRecord{
 				Name:        sp.Name,
 				Description: sp.Description,
 				Tech:        sp.Tech,
@@ -587,7 +595,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 			graphBuf.addEdge("Proj", spID, "PART_OF", "Exp", expID)
 
 			for _, techName := range sp.Tech {
-				sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
+				sid := ensureSkill(ctx, rdb, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 				if sid > 0 {
 					graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
 					graphBuf.addEdge("Proj", spID, "USED_SKILL", "Skill", sid)
@@ -615,7 +623,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 	// 7. Insert standalone projects + graph
 	for _, proj := range parsed.Projects {
-		projID, err := db.InsertProject(ctx, personID, ProjectRecord{
+		projID, err := rdb.InsertProject(ctx, personID, ProjectRecord{
 			Name:        proj.Name,
 			Description: proj.Description,
 			URL:         proj.URL,
@@ -631,7 +639,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		graphBuf.addNode("Proj", projID, map[string]string{graphPropName: proj.Name})
 
 		for _, techName := range proj.Tech {
-			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
+			sid := ensureSkill(ctx, rdb, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
 				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
 				graphBuf.addEdge("Proj", projID, "USED_SKILL", "Skill", sid)
@@ -649,7 +657,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 	// 8. Insert achievements + graph
 	for i, achv := range parsed.Achievements {
-		achvID, err := db.InsertAchievementExtended(ctx, personID, AchievementRecord{
+		achvID, err := rdb.InsertAchievementExtended(ctx, personID, AchievementRecord{
 			Text:          achv.Text,
 			Metric:        achv.Metric,
 			Value:         achv.Value,
@@ -667,7 +675,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 		// Link to parent experience/project by context match
 		if achv.Context != "" {
-			linkAchievementToParent(ctx, db, graphBuf, achv.Context, achvID, personID)
+			linkAchievementToParent(ctx, rdb, graphBuf, achv.Context, achvID, personID)
 		}
 
 		achvIDi64 := int64(achvID)
@@ -680,7 +688,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 	// 9. Insert educations
 	for _, edu := range parsed.Educations {
-		_, err := db.InsertEducation(ctx, personID, EducationRecord{
+		_, err := rdb.InsertEducation(ctx, personID, EducationRecord{
 			School:     edu.School,
 			Degree:     edu.Degree,
 			Field:      edu.Field,
@@ -698,7 +706,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 
 	// 10. Insert certifications
 	for _, cert := range parsed.Certifications {
-		_, err := db.InsertCertification(ctx, personID, CertificationRecord{
+		_, err := rdb.InsertCertification(ctx, personID, CertificationRecord{
 			Name:   cert.Name,
 			Issuer: cert.Issuer,
 			Year:   cert.Year,
@@ -719,7 +727,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		allDomains[d] = true
 	}
 	for d := range allDomains {
-		domID, err := db.InsertDomain(ctx, personID, d)
+		domID, err := rdb.InsertDomain(ctx, personID, d)
 		if err != nil {
 			slog.Warn("insert domain failed", slog.String("name", d), slog.Any("error", err))
 			continue
@@ -739,7 +747,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		}
 	}
 	for name, desc := range allMethods {
-		methID, err := db.InsertMethodology(ctx, personID, name, desc)
+		methID, err := rdb.InsertMethodology(ctx, personID, name, desc)
 		if err != nil {
 			slog.Warn("insert methodology failed", slog.String("name", name), slog.Any("error", err))
 			continue
@@ -753,14 +761,14 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		if _, exists := skillIDs[strings.ToLower(is.Name)]; exists {
 			continue // already have this skill
 		}
-		sid := ensureSkill(ctx, db, personID, is.Name, is.Category, is.Level, true, "inferred", skillIDs, result)
+		sid := ensureSkill(ctx, rdb, personID, is.Name, is.Category, is.Level, true, "inferred", skillIDs, result)
 		if sid > 0 {
 			result.ImplicitSkills++
 			graphBuf.addNode("Skill", sid, map[string]string{graphPropName: is.Name})
 
 			// DERIVED_SKILL: link from achievement context if possible
 			if is.Source != "" {
-				linkImplicitSkillToSource(ctx, db, graphBuf, is.Source, sid, personID)
+				linkImplicitSkillToSource(ctx, rdb, graphBuf, is.Source, sid, personID)
 			}
 		}
 	}
@@ -773,7 +781,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 			parentPtr = &parentExpID
 		}
 
-		spID, err := db.InsertProjectWithParent(ctx, personID, parentPtr, ProjectRecord{
+		spID, err := rdb.InsertProjectWithParent(ctx, personID, parentPtr, ProjectRecord{
 			Name:        sp.Name,
 			Description: sp.Description,
 			Tech:        sp.Tech,
@@ -791,7 +799,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		}
 
 		for _, techName := range sp.Tech {
-			sid := ensureSkill(ctx, db, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
+			sid := ensureSkill(ctx, rdb, personID, techName, "other", "intermediate", false, "resume", skillIDs, result)
 			if sid > 0 {
 				graphBuf.addNode("Skill", sid, map[string]string{graphPropName: techName})
 				graphBuf.addEdge("Proj", spID, "USED_SKILL", "Skill", sid)
@@ -813,7 +821,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 		if !ok {
 			continue
 		}
-		toID := ensureSkill(ctx, db, personID, adj.To, "other", "intermediate", true, "inferred", skillIDs, result)
+		toID := ensureSkill(ctx, rdb, personID, adj.To, "other", "intermediate", true, "inferred", skillIDs, result)
 		if toID > 0 {
 			graphBuf.addNode("Skill", toID, map[string]string{graphPropName: adj.To})
 			graphBuf.addEdge("Skill", fromID, "IMPLIES_SKILL", "Skill", toID)
@@ -830,8 +838,8 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	}
 
 	// 17. Link methodologies to experiences via USED_METHOD
-	exps, _ := db.GetAllExperiences(ctx, personID)
-	methods, _ := db.GetAllMethodologies(ctx, personID)
+	exps, _ := rdb.GetAllExperiences(ctx, personID)
+	methods, _ := rdb.GetAllMethodologies(ctx, personID)
 	for _, exp := range exps {
 		expText := strings.ToLower(exp.Description + " " + strings.Join(exp.Highlights, " "))
 		for _, m := range methods {
@@ -847,20 +855,19 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	result.GraphNodes = graphBuf.nodeCount()
 	result.GraphEdges = graphBuf.edgeCount()
 
-	// 19. Sync to resume_vectors
-	if rdb := GetResumeDB(); rdb != nil {
-		for _, ve := range vectorTexts {
-			embedding, _ := embedPassage(ctx, rdb, ve.content, "master_resume add")
-			if _, err := rdb.UpsertVectorWithSource(ctx, ve.content, ve.memType, ve.refID, embedding, sourceProfile); err != nil {
-				slog.Debug("resume_vectors add failed", slog.Any("error", err))
-				continue
-			}
-			result.VectorsStored++
+	// 19. Sync to resume_vectors — account-scoped writes (embedding generation
+	// itself is account-free; embedPassage takes the bare *ResumeDB).
+	for _, ve := range vectorTexts {
+		embedding, _ := embedPassage(ctx, db, ve.content, "master_resume add")
+		if _, err := rdb.UpsertVectorWithSource(ctx, ve.content, ve.memType, ve.refID, embedding, sourceProfile); err != nil {
+			slog.Debug("resume_vectors add failed", slog.Any("error", err))
+			continue
 		}
+		result.VectorsStored++
 	}
 
 	// 20. Mark person as enriched
-	if err := db.MarkPersonEnriched(ctx, personID); err != nil {
+	if err := rdb.MarkPersonEnriched(ctx, personID); err != nil {
 		slog.Debug("mark person enriched failed", slog.Int("person_id", personID), slog.Any("error", err))
 	}
 
@@ -921,7 +928,7 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 	// dead ids). Replay failures leave the profile committed and correct with a
 	// stale graph: a WARN names that state; the call does not report success as
 	// though the graph were rebuilt.
-	replayGraphAfterCommit(ctx, db, graphBuf)
+	replayGraphAfterCommit(ctx, rdb, graphBuf)
 
 	return result, nil
 }
@@ -932,31 +939,31 @@ func BuildMasterResume(ctx context.Context, resumeText string, replacePersonID i
 // query errored renders as "?" rather than "0": "0 experiences, 0 skills, …"
 // reads as "nothing to lose" — the exact input that makes an agent consent to
 // the replacement — and a failing count is not the same as an empty profile.
-func describeExistingProfile(ctx context.Context, db *ResumeDB, personID int) string {
+func describeExistingProfile(ctx context.Context, rdb *ResumeAccount, personID int) string {
 	fmtCount := func(v any, err error) string {
 		if err != nil {
 			return "?"
 		}
 		return fmt.Sprintf("%d", v)
 	}
-	expsN, err := db.GetAllExperiences(ctx, personID)
+	expsN, err := rdb.GetAllExperiences(ctx, personID)
 	exps := fmtCount(len(expsN), err)
-	skillsN, err := db.GetAllSkills(ctx, personID)
+	skillsN, err := rdb.GetAllSkills(ctx, personID)
 	skills := fmtCount(len(skillsN), err)
-	projsN, err := db.GetAllProjects(ctx, personID)
+	projsN, err := rdb.GetAllProjects(ctx, personID)
 	projs := fmtCount(len(projsN), err)
-	achvsN, err := db.GetAllAchievements(ctx, personID)
+	achvsN, err := rdb.GetAllAchievements(ctx, personID)
 	achvs := fmtCount(len(achvsN), err)
 	return fmt.Sprintf(" with %s experiences, %s skills, %s projects, %s achievements", exps, skills, projs, achvs)
 }
 
 // ensureSkill inserts or retrieves a skill, updating the tracking map and result counter.
-func ensureSkill(ctx context.Context, db *ResumeDB, personID int, name, category, level string, isImplicit bool, source string, skillIDs map[string]int, result *MasterResumeBuildResult) int {
+func ensureSkill(ctx context.Context, rdb *ResumeAccount, personID int, name, category, level string, isImplicit bool, source string, skillIDs map[string]int, result *MasterResumeBuildResult) int {
 	key := strings.ToLower(name)
 	if sid, ok := skillIDs[key]; ok {
 		return sid
 	}
-	sid, err := db.InsertSkillExtended(ctx, personID, SkillRecord{
+	sid, err := rdb.InsertSkillExtended(ctx, personID, SkillRecord{
 		Name:       name,
 		Category:   category,
 		Level:      level,
@@ -987,9 +994,9 @@ func findExperienceByHint(expByCompany map[string]int, hint string) int {
 }
 
 // linkImplicitSkillToSource creates a DERIVED_SKILL edge from the matching achievement to the skill.
-func linkImplicitSkillToSource(ctx context.Context, db *ResumeDB, buf *graphBuffer, sourceHint string, skillID int, personID int) {
+func linkImplicitSkillToSource(ctx context.Context, rdb *ResumeAccount, buf *graphBuffer, sourceHint string, skillID int, personID int) {
 	hint := strings.ToLower(sourceHint)
-	achvs, _ := db.GetAllAchievements(ctx, personID)
+	achvs, _ := rdb.GetAllAchievements(ctx, personID)
 	for _, a := range achvs {
 		if strings.Contains(strings.ToLower(a.Text), hint) || strings.Contains(strings.ToLower(a.Context), hint) {
 			buf.addEdge("Achv", a.ID, "DERIVED_SKILL", "Skill", skillID)
@@ -1035,11 +1042,11 @@ func formatProjectText(name, description string, tech []string, highlights []str
 }
 
 // linkAchievementToParent creates a PRODUCED edge from the matching experience/project to the achievement.
-func linkAchievementToParent(ctx context.Context, db *ResumeDB, buf *graphBuffer, contextHint string, achvID int, personID int) {
+func linkAchievementToParent(ctx context.Context, rdb *ResumeAccount, buf *graphBuffer, contextHint string, achvID int, personID int) {
 	hint := strings.ToLower(contextHint)
 
 	// Try experiences
-	exps, _ := db.GetAllExperiences(ctx, personID)
+	exps, _ := rdb.GetAllExperiences(ctx, personID)
 	for _, exp := range exps {
 		if strings.Contains(hint, strings.ToLower(exp.Company)) || strings.Contains(hint, strings.ToLower(exp.Title)) {
 			buf.addEdge("Exp", exp.ID, "PRODUCED", "Achv", achvID)
@@ -1048,7 +1055,7 @@ func linkAchievementToParent(ctx context.Context, db *ResumeDB, buf *graphBuffer
 	}
 
 	// Try projects
-	projs, _ := db.GetAllProjects(ctx, personID)
+	projs, _ := rdb.GetAllProjects(ctx, personID)
 	for _, proj := range projs {
 		if strings.Contains(hint, strings.ToLower(proj.Name)) {
 			buf.addEdge("Proj", proj.ID, "PRODUCED", "Achv", achvID)

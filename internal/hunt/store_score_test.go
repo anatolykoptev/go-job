@@ -36,15 +36,18 @@ func TestStore_Migration008_Idempotent(t *testing.T) {
 	}
 }
 
-// TestStore_SetJobScore_RoundTrip inserts a job, scores it, reads back the score
-// columns directly and verifies: all fields round-trip correctly, status is
-// untouched, and JSONB shape matches the scoreRationale contract.
+// TestStore_SetJobScore_RoundTrip inserts a job, scores it under an account,
+// reads back the account_job_scores row directly and verifies: all fields
+// round-trip correctly, hunt_jobs status is untouched, the legacy
+// hunt_jobs.fit_* columns stay NULL (dead to writes from P2 on), and the
+// JSONB shape matches the scoreRationale contract.
 func TestStore_SetJobScore_RoundTrip(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx))
 	truncateJobs(t, pool)
+	sc := s.ForAccount(newScoreAccount(t, pool))
 
 	// Insert a job via UpsertJob
 	j := hunt.Job{
@@ -70,23 +73,34 @@ func TestStore_SetJobScore_RoundTrip(t *testing.T) {
 		ScoredAt:         scoredAt,
 	}
 
-	err = s.SetJobScore(ctx, id, sr)
+	err = sc.SetJobScore(ctx, id, sr)
 	require.NoError(t, err, "SetJobScore must not error")
 
-	// Read back score columns directly (GetJob does not yet expose them)
+	// Read back the per-account score row directly (GetJob does not expose
+	// score fields — account_job_scores is the only score surface now).
 	var fitScore *int
 	var fitBand, successBand, overUnder *string
 	var rationaleJSON []byte
 	var dbScoredAt *time.Time
-	var dbStatus string
 	err = pool.QueryRow(ctx, `
 		SELECT fit_score, fit_band, success_band, over_under,
-		       score_rationale, scored_at, status
-		FROM hunt_jobs WHERE id = $1`, id).Scan(
+		       score_rationale, scored_at
+		FROM account_job_scores
+		WHERE account_id = $1 AND job_id = $2`, sc.AccountID(), id).Scan(
 		&fitScore, &fitBand, &successBand, &overUnder,
-		&rationaleJSON, &dbScoredAt, &dbStatus,
+		&rationaleJSON, &dbScoredAt,
 	)
 	require.NoError(t, err)
+
+	// hunt_jobs: status untouched AND the legacy fit_* columns stay NULL —
+	// the write must not leak back into the shared corpus.
+	var dbStatus string
+	var legacyFit *int
+	err = pool.QueryRow(ctx,
+		`SELECT status, fit_score FROM hunt_jobs WHERE id = $1`, id,
+	).Scan(&dbStatus, &legacyFit)
+	require.NoError(t, err)
+	assert.Nil(t, legacyFit, "hunt_jobs.fit_score must stay NULL — per-account write only")
 
 	require.NotNil(t, fitScore, "fit_score must be set")
 	assert.Equal(t, 82, *fitScore)
@@ -114,13 +128,15 @@ func TestStore_SetJobScore_RoundTrip(t *testing.T) {
 	assert.Equal(t, "Strong stack match; seniority aligns well.", rat.SuccessReasoning)
 }
 
-// TestStore_SetJobScore_NotFound verifies ErrNotFound is returned for unknown id.
+// TestStore_SetJobScore_NotFound verifies ErrNotFound is returned for unknown
+// job id — the WHERE EXISTS probe on the shared corpus still gates the write.
 func TestStore_SetJobScore_NotFound(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
 	s := hunt.NewStore(pool)
 	require.NoError(t, s.Migrate(ctx))
+	sc := s.ForAccount(newScoreAccount(t, pool))
 
-	err := s.SetJobScore(ctx, 999999999, hunt.ScoreResult{ScoredAt: time.Now()})
+	err := sc.SetJobScore(ctx, 999999999, hunt.ScoreResult{ScoredAt: time.Now()})
 	assert.ErrorIs(t, err, hunt.ErrNotFound, "SetJobScore on unknown id must return ErrNotFound")
 }

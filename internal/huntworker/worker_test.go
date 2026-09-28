@@ -36,27 +36,27 @@ func TestWorker_SetNotifier_Wires(t *testing.T) {
 // TestWorker_MaybeNotifyJob_Created_Open: OutcomeCreated + StatusOpen → notify fires.
 func TestWorker_MaybeNotifyJob_Created_Open(t *testing.T) {
 	f := &fakeHuntNotifier{}
-	w := &Worker{notifier: f}
+	p := &accountPlan{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
+	p.maybeNotifyJob(j, hunt.OutcomeCreated, nil, nil)
 	assert.Len(t, f.jobs, 1, "OutcomeCreated + open status must notify")
 }
 
 // TestWorker_MaybeNotifyJob_Created_EmptyStatus: empty Status treated as open (SearxngResultToHuntJob leaves Status="").
 func TestWorker_MaybeNotifyJob_Created_EmptyStatus(t *testing.T) {
 	f := &fakeHuntNotifier{}
-	w := &Worker{notifier: f}
+	p := &accountPlan{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: ""}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
+	p.maybeNotifyJob(j, hunt.OutcomeCreated, nil, nil)
 	assert.Len(t, f.jobs, 1, "empty Status must be treated as open — SearxngResultToHuntJob leaves Status empty")
 }
 
 // TestWorker_MaybeNotifyJob_Merged_NoNotify: OutcomeMerged must not notify.
 func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
 	f := &fakeHuntNotifier{}
-	w := &Worker{notifier: f}
+	p := &accountPlan{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeMerged, nil)
+	p.maybeNotifyJob(j, hunt.OutcomeMerged, nil, nil)
 	assert.Empty(t, f.jobs, "OutcomeMerged must not notify")
 }
 
@@ -64,14 +64,11 @@ func TestWorker_MaybeNotifyJob_Merged_NoNotify(t *testing.T) {
 // the "notifier_disabled" metric is emitted so operators can alert on it.
 func TestWorker_MaybeNotifyJob_NilNotifier(t *testing.T) {
 	var metricOutcomes []string
-	w := &Worker{
-		notifier: nil,
-		notifyMetric: func(outcome string) {
-			metricOutcomes = append(metricOutcomes, outcome)
-		},
-	}
+	p := &accountPlan{notifier: nil}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusOpen}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil) // must not panic
+	p.maybeNotifyJob(j, hunt.OutcomeCreated, nil, func(outcome string) {
+		metricOutcomes = append(metricOutcomes, outcome)
+	}) // must not panic
 	assert.Contains(t, metricOutcomes, "notifier_disabled",
 		"nil notifier must emit notifier_disabled metric so operators can alert")
 }
@@ -79,9 +76,9 @@ func TestWorker_MaybeNotifyJob_NilNotifier(t *testing.T) {
 // TestWorker_MaybeNotifyJob_Closed_NoNotify: closed job must not notify even on create.
 func TestWorker_MaybeNotifyJob_Closed_NoNotify(t *testing.T) {
 	f := &fakeHuntNotifier{}
-	w := &Worker{notifier: f}
+	p := &accountPlan{notifier: f}
 	j := hunt.Job{URL: "https://x.com/j", Status: hunt.StatusClosed}
-	w.maybeNotifyJob(j, hunt.OutcomeCreated, nil)
+	p.maybeNotifyJob(j, hunt.OutcomeCreated, nil, nil)
 	assert.Empty(t, f.jobs, "closed status must not notify")
 }
 
@@ -101,17 +98,16 @@ func TestParseQueries_Empty_UsesDefault(t *testing.T) {
 	}
 }
 
-func TestHuntIngestEnabled_DefaultFalse(t *testing.T) {
-	// HUNT_INGEST_ENABLED is not set in the test environment.
+func TestHuntIngestEnabled_UnsetIsNotKillSwitch(t *testing.T) {
+	// P3: HUNT_INGEST_ENABLED=false is the explicit fleet kill-switch; unset
+	// (or true) lets the per-cycle account enumeration decide.
 	t.Setenv("HUNT_INGEST_ENABLED", "")
-	s := LoadSettings(context.Background(), nil)
-	assert.False(t, s.Enabled)
+	assert.False(t, envEqualFold("HUNT_INGEST_ENABLED", "false"))
 }
 
-func TestHuntIngestEnabled_TrueWhenSet(t *testing.T) {
-	t.Setenv("HUNT_INGEST_ENABLED", "true")
-	s := LoadSettings(context.Background(), nil)
-	assert.True(t, s.Enabled)
+func TestHuntIngestEnabled_FalseDisables(t *testing.T) {
+	t.Setenv("HUNT_INGEST_ENABLED", "false")
+	assert.True(t, envEqualFold("HUNT_INGEST_ENABLED", "false"))
 }
 
 func TestNewWorker_NilStore_ReturnsNil(t *testing.T) {
@@ -226,7 +222,7 @@ func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testi
 	llmCalls.Store(int64(score.MaxLLMPerCycle(nil))) // breaker tripped: at capacity
 
 	job := hunt.Job{ID: 42}
-	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, &llmCalls)
+	result := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, nil, score.ScorerDeps{}, store, testBudget(&llmCalls))
 
 	// The result pointer is still returned for notification/metric purposes.
 	require.NotNil(t, result, "breaker-tripped result must be returned for notification")
@@ -235,6 +231,12 @@ func TestScoreJobWithLimit_CircuitBreakerTripped_DoesNotPersistScoredAt(t *testi
 	// Critical: SetJobScore must NOT be called — scored_at stays NULL so the
 	// sweep can pick up the job in the next cycle.
 	assert.Equal(t, 0, store.callCount(), "SetJobScore must NOT be called when circuit breaker trips — job must stay in unscored pool (scored_at IS NULL)")
+}
+
+// testBudget wraps a plain per-account counter in the P3 llmBudget shape —
+// fleet nil = "no fleet gate" for single-account unit tests.
+func testBudget(c *atomic.Int64) *llmBudget {
+	return &llmBudget{acct: c}
 }
 
 // fakeUnscoredJobStore implements unscoredJobStore for sweep tests.
@@ -275,15 +277,15 @@ func TestRunUnscoredSweep_SetsGauges(t *testing.T) {
 	}
 	var llmCalls atomic.Int64
 
-	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls, 50)
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, testBudget(&llmCalls), 50, "test_acct")
 
 	// Count gauge must reflect the number of jobs returned.
-	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
+	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount + "{account=test_acct}")
 	assert.Equal(t, float64(2), countVal,
 		"unscored jobs count gauge must be set to the number of jobs returned by UnscoredOpenJobs")
 
 	// Max-age gauge must reflect the age of the OLDEST job (min first_seen_at).
-	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge)
+	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge + "{account=test_acct}")
 	expectedAge := time.Since(oldest).Seconds()
 	// Allow a small tolerance for execution time between setting and checking.
 	assert.InDelta(t, expectedAge, maxAgeVal, 5.0,
@@ -425,13 +427,23 @@ func TestRunUnscoredSweep_SetsGauges_EmptyResult(t *testing.T) {
 	}
 	var llmCalls atomic.Int64
 
-	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, &llmCalls, 50)
+	runUnscoredSweep(context.Background(), store, nil, score.ScorerDeps{}, testBudget(&llmCalls), 50, "test_acct")
 
-	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount)
+	countVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount + "{account=test_acct}")
 	assert.Equal(t, float64(0), countVal,
 		"unscored jobs count gauge must be 0 when no unscored jobs are found")
 
-	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge)
+	maxAgeVal := engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge + "{account=test_acct}")
 	assert.Equal(t, float64(0), maxAgeVal,
 		"unscored jobs max-age gauge must be 0 when no unscored jobs are found")
+}
+
+// TestStartWorker_NilStore_Noop pins the DB-down boot path: a nil *hunt.Store
+// must return before LoadSettings — the huntSettingsStore interface would
+// carry a typed nil past its internal store==nil guard and panic inside
+// GetHuntSettings (observed: a boot with DATABASE_URL set but unreachable
+// SIGSEGVd before the MCP listener bound).
+func TestStartWorker_NilStore_Noop(t *testing.T) {
+	t.Setenv("HUNT_INGEST_ENABLED", "true")
+	StartWorker(t.Context(), nil, nil) // must not panic
 }

@@ -96,43 +96,43 @@ func stubMasterResumeParseLLM(_ context.Context, prompt string) (string, error) 
 // resume_vectors row for the test user is removed. It publishes the DB as the
 // package-level resumeDB so BuildMasterResume (which reads GetResumeDB()) sees
 // it. Uses the same dbtest.RequireTestDB guard as testResumeDB.
-func testResumeDBClean(t *testing.T) *ResumeDB {
+func testResumeDBClean(t *testing.T) (*ResumeDB, *ResumeAccount) {
 	t.Helper()
-	db := testResumeDB(t)
+	db, rdb := testResumeDB(t)
 	SetResumeDB(db)
 	t.Cleanup(func() { SetResumeDB(nil) })
 	ctx := context.Background()
-	if _, err := db.pool.Exec(ctx, `DELETE FROM resume_vectors WHERE user_name = $1`, resumeVectorUser); err != nil {
+	if _, err := db.pool.Exec(ctx, `DELETE FROM resume_vectors WHERE account_id = $1`, rdb.AccountID()); err != nil {
 		t.Fatalf("purge resume_vectors: %v", err)
 	}
-	if err := db.ClearAllPersons(ctx); err != nil {
+	if err := rdb.ClearAllPersons(ctx); err != nil {
 		t.Fatalf("purge resume_persons: %v", err)
 	}
-	// Best-effort graph clear; AGE may be absent on the test cluster.
-	_ = db.ClearGraph(ctx)
-	return db
+	// Best-effort graph clear (account-scoped); AGE may be absent on the test cluster.
+	_ = rdb.ClearGraph(ctx)
+	return db, rdb
 }
 
 // seedProfile inserts a small, recognizable profile (1 person + 1 skill + 1
 // project + 1 experience + 1 achievement) and returns the person id. The
 // person name is unique so tests can detect whether the seeded person survived.
-func seedProfile(t *testing.T, db *ResumeDB) int {
+func seedProfile(t *testing.T, rdb *ResumeAccount) int {
 	t.Helper()
 	ctx := context.Background()
-	pid, err := db.InsertPerson(ctx, PersonRecord{Name: "Seeded Person"})
+	pid, err := rdb.InsertPerson(ctx, PersonRecord{Name: "Seeded Person"})
 	if err != nil {
 		t.Fatalf("seed InsertPerson: %v", err)
 	}
-	if _, err := db.InsertSkillExtended(ctx, pid, SkillRecord{Name: "Seeded Skill", Category: "tool", Level: "expert", Source: "resume"}); err != nil {
+	if _, err := rdb.InsertSkillExtended(ctx, pid, SkillRecord{Name: "Seeded Skill", Category: "tool", Level: "expert", Source: "resume"}); err != nil {
 		t.Fatalf("seed InsertSkillExtended: %v", err)
 	}
-	if _, err := db.InsertProject(ctx, pid, ProjectRecord{Name: "Seeded Project"}); err != nil {
+	if _, err := rdb.InsertProject(ctx, pid, ProjectRecord{Name: "Seeded Project"}); err != nil {
 		t.Fatalf("seed InsertProject: %v", err)
 	}
-	if _, err := db.InsertExperience(ctx, pid, ExperienceRecord{Title: "Seeded Role", Company: "SeededCo"}); err != nil {
+	if _, err := rdb.InsertExperience(ctx, pid, ExperienceRecord{Title: "Seeded Role", Company: "SeededCo"}); err != nil {
 		t.Fatalf("seed InsertExperience: %v", err)
 	}
-	if _, err := db.InsertAchievementExtended(ctx, pid, AchievementRecord{Text: "Seeded achievement"}); err != nil {
+	if _, err := rdb.InsertAchievementExtended(ctx, pid, AchievementRecord{Text: "Seeded achievement"}); err != nil {
 		t.Fatalf("seed InsertAchievementExtended: %v", err)
 	}
 	return pid
@@ -156,6 +156,18 @@ var resumeTableTotalCounts = []string{
 	"resume_vectors",
 }
 
+// accountScopedCountSQL returns the per-account row-count probe for a resume
+// table — the multi-account form of the old global count: resume_persons and
+// resume_vectors filter on account_id directly; children filter through the
+// parent person. Asserting "no stray rows appeared" now means "no stray rows
+// FOR THIS ACCOUNT" — another account's rows are legitimately present.
+func accountScopedCountSQL(tbl string) string {
+	if tbl == "resume_persons" || tbl == "resume_vectors" {
+		return `SELECT count(*) FROM ` + tbl + ` WHERE account_id = $1`
+	}
+	return `SELECT count(*) FROM ` + tbl + ` WHERE person_id IN (SELECT id FROM resume_persons WHERE account_id = $1)`
+}
+
 // profileSnapshot captures the committed profile state the invariant cares
 // about: total person count, the seeded person's name (looked up by id),
 // per-entity counts for the seeded person, AND total row counts across every
@@ -170,34 +182,34 @@ type profileSnapshot struct {
 	totalCounts  map[string]int
 }
 
-func snapshotProfile(t *testing.T, db *ResumeDB, seededID int) profileSnapshot {
+func snapshotProfile(t *testing.T, rdb *ResumeAccount, seededID int) profileSnapshot {
 	t.Helper()
 	ctx := context.Background()
 	var snap profileSnapshot
-	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM resume_persons`).Scan(&snap.personCount); err != nil {
+	if err := rdb.db.pool.QueryRow(ctx, `SELECT count(*) FROM resume_persons WHERE account_id = $1`, rdb.AccountID()).Scan(&snap.personCount); err != nil {
 		t.Fatalf("snapshot person count: %v", err)
 	}
 	var name string
-	if err := db.pool.QueryRow(ctx, `SELECT name FROM resume_persons WHERE id = $1`, seededID).Scan(&name); err != nil {
+	if err := rdb.db.pool.QueryRow(ctx, `SELECT name FROM resume_persons WHERE id = $1 AND account_id = $2`, seededID, rdb.AccountID()).Scan(&name); err != nil {
 		t.Fatalf("snapshot seeded person name: %v", err)
 	}
 	snap.seededName = name
-	if v, err := db.GetAllSkills(ctx, seededID); err == nil {
+	if v, err := rdb.GetAllSkills(ctx, seededID); err == nil {
 		snap.skills = len(v)
 	}
-	if v, err := db.GetAllProjects(ctx, seededID); err == nil {
+	if v, err := rdb.GetAllProjects(ctx, seededID); err == nil {
 		snap.projects = len(v)
 	}
-	if v, err := db.GetAllExperiences(ctx, seededID); err == nil {
+	if v, err := rdb.GetAllExperiences(ctx, seededID); err == nil {
 		snap.experiences = len(v)
 	}
-	if v, err := db.GetAllAchievements(ctx, seededID); err == nil {
+	if v, err := rdb.GetAllAchievements(ctx, seededID); err == nil {
 		snap.achievements = len(v)
 	}
 	snap.totalCounts = make(map[string]int, len(resumeTableTotalCounts))
 	for _, tbl := range resumeTableTotalCounts {
 		var n int
-		if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM `+tbl).Scan(&n); err != nil {
+		if err := rdb.db.pool.QueryRow(ctx, accountScopedCountSQL(tbl), rdb.AccountID()).Scan(&n); err != nil {
 			t.Fatalf("snapshot total count %s: %v", tbl, err)
 		}
 		snap.totalCounts[tbl] = n
@@ -211,11 +223,11 @@ func snapshotProfile(t *testing.T, db *ResumeDB, seededID int) profileSnapshot {
 // AND the total row count across every resume_* table plus resume_vectors must
 // be unchanged — so an orphan child row written on the pool under a rolled-back
 // person id (the F6 regression) is caught.
-func assertProfileIntact(t *testing.T, db *ResumeDB, seededID int, want profileSnapshot) {
+func assertProfileIntact(t *testing.T, rdb *ResumeAccount, seededID int, want profileSnapshot) {
 	t.Helper()
 	ctx := context.Background()
 	var gotCount int
-	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM resume_persons`).Scan(&gotCount); err != nil {
+	if err := rdb.db.pool.QueryRow(ctx, `SELECT count(*) FROM resume_persons WHERE account_id = $1`, rdb.AccountID()).Scan(&gotCount); err != nil {
 		t.Fatalf("verify person count: %v", err)
 	}
 	if gotCount != want.personCount {
@@ -223,27 +235,27 @@ func assertProfileIntact(t *testing.T, db *ResumeDB, seededID int, want profileS
 			gotCount, want.personCount)
 	}
 	var name string
-	if err := db.pool.QueryRow(ctx, `SELECT name FROM resume_persons WHERE id = $1`, seededID).Scan(&name); err != nil {
+	if err := rdb.db.pool.QueryRow(ctx, `SELECT name FROM resume_persons WHERE id = $1 AND account_id = $2`, seededID, rdb.AccountID()).Scan(&name); err != nil {
 		t.Fatalf("profile damaged: seeded person %d no longer exists: %v", seededID, err)
 	}
 	if name != want.seededName {
 		t.Errorf("profile damaged: seeded person name = %q, want %q", name, want.seededName)
 	}
-	if v, _ := db.GetAllSkills(ctx, seededID); len(v) != want.skills {
+	if v, _ := rdb.GetAllSkills(ctx, seededID); len(v) != want.skills {
 		t.Errorf("profile damaged: skills = %d, want %d", len(v), want.skills)
 	}
-	if v, _ := db.GetAllProjects(ctx, seededID); len(v) != want.projects {
+	if v, _ := rdb.GetAllProjects(ctx, seededID); len(v) != want.projects {
 		t.Errorf("profile damaged: projects = %d, want %d", len(v), want.projects)
 	}
-	if v, _ := db.GetAllExperiences(ctx, seededID); len(v) != want.experiences {
+	if v, _ := rdb.GetAllExperiences(ctx, seededID); len(v) != want.experiences {
 		t.Errorf("profile damaged: experiences = %d, want %d", len(v), want.experiences)
 	}
-	if v, _ := db.GetAllAchievements(ctx, seededID); len(v) != want.achievements {
+	if v, _ := rdb.GetAllAchievements(ctx, seededID); len(v) != want.achievements {
 		t.Errorf("profile damaged: achievements = %d, want %d", len(v), want.achievements)
 	}
 	for _, tbl := range resumeTableTotalCounts {
 		var n int
-		if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM `+tbl).Scan(&n); err != nil {
+		if err := rdb.db.pool.QueryRow(ctx, accountScopedCountSQL(tbl), rdb.AccountID()).Scan(&n); err != nil {
 			t.Fatalf("verify total count %s: %v", tbl, err)
 		}
 		if n != want.totalCounts[tbl] {
@@ -270,9 +282,9 @@ func withStubbedLLM(t *testing.T) {
 // already committed on the pool and the seeded profile is gone. The total
 // row-count assertion also catches any single write routed to db.pool (F6).
 func TestBuildMasterResume_F1_AtomicRebuild_RollbackOnFailure(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db)
-	want := snapshotProfile(t, db, seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
 	if want.personCount != 1 {
 		t.Fatalf("test setup: expected 1 person after seed, got %d", want.personCount)
 	}
@@ -284,7 +296,7 @@ func TestBuildMasterResume_F1_AtomicRebuild_RollbackOnFailure(t *testing.T) {
 	t.Cleanup(func() { masterResumeWriteHook = prevHook })
 
 	ctx := context.Background()
-	_, err := BuildMasterResume(ctx, "dummy resume text", seededID)
+	_, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID)
 	if err == nil {
 		t.Fatal("F1: expected the build to fail (injected hook error), got nil")
 	}
@@ -292,7 +304,7 @@ func TestBuildMasterResume_F1_AtomicRebuild_RollbackOnFailure(t *testing.T) {
 		t.Errorf("F1: error did not carry the injected cause: %v", err)
 	}
 
-	assertProfileIntact(t, db, seededID, want)
+	assertProfileIntact(t, rdb, seededID, want)
 }
 
 // F2 — non-replayable consent: when a profile already exists and the caller
@@ -301,15 +313,15 @@ func TestBuildMasterResume_F1_AtomicRebuild_RollbackOnFailure(t *testing.T) {
 // lets the stubbed build run to completion and replace the profile → err==nil
 // and the profile is damaged → RED.
 func TestBuildMasterResume_F2_ReplaceGuard_RefusesWithoutConsent(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db)
-	want := snapshotProfile(t, db, seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
 
 	withStubbedLLM(t)
 
 	ctx := context.Background()
 	// replace_person_id=0 → no consent → must refuse.
-	_, err := BuildMasterResume(ctx, "dummy resume text", 0)
+	_, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", 0)
 	if err == nil {
 		t.Fatal("F2: expected a refuse error (profile exists, no consent), got nil — " +
 			"the consent guard is missing and a second run would silently destroy the profile")
@@ -321,7 +333,7 @@ func TestBuildMasterResume_F2_ReplaceGuard_RefusesWithoutConsent(t *testing.T) {
 		t.Errorf("F2: refuse error must name the existing person_id so the caller can consent, got: %v", err)
 	}
 
-	assertProfileIntact(t, db, seededID, want)
+	assertProfileIntact(t, rdb, seededID, want)
 }
 
 // F3 — deadline: under a pre-cancelled context the build must abort before the
@@ -331,16 +343,16 @@ func TestBuildMasterResume_F2_ReplaceGuard_RefusesWithoutConsent(t *testing.T) {
 // instead of the guard's "caller deadline exceeded before write phase" → the
 // guard-firing assertion fails → RED.
 func TestBuildMasterResume_F3_Deadline_AbortsBeforeWritePhase(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db)
-	want := snapshotProfile(t, db, seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
 
 	withStubbedLLM(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // caller already gone before the call
 
-	_, err := BuildMasterResume(ctx, "dummy resume text", seededID) // consent given, but caller gone
+	_, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID) // consent given, but caller gone
 	if err == nil {
 		t.Fatal("F3: expected an error under a cancelled context, got nil")
 	}
@@ -349,7 +361,7 @@ func TestBuildMasterResume_F3_Deadline_AbortsBeforeWritePhase(t *testing.T) {
 			"got: %v — the ctx.Err() check before the write phase is missing", err)
 	}
 
-	assertProfileIntact(t, db, seededID, want)
+	assertProfileIntact(t, rdb, seededID, want)
 }
 
 // F4 — fail-open guard: when the destructive-consent guard's query errors, the
@@ -358,9 +370,9 @@ func TestBuildMasterResume_F3_Deadline_AbortsBeforeWritePhase(t *testing.T) {
 // the error path return "no profile" (exists=false, err=nil) lets the build
 // proceed → the seeded profile is destroyed → assertProfileIntact fails → RED.
 func TestBuildMasterResume_F4_GuardFailsClosedOnQueryError(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db)
-	want := snapshotProfile(t, db, seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
 
 	withStubbedLLM(t)
 
@@ -369,7 +381,7 @@ func TestBuildMasterResume_F4_GuardFailsClosedOnQueryError(t *testing.T) {
 	t.Cleanup(func() { masterResumeGuardHook = prevGuard })
 
 	ctx := context.Background()
-	_, err := BuildMasterResume(ctx, "dummy resume text", seededID)
+	_, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID)
 	if err == nil {
 		t.Fatal("F4: expected the build to refuse when the guard query errors, got nil — " +
 			"the guard is fail-open and a transient pool error turns a guarded destroy into an unguarded one")
@@ -378,7 +390,7 @@ func TestBuildMasterResume_F4_GuardFailsClosedOnQueryError(t *testing.T) {
 		t.Errorf("F4: error must name the guard failure (refusing to touch the profile), got: %v", err)
 	}
 
-	assertProfileIntact(t, db, seededID, want)
+	assertProfileIntact(t, rdb, seededID, want)
 }
 
 // F5 — graph survives rollback: NO graph statement (clear/node/edge) may execute
@@ -391,19 +403,19 @@ func TestBuildMasterResume_F4_GuardFailsClosedOnQueryError(t *testing.T) {
 // graph is emptied and the recorder is non-empty even on a rolled-back build →
 // RED.
 func TestBuildMasterResume_F5_GraphUntouchedOnRollback(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db)
-	want := snapshotProfile(t, db, seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
 
 	// Seed real graph nodes so a pre-tx ClearGraph is observable. Best-effort:
 	// AGE may be absent in some environments; if so, only the recorder
 	// assertion applies (and the test still catches the mutation at the
 	// call-boundary).
 	ctx := context.Background()
-	_ = db.UpsertGraphNode(ctx, "Skill", 999001, map[string]string{graphPropName: "Seeded Graph Skill"})
-	_ = db.UpsertGraphNode(ctx, "Exp", 999002, map[string]string{"title": "Seeded Graph Exp"})
+	_ = rdb.UpsertGraphNode(ctx, "Skill", 999001, map[string]string{graphPropName: "Seeded Graph Skill"})
+	_ = rdb.UpsertGraphNode(ctx, "Exp", 999002, map[string]string{"title": "Seeded Graph Exp"})
 
-	wantNodes, wantEdges, ageOK := liveGraphCounts(t, db)
+	wantNodes, wantEdges, ageOK := liveGraphCounts(t, rdb)
 
 	withStubbedLLM(t)
 
@@ -416,7 +428,7 @@ func TestBuildMasterResume_F5_GraphUntouchedOnRollback(t *testing.T) {
 	masterResumeGraphOpRecorder = func(op string) { graphOps = append(graphOps, op) }
 	t.Cleanup(func() { masterResumeGraphOpRecorder = prevRec })
 
-	_, err := BuildMasterResume(ctx, "dummy resume text", seededID)
+	_, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID)
 	if err == nil {
 		t.Fatal("F5: expected the build to fail (injected hook error), got nil")
 	}
@@ -426,7 +438,7 @@ func TestBuildMasterResume_F5_GraphUntouchedOnRollback(t *testing.T) {
 	}
 
 	if ageOK {
-		gotNodes, gotEdges, _ := liveGraphCounts(t, db)
+		gotNodes, gotEdges, _ := liveGraphCounts(t, rdb)
 		if gotNodes != wantNodes || gotEdges != wantEdges {
 			t.Errorf("F5: graph damaged on rollback: nodes=%d want=%d, edges=%d want=%d — "+
 				"ClearGraph must not run before the transaction commits", gotNodes, wantNodes, gotEdges, wantEdges)
@@ -442,7 +454,7 @@ func TestBuildMasterResume_F5_GraphUntouchedOnRollback(t *testing.T) {
 			"mutation is NOT covered on this runner. Provision AGE in preflight to close this.")
 	}
 
-	assertProfileIntact(t, db, seededID, want)
+	assertProfileIntact(t, rdb, seededID, want)
 }
 
 // liveGraphCounts returns the total node/edge count of the resume AGE graph,
@@ -453,16 +465,16 @@ func TestBuildMasterResume_F5_GraphUntouchedOnRollback(t *testing.T) {
 // does not ship it. So absence is reported, not fatal. Any OTHER error still
 // fails the test: "AGE is installed but broken" must not be laundered into
 // "AGE is absent".
-func liveGraphCounts(t *testing.T, db *ResumeDB) (nodes, edges int, available bool) {
+func liveGraphCounts(t *testing.T, rdb *ResumeAccount) (nodes, edges int, available bool) {
 	t.Helper()
-	n, err := db.CountGraphNodes(context.Background())
+	n, err := rdb.CountGraphNodes(context.Background())
 	if err != nil {
 		if isAgeMissing(err) {
 			return 0, 0, false
 		}
 		t.Fatalf("F5: CountGraphNodes: %v", err)
 	}
-	e, err := db.CountGraphEdges(context.Background())
+	e, err := rdb.CountGraphEdges(context.Background())
 	if err != nil {
 		if isAgeMissing(err) {
 			return 0, 0, false
@@ -478,15 +490,15 @@ func liveGraphCounts(t *testing.T, db *ResumeDB) (nodes, edges int, available bo
 // old id, not the present one. Dropping the id check lets the replay proceed
 // and destroy the new profile → err==nil and the profile is damaged → RED.
 func TestBuildMasterResume_F7_NonReplayableConsent_ReplayAfterSuccess(t *testing.T) {
-	db := testResumeDBClean(t)
-	seededID := seedProfile(t, db) // profile A (id=seededID)
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb) // profile A (id=seededID)
 
 	withStubbedLLM(t)
 
 	ctx := context.Background()
 
 	// First build: consent names A → succeeds, replaces A with a new profile B.
-	first, err := BuildMasterResume(ctx, "dummy resume text", seededID)
+	first, err := BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID)
 	if err != nil {
 		t.Fatalf("F7: first build (consenting to seeded id=%d) must succeed, got: %v", seededID, err)
 	}
@@ -497,7 +509,7 @@ func TestBuildMasterResume_F7_NonReplayableConsent_ReplayAfterSuccess(t *testing
 
 	// Replay the SAME arguments (consent still names the old id=seededID) against
 	// the now-present profile B (id=newID). The consent is stale → must refuse.
-	_, err = BuildMasterResume(ctx, "dummy resume text", seededID)
+	_, err = BuildMasterResume(ctx, rdb.AccountID(), "dummy resume text", seededID)
 	if err == nil {
 		t.Fatal("F7: expected the replay (stale consent id) to refuse, got nil — " +
 			"the consent is replayable and a blind retry destroyed the profile")
@@ -507,9 +519,9 @@ func TestBuildMasterResume_F7_NonReplayableConsent_ReplayAfterSuccess(t *testing
 	}
 
 	// The new profile B must survive the refused replay intact.
-	wantB := snapshotProfile(t, db, newID)
+	wantB := snapshotProfile(t, rdb, newID)
 	if wantB.personCount != 1 {
 		t.Fatalf("F7: expected 1 person after the successful build, got %d", wantB.personCount)
 	}
-	assertProfileIntact(t, db, newID, wantB)
+	assertProfileIntact(t, rdb, newID, wantB)
 }
