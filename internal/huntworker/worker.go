@@ -844,6 +844,14 @@ func refreshUnscoredGauges(ctx context.Context, store any) {
 // Must be called after engine.SetHuntStore.
 // notifier may be nil — if nil, no Telegram notifications are sent by the worker.
 func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier) {
+	// Nil-store first, on the CONCRETE pointer: LoadSettings takes the
+	// huntSettingsStore interface — a nil *hunt.Store would arrive typed-nil,
+	// slip its store==nil guard, and nil-deref inside GetHuntSettings (a
+	// DB-down boot crashed here before the MCP listener ever bound).
+	if store == nil {
+		slog.Debug("hunt worker: no store — skipping")
+		return
+	}
 	settings := LoadSettings(ctx, store)
 	if !settings.Enabled {
 		slog.Debug("hunt worker: disabled (settings.Enabled=false)")

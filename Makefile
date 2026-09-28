@@ -47,7 +47,7 @@ preflight:
 	@! grep -rn 'RequiredRole:[[:space:]]*"' internal/adminui/ --include='*.go' | grep -v '_test\.go' || (echo "FAIL: RequiredRole declared on an adminui resource -- under AUTH_DRIVER=hmac this panics at Register; role gating is bcrypt-only and unused in v1" && exit 1)
 	@echo "==> identity fitness: X-MCP-User edge header is never read (post-Caddy-exemption it is client-controllable, ADR-4)"
 	@! grep -rn 'X-MCP-User' internal/ main.go --include='*.go' | grep -v '_test\.go' || (echo "FAIL: X-MCP-User consumed -- after the Caddy exemption this header is attacker-controlled; identity comes from verified bearer keys only" && exit 1)
-	@echo "==> identity fitness: ADR-6 boot order (EnsureSchema -> role migration -> seed) is asserted by accounts.TestBootstrap_Order_SourceGate; Bootstrap-before-hStore.Migrate by accounts.TestBootstrap_PrecedesHuntMigrate_SourceGate"
+	@echo "==> identity fitness: ADR-6 boot order (EnsureSchema -> role migration -> mcp_api_keys DDL -> seed) is asserted by accounts.TestBootstrap_Order_SourceGate; Bootstrap-before-hStore.Migrate by accounts.TestBootstrap_PrecedesHuntMigrate_SourceGate"
 
 	@echo "==> go vet ./internal/..."
 	GOWORK=off go vet ./internal/...
