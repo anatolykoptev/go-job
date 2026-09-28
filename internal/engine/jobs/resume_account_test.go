@@ -21,7 +21,7 @@ func newResumeTestAccount(t *testing.T, db *ResumeDB) *ResumeAccount {
 	_, _, err := accounts.Bootstrap(ctx, db.Pool(), accounts.OperatorSeed{})
 	require.NoError(t, err, "accounts.Bootstrap")
 	aid, _, err := accounts.CreateAccount(ctx, db.Pool(),
-		"jobs-test-"+uuid.NewString()[:12]+"@example.com", "jobs test", nil, "user")
+		"jobs-test-"+uuid.NewString()[:12]+"@example.com", "jobs test", "test-hash", "user")
 	require.NoError(t, err, "accounts.CreateAccount")
 	return db.ForAccount(aid)
 }

@@ -244,3 +244,37 @@ END $$;
 	}
 	return nil
 }
+
+// EnsurePasswordRequired — panel_accounts.password_hash must be NOT NULL.
+// The P6.2 account model has no key-only accounts: every row must be
+// login-capable. Same data-gate shape as ConstrainAccountColumns — a
+// surviving NULL refuses the boot loudly (backfill via `gojob-admin
+// account set-password`, then reboot); clean state applies SET NOT NULL.
+// Idempotent: once NOT NULL, the is_nullable probe short-circuits.
+func EnsurePasswordRequired(ctx context.Context, pool *pgxpool.Pool) error {
+	var nullable string
+	if err := pool.QueryRow(ctx, `
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'panel_accounts' AND column_name = 'password_hash'`).Scan(&nullable); err != nil {
+		return fmt.Errorf("constrain panel_accounts.password_hash: probe: %w", err)
+	}
+	if nullable != "YES" {
+		return nil
+	}
+	var nulls int64
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM panel_accounts WHERE password_hash IS NULL`).Scan(&nulls); err != nil {
+		return fmt.Errorf("constrain panel_accounts.password_hash: count NULLs: %w", err)
+	}
+	if nulls > 0 {
+		return fmt.Errorf("constrain refused: %d account(s) have no password_hash — "+
+			"key-only accounts were removed; set a password via "+
+			"`gojob-admin account set-password` (or delete the account), then reboot", nulls)
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE panel_accounts ALTER COLUMN password_hash SET NOT NULL`); err != nil {
+		return fmt.Errorf("constrain panel_accounts.password_hash: %w", err)
+	}
+	return nil
+}

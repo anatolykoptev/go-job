@@ -39,17 +39,17 @@ func TestBootstrap_RoleConstraint(t *testing.T) {
 
 	// Role-omitting insert must fail — the column default is dropped.
 	_, err = pool.Exec(ctx,
-		`INSERT INTO panel_accounts (email, name) VALUES ('norole@t.example','x')`)
+		`INSERT INTO panel_accounts (email, name, password_hash) VALUES ('norole@t.example','x','h')`)
 	require.Error(t, err, "role-omitting insert must fail after DROP DEFAULT")
 
 	// 'owner' is unwritable — RequireRole/HasRole's super-bypass stays dead.
 	_, err = pool.Exec(ctx,
-		`INSERT INTO panel_accounts (email, name, role) VALUES ('owner@t.example','x','owner')`)
+		`INSERT INTO panel_accounts (email, name, role, password_hash) VALUES ('owner@t.example','x','owner','h')`)
 	require.Error(t, err, "role='owner' insert must be rejected by CHECK")
 
 	for _, role := range []string{"user", "admin"} {
 		_, err = pool.Exec(ctx,
-			`INSERT INTO panel_accounts (email, name, role) VALUES ($1,'x',$2)`,
+			`INSERT INTO panel_accounts (email, name, role, password_hash) VALUES ($1,'x',$2,'h')`,
 			"ok-"+role+"@t.example", role)
 		require.NoError(t, err, "role=%s must insert", role)
 	}
@@ -86,7 +86,7 @@ func TestBootstrap_OwnerRowNormalized(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		ALTER TABLE panel_accounts DROP CONSTRAINT panel_accounts_role_check;
 		ALTER TABLE panel_accounts ALTER COLUMN role SET DEFAULT 'admin';
-		INSERT INTO panel_accounts (email, name, role) VALUES ('legacy-owner@t.example','x','owner')`)
+		INSERT INTO panel_accounts (email, name, role, password_hash) VALUES ('legacy-owner@t.example','x','owner','h')`)
 	require.NoError(t, err)
 
 	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})

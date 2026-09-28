@@ -216,6 +216,12 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if err := ConstrainAccountColumns(ctx, pool); err != nil {
 		return nil, nil, fmt.Errorf("accounts: account constrain: %w", err)
 	}
+	// P6.2: password_hash NOT NULL — every account is login-capable; the
+	// key-only shape is gone (see gojob-admin account set-password for
+	// backfilling any legacy NULL row before this gate will boot).
+	if err := EnsurePasswordRequired(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: password required: %w", err)
+	}
 	return store, op, nil
 }
 
