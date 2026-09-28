@@ -37,7 +37,7 @@ func TestJobsResource_BadgeClosureNonNil(t *testing.T) {
 	store := openBadgeTestStore(t)
 	// uuid.Nil account: badge tests only exercise Count* badges — the score
 	// join is lister-side, never reached here.
-	r := jobsResource(store, "test_badge_user", nil, nil, fixedAccount(uuid.Nil))
+	r := jobsResource(store, nil, nil, fixedAccount(uuid.Nil))
 	if r.Badge == nil {
 		t.Fatal("jobs resource Badge must be non-nil")
 	}
@@ -59,7 +59,7 @@ func TestJobsResource_BadgeClosureNonNil(t *testing.T) {
 // RED-on-revert: removing Badge from shortlistResource makes this test fail.
 func TestShortlistResource_BadgeClosureNonNil(t *testing.T) {
 	store := openBadgeTestStore(t)
-	r := shortlistResource(store, "test_badge_user", nil, nil, fixedAccount(uuid.Nil))
+	r := shortlistResource(store, nil, nil, fixedAccount(uuid.Nil))
 	if r.Badge == nil {
 		t.Fatal("shortlist resource Badge must be non-nil")
 	}

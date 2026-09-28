@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,12 +49,12 @@ type trackerFile struct {
 
 // trackerJob is one entry in _tracker.json.jobs.
 type trackerJob struct {
-	Score      int    `json:"score"`      // stale 0–16 — NEVER written to fit_score
+	Score      int    `json:"score"` // stale 0–16 — NEVER written to fit_score
 	Company    string `json:"company"`
 	Title      string `json:"title"`
 	Location   string `json:"location"`
 	URL        string `json:"url"`
-	Comp       string `json:"comp"`       // free-text salary, e.g. "$190K – $270K • Offers Equity"
+	Comp       string `json:"comp"` // free-text salary, e.g. "$190K – $270K • Offers Equity"
 	Department string `json:"department"`
 	Team       string `json:"team"`
 	Status     string `json:"status"` // "saved" | "pack-ready"
@@ -157,9 +158,15 @@ func main() {
 func run() error {
 	filePath := flag.String("file", envOr("APPLICATIONS_DIR", "/data/applications")+"/_tracker.json", "path to _tracker.json")
 	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "postgres DSN (DATABASE_URL if unset)")
-	user := flag.String("user", envOr("ADMIN_USERNAME", "admin"), "hunt_ratings user_name (matches ADMIN_USERNAME)")
+	account := flag.String("account", "", "panel_accounts UUID that owns the migrated hunt_ratings rows (required)")
 	dryRun := flag.Bool("dry-run", false, "print what would be done without writing")
 	flag.Parse()
+
+	aid, err := uuid.Parse(*account)
+	if *account == "" || err != nil || aid == uuid.Nil {
+		slog.Error("--account <panel_accounts UUID> is required (see panel_accounts table)")
+		os.Exit(1)
+	}
 
 	if *dsn == "" {
 		return errors.New("DATABASE_URL or -dsn required")
@@ -181,7 +188,7 @@ func run() error {
 	slog.Info("loaded _tracker.json", "version", tf.Version, "updated", tf.Updated, "entries", len(tf.Jobs))
 
 	if *dryRun {
-		runDryRun(tf, *user)
+		runDryRun(tf, aid.String())
 		return nil
 	}
 
@@ -246,7 +253,7 @@ func run() error {
 		if stage == hunt.StageSaved {
 			triage, stageVal = hunt.StageSaved, ""
 		}
-		if err := store.Rate(ctx, hunt.KindJob, id, *user, triage, stageVal, note); err != nil {
+		if err := store.ForAccount(aid).Rate(ctx, hunt.KindJob, id, triage, stageVal, note); err != nil {
 			slog.Error("rate job", "id", id, "company", tj.Company, "err", err)
 			nSkipped++
 			continue
@@ -272,8 +279,8 @@ func run() error {
 }
 
 // runDryRun prints what the migration would do without touching the DB.
-func runDryRun(tf trackerFile, user string) {
-	fmt.Printf("DRY-RUN: _tracker.json v%d updated=%s entries=%d user=%s\n", tf.Version, tf.Updated, len(tf.Jobs), user)
+func runDryRun(tf trackerFile, account string) {
+	fmt.Printf("DRY-RUN: _tracker.json v%d updated=%s entries=%d account=%s\n", tf.Version, tf.Updated, len(tf.Jobs), account)
 	fmt.Printf("%-4s %-30s %-48s %-12s %-10s %s\n", "#", "Company", "Title", "Status→Stage", "Salary", "Note")
 	fmt.Println(strings.Repeat("-", 130))
 	for i, tj := range tf.Jobs {

@@ -42,13 +42,19 @@ var testPipelineStages = []string{
 	hunt.StageOffer,
 }
 
-const starTestUser = "test_admin"
+// starAcct binds a fresh account facade for the star-toggle/set-stage tests.
+// P3: hunt_ratings.account_id is the scoping key — each test gets its own
+// account so legacy user_name plays no role in scoping.
+func starAcct(t *testing.T, s *hunt.Store) *hunt.AccountStore {
+	t.Helper()
+	return s.ForAccount(newScoreAccount(t, s.Pool()))
+}
 
 // toggleStar is a test helper that calls ToggleShortlistStar with the standard
-// pipeline-protection stages and soft-demotable triage values.
-func toggleStar(t *testing.T, s *hunt.Store, id int64) bool {
+// pipeline-protection stages and soft-demotable triage values on acct.
+func toggleStar(t *testing.T, acct *hunt.AccountStore, id int64) bool {
 	t.Helper()
-	starred, err := s.ToggleShortlistStar(context.Background(), id, starTestUser,
+	starred, err := acct.ToggleShortlistStar(context.Background(), id,
 		testPipelineStages, hunt.StarSoftTriageValues)
 	if err != nil {
 		t.Fatalf("ToggleShortlistStar: %v", err)
@@ -56,27 +62,27 @@ func toggleStar(t *testing.T, s *hunt.Store, id int64) bool {
 	return starred
 }
 
-// readStage reads hunt_ratings.stage (pipeline axis) for a job.
-func readStage(t *testing.T, s *hunt.Store, id int64) string {
+// readStage reads hunt_ratings.stage (pipeline axis) for a job under acct.
+func readStage(t *testing.T, s *hunt.Store, acct *hunt.AccountStore, id int64) string {
 	t.Helper()
 	var stage string
 	if err := s.Pool().QueryRow(context.Background(),
-		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
+		"SELECT stage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2",
+		id, acct.AccountID(),
 	).Scan(&stage); err != nil {
 		t.Fatalf("readStage: %v", err)
 	}
 	return stage
 }
 
-// readTriage reads hunt_ratings.triage (triage axis) for a job.
+// readTriage reads hunt_ratings.triage (triage axis) for a job under acct.
 // After migration 012 the star toggle operates exclusively on the triage column.
-func readTriage(t *testing.T, s *hunt.Store, id int64) string {
+func readTriage(t *testing.T, s *hunt.Store, acct *hunt.AccountStore, id int64) string {
 	t.Helper()
 	var triage string
 	if err := s.Pool().QueryRow(context.Background(),
-		"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
+		"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2",
+		id, acct.AccountID(),
 	).Scan(&triage); err != nil {
 		t.Fatalf("readTriage: %v", err)
 	}
@@ -105,16 +111,17 @@ func TestStore_ToggleShortlistStar_StarOn_NoRow(t *testing.T) {
 	defer close()
 
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 
-	starred := toggleStar(t, s, id)
+	starred := toggleStar(t, acct, id)
 	if !starred {
 		t.Errorf("star on (no row): want starred=true, got false")
 	}
-	if got := readTriage(t, s, id); got != hunt.StageSaved {
+	if got := readTriage(t, s, acct, id); got != hunt.StageSaved {
 		t.Errorf("triage after star on (no row): want %q, got %q", hunt.StageSaved, got)
 	}
 	// Star-on must NOT touch the pipeline stage column.
-	if got := readStage(t, s, id); got != "" {
+	if got := readStage(t, s, acct, id); got != "" {
 		t.Errorf("stage after star on (no row): must be empty (untouched), got %q", got)
 	}
 }
@@ -128,16 +135,17 @@ func TestStore_ToggleShortlistStar_StarOn_FromUnrated(t *testing.T) {
 	defer close()
 
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 	// Insert an explicit empty-triage row (representing a post-migration "new" job).
-	if err := s.Rate(context.Background(), "job", id, starTestUser, "", "", ""); err != nil {
+	if err := acct.Rate(context.Background(), "job", id, "", "", ""); err != nil {
 		t.Fatalf("Rate (seed untriaged): %v", err)
 	}
 
-	starred := toggleStar(t, s, id)
+	starred := toggleStar(t, acct, id)
 	if !starred {
 		t.Errorf("star on from untriaged: want starred=true, got false")
 	}
-	if got := readTriage(t, s, id); got != hunt.StageSaved {
+	if got := readTriage(t, s, acct, id); got != hunt.StageSaved {
 		t.Errorf("triage after star on from untriaged: want %q, got %q", hunt.StageSaved, got)
 	}
 }
@@ -159,23 +167,24 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 	defer close()
 
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 	const wantNote = "do not delete this note"
 
 	// Seed: empty triage + existing note. Rate with triage="" uses CASE guard
 	// (preserves existing triage=''), so this is "unrated with a note".
-	if err := s.Rate(context.Background(), "job", id, starTestUser, "", "", wantNote); err != nil {
+	if err := acct.Rate(context.Background(), "job", id, "", "", wantNote); err != nil {
 		t.Fatalf("Rate (seed unrated with note): %v", err)
 	}
 
-	starred := toggleStar(t, s, id)
+	starred := toggleStar(t, acct, id)
 	if !starred {
 		t.Errorf("star on from unrated: want starred=true, got false")
 	}
 
 	var note *string
 	if err := s.Pool().QueryRow(context.Background(),
-		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
+		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2",
+		id, acct.AccountID(),
 	).Scan(&note); err != nil {
 		t.Fatalf("read note: %v", err)
 	}
@@ -185,7 +194,7 @@ func TestStore_ToggleShortlistStar_StarOn_NotePreserved(t *testing.T) {
 }
 
 // TestStore_ToggleShortlistStar_SoftDemote tests star-off from each of the two
-// soft (demotable) triage values → should clear triage to '', return starred=false.
+// soft (demotable) triage values → should clear triage to ”, return starred=false.
 //
 // After migration 012: star-off clears the triage column (NOT stage). The pipeline
 // stage is never touched. The legacy 'claimed' value is now a pipeline stage and is
@@ -202,21 +211,22 @@ func TestStore_ToggleShortlistStar_SoftDemote(t *testing.T) {
 			defer close()
 
 			id := insertStarTestJob(t, s)
+			acct := starAcct(t, s)
 			// Seed via triage axis.
-			if err := s.Rate(context.Background(), "job", id, starTestUser, initialTriage, "", "my note"); err != nil {
+			if err := acct.Rate(context.Background(), "job", id, initialTriage, "", "my note"); err != nil {
 				t.Fatalf("Rate (seed triage=%s): %v", initialTriage, err)
 			}
 
-			starred := toggleStar(t, s, id)
+			starred := toggleStar(t, acct, id)
 			if starred {
 				t.Errorf("star off from triage=%s: want starred=false, got true", initialTriage)
 			}
 			// Triage must be cleared.
-			if got := readTriage(t, s, id); got != "" {
+			if got := readTriage(t, s, acct, id); got != "" {
 				t.Errorf("triage after star off from %s: want \"\", got %q", initialTriage, got)
 			}
 			// Pipeline stage must be untouched.
-			if got := readStage(t, s, id); got != "" {
+			if got := readStage(t, s, acct, id); got != "" {
 				t.Errorf("stage after star off from triage=%s: must be untouched (\"\"), got %q", initialTriage, got)
 			}
 		})
@@ -232,21 +242,22 @@ func TestStore_ToggleShortlistStar_SoftDemote_NotePreserved(t *testing.T) {
 	defer close()
 
 	id := insertStarTestJob(t, s)
+	acct := starAcct(t, s)
 	const wantNote = "important note keep on demotion"
 
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageSaved, "", wantNote); err != nil {
+	if err := acct.Rate(context.Background(), "job", id, hunt.StageSaved, "", wantNote); err != nil {
 		t.Fatalf("Rate (seed): %v", err)
 	}
 
-	starred := toggleStar(t, s, id)
+	starred := toggleStar(t, acct, id)
 	if starred {
 		t.Errorf("star off from saved: want starred=false, got true")
 	}
 
 	var note *string
 	if err := s.Pool().QueryRow(context.Background(),
-		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-		id, starTestUser,
+		"SELECT note FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2",
+		id, acct.AccountID(),
 	).Scan(&note); err != nil {
 		t.Fatalf("read note: %v", err)
 	}
@@ -279,16 +290,17 @@ func TestStore_ToggleShortlistStar_AdvancedStageNoOp(t *testing.T) {
 			defer close()
 
 			id := insertStarTestJob(t, s)
+			acct := starAcct(t, s)
 			// Seed via pipeline axis (triage="", stage=initialStage).
-			if err := s.Rate(context.Background(), "job", id, starTestUser, "", initialStage, "pipeline note"); err != nil {
+			if err := acct.Rate(context.Background(), "job", id, "", initialStage, "pipeline note"); err != nil {
 				t.Fatalf("Rate (seed stage=%s): %v", initialStage, err)
 			}
 
-			starred := toggleStar(t, s, id)
+			starred := toggleStar(t, acct, id)
 			if !starred {
 				t.Errorf("pipeline stage %s no-op: want starred=true (unchanged), got false", initialStage)
 			}
-			if got := readStage(t, s, id); got != initialStage {
+			if got := readStage(t, s, acct, id); got != initialStage {
 				t.Errorf("pipeline stage %s no-op: stage must be UNCHANGED, got %q", initialStage, got)
 			}
 		})
@@ -309,15 +321,16 @@ func TestStore_ToggleShortlistStar_Discarded_IsNoOp(t *testing.T) {
 	defer close()
 
 	id := insertStarTestJob(t, s)
-	if err := s.Rate(context.Background(), "job", id, starTestUser, hunt.StageDiscarded, "", ""); err != nil {
+	acct := starAcct(t, s)
+	if err := acct.Rate(context.Background(), "job", id, hunt.StageDiscarded, "", ""); err != nil {
 		t.Fatalf("Rate (seed discarded): %v", err)
 	}
 
-	starred := toggleStar(t, s, id)
+	starred := toggleStar(t, acct, id)
 	if starred {
 		t.Errorf("star click on discarded: want starred=false (no-op), got true")
 	}
-	if got := readTriage(t, s, id); got != hunt.StageDiscarded {
+	if got := readTriage(t, s, acct, id); got != hunt.StageDiscarded {
 		t.Errorf("triage after star click on discarded: want %q (unchanged), got %q", hunt.StageDiscarded, got)
 	}
 }

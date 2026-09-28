@@ -169,6 +169,27 @@ func NewFromSinkWithMaxAge(sink kitnotify.ProductSink, maxAge time.Duration, cha
 	return n
 }
 
+// ForChat returns a notifier clone bound to a different recipient and
+// recency gate — the per-account notifier the multi-account hunt worker
+// builds per cycle from account_hunt_settings (notify_chat_id,
+// notify_max_age_seconds, ADR-7). The sink (bot connection) and the
+// OnSend metric hook are shared; chatIDs and maxAge are rebound.
+// chatID <= 0 keeps the base recipient list (env HUNT_NOTIFY_CHAT_ID or
+// the sink default).
+func (n *ProductNotifier) ForChat(chatID int64, maxAge time.Duration) hunt.Notifier {
+	c := &ProductNotifier{sink: n.sink, token: n.token, OnSend: n.OnSend}
+	if chatID != 0 {
+		c.chatIDs = []int64{chatID}
+	} else {
+		c.chatIDs = n.chatIDs
+	}
+	if maxAge <= 0 {
+		maxAge = defaultMaxAge
+	}
+	c.maxAge.Store(int64(maxAge))
+	return c
+}
+
 // NotifyNewBounty sends a notification for a new bounty entry (fire-and-forget).
 func (n *ProductNotifier) NotifyNewBounty(b hunt.Bounty) {
 	n.dispatch(formatBountyMsg(b))

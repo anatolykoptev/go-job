@@ -9,9 +9,9 @@ import (
 
 	"github.com/anatolykoptev/go-kit/admintable"
 	"github.com/anatolykoptev/go-panel/resource"
-	"github.com/anatolykoptev/go-panel/shell"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs/applications"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 )
 
 // navIDShortlist is the sidebar nav ID for the curated shortlist page.
@@ -86,7 +86,14 @@ var shortlistFilter = admintable.FilterSpec{Filters: []admintable.Filter{
 	{Key: colKeyStage, SQLExpr: sqlRStage, Match: admintable.Eq, Allowed: hunt.PipelineStages},
 }}
 
-func shortlistResource(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
+func shortlistResource(store *hunt.Store, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) resource.Resource {
+	shortlistBadge := perAccountBadge(30*time.Second, func(ctx context.Context, aid uuid.UUID) string {
+		n := store.ForAccount(aid).CountShortlist(ctx, shortlistTriageValues, shortlistPipelineValues)
+		if n == 0 {
+			return ""
+		}
+		return strconv.Itoa(n)
+	})
 	return resource.Resource{
 		Name:   navIDShortlist,
 		Title:  "Shortlist",
@@ -94,14 +101,11 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 		Group:  grpHunt,
 		Sort:   shortlistSpec,
 		Filter: shortlistFilter,
-		Badge: shell.CachedBadge(30*time.Second, func(ctx context.Context) string {
-			n := store.CountShortlist(ctx, adminUser, shortlistTriageValues, shortlistPipelineValues)
-			if n == 0 {
-				return ""
-			}
-			return strconv.Itoa(n)
-		}),
-		Lister: shortlistLister(store, adminUser, authority, csrfKey, acctOf),
+		Badge: func(ctx context.Context) string {
+			aid, _ := acctOf(ctx)
+			return shortlistBadge(ctx, aid)
+		},
+		Lister: shortlistLister(store, authority, csrfKey, acctOf),
 	}
 }
 
@@ -111,13 +115,12 @@ func shortlistResource(store *hunt.Store, adminUser string, authority *applicati
 // unit test exercise the same query — no decoy gap. PDF-derived filter chips
 // (pack-ready, with-docs) cannot be expressed as SQL; they surface as Docs
 // badges per row instead.
-func shortlistLister(store *hunt.Store, adminUser string, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
+func shortlistLister(store *hunt.Store, authority *applications.Authority, csrfKey []byte, acctOf accountResolver) func(context.Context, resource.ListQuery) ([]resource.Row, int, error) {
 	return func(ctx context.Context, q resource.ListQuery) ([]resource.Row, int, error) {
 		// Scores are per-account (account_job_scores) — the facade binds the
 		// acting account; a miss yields uuid.Nil, whose join matches nothing.
 		aid, _ := acctOf(ctx)
 		storeRows, total, err := store.ForAccount(aid).ListShortlist(ctx, hunt.ShortlistQuery{
-			User:         adminUser,
 			TriageValues: shortlistTriageValues,
 			StageValues:  shortlistPipelineValues,
 			WhereConds:   q.WhereConds,

@@ -11,18 +11,29 @@
 // huntworker imports both hunt and engine/jobs without any back-edge.
 // internal/hunt/score imports only hunt types (no engine), so the graph is:
 //
+//	huntworker → accounts (panel_accounts enumeration + account_hunt_settings)
 //	huntworker → engine (CallLLM)
 //	huntworker → engine/jobs (ScoreJobMatchCoverage, search functions)
 //	huntworker → hunt (Store, Job, ScoreResult, Outcome)
 //	huntworker → hunt/score (Score, ScorerDeps, ScoringProfile)
 //	hunt/score → hunt (types only, no engine — cycle-free)
 //
-// Gate: HUNT_INGEST_ENABLED=true (default false).
-// Interval: HUNT_INGEST_INTERVAL (default 6h).
-// Queries: HUNT_INGEST_QUERIES comma-separated generic role strings
+// P3 account model (plan ADR-7): the worker derives its account scope — it is
+// NOT handed one. Every cycle enumerates ACTIVE panel_accounts LEFT JOIN
+// account_hunt_settings (accounts.ListAccountHuntSettings): a missing row or
+// enabled=false skips the account (provisioning never silently arms a hunt).
+// Ingest consumes the UNION of enabled accounts' query lists against the
+// SHARED hunt_jobs corpus; judgments (account_job_scores, hunt_ratings) are
+// written per-account through the ForAccount facade; notification routes
+// per-account via notify_chat_id/notify_min_fit/notify_max_age_seconds.
+// uuid.Nil never names a scoring account — its only meaning is the
+// corpus-only ingest fallback when zero accounts are enabled.
 //
-//	(default "software engineer,backend engineer,golang developer").
-//	NO company names, NO ATS slugs — this is a PUBLIC repo.
+// Fleet-global knobs stay env/deploy config: HUNT_INGEST_INTERVAL (ticker),
+// HUNT_SCORE_MAX_LLM_PER_CYCLE (fleet LLM cap — per-account
+// score_max_llm_per_cycle can only tighten it), HUNT_SCORE_SWEEP_LIMIT.
+// Gate: HUNT_INGEST_ENABLED=false explicitly disables the worker; unset/true
+// lets the per-account enumeration decide (accounts with no row are skipped).
 package huntworker
 
 import (
@@ -36,16 +47,16 @@ import (
 	"github.com/anatolykoptev/go-kit/breaker"
 	"github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/retry"
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/engine"
 	"github.com/anatolykoptev/go_job/internal/engine/jobs"
 	"github.com/anatolykoptev/go_job/internal/hunt"
-	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 	"github.com/anatolykoptev/go_job/internal/hunt/score"
 	"github.com/google/uuid"
 )
 
 // jobScoreSetter is the narrow store interface used by scoring helpers.
-// *hunt.Store satisfies this; tests inject a fake.
+// *hunt.AccountStore satisfies this; tests inject a fake.
 type jobScoreSetter interface {
 	SetJobScore(ctx context.Context, id int64, sr hunt.ScoreResult) error
 }
@@ -78,88 +89,12 @@ type accountScoreStore interface {
 	UnscoredOpenJobs(ctx context.Context, limit int, rescoreAll bool) ([]hunt.Job, error)
 }
 
-// huntSettingsStore is the narrow store interface for loading/saving hunt
-// settings. Implemented by *hunt.Store; tests inject a fake.
-type huntSettingsStore interface {
-	GetHuntSettings(ctx context.Context) (hunt.HuntSettings, error)
-}
-
-// LoadSettings loads hunt worker settings from the DB (primary) with env-var
-// fallbacks for any zero-value field. This allows the operator to tune the
-// worker via the admin UI without a redeploy — changes apply on the next cycle.
-//
-// Merge rules (per field):
-//   - Enabled: DB value if row exists, else env HUNT_INGEST_ENABLED (default false).
-//   - Interval: DB value if > 0, else env HUNT_INGEST_INTERVAL (default 6h).
-//   - Queries: DB value if non-empty, else env HUNT_INGEST_QUERIES (default
-//     "software engineer,backend engineer,golang developer").
-//   - NotifyChatID: DB value if > 0, else env HUNT_NOTIFY_CHAT_ID (default 0).
-//   - NotifyMinFit: DB value if > 0, else env HUNT_NOTIFY_MIN_FIT (default 0).
-//     Clamped to [0,100].
-//   - NotifyMaxAge: DB value if > 0, else env HUNT_NOTIFY_MAX_AGE (default 48h).
-//   - ScoreEnabled: DB value if row exists, else env HUNT_SCORE_ENABLED (default true).
-//   - ScoreMinJaccard: DB value if > 0, else env HUNT_SCORE_MIN_JACCARD (default 8).
-//   - ScoreMaxLLMPerCycle: DB value if > 0, else env HUNT_SCORE_MAX_LLM_PER_CYCLE (default 50).
-//   - ScoreSweepLimit: DB value if > 0, else env HUNT_SCORE_SWEEP_LIMIT (default 50).
-//   - ScoreFailOpen: DB value if row exists, else env HUNT_SCORE_FAIL_OPEN (default true).
-func LoadSettings(ctx context.Context, store huntSettingsStore) hunt.HuntSettings {
-	s := hunt.HuntSettings{
-		Enabled:             envEqualFold("HUNT_INGEST_ENABLED", "true"),
-		Interval:            env.MustDuration("HUNT_INGEST_INTERVAL", 6*time.Hour),
-		Queries:             env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries),
-		NotifyChatID:        int64(env.MustInt("HUNT_NOTIFY_CHAT_ID", 0)),
-		NotifyMinFit:        clampNotifyMinFit(env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)),
-		NotifyMaxAge:        env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour),
-		ScoreEnabled:        envEqualFold("HUNT_SCORE_ENABLED", "true"),
-		ScoreMinJaccard:     env.MustInt("HUNT_SCORE_MIN_JACCARD", 8),
-		ScoreMaxLLMPerCycle: env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50),
-		ScoreSweepLimit:     env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50),
-		ScoreFailOpen:       envEqualFold("HUNT_SCORE_FAIL_OPEN", "true"),
-	}
-	if store == nil {
-		return s
-	}
-	db, err := store.GetHuntSettings(ctx)
-	if err != nil {
-		slog.WarnContext(ctx, "hunt worker: settings DB load error, using env defaults",
-			slog.Any("error", err))
-		return s
-	}
-	// Merge: DB wins for non-zero values; zero-value DB fields keep env defaults.
-	// Enabled/ScoreEnabled/ScoreFailOpen are bools — DB always wins if the row
-	// exists (GetHuntSettings returns zero-value HuntSettings with all bools =
-	// false when the row is absent, but in that case we keep env defaults).
-	if db.Interval > 0 {
-		s.Interval = db.Interval
-	}
-	if db.Queries != "" {
-		s.Queries = db.Queries
-	}
-	if db.NotifyChatID > 0 {
-		s.NotifyChatID = db.NotifyChatID
-	}
-	if db.NotifyMinFit > 0 {
-		s.NotifyMinFit = clampNotifyMinFit(db.NotifyMinFit)
-	}
-	if db.NotifyMaxAge > 0 {
-		s.NotifyMaxAge = db.NotifyMaxAge
-	}
-	if db.ScoreMinJaccard > 0 {
-		s.ScoreMinJaccard = db.ScoreMinJaccard
-	}
-	if db.ScoreMaxLLMPerCycle > 0 {
-		s.ScoreMaxLLMPerCycle = db.ScoreMaxLLMPerCycle
-	}
-	if db.ScoreSweepLimit > 0 {
-		s.ScoreSweepLimit = db.ScoreSweepLimit
-	}
-	// Bool fields: DB wins only if the row actually exists (UpdatedAt non-zero).
-	if !db.UpdatedAt.IsZero() {
-		s.Enabled = db.Enabled
-		s.ScoreEnabled = db.ScoreEnabled
-		s.ScoreFailOpen = db.ScoreFailOpen
-	}
-	return s
+// fleetLLMCap is the fleet-wide per-cycle LLM budget ceiling
+// (HUNT_SCORE_MAX_LLM_PER_CYCLE, default 50). Per-account
+// score_max_llm_per_cycle values can only TIGHTEN it — a NULL account setting
+// means the account shares the fleet cap.
+func fleetLLMCap() int {
+	return env.MustInt("HUNT_SCORE_MAX_LLM_PER_CYCLE", 50)
 }
 
 // envEqualFold reads an env var and compares case-insensitively to val.
@@ -182,9 +117,8 @@ func clampNotifyMinFit(n int) int {
 	return n
 }
 
-// defaultIngestQueries are generic role/skill strings used when the operator
-// has not set HUNT_INGEST_QUERIES.  No company names, no personal targets —
-// PUBLIC-repo-safe.
+// defaultIngestQueries are generic role/skill strings used when no account's
+// queries apply. No company names, no personal targets — PUBLIC-repo-safe.
 const defaultIngestQueries = "software engineer,backend engineer,golang developer"
 
 // perPlatformTimeout caps one ATS search call (slug discovery + API fetch).
@@ -208,15 +142,153 @@ const defaultIngestQueries = "software engineer,backend engineer,golang develope
 // discovery.TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap.
 const perPlatformTimeout = 120 * time.Second
 
+// ── per-account cycle plan ──────────────────────────────────────────────────
+
+// llmBudget bundles the two per-cycle LLM counters a score may spend:
+//
+//   - acct  — the account's own counter, capped by the account's EFFECTIVE cap
+//     (min(score_max_llm_per_cycle, fleet cap); deps.Settings.MaxLLMPerCycle
+//     already carries the effective value)
+//   - fleet — the fleet-wide counter shared across all accounts this cycle,
+//     capped by fleetCap (HUNT_SCORE_MAX_LLM_PER_CYCLE)
+//
+// A nil fleet pointer means "no fleet gate" — single-account test fakes and
+// the corpus-only ingest path stay simple. consume() is called ONLY when an
+// LLM call was actually attempted (LLMResult != "") — stale/reject/nil-profile
+// short-circuits spend zero budget.
+type llmBudget struct {
+	acct     *atomic.Int64
+	fleet    *atomic.Int64
+	fleetCap int
+}
+
+// exhausted reports whether EITHER counter is at its cap.
+func (b *llmBudget) exhausted(perAcctCap int) bool {
+	if b.acct.Load() >= int64(perAcctCap) {
+		return true
+	}
+	return b.fleet != nil && b.fleet.Load() >= int64(b.fleetCap)
+}
+
+// consume charges one attempted LLM call to both counters.
+func (b *llmBudget) consume() {
+	b.acct.Add(1)
+	if b.fleet != nil {
+		b.fleet.Add(1)
+	}
+}
+
+// acctRemaining reports how many LLM calls this account may still spend this
+// cycle under BOTH its own cap and the fleet cap.
+func (b *llmBudget) acctRemaining(perAcctCap int) int {
+	r := perAcctCap - int(b.acct.Load())
+	if b.fleet != nil {
+		if f := b.fleetCap - int(b.fleet.Load()); f < r {
+			r = f
+		}
+	}
+	if r < 0 {
+		return 0
+	}
+	return r
+}
+
+// accountPlan is one enabled account's resolved per-cycle configuration: the
+// bound scoring facade, the env-merged settings, the per-account scorer deps
+// (ScoringSettings derived from the account row), the account-bound notifier,
+// and the cycle's LLM budget counters. Built fresh every cycle by
+// loadAccountPlans — account settings apply without a redeploy.
+type accountPlan struct {
+	aid      uuid.UUID
+	scores   accountScoreStore
+	settings accounts.AccountHuntSettings
+	deps     score.ScorerDeps
+	notifier hunt.Notifier // account-bound clone (chat id + max age); nil → metric only
+	budget   *llmBudget
+}
+
+// scoreEnabled reports whether this account may score this cycle — its own
+// score_enabled flag AND a loaded scoring profile (nil profile → scorer
+// short-circuits anyway; the flag keeps the sweep from even fetching).
+func (p *accountPlan) scoreEnabled(profile *score.ScoringProfile) bool {
+	return profile != nil && p.settings.ScoreEnabled && p.scores != nil
+}
+
+// maybeNotifyJob applies THIS ACCOUNT's fit gate and fires its account-bound
+// notifier when the outcome is OutcomeCreated and the job is open (or has
+// empty status — see SearxngResultToHuntJob's empty-status note in worker.go).
+//
+// Gate table (unchanged semantics, now per-account):
+//   - score == nil (scoring disabled)        → notify (recency-only card)
+//   - score.FitBand == "unscored" (LLM fail) → notify (degraded card)
+//   - score.FitScore < account's min_fit     → skip notify, metric "low_fit"
+//   - else                                    → notify (full fit-card)
+//
+// Metric ownership (no double-count): the ONLY outcome this method emits is
+// "low_fit" — and only on the terminal-drop path that returns without
+// dispatch. All other outcomes (sent/failed/stale/no_date/unscored) are
+// emitted by the notifier AFTER ITS OWN recency gate, so a stale unscored job
+// counts once ("stale"), not twice. See ProductNotifier.NotifyNewJob.
+//
+// Empty status is treated as open because SearxngResultToHuntJob does not set
+// a Status field — UpsertJob normalises it to StatusOpen in Postgres, but the
+// in-memory Job struct retains "".
+func (p *accountPlan) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, sr *hunt.ScoreResult, notifyMetric func(string)) {
+	if outcome != hunt.OutcomeCreated {
+		return
+	}
+	if p.notifier == nil {
+		if notifyMetric != nil {
+			notifyMetric("notifier_disabled")
+		}
+		return
+	}
+	if j.Status != hunt.StatusOpen && j.Status != "" {
+		return
+	}
+
+	// Fit gate — only a REAL score (not nil, not "unscored") is gated, by THIS
+	// account's notify_min_fit. A sub-threshold real score is a TERMINAL drop:
+	// the job is not dispatched and "low_fit" is emitted here exactly once.
+	if sr != nil && sr.FitBand != hunt.FitBandUnscored {
+		minFit := p.settings.NotifyMinFit
+		if minFit > 0 && sr.FitScore < minFit {
+			if notifyMetric != nil {
+				notifyMetric("low_fit")
+			}
+			slog.Debug("hunt worker: fit gate dropped job",
+				slog.Int64("job_id", j.ID),
+				slog.Int("fit_score", sr.FitScore),
+				slog.Int("min_fit", minFit),
+				slog.String("account_id", p.aid.String()),
+			)
+			return
+		}
+	}
+
+	// nil score (scoring disabled), unscored (LLM-fail fail-open), or fit ≥
+	// threshold: dispatch to the account-bound notifier, which owns the
+	// recency gate and emits the terminal outcome.
+	p.notifier.NotifyNewJob(j, sr)
+}
+
 // Worker runs a periodic ATS ingest cycle.
 type Worker struct {
 	store    *hunt.Store
 	notifier hunt.Notifier
-	// scores is the account-bound score surface (store.ForAccount output in
-	// production — TRANSITIONAL: pinned to the operator account until P3 wires
-	// per-cycle account enumeration, plan ADR-7). nil → the worker ingests the
-	// shared corpus but persists no scores (no account to attach them to).
-	scores         accountScoreStore
+	// accountNotify builds a per-account notifier bound to (chatID, maxAge).
+	// Production: clones the *notify.ProductNotifier sink via ForChat; tests
+	// inject a fake to capture the per-account routing. nil → the base
+	// notifier is reused for every account.
+	accountNotify func(chatID int64, maxAge time.Duration) hunt.Notifier
+	// listAccounts enumerates ACTIVE panel_accounts LEFT JOIN
+	// account_hunt_settings (accounts.ListAccountHuntSettings in production;
+	// tests inject fakes). Called at the top of every cycle — account changes
+	// apply on the next tick.
+	listAccounts func(ctx context.Context) ([]accounts.AccountHuntSettings, error)
+	// forAccount binds the account-scoped score facade (store.ForAccount in
+	// production; tests inject fakes).
+	forAccount     func(aid uuid.UUID) accountScoreStore
 	notifyMetric   func(outcome string)  // wired to engine.IncrHuntNotify in production
 	scoringProfile *score.ScoringProfile // nil = scoring disabled
 	scorerDeps     score.ScorerDeps
@@ -236,11 +308,6 @@ type Worker struct {
 	// runCycle is still executing → concurrent DB upserts, 2x ATS API calls,
 	// LLM budget confusion. CAS(false→true) on tick; store(false) on exit.
 	cycleRunning atomic.Bool
-	// settings holds the current hunt worker settings (DB + env merge).
-	// Reloaded at the start of each cycle so admin-UI changes apply without
-	// a redeploy. Interval is read once at Run() start (ticker is fixed);
-	// all other fields are read per-cycle.
-	settings atomic.Pointer[hunt.HuntSettings]
 }
 
 // NewWorker builds a Worker from env vars.  Returns nil if the store is nil
@@ -301,82 +368,142 @@ func newLLMBreaker() *breaker.Breaker {
 	})
 }
 
-// SetNotifier wires the Telegram notifier into the worker.
+// SetNotifier wires the base Telegram notifier into the worker.
 // Must be called before Run(). Optional — if nil, no notifications are sent.
-func (w *Worker) SetNotifier(n hunt.Notifier) { w.notifier = n }
-
-// notifyMinFit returns the fit-gate threshold from the current settings
-// (DB + env merge). Read per-call so admin-UI changes apply on the next cycle.
-func (w *Worker) notifyMinFit() int {
-	if s := w.settings.Load(); s != nil {
-		return s.NotifyMinFit
+// Per-cycle, each enabled account gets a notifier bound to ITS OWN
+// notify_chat_id + notify_max_age via accountNotify (ProductNotifier.ForChat);
+// when the base is nil or cannot clone, every account falls back to the base
+// notifier (or none).
+func (w *Worker) SetNotifier(n hunt.Notifier) {
+	w.notifier = n
+	w.accountNotify = func(chatID int64, maxAge time.Duration) hunt.Notifier {
+		if pn, ok := n.(interface {
+			ForChat(int64, time.Duration) hunt.Notifier
+		}); ok && chatID != 0 {
+			return pn.ForChat(chatID, maxAge)
+		}
+		return n
 	}
-	return 0
 }
 
-// maybeNotifyJob applies the fit gate and fires NotifyNewJob when the outcome
-// is OutcomeCreated and the job is open (or has empty status — see comment
-// on SearxngResultToHuntJob below).
-//
-// Gate table (Phase 5):
-//   - score == nil (scoring disabled)        → notify (recency-only card), terminal outcome via notifier
-//   - score.FitBand == "unscored" (LLM fail) → notify (degraded card); notifier emits "unscored" post-recency
-//   - score.FitScore < MIN_FIT (real band)   → skip notify, metric "low_fit" (emitted HERE, terminal)
-//   - else                                    → notify (full fit-card), terminal outcome via notifier
-//
-// Metric ownership (no double-count): the ONLY outcome this method emits is
-// "low_fit" — and only on the terminal-drop path that returns without dispatch.
-// All other outcomes (sent/failed/stale/no_date/unscored) are emitted by the
-// notifier AFTER its recency gate, so a stale unscored job counts once ("stale"),
-// not twice. See ProductNotifier.NotifyNewJob.
-//
-// Empty status is treated as open because SearxngResultToHuntJob does not set a
-// Status field — UpsertJob normalises it to StatusOpen in Postgres, but the
-// in-memory Job struct retains "".
-func (w *Worker) maybeNotifyJob(j hunt.Job, outcome hunt.Outcome, score *hunt.ScoreResult) {
-	if outcome != hunt.OutcomeCreated {
-		return
+// mergeAccountSettings resolves one account's runtime settings: the DB row is
+// authoritative for every bool (enabled/score_enabled/score_fail_open can
+// never be re-armed by env), env vars fill only zero-valued scalar fields —
+// the same per-field merge contract the legacy single-row LoadSettings had.
+func mergeAccountSettings(r accounts.AccountHuntSettings) accounts.AccountHuntSettings {
+	s := accounts.AccountHuntSettings{
+		AccountID:           r.AccountID,
+		HasRow:              r.HasRow,
+		Enabled:             r.Enabled, // DB-authoritative
+		Queries:             env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries),
+		NotifyChatID:        int64(env.MustInt("HUNT_NOTIFY_CHAT_ID", 0)),
+		NotifyMinFit:        clampNotifyMinFit(env.MustInt("HUNT_NOTIFY_MIN_FIT", 0)),
+		NotifyMaxAge:        env.MustDuration("HUNT_NOTIFY_MAX_AGE", 48*time.Hour),
+		ScoreEnabled:        r.ScoreEnabled, // DB-authoritative
+		ScoreMinJaccard:     env.MustInt("HUNT_SCORE_MIN_JACCARD", 8),
+		ScoreMaxLLMPerCycle: r.ScoreMaxLLMPerCycle,
+		ScoreFailOpen:       r.ScoreFailOpen, // DB-authoritative
+		UpdatedAt:           r.UpdatedAt,
 	}
-	if w.notifier == nil {
-		if w.notifyMetric != nil {
-			w.notifyMetric("notifier_disabled")
-		}
-		return
+	if r.Queries != "" {
+		s.Queries = r.Queries
 	}
-	if j.Status != hunt.StatusOpen && j.Status != "" {
-		return
+	if r.NotifyChatID > 0 {
+		s.NotifyChatID = r.NotifyChatID
 	}
+	if r.NotifyMinFit > 0 {
+		s.NotifyMinFit = clampNotifyMinFit(r.NotifyMinFit)
+	}
+	if r.NotifyMaxAge > 0 {
+		s.NotifyMaxAge = r.NotifyMaxAge
+	}
+	if r.ScoreMinJaccard > 0 {
+		s.ScoreMinJaccard = r.ScoreMinJaccard
+	}
+	return s
+}
 
-	// Fit gate — only a REAL score (not nil, not "unscored") is gated. A
-	// sub-threshold real score is a TERMINAL drop: the job is not dispatched and
-	// "low_fit" is emitted here exactly once (mutually exclusive with the
-	// notifier's stale/no_date/sent outcomes because we return).
-	if score != nil && score.FitBand != hunt.FitBandUnscored {
-		minFit := w.notifyMinFit()
-		if minFit > 0 && score.FitScore < minFit {
-			if w.notifyMetric != nil {
-				w.notifyMetric("low_fit")
+// loadAccountPlans enumerates ACTIVE panel_accounts LEFT JOIN
+// account_hunt_settings and builds one accountPlan per ENABLED account —
+// the worker's account census for this cycle (plan ADR-7). A missing
+// settings row (HasRow=false) or enabled=false skips the account silently;
+// deactivated accounts are absent upstream. fleetUsed is the shared per-cycle
+// fleet LLM counter each plan's budget references.
+func (w *Worker) loadAccountPlans(ctx context.Context, fleetUsed *atomic.Int64) []accountPlan {
+	rows, err := w.listAccounts(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "hunt worker: account enumeration failed — cycle uses no accounts",
+			slog.Any("error", err))
+		return nil
+	}
+	fleetCap := fleetLLMCap()
+	plans := make([]accountPlan, 0, len(rows))
+	for _, r := range rows {
+		if !r.HasRow || !r.Enabled {
+			continue // missing row or disabled → skip (ADR-7)
+		}
+		s := mergeAccountSettings(r)
+
+		// Effective per-account LLM cap: the account's optional sub-cap can
+		// only TIGHTEN the fleet cap, never loosen it.
+		effCap := fleetCap
+		if s.ScoreMaxLLMPerCycle != nil && *s.ScoreMaxLLMPerCycle > 0 && *s.ScoreMaxLLMPerCycle < fleetCap {
+			effCap = *s.ScoreMaxLLMPerCycle
+		}
+
+		deps := w.scorerDeps
+		failOpen := s.ScoreFailOpen
+		deps.Settings = &score.ScoringSettings{
+			NotifyMaxAge:   s.NotifyMaxAge,
+			MinJaccard:     float64(s.ScoreMinJaccard),
+			FailOpen:       &failOpen,
+			MaxLLMPerCycle: effCap,
+		}
+
+		var n hunt.Notifier
+		if w.accountNotify != nil {
+			n = w.accountNotify(s.NotifyChatID, s.NotifyMaxAge)
+		} else {
+			n = w.notifier
+		}
+
+		var acctStore accountScoreStore
+		if w.forAccount != nil {
+			acctStore = w.forAccount(r.AccountID)
+		}
+
+		plans = append(plans, accountPlan{
+			aid:      r.AccountID,
+			scores:   acctStore,
+			settings: s,
+			deps:     deps,
+			notifier: n,
+			budget:   &llmBudget{acct: &atomic.Int64{}, fleet: fleetUsed, fleetCap: fleetCap},
+		})
+	}
+	return plans
+}
+
+// unionQueries collects the enabled plans' query lists, deduplicated while
+// preserving first-seen order (a query shared by several accounts is fetched
+// once — the corpus row is global, only the judgments are per-account).
+func unionQueries(plans []accountPlan) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, p := range plans {
+		for _, q := range parseQueries(p.settings.Queries) {
+			if !seen[q] {
+				seen[q] = true
+				out = append(out, q)
 			}
-			slog.Debug("hunt worker: fit gate dropped job",
-				slog.Int64("job_id", j.ID),
-				slog.Int("fit_score", score.FitScore),
-				slog.Int("min_fit", minFit),
-			)
-			return
 		}
 	}
-
-	// nil score (scoring disabled), unscored (LLM-fail fail-open), or
-	// fit ≥ threshold: dispatch. The notifier owns the recency gate and emits the
-	// terminal outcome (sent/failed/stale/no_date); for a degraded (unscored)
-	// card it emits "unscored" AFTER recency passes — so a stale unscored job
-	// counts only as "stale", never "unscored"+"stale". The fit gate above is the
-	// ONLY metric this worker emits pre-dispatch.
-	w.notifier.NotifyNewJob(j, score)
+	return out
 }
 
 // parseQueries splits a comma-separated query string, trims whitespace, and
-// drops empty entries.
+// drops empty entries. An empty input falls back to defaultIngestQueries —
+// matching the legacy HUNT_INGEST_QUERIES default contract.
 func parseQueries(raw string) []string {
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
@@ -395,17 +522,12 @@ func parseQueries(raw string) []string {
 // Each cycle recovers from panics so one bad platform cannot abort others.
 // Intended to run as a goroutine in main.go.
 func (w *Worker) Run(ctx context.Context) {
-	// Load settings from DB (primary) with env fallback. Interval is fixed
-	// for the ticker lifetime; all other fields are reloaded per-cycle.
-	settings := LoadSettings(ctx, w.store)
-	w.settings.Store(&settings)
-
-	slog.Info("hunt worker: starting",
-		slog.Duration("interval", settings.Interval),
-		slog.Int("queries", len(parseQueries(settings.Queries))),
-	)
+	interval := env.MustDuration("HUNT_INGEST_INTERVAL", 6*time.Hour)
+	slog.Info("hunt worker: starting", slog.Duration("interval", interval))
 
 	// Load the scoring profile once at startup (requires context + DB).
+	// The profile itself is fleet-global (one resume profile); per-account
+	// scoring decisions happen per-cycle in loadAccountPlans.
 	if score.ScoringEnabled() && w.store != nil {
 		prof, err := score.LoadProfile(ctx, w.store.Pool())
 		if err != nil {
@@ -419,20 +541,20 @@ func (w *Worker) Run(ctx context.Context) {
 	// Run one cycle immediately so the table is populated before the first tick.
 	w.runCycle(ctx)
 
-	// Periodic gauge refresher: update gojob_hunt_unscored_jobs_count and
-	// gojob_hunt_unscored_jobs_max_age_seconds between hunt cycles so the
-	// alert gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the
-	// LIVE state, not a value frozen at the end of the last 6h cycle. The
-	// refresher runs on its own ticker (default 10m, configurable via
-	// HUNT_SCORE_GAUGE_REFRESH_INTERVAL) and does a single COUNT+MIN query —
-	// no row fetch, no LLM call, no scoring. It is safe to run concurrently
-	// with an in-progress cycle (read-only query, gauges are atomic).
+	// Periodic gauge refresher: update gojob_hunt_unscored_jobs_count{account}
+	// and gojob_hunt_unscored_jobs_max_age_seconds{account} between hunt
+	// cycles so the alert max(gojob_hunt_unscored_jobs_max_age_seconds) > 7200
+	// reflects the LIVE per-account backlog, not a value frozen at the end of
+	// the last 6h cycle. The refresher runs on its own ticker (default 10m,
+	// configurable via HUNT_SCORE_GAUGE_REFRESH_INTERVAL) and does a single
+	// COUNT+MIN query per enabled account — no row fetch, no LLM call, no
+	// scoring. It is safe to run concurrently with an in-progress cycle.
 	gaugeRefreshInterval := env.MustDuration("HUNT_SCORE_GAUGE_REFRESH_INTERVAL", 10*time.Minute)
 	gaugeTicker := time.NewTicker(gaugeRefreshInterval)
 	defer gaugeTicker.Stop()
 	slog.Info("hunt worker: gauge refresher started", slog.Duration("interval", gaugeRefreshInterval))
 
-	ticker := time.NewTicker(settings.Interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -440,16 +562,14 @@ func (w *Worker) Run(ctx context.Context) {
 			slog.Info("hunt worker: stopping")
 			return
 		case <-gaugeTicker.C:
-			if w.scores != nil {
-				refreshUnscoredGauges(ctx, w.scores)
-			}
+			w.refreshAllUnscoredGauges(ctx)
 		case <-ticker.C:
 			// BH-7: Skip tick if previous cycle is still running. A slow cycle
 			// (e.g., ATS APIs hanging) can exceed HUNT_INGEST_INTERVAL; without
 			// this guard, the next tick spawns a concurrent cycle → duplicate
 			// upserts, 2x resource consumption, LLM budget confusion.
 			if !w.cycleRunning.CompareAndSwap(false, true) {
-				slog.Warn("hunt worker: previous cycle still running, skipping tick")
+				slog.Warn("hunt worker: previous cycle still running — skipping tick")
 				continue
 			}
 			go func() {
@@ -460,44 +580,52 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// runCycle executes one ingest cycle across all configured role queries and
-// the three ATS platforms (greenhouse, lever, ashby).
+// refreshAllUnscoredGauges re-enumerates enabled accounts and refreshes each
+// account's unscored-pool gauges independently (label account=<uuid>).
+func (w *Worker) refreshAllUnscoredGauges(ctx context.Context) {
+	var fleet atomic.Int64 // not needed for gauge refresh; satisfies budget shape
+	for _, p := range w.loadAccountPlans(ctx, &fleet) {
+		if p.scores == nil {
+			continue
+		}
+		refreshUnscoredGauges(ctx, p.scores, p.aid.String())
+	}
+}
+
+// runCycle executes one ingest cycle: enumerate enabled accounts, ingest the
+// union of their query lists into the SHARED corpus, then score + notify each
+// created job under EVERY enabled account (round-robin per job), and finally
+// run each account's unscored sweep under its own sub-cap + the fleet cap.
 func (w *Worker) runCycle(ctx context.Context) {
 	start := time.Now()
 
-	// Reload settings from DB so admin-UI changes apply on the next cycle
-	// without a redeploy. Interval is NOT reloaded (ticker is fixed at Run).
-	settings := LoadSettings(ctx, w.store)
-	w.settings.Store(&settings)
-	queries := parseQueries(settings.Queries)
+	// Account census for this cycle — settings changes apply without redeploy.
+	var fleetUsed atomic.Int64
+	plans := w.loadAccountPlans(ctx, &fleetUsed)
 
-	slog.Info("hunt worker: cycle start", slog.Int("queries", len(queries)))
+	queries := unionQueries(plans)
+	if len(queries) == 0 {
+		// Zero enabled accounts. uuid.Nil's only remaining meaning: the
+		// corpus-only ingest fallback — HUNT_INGEST_ENABLED=true keeps the
+		// shared corpus warm from env queries even with no account armed.
+		// Scores and notify stay off (there is no account to attach them to).
+		if !envEqualFold("HUNT_INGEST_ENABLED", "true") {
+			slog.Debug("hunt worker: no enabled accounts — cycle skipped")
+			return
+		}
+		queries = parseQueries(env.Str("HUNT_INGEST_QUERIES", defaultIngestQueries))
+		slog.Info("hunt worker: no enabled accounts — corpus-only ingest",
+			slog.Int("queries", len(queries)))
+	} else {
+		slog.Info("hunt worker: cycle start",
+			slog.Int("accounts", len(plans)),
+			slog.Int("queries", len(queries)),
+		)
+	}
 
 	// ESC-2: reset scoring degradation flag at cycle start. Set to 1 during the
 	// cycle when the circuit breaker trips or the fail-open path is taken.
 	engine.SetHuntScoringDegraded(false, "cycle_reset")
-
-	// Wire DB-backed scoring settings into ScorerDeps so score.Score() uses
-	// them instead of env vars. Updated per-cycle from the admin UI.
-	failOpen := settings.ScoreFailOpen
-	w.scorerDeps.Settings = &score.ScoringSettings{
-		NotifyMaxAge:   settings.NotifyMaxAge,
-		MinJaccard:     float64(settings.ScoreMinJaccard),
-		FailOpen:       &failOpen,
-		MaxLLMPerCycle: settings.ScoreMaxLLMPerCycle,
-	}
-
-	// ScoreEnabled per-cycle: if disabled in DB, nil out the scoring profile
-	// so score.Score() returns unscored (no LLM calls).
-	if !settings.ScoreEnabled {
-		w.scoringProfile = nil
-	}
-
-	// Update the notifier's recency gate from DB settings (if the notifier
-	// supports runtime updates).
-	if u, ok := w.notifier.(notify.MaxAgeUpdater); ok && u != nil {
-		u.SetMaxAge(settings.NotifyMaxAge)
-	}
 
 	platforms := []struct {
 		name   string
@@ -509,7 +637,6 @@ func (w *Worker) runCycle(ctx context.Context) {
 	}
 
 	var totalCreated, totalMerged, totalError int
-	var llmCallsThisCycle atomic.Int64 // circuit-breaker counter, reset per cycle (BH-4)
 
 	for _, q := range queries {
 		for _, p := range platforms {
@@ -557,20 +684,21 @@ func (w *Worker) runCycle(ctx context.Context) {
 						totalCreated++
 						// Attach the job ID so SetJobScore can find the row.
 						j.ID = id
-						// Score first (persist fit data), then notify — both fire on
-						// OutcomeCreated; scoring is orthogonal to notification.
-						// Scores persist per-account (account_job_scores); with no
-						// bound account the job is notified unscored — the corpus row
-						// still landed, only the judgment is account-owned.
-						var sr *hunt.ScoreResult
-						if w.scores != nil {
-							sr = scoreJobWithLimit(ctx, outcome, j,
-								w.scoringProfile, w.scorerDeps, w.scores, &llmCallsThisCycle)
-							if sr != nil {
-								observeScore(*sr)
+						// Round-robin per account: each enabled account scores
+						// the new corpus row under its own sub-cap + the shared
+						// fleet counter, then applies its own notify gates.
+						for i := range plans {
+							plan := &plans[i]
+							var sr *hunt.ScoreResult
+							if plan.scoreEnabled(w.scoringProfile) {
+								sr = scoreJobWithLimit(ctx, outcome, j,
+									w.scoringProfile, plan.deps, plan.scores, plan.budget)
+								if sr != nil {
+									observeScore(*sr)
+								}
 							}
+							plan.maybeNotifyJob(j, outcome, sr, w.notifyMetric)
 						}
-						w.maybeNotifyJob(j, outcome, sr)
 					case outcome == hunt.OutcomeMerged:
 						totalMerged++
 					}
@@ -579,37 +707,41 @@ func (w *Worker) runCycle(ctx context.Context) {
 		}
 	}
 
-	// End-of-cycle unscored-open sweep: score open jobs that have no
-	// account_job_scores row FOR THIS ACCOUNT yet. Only when scoring is enabled
-	// and an account is bound (w.scores != nil — see StartWorker).
-	if w.scoringProfile != nil && w.scores != nil {
-		runUnscoredSweep(ctx, w.scores, w.scoringProfile, w.scorerDeps, &llmCallsThisCycle, settings.ScoreSweepLimit)
+	// End-of-cycle unscored-open sweep PER ACCOUNT: score open jobs that have
+	// no account_job_scores row for that account, bounded by the account's
+	// effective sub-cap and the fleet counter they all share.
+	sweepLimit := env.MustInt("HUNT_SCORE_SWEEP_LIMIT", 50)
+	for i := range plans {
+		plan := &plans[i]
+		if plan.scoreEnabled(w.scoringProfile) {
+			runUnscoredSweep(ctx, plan.scores, w.scoringProfile, plan.deps, plan.budget, sweepLimit, plan.aid.String())
+		}
 	}
 
 	elapsed := time.Since(start)
 	engine.ObserveHuntCycleDuration(elapsed.Seconds())
 	slog.Info("hunt worker: cycle complete",
 		slog.Duration("elapsed", elapsed),
+		slog.Int("accounts", len(plans)),
 		slog.Int("created", totalCreated),
 		slog.Int("merged", totalMerged),
 		slog.Int("errors", totalError),
-		slog.Int("llm_scored", int(llmCallsThisCycle.Load())),
+		slog.Int64("llm_scored_fleet", fleetUsed.Load()),
 	)
 }
 
-// scoreJobWithLimit scores a job, enforcing the per-cycle LLM circuit breaker.
-// If the circuit breaker has tripped (llmCallsThisCycle >= max), the job is
-// persisted as "unscored" without calling the LLM.
+// scoreJobWithLimit scores a job, enforcing the per-cycle LLM budget
+// (per-account cap AND shared fleet cap via budget). If either counter is
+// exhausted, the job is returned as "unscored" without calling the LLM.
 //
 // Returns a pointer to the ScoreResult so the caller (runCycle) can thread it
 // into maybeNotifyJob for the fit gate and card rendering. Returns nil when
 // outcome is not OutcomeCreated (no scoring performed).
 //
-// llmCallsThisCycle is incremented when the LLM was ATTEMPTED
-// (ScoreResult.LLMResult != ""). This includes parse_fail and llm_error paths
-// so that a proxy-down storm cannot issue unlimited calls (MEDIUM-2).
-// Stale, sub-Jaccard, and nil-profile jobs short-circuit before the LLM
-// (LLMResult=="") and must NOT consume budget.
+// budget.consume() runs when the LLM was ATTEMPTED (ScoreResult.LLMResult !=
+// ""). This includes parse_fail and llm_error paths so that a proxy-down storm
+// cannot issue unlimited calls (MEDIUM-2). Stale, sub-Jaccard, and nil-profile
+// jobs short-circuit before the LLM (LLMResult=="") and must NOT consume budget.
 func scoreJobWithLimit(
 	ctx context.Context,
 	outcome hunt.Outcome,
@@ -617,19 +749,19 @@ func scoreJobWithLimit(
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
 	store jobScoreSetter,
-	llmCallsThisCycle *atomic.Int64,
+	budget *llmBudget,
 ) *hunt.ScoreResult {
 	if outcome != hunt.OutcomeCreated {
 		return nil
 	}
 
 	maxLLM := score.MaxLLMPerCycle(deps.Settings)
-	if llmCallsThisCycle.Load() >= int64(maxLLM) {
+	if budget.exhausted(maxLLM) {
 		// Per-cycle LLM budget exhausted: return unscored result in-memory only.
 		// Do NOT call SetJobScore — persisting scored_at=NOW() would remove
-		// the job from the `scored_at IS NULL` unscored pool, permanently
-		// stranding it without LLM scoring. The sweep (runUnscoredSweep)
-		// will pick it up in the next cycle when budget is available.
+		// the job from the account's unscored pool, permanently stranding it
+		// without LLM scoring. The sweep (runUnscoredSweep) will pick it up in
+		// the next cycle when budget is available.
 		//
 		// Budget exhaustion is NORMAL operation, not degradation — the gauge
 		// must NOT be set. The skipped_budget LLMResult makes these jobs
@@ -640,13 +772,13 @@ func scoreJobWithLimit(
 		return &result
 	}
 
-	// Run the full cascade scorer. Increment the counter when the LLM was
+	// Run the full cascade scorer. Charge the budget when the LLM was
 	// ATTEMPTED (LLMResult != "") — this includes parse_fail and llm_error so
 	// a proxy-down storm cannot issue unlimited calls (MEDIUM-2 fix).
 	// Stale/reject/nil-profile short-circuits have LLMResult=="" and spend zero budget.
 	result := scoreJobIfCreated(ctx, outcome, job, profile, deps, store)
 	if result.LLMResult != "" {
-		llmCallsThisCycle.Add(1)
+		budget.consume()
 	}
 	return &result
 }
@@ -660,9 +792,9 @@ func scoreJobWithLimit(
 // are retried; permanent errors (ErrNotFound — job deleted between UpsertJob
 // and SetJobScore) are not retried. After all retries are exhausted, the
 // failure is logged and a metric is incremented — the job stays in the
-// unscored pool (scored_at IS NULL) for the sweep to retry in the next cycle.
+// account's unscored pool for the sweep to retry in the next cycle.
 // The returned ScoreResult carries LLMCalled so the caller can update the
-// per-cycle circuit-breaker counter only when an actual LLM call occurred.
+// per-cycle budget counters only when an actual LLM call occurred.
 func scoreJobIfCreated(
 	ctx context.Context,
 	outcome hunt.Outcome,
@@ -741,29 +873,31 @@ func observeScore(sr hunt.ScoreResult) {
 	}
 }
 
-// runUnscoredSweep performs the end-of-cycle backfill: scores open jobs that
-// have never been scored (scored_at IS NULL), or all open jobs when
-// HUNT_SCORE_RESCORE_ALL=true is set (one-shot re-score).
+// runUnscoredSweep performs the end-of-cycle backfill FOR ONE ACCOUNT: scores
+// open jobs that have no account_job_scores row for that account
+// (rescore-all under HUNT_SCORE_RESCORE_ALL=true is the one-shot re-score).
 //
-// The sweep shares the per-cycle LLM budget (llmCallsThisCycle) with the
-// ingest path. The fetch is capped at the REMAINING budget to guarantee that
-// budget-starved jobs are never persisted with scored_at=now() before being
-// LLM-scored, which would remove them from the unscored pool permanently
-// (MEDIUM-1). If the budget is already exhausted, the sweep returns early
-// without calling UnscoredOpenJobs.
+// The sweep shares the per-cycle LLM budget (account counter AND fleet
+// counter via budget) with the ingest path. The fetch is capped at the
+// REMAINING budget to guarantee that budget-starved jobs are never persisted
+// with scored_at=now() before being LLM-scored, which would remove them from
+// the account's unscored pool permanently (MEDIUM-1). If the budget is
+// already exhausted, the sweep returns early without calling UnscoredOpenJobs.
 //
 // Jobs processed by the sweep are NOT notified — the sweep is a backfill
 // path for hunt_list/job_match consumption only.
 //
-// sweepLimit is the max unscored-open jobs to backfill per cycle (from DB
-// settings, default 50).
+// sweepLimit is the fleet-global max unscored-open jobs to backfill per cycle
+// (env HUNT_SCORE_SWEEP_LIMIT, default 50). account labels the account's
+// unscored gauges (gojob_hunt_unscored_jobs_*{account}).
 func runUnscoredSweep(
 	ctx context.Context,
 	store unscoredJobStore,
 	profile *score.ScoringProfile,
 	deps score.ScorerDeps,
-	llmCallsThisCycle *atomic.Int64,
+	budget *llmBudget,
 	sweepLimit int,
+	account string,
 ) {
 	rescoreAll := env.MustBool("HUNT_SCORE_RESCORE_ALL", false)
 	if sweepLimit <= 0 {
@@ -771,10 +905,10 @@ func runUnscoredSweep(
 	}
 
 	// MEDIUM-1 budget cap: only fetch as many jobs as there is remaining LLM
-	// budget. Jobs that would exceed the ceiling could end up with
-	// scored_at=now() + FitBand=unscored (via the circuit-breaker inside
-	// scoreJobWithLimit), removing them from the `scored_at IS NULL` pool
-	// permanently without ever being LLM-scored.
+	// budget under BOTH the account sub-cap and the fleet cap. Jobs that would
+	// exceed the ceiling could end up with scored_at=now() + FitBand=unscored
+	// (via the circuit-breaker inside scoreJobWithLimit), removing them from
+	// the account's unscored pool permanently without ever being LLM-scored.
 	//
 	// Note: stale/reject jobs that short-circuit BEFORE the LLM still get
 	// scored legitimately (they don't consume budget); only LLM-needing jobs
@@ -782,7 +916,7 @@ func runUnscoredSweep(
 	// the LLM call count. A larger sweep limit just under-utilizes, never
 	// permanently strands jobs.
 	maxLLM := score.MaxLLMPerCycle(deps.Settings)
-	remaining := maxLLM - int(llmCallsThisCycle.Load())
+	remaining := budget.acctRemaining(maxLLM)
 	if remaining <= 0 {
 		return
 	}
@@ -793,13 +927,14 @@ func runUnscoredSweep(
 
 	jobs, err := store.UnscoredOpenJobs(ctx, fetch, rescoreAll)
 	if err != nil {
-		slog.WarnContext(ctx, "hunt worker: sweep UnscoredOpenJobs failed", slog.Any("error", err))
+		slog.WarnContext(ctx, "hunt worker: sweep UnscoredOpenJobs failed",
+			slog.String("account", account), slog.Any("error", err))
 		return
 	}
 
-	// ESC-2: set unscored-jobs gauges from the sweep result (no extra SQL query).
-	// Aggregate count and oldest first_seen_at in Go from the UnscoredOpenJobs
-	// result (which returns first_seen_at and is ordered ASC by first_seen_at).
+	// ESC-2: set the ACCOUNT's unscored-jobs gauges from the sweep result (no
+	// extra SQL query). Aggregate count and oldest first_seen_at in Go from
+	// the UnscoredOpenJobs result (ordered ASC by first_seen_at).
 	count := float64(len(jobs))
 	var maxAge float64
 	if count > 0 {
@@ -811,8 +946,8 @@ func runUnscoredSweep(
 		}
 		maxAge = time.Since(oldest).Seconds()
 	}
-	engine.SetHuntUnscoredJobsCount(count)
-	engine.SetHuntUnscoredJobsMaxAge(maxAge)
+	engine.SetHuntUnscoredJobsCount(account, count)
+	engine.SetHuntUnscoredJobsMaxAge(account, maxAge)
 
 	if len(jobs) == 0 {
 		return
@@ -820,24 +955,25 @@ func runUnscoredSweep(
 
 	scored := 0
 	for _, j := range jobs {
-		sr := scoreJobWithLimit(ctx, hunt.OutcomeCreated, j, profile, deps, store, llmCallsThisCycle)
+		sr := scoreJobWithLimit(ctx, hunt.OutcomeCreated, j, profile, deps, store, budget)
 		if sr != nil {
 			observeScore(*sr)
 			scored++
 		}
 	}
 	slog.InfoContext(ctx, "hunt worker: sweep complete",
+		slog.String("account", account),
 		slog.Int("swept", len(jobs)),
 		slog.Int("scored", scored),
 	)
 }
 
-// refreshUnscoredGauges updates gojob_hunt_unscored_jobs_count and
-// gojob_hunt_unscored_jobs_max_age_seconds from a lightweight SQL query
-// (COUNT + MIN(first_seen_at), no row fetch). Called by the periodic gauge
-// refresher ticker between hunt cycles so the alert
-// gojob_hunt_unscored_jobs_max_age_seconds > 7200 reflects the LIVE state,
-// not a value frozen at the end of the last 6h cycle.
+// refreshUnscoredGauges updates gojob_hunt_unscored_jobs_count{account} and
+// gojob_hunt_unscored_jobs_max_age_seconds{account} from a lightweight SQL
+// query (COUNT + MIN(first_seen_at), no row fetch). Called by the periodic
+// gauge refresher ticker between hunt cycles so the alert
+// max(gojob_hunt_unscored_jobs_max_age_seconds) > 7200 reflects the LIVE
+// per-account state, not a value frozen at the end of the last 6h cycle.
 //
 // Without this refresher, the gauge is set only inside runUnscoredSweep (once
 // per 6h cycle) and stays frozen between cycles — a pipeline that stalls
@@ -848,7 +984,7 @@ func runUnscoredSweep(
 // No-op if the store doesn't satisfy unscoredJobStatsStore (test fake) or if
 // the query fails (logged at WARN, gauges left at their last value — a query
 // failure is not a pipeline stall).
-func refreshUnscoredGauges(ctx context.Context, store any) {
+func refreshUnscoredGauges(ctx context.Context, store any, account string) {
 	statsStore, ok := store.(unscoredJobStatsStore)
 	if !ok {
 		return
@@ -856,37 +992,35 @@ func refreshUnscoredGauges(ctx context.Context, store any) {
 	stats, err := statsStore.UnscoredOpenJobsStats(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "hunt worker: gauge refresh UnscoredOpenJobsStats failed",
-			slog.Any("error", err))
+			slog.String("account", account), slog.Any("error", err))
 		return
 	}
-	engine.SetHuntUnscoredJobsCount(float64(stats.Count))
-	engine.SetHuntUnscoredJobsMaxAge(stats.OldestAge.Seconds())
+	engine.SetHuntUnscoredJobsCount(account, float64(stats.Count))
+	engine.SetHuntUnscoredJobsMaxAge(account, stats.OldestAge.Seconds())
 }
 
-// StartWorker starts the durable ingest worker in a background goroutine when
-// hunt settings are enabled (DB or env HUNT_INGEST_ENABLED=true) and the store
-// is available.  Noop otherwise.
+// StartWorker starts the durable ingest worker in a background goroutine.
+// The worker derives its account scope itself: every cycle enumerates ACTIVE
+// panel_accounts LEFT JOIN account_hunt_settings (ADR-7) — accounts with no
+// row or enabled=false are skipped; the worker needs no pre-resolved account.
+//
+// HUNT_INGEST_ENABLED=false is the explicit fleet kill-switch; when unset the
+// worker still starts — the per-cycle enumeration decides (zero enabled
+// accounts → cheap no-op cycles, or env-query corpus ingest when
+// HUNT_INGEST_ENABLED=true).
+//
 // Must be called after engine.SetHuntStore.
-// notifier may be nil — if nil, no Telegram notifications are sent by the worker.
-// scoreAccount is the account the worker's score writes and unscored sweep
-// bind to (store.ForAccount). TRANSITIONAL (P2→P3): main resolves the single
-// seeded operator account — scoring today is single-operator by deployment
-// shape. P3 replaces this pin with per-cycle enumeration over active
-// panel_accounts LEFT JOIN account_hunt_settings (plan ADR-7).
-// uuid.Nil keeps ingest running but disables score persistence — a score with
-// no owning account has nowhere to land.
-func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier, scoreAccount uuid.UUID) {
-	// Nil-store first, on the CONCRETE pointer: LoadSettings takes the
-	// huntSettingsStore interface — a nil *hunt.Store would arrive typed-nil,
-	// slip its store==nil guard, and nil-deref inside GetHuntSettings (a
-	// DB-down boot crashed here before the MCP listener ever bound).
+// notifier may be nil — if nil, no Telegram notifications are sent by the
+// worker. A *notify.ProductNotifier is cloned per account (chat id + recency
+// gate from account_hunt_settings); other Notifier impls are reused as-is.
+func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier) {
+	// Nil-store first, on the CONCRETE pointer.
 	if store == nil {
 		slog.Debug("hunt worker: no store — skipping")
 		return
 	}
-	settings := LoadSettings(ctx, store)
-	if !settings.Enabled {
-		slog.Debug("hunt worker: disabled (settings.Enabled=false)")
+	if envEqualFold("HUNT_INGEST_ENABLED", "false") {
+		slog.Debug("hunt worker: disabled (HUNT_INGEST_ENABLED=false)")
 		return
 	}
 	w := NewWorker(store)
@@ -895,10 +1029,11 @@ func StartWorker(ctx context.Context, store *hunt.Store, notifier hunt.Notifier,
 		return
 	}
 	w.SetNotifier(notifier)
-	if scoreAccount != uuid.Nil {
-		w.scores = store.ForAccount(scoreAccount)
-	} else {
-		slog.Warn("hunt worker: no scoring account resolved — score writes, the unscored sweep and its gauges are OFF (P3 wires account enumeration)")
+	w.listAccounts = func(ctx context.Context) ([]accounts.AccountHuntSettings, error) {
+		return accounts.ListAccountHuntSettings(ctx, store.Pool())
+	}
+	w.forAccount = func(aid uuid.UUID) accountScoreStore {
+		return store.ForAccount(aid)
 	}
 	go w.Run(ctx)
 }

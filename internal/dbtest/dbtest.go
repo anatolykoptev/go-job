@@ -82,9 +82,16 @@ func RequireTestDB(tb testingTB, dsn string) string {
 func DropAccountTables(tb testingTB, pool *pgxpool.Pool) {
 	tb.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`DROP TABLE IF EXISTS account_job_scores;
+		`DROP TABLE IF EXISTS account_hunt_settings;
+		 DROP TABLE IF EXISTS account_job_scores;
 		 DROP TABLE IF EXISTS mcp_api_keys;
 		 DROP TABLE IF EXISTS panel_totp_recovery_codes;
+		 -- hunt_ratings survives the account drop (hunt-owned table), but its
+		 -- account_id FK must go first or panel_accounts won't drop.
+		 -- Bootstrap's EnsureHuntRatingsAccountScope re-adds it on the next
+		 -- test, matching the guarded DO block in hunt schema 014.
+		 ALTER TABLE IF EXISTS hunt_ratings
+		   DROP CONSTRAINT IF EXISTS hunt_ratings_account_id_fkey;
 		 DROP TABLE IF EXISTS panel_accounts;`); err != nil {
 		tb.Fatalf("dbtest.DropAccountTables: %v", err)
 	}

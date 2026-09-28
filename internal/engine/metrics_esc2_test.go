@@ -19,24 +19,29 @@ import (
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
 )
 
-// TestFormatMetrics_PretouchesNewGauges verifies the three ESC-2 gauges appear
-// in the FormatMetrics flat-text output at 0 before any sweep/cycle runs.
+// TestFormatMetrics_PretouchesNewGauges verifies the ESC-2 gauges' flat-text
+// contract post-P3: hunt_scoring_degraded stays unlabelled and pre-touched at
+// 0, while the unscored-jobs gauges carry the {account} label — the account
+// set is dynamic (per-cycle enumeration), so they must NOT appear as bare
+// pre-touched series and DO appear once a labelled Set lands.
 func TestFormatMetrics_PretouchesNewGauges(t *testing.T) {
 	orig := reg
 	t.Cleanup(func() { reg = orig })
 	reg = kitmetrics.NewRegistry()
 
 	out := FormatMetrics()
-	for _, name := range []string{
-		MetricHuntUnscoredJobsCount,
-		MetricHuntUnscoredJobsMaxAge,
-		MetricHuntScoringDegraded,
-	} {
-		line := name + " 0"
-		if !strings.Contains(out, line) {
-			t.Errorf("FormatMetrics output must contain %q (pre-touched at 0); got:\n%s", line, out)
+	if !strings.Contains(out, MetricHuntScoringDegraded+" 0") {
+		t.Errorf("FormatMetrics output must contain %q (pre-touched at 0); got:\n%s",
+			MetricHuntScoringDegraded+" 0", out)
+	}
+	for _, name := range []string{MetricHuntUnscoredJobsCount, MetricHuntUnscoredJobsMaxAge} {
+		bare := regexp.MustCompile(`(?m)^` + name + ` [0-9]`)
+		if bare.MatchString(out) {
+			t.Errorf("FormatMetrics must not emit an unlabelled %q series — P3 gauges are {account}-labelled, created on first Set", name)
 		}
 	}
+	// (Labelled series exist only in the Prometheus registry — GaugeSnapshot
+	// coverage lives in the SetHuntUnscoredJobs*_SetsGauge tests below.)
 }
 
 // TestSetHuntScoringDegraded_SetsGauge verifies the gauge is set to 1 for
@@ -78,9 +83,9 @@ func TestSetHuntUnscoredJobsCount_SetsGauge(t *testing.T) {
 	t.Cleanup(func() { reg = orig })
 	reg = kitmetrics.NewRegistry()
 
-	SetHuntUnscoredJobsCount(42)
+	SetHuntUnscoredJobsCount("acct", 42)
 	snap := reg.GaugeSnapshot()
-	if v := snap[MetricHuntUnscoredJobsCount]; v != 42 {
+	if v := snap[MetricHuntUnscoredJobsCount+"{account=acct}"]; v != 42 {
 		t.Errorf("%s = %v, want 42", MetricHuntUnscoredJobsCount, v)
 	}
 }
@@ -91,9 +96,9 @@ func TestSetHuntUnscoredJobsMaxAge_SetsGauge(t *testing.T) {
 	t.Cleanup(func() { reg = orig })
 	reg = kitmetrics.NewRegistry()
 
-	SetHuntUnscoredJobsMaxAge(3600.5)
+	SetHuntUnscoredJobsMaxAge("acct", 3600.5)
 	snap := reg.GaugeSnapshot()
-	if v := snap[MetricHuntUnscoredJobsMaxAge]; v != 3600.5 {
+	if v := snap[MetricHuntUnscoredJobsMaxAge+"{account=acct}"]; v != 3600.5 {
 		t.Errorf("%s = %v, want 3600.5", MetricHuntUnscoredJobsMaxAge, v)
 	}
 }

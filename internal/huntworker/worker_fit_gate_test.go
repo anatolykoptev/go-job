@@ -14,11 +14,11 @@ package huntworker
 //   Remove nil-score notify path → nil-score case does not call notifier, test fails.
 
 import (
-	"context"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/hunt"
 	"github.com/stretchr/testify/assert"
 )
@@ -61,16 +61,12 @@ func freshJob() hunt.Job {
 	}
 }
 
-// newGateWorker builds a Worker with settings loaded from env (no DB store)
-// so notifyMinFit() reads HUNT_NOTIFY_MIN_FIT via LoadSettings.
-func newGateWorker(metrics *fakeMetricSink, notifier *fakeFitNotifier) *Worker {
-	w := &Worker{
-		notifier:     notifier,
-		notifyMetric: metrics.record,
-	}
-	s := LoadSettings(context.Background(), nil)
-	w.settings.Store(&s)
-	return w
+// newGatePlan builds an accountPlan whose NotifyMinFit is env-merged via
+// mergeAccountSettings — the same per-account merge the worker applies per
+// cycle (HUNT_NOTIFY_MIN_FIT is the env fallback for a zero DB value).
+func newGatePlan(notifier *fakeFitNotifier) *accountPlan {
+	s := mergeAccountSettings(accounts.AccountHuntSettings{HasRow: true, Enabled: true})
+	return &accountPlan{settings: s, notifier: notifier}
 }
 
 // Test_Gate_DropsLowFit covers all 4 gate outcomes.
@@ -85,10 +81,10 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := newGateWorker(metrics, notifier)
+		p := newGatePlan(notifier)
 
 		sr := &hunt.ScoreResult{FitScore: 40, FitBand: "medium"}
-		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
+		p.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr, metrics.record)
 
 		assert.Zero(t, notifier.callCount.Load(), "low_fit (40 < 60): notifier must NOT be called")
 		assert.Contains(t, metrics.outcomes, "low_fit", "low_fit must be recorded in metrics")
@@ -99,10 +95,10 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := newGateWorker(metrics, notifier)
+		p := newGatePlan(notifier)
 
 		sr := &hunt.ScoreResult{FitScore: 80, FitBand: "high"}
-		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
+		p.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr, metrics.record)
 
 		assert.Equal(t, int32(1), notifier.callCount.Load(), "fit≥threshold (80≥60): notifier must be called once")
 		assert.Len(t, notifier.scores, 1)
@@ -120,10 +116,10 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := newGateWorker(metrics, notifier)
+		p := newGatePlan(notifier)
 
 		sr := &hunt.ScoreResult{FitBand: "unscored"}
-		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr)
+		p.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, sr, metrics.record)
 
 		assert.Equal(t, int32(1), notifier.callCount.Load(), "unscored (LLM fail): notifier must be called (fail-open dispatch)")
 		// The worker emits NO pre-dispatch metric on the unscored path (the
@@ -137,10 +133,10 @@ func Test_Gate_DropsLowFit(t *testing.T) {
 
 		metrics := &fakeMetricSink{}
 		notifier := &fakeFitNotifier{}
-		w := newGateWorker(metrics, notifier)
+		p := newGatePlan(notifier)
 
 		// nil score = scoring disabled
-		w.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, nil)
+		p.maybeNotifyJob(freshJob(), hunt.OutcomeCreated, nil, metrics.record)
 
 		assert.Equal(t, int32(1), notifier.callCount.Load(), "nil score: notifier must be called (recency-only card)")
 		assert.Len(t, notifier.scores, 1)

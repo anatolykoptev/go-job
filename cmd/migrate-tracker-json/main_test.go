@@ -6,8 +6,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/anatolykoptev/go_job/internal/accounts"
 	"github.com/anatolykoptev/go_job/internal/dbtest"
 	"github.com/anatolykoptev/go_job/internal/hunt"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,10 +41,10 @@ func TestMapStatus(t *testing.T) {
 // Red-on-revert: break parseSalary → min==0, assertions fail.
 func TestParseSalary(t *testing.T) {
 	cases := []struct {
-		comp        string
-		wantMin     int
-		wantMax     int
-		wantCurr    string
+		comp         string
+		wantMin      int
+		wantMax      int
+		wantCurr     string
 		wantInterval string
 	}{
 		{"$190K – $270K • Offers Equity", 190_000, 270_000, "USD", "year"},
@@ -274,8 +276,15 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 	store := hunt.NewStore(pool)
 	require.NoError(t, store.Migrate(ctx))
 
-	const testUser = "test_mig_json"
 	const testSource = "test_mig_json"
+
+	// Explicit account binding — the migration path writes through ForAccount.
+	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
+	require.NoError(t, err, "accounts.Bootstrap")
+	testAccountID, _, err := accounts.CreateAccount(ctx, pool,
+		"mig-json-"+uuid.NewString()[:12]+"@example.com", "mig json test", nil, "user")
+	require.NoError(t, err, "accounts.CreateAccount")
+	acct := store.ForAccount(testAccountID)
 
 	var jobIDs []int64
 	for _, tj := range tf.Jobs {
@@ -299,7 +308,7 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 		stage := mapStatus(tj.Status) // always StageSaved after mapStatus
 		note := buildNote(tj)
 		// StageSaved is a triage-axis value post-012.
-		require.NoError(t, store.Rate(ctx, hunt.KindJob, id, testUser, stage, "", note))
+		require.NoError(t, acct.Rate(ctx, hunt.KindJob, id, stage, "", note))
 	}
 
 	// Assert: hunt_jobs rows have NULL fit_score (migration never writes it).
@@ -317,8 +326,8 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 	for _, id := range jobIDs {
 		var triage string
 		err := pool.QueryRow(ctx,
-			"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND user_name=$2",
-			id, testUser,
+			"SELECT triage FROM hunt_ratings WHERE entry_kind='job' AND entry_id=$1 AND account_id=$2",
+			id, testAccountID,
 		).Scan(&triage)
 		require.NoError(t, err)
 		assert.Equal(t, hunt.StageSaved, triage, "triage must be 'saved' for id=%d", id)
@@ -338,7 +347,7 @@ func TestMigrate_Integration_Idempotent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, hunt.OutcomeMerged, outcome, "second run must merge (not create) entry %d", i)
 
-		require.NoError(t, store.Rate(ctx, hunt.KindJob, jobIDs[i], testUser, hunt.StageSaved, "", ""))
+		require.NoError(t, acct.Rate(ctx, hunt.KindJob, jobIDs[i], hunt.StageSaved, "", ""))
 	}
 
 	// Count: 0 new hunt_jobs rows added on second pass (delta == 0).

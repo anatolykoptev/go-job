@@ -108,7 +108,7 @@ func starToggleHTML(id int64, starred bool, csrfTok string) string {
 // as rateHandler). On success redirects to Referer to preserve filter state.
 // On toggle error redirects to Referer with ?err=star-toggle-failed so the
 // operator stays in the admin UI (no dead-end error page).
-func shortlistHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
+func shortlistHandler(store *hunt.Store, acctOf accountResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawID := r.PathValue("id")
 		id64, err := strconv.ParseInt(rawID, 10, 64)
@@ -119,9 +119,15 @@ func shortlistHandler(store *hunt.Store, adminUser string) http.HandlerFunc {
 
 		// CSRF already verified by MountAction — no verifyCSRF call needed.
 
+		aid, ok := acctOf(r.Context())
+		if !ok {
+			http.Error(w, "account identity required", http.StatusForbidden)
+			return
+		}
+
 		// activePipelineStages: protect advanced pipeline stages from star-off.
 		// softDemotable: triage values a star-off is allowed to clear (StarSoftTriageValues).
-		if _, err := store.ToggleShortlistStar(r.Context(), id64, adminUser, shortlistPipelineValues, hunt.StarSoftTriageValues); err != nil {
+		if _, err := store.ForAccount(aid).ToggleShortlistStar(r.Context(), id64, shortlistPipelineValues, hunt.StarSoftTriageValues); err != nil {
 			slog.Error("shortlistHandler: toggle star", "id", id64, "err", err)
 			// Redirect back with an error param so the operator stays in the admin
 			// UI rather than landing on a dead-end error page.

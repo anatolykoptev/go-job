@@ -223,7 +223,7 @@ func Test_Sweep_ScoresUnscoredOpen(t *testing.T) {
 	}
 
 	var llmCallsThisCycle atomic.Int64
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
+	runUnscoredSweep(context.Background(), store, prof, deps, testBudget(&llmCallsThisCycle), 50, "test_acct")
 
 	assert.Equal(t, int64(1), store.setCount.Load(),
 		"sweep must call SetJobScore once for the unscored open job; RED-on-revert: remove sweep code")
@@ -277,7 +277,7 @@ func Test_Sweep_RespectsCircuitBreaker(t *testing.T) {
 	maxBudget := score.MaxLLMPerCycle(nil) // = 0 from env
 	var llmCallsThisCycle atomic.Int64
 	llmCallsThisCycle.Store(int64(maxBudget)) // budget exhausted
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
+	runUnscoredSweep(context.Background(), store, prof, deps, testBudget(&llmCallsThisCycle), 50, "test_acct")
 
 	assert.Equal(t, int64(0), llmCalls.Load(),
 		"sweep must NOT call LLM when per-cycle budget exhausted")
@@ -317,7 +317,7 @@ func Test_Sweep_SkipsQueryWhenBudgetZero(t *testing.T) {
 	maxLLM := score.MaxLLMPerCycle(nil) // 3 from env
 	var llmCallsThisCycle atomic.Int64
 	llmCallsThisCycle.Store(int64(maxLLM)) // already at ceiling
-	runUnscoredSweep(context.Background(), store, prof, deps, &llmCallsThisCycle, 50)
+	runUnscoredSweep(context.Background(), store, prof, deps, testBudget(&llmCallsThisCycle), 50, "test_acct")
 
 	assert.Equal(t, int64(0), store.setCount.Load(),
 		"sweep must NOT call UnscoredOpenJobs / SetJobScore when remaining budget == 0; "+
@@ -358,7 +358,7 @@ func Test_BudgetCountsAttempts(t *testing.T) {
 	}
 
 	var llmCallsThisCycle atomic.Int64
-	sr := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, store, &llmCallsThisCycle)
+	sr := scoreJobWithLimit(context.Background(), hunt.OutcomeCreated, job, prof, deps, store, testBudget(&llmCallsThisCycle))
 
 	// LLM was attempted (parse_fail) — budget must be consumed.
 	assert.Equal(t, int64(1), llmCallsThisCycle.Load(),
@@ -408,14 +408,14 @@ func Test_RefreshUnscoredGauges_UpdatesGauges(t *testing.T) {
 		},
 	}
 
-	refreshUnscoredGauges(context.Background(), store)
+	refreshUnscoredGauges(context.Background(), store, "test_acct")
 
 	assert.Equal(t, int64(1), store.calls.Load(),
 		"refreshUnscoredGauges must call UnscoredOpenJobsStats once")
 
-	assert.Equal(t, float64(3), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+	assert.Equal(t, float64(3), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount+"{account=test_acct}"),
 		"gauge count must reflect stats.Count")
-	assert.InDelta(t, 14400, engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge), 1,
+	assert.InDelta(t, 14400, engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge+"{account=test_acct}"), 1,
 		"gauge max_age must reflect stats.OldestAge in seconds (4h = 14400s)")
 }
 
@@ -425,18 +425,18 @@ func Test_RefreshUnscoredGauges_ZeroCountSetsZero(t *testing.T) {
 	engine.InitTestRegistry()
 
 	// Pre-set gauges to non-zero to verify they get reset.
-	engine.SetHuntUnscoredJobsCount(42)
-	engine.SetHuntUnscoredJobsMaxAge(9999)
+	engine.SetHuntUnscoredJobsCount("test_acct", 42)
+	engine.SetHuntUnscoredJobsMaxAge("test_acct", 9999)
 
 	store := &fakeUnscoredStatsStore{
 		stats: hunt.UnscoredJobsStats{Count: 0, OldestAge: 0},
 	}
 
-	refreshUnscoredGauges(context.Background(), store)
+	refreshUnscoredGauges(context.Background(), store, "test_acct")
 
-	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount+"{account=test_acct}"),
 		"gauge count must be 0 when no unscored jobs")
-	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge),
+	assert.Equal(t, float64(0), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge+"{account=test_acct}"),
 		"gauge max_age must be 0 when no unscored jobs")
 }
 
@@ -447,20 +447,20 @@ func Test_RefreshUnscoredGauges_ZeroCountSetsZero(t *testing.T) {
 func Test_RefreshUnscoredGauges_QueryErrorDoesNotPanic(t *testing.T) {
 	engine.InitTestRegistry()
 
-	engine.SetHuntUnscoredJobsCount(5)
-	engine.SetHuntUnscoredJobsMaxAge(3000)
+	engine.SetHuntUnscoredJobsCount("test_acct", 5)
+	engine.SetHuntUnscoredJobsMaxAge("test_acct", 3000)
 
 	store := &fakeUnscoredStatsStore{
 		err: assert.AnError,
 	}
 
 	assert.NotPanics(t, func() {
-		refreshUnscoredGauges(context.Background(), store)
+		refreshUnscoredGauges(context.Background(), store, "test_acct")
 	})
 
-	assert.Equal(t, float64(5), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount),
+	assert.Equal(t, float64(5), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsCount+"{account=test_acct}"),
 		"gauge count must be unchanged on query error")
-	assert.Equal(t, float64(3000), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge),
+	assert.Equal(t, float64(3000), engine.GetGaugeValue(engine.MetricHuntUnscoredJobsMaxAge+"{account=test_acct}"),
 		"gauge max_age must be unchanged on query error")
 }
 
@@ -471,6 +471,6 @@ func Test_RefreshUnscoredGauges_NilSafeStore(t *testing.T) {
 	store := &fakeUnscoredStore{} // does NOT implement unscoredJobStatsStore
 
 	assert.NotPanics(t, func() {
-		refreshUnscoredGauges(context.Background(), store)
+		refreshUnscoredGauges(context.Background(), store, "test_acct")
 	})
 }

@@ -143,7 +143,7 @@ func SetNotifyChatID(ctx context.Context, pool *pgxpool.Pool, accountID uuid.UUI
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO account_hunt_settings (account_id, notify_chat_id, enabled)
 		VALUES ($1, $2, false)
-		ON CONFLICT DO NOTHING`,
+		ON CONFLICT (account_id) DO UPDATE SET notify_chat_id = EXCLUDED.notify_chat_id`,
 		accountID, chatID); err != nil {
 		return false, fmt.Errorf("accounts: set notify_chat_id: %w", err)
 	}
