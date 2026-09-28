@@ -31,6 +31,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// normalizeEmail canonicalizes the unique key for panel_accounts rows:
+// case-insensitive + surrounding whitespace ignored, matching the login
+// path (go-panel's verifyPassword lower-trims the form value before
+// GetByEmail). Every write seam MUST normalize so a verbatim-mixed-case
+// row can never become unreachable or duplicate an existing login.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 // CreateAccount inserts a panel_accounts row with an explicitly NULL-able
 // password hash (nil hash → NULL: a key-only account must not satisfy
 // GetByEmail's password_hash IS NOT NULL filter). Email conflict returns
@@ -41,6 +50,7 @@ import (
 // {user,admin} before calling and the panel_accounts_role_check CHECK
 // constraint (Bootstrap) makes anything else unwritable at the DB layer.
 func CreateAccount(ctx context.Context, pool *pgxpool.Pool, email, name string, passwordHash *string, role string) (uuid.UUID, bool, error) {
+	email = normalizeEmail(email)
 	var id uuid.UUID
 	err := pool.QueryRow(ctx, `
 		INSERT INTO panel_accounts (email, name, password_hash, role, active)
@@ -239,6 +249,7 @@ func (k *KeyStore) ActiveKeyIDsByPrefix(ctx context.Context, prefix string) ([]u
 // performs — deliberate divergence from CreateAccount (active=true, role
 // parameterized) which stays the trusted CLI seam.
 func RegisterPending(ctx context.Context, pool *pgxpool.Pool, email, name, passwordHash string) (created bool, err error) {
+	email = normalizeEmail(email)
 	ct, err := pool.Exec(ctx, `
 		INSERT INTO panel_accounts (email, name, password_hash, role, active)
 		VALUES ($1, $2, $3, 'user', false)
@@ -274,7 +285,7 @@ func RegisterPending(ctx context.Context, pool *pgxpool.Pool, email, name, passw
 // normalizes identically itself — defense in depth for any future caller.
 func PendingLoginHint(pool *pgxpool.Pool) func(ctx context.Context, email string) (string, bool) {
 	return func(ctx context.Context, email string) (string, bool) {
-		email = strings.ToLower(strings.TrimSpace(email))
+		email = normalizeEmail(email)
 		var active, hasPassword bool
 		err := pool.QueryRow(ctx,
 			`SELECT active, password_hash IS NOT NULL FROM panel_accounts WHERE email = $1`,

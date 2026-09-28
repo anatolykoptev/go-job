@@ -419,6 +419,11 @@ func seedOperator(ctx context.Context, pool *pgxpool.Pool, store *auth.PgxAccoun
 	if seed.Email == "" || seed.Password == "" {
 		return nil, nil
 	}
+	// Canonicalize at the write seam too — login lower-trims the submitted
+	// email, so a verbatim-mixed-case ADMIN_EMAIL would seed a row its owner
+	// could never log into (and the conflict-path SELECT below must match
+	// the stored form).
+	seed.Email = normalizeEmail(seed.Email)
 	hash, err := auth.HashPassword(seed.Password)
 	if err != nil {
 		return nil, err

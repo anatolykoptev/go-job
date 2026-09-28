@@ -30,10 +30,11 @@ func TestRegisterPending_Shape(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, created)
 
-	var role string
+	var storedEmail, role string
 	var active bool
 	require.NoError(t, pool.QueryRow(ctx,
-		`SELECT role, active FROM panel_accounts WHERE email = 'Pending@T.example'`).Scan(&role, &active))
+		`SELECT email, role, active FROM panel_accounts WHERE email = 'pending@t.example'`).Scan(&storedEmail, &role, &active))
+	assert.Equal(t, "pending@t.example", storedEmail, "email must be stored normalized — login lower-trims, so a verbatim row would be unreachable")
 	assert.Equal(t, "user", role, "register must pin role='user' — a parameter would let the public surface mint an admin")
 	assert.False(t, active, "register must pin active=false — pending approval")
 }
@@ -115,4 +116,36 @@ func TestPendingLoginHint(t *testing.T) {
 	msg, ok = hint(ctx, "live@t.example")
 	assert.False(t, ok)
 	assert.Empty(t, msg)
+}
+
+// TestCreateAccount_NormalizesEmail: every write seam canonicalizes the
+// email — a mixed-case CLI/seed email must store lowercase so the login
+// path (which lower-trims input) and the case-sensitive unique index stay
+// consistent. Covers both accounts.CreateAccount and the seedOperator path.
+func TestCreateAccount_NormalizesEmail(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	dbtest.DropAccountTables(t, pool)
+	acctStore, op, err := accounts.Bootstrap(ctx, pool,
+		accounts.OperatorSeed{Email: "Op.Seed@T.example", Password: "op-pass-12345"})
+	require.NoError(t, err)
+	require.NotNil(t, op)
+
+	var email string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT email FROM panel_accounts WHERE id = $1`, op.ID).Scan(&email))
+	assert.Equal(t, "op.seed@t.example", email, "seeded operator email must be normalized at the write seam")
+
+	hash := "h"
+	id, created, err := accounts.CreateAccount(ctx, pool, "Mixed.Case@T.example", "m", &hash, "user")
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT email FROM panel_accounts WHERE id = $1`, id).Scan(&email))
+	assert.Equal(t, "mixed.case@t.example", email)
+
+	// The normalized row resolves through the login-path lookup.
+	acct, err := acctStore.GetByID(ctx, id.String())
+	require.NoError(t, err)
+	require.NotNil(t, acct)
 }
