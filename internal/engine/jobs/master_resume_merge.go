@@ -42,25 +42,29 @@ var mergeSnapshotMaxRunes = 48000
 // profile is cleared, closing the lost-update window between the LLM call and
 // the commit. A guard error refuses rather than silently building without the
 // baseline (the model would not know what to preserve).
-func mergePrompt(ctx context.Context, rdb *ResumeAccount, resumeTrunc string) (string, string, error) {
-	exists, personID, err := rdb.guardLatestPersonID(ctx)
+// personID returns the id observed by the probe — the plan must bind the
+// baseline to THIS same read, not a second probe that could observe a profile
+// that materialized in between (baseline="" + personID=N would apply with the
+// drift check silently off).
+func mergePrompt(ctx context.Context, rdb *ResumeAccount, resumeTrunc string) (prompt, baseline string, personID int, err error) {
+	exists, pid, err := rdb.guardLatestPersonID(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("master_resume_merge: profile probe failed (refusing): %w", err)
+		return "", "", 0, fmt.Errorf("master_resume_merge: profile probe failed (refusing): %w", err)
 	}
 	if !exists {
-		return "", "", nil
+		return "", "", 0, nil
 	}
-	snap, err := profileSnapshotJSON(ctx, rdb, personID)
+	snap, err := profileSnapshotJSON(ctx, rdb, pid)
 	if err != nil {
-		return "", "", fmt.Errorf("master_resume_merge: profile snapshot: %w", err)
+		return "", "", 0, fmt.Errorf("master_resume_merge: profile snapshot: %w", err)
 	}
 	if n := utf8.RuneCountInString(snap); n > mergeSnapshotMaxRunes {
-		return "", "", fmt.Errorf("master_resume_merge: existing profile too large to merge (%d runes, cap %d) — use Rebuild instead",
+		return "", "", 0, fmt.Errorf("master_resume_merge: existing profile too large to merge (%d runes, cap %d) — use Rebuild instead",
 			n, mergeSnapshotMaxRunes)
 	}
 	return fmt.Sprintf("%s\n\nEXISTING PROFILE JSON:\n%s\n\n%s",
 		masterResumeMergeRules, snap,
-		fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)), snap, nil
+		fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)), snap, pid, nil
 }
 
 // profileSnapshotJSON serializes the full current profile in the same shape

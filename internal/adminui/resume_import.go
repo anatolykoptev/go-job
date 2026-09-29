@@ -14,6 +14,10 @@ package adminui
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
@@ -24,6 +28,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/anatolykoptev/go-panel/csrf"
 	"github.com/anatolykoptev/go-panel/resource"
 	"github.com/anatolykoptev/go-panel/shell"
@@ -33,9 +39,10 @@ import (
 )
 
 const (
-	// resumeImportRateLimit bounds builds per account: one build costs 2 LLM
-	// calls + ~40 sequential embed calls and destroys the existing profile.
-	resumeImportRateLimit  = 3
+	// resumeImportRateLimit bounds plan+apply calls per account: a preview
+	// costs 2 LLM calls, an apply ~40 sequential embed calls — 6/10min covers
+	// two full merge cycles plus slack, while still bounding abuse.
+	resumeImportRateLimit  = 6
 	resumeImportRateWindow = 10 * time.Minute
 	// resumeImportMaxBody covers real .docx/.pdf resumes; the extraction
 	// result feeds a 12k-rune LLM prompt either way.
@@ -49,7 +56,9 @@ const (
 // master_resume.go: capture args + fake results without an LLM.
 var (
 	buildMasterResume = jobs.BuildMasterResume
-	mergeMasterResume = jobs.BuildMergedResume
+	planResumeBuild   = jobs.PlanResumeBuild
+	applyResumePlan   = jobs.ApplyResumePlan
+	diffResumePlan    = jobs.DiffResumePlan
 )
 
 type importView struct {
@@ -117,50 +126,76 @@ func resumeImportPost(p *resource.Panel, acctOf accountResolver, csrfKey []byte,
 		}
 		aid, _ := acctOf(ctx)
 
-		// Input: pasted text XOR an uploaded file.
-		text := strings.TrimSpace(r.FormValue("resume_text"))
-		file, hdr, ferr := r.FormFile("resume_file")
-		hasFile := ferr == nil
-		if ferr != nil && !errors.Is(ferr, http.ErrMissingFile) && !errors.Is(ferr, http.ErrNotMultipart) {
-			render(importView{ErrMsg: "Could not read the uploaded file.", Text: text})
+		// Whitelist the mode before anything dispatches on it — apply carries
+		// the plan in a signed payload, so the text/file gate below is for
+		// merge|rebuild only.
+		mode := r.FormValue("mode")
+		switch mode {
+		case modeMerge, modeApply, "", modeRebuild:
+		default:
+			http.Error(w, "unknown mode", http.StatusBadRequest)
 			return
 		}
-		if text != "" && hasFile {
-			render(importView{ErrMsg: "Provide either pasted text or a file, not both.", Text: text})
-			return
-		}
-		if text == "" && !hasFile {
-			render(importView{ErrMsg: "Paste your resume text or choose a file (.txt, .md, .docx, .pdf)."})
-			return
-		}
-		resumeText := text
+
+		// Input: pasted text XOR an uploaded file — merge/rebuild only.
+		// mode=apply carries the plan in merge_payload; running the file
+		// extraction would just burn IO on bytes that are never read.
+		resumeText := ""
 		fileName := ""
-		if hasFile {
-			defer file.Close()
-			data, err := io.ReadAll(file)
-			if err != nil {
-				render(importView{ErrMsg: "Could not read the uploaded file."})
+		text := ""
+		if mode != modeApply {
+			text = strings.TrimSpace(r.FormValue("resume_text"))
+			file, hdr, ferr := r.FormFile("resume_file")
+			hasFile := ferr == nil
+			if ferr != nil && !errors.Is(ferr, http.ErrMissingFile) && !errors.Is(ferr, http.ErrNotMultipart) {
+				render(importView{ErrMsg: "Could not read the uploaded file.", Text: text})
 				return
 			}
-			resumeText, err = resumeimport.Extract(data)
-			if err != nil {
-				render(importView{ErrMsg: extractErrMsg(err)})
+			if text != "" && hasFile {
+				render(importView{ErrMsg: "Provide either pasted text or a file, not both.", Text: text})
 				return
 			}
-			fileName = hdr.Filename
+			if text == "" && !hasFile {
+				render(importView{ErrMsg: "Paste your resume text or choose a file (.txt, .md, .docx, .pdf)."})
+				return
+			}
+			resumeText = text
+			if hasFile {
+				defer file.Close()
+				data, err := io.ReadAll(file)
+				if err != nil {
+					render(importView{ErrMsg: "Could not read the uploaded file."})
+					return
+				}
+				resumeText, err = resumeimport.Extract(data)
+				if err != nil {
+					render(importView{ErrMsg: extractErrMsg(err)})
+					return
+				}
+				fileName = hdr.Filename
+			}
 		}
 
 		// Destructive consent — fail-closed probe of the existing profile.
-		exists, existingID, gerr := rdb.GetLatestPersonIDChecked(ctx)
-		if gerr != nil {
-			slog.Error("adminui: resume import person probe", "err", gerr)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
+		// merge and apply skip the checkbox: merge only plans (nothing is
+		// destroyed), and apply's consent lives inside the signed payload —
+		// the preview page IS the informed consent.
+		// The person probe feeds only the rebuild/"" consent gate — merge plans
+		// get their own probe inside PlanResumeBuild, and apply's consent rides
+		// inside the signed payload.
 		replaceID, _ := strconv.Atoi(r.FormValue("replace_person_id"))
-		if exists && (existingID != replaceID || r.FormValue("confirm_replace") == "") {
-			render(confirmView(ctx, rdb, existingID, text))
-			return
+		if mode != modeMerge && mode != modeApply {
+			exists, existingID, gerr := rdb.GetLatestPersonIDChecked(ctx)
+			if gerr != nil {
+				slog.Error("adminui: resume import person probe", "err", gerr)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if exists &&
+				(existingID != replaceID || r.FormValue("confirm_replace") == "") {
+				render(confirmView(ctx, rdb, existingID, text))
+				return
+			}
 		}
 
 		allowed, err := limiter.Allow(ctx, "resume-import:"+aid.String(), resumeImportRateLimit, resumeImportRateWindow)
@@ -173,23 +208,17 @@ func resumeImportPost(p *resource.Panel, acctOf accountResolver, csrfKey []byte,
 			return
 		}
 
-		// Whitelist the mode BEFORE the build-start log — an unrecognized mode
-		// must not log a build that never runs.
-		mode := r.FormValue("mode")
-		if mode != "" && mode != "merge" && mode != "rebuild" {
-			http.Error(w, "unknown mode", http.StatusBadRequest)
-			return
-		}
-		slog.Info("adminui: resume import build start",
-			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText), "mode", mode)
 		bctx, cancel := context.WithTimeout(ctx, resumeImportBuildTTL)
 		defer cancel()
-		var res *jobs.MasterResumeBuildResult
-		if mode == "merge" {
-			res, err = mergeMasterResume(bctx, aid, resumeText, replaceID)
-		} else {
-			res, err = buildMasterResume(bctx, aid, resumeText, replaceID)
+
+		if mode == modeMerge || mode == modeApply {
+			handleResumeMerge(bctx, w, r, p, csrfKey, cookieName, aid, mode, resumeText, fileName, render)
+			return
 		}
+
+		slog.Info("adminui: resume import build start",
+			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText), "mode", mode)
+		res, err := buildMasterResume(bctx, aid, resumeText, replaceID)
 		if err != nil {
 			v := importView{ErrMsg: "Build failed: " + truncateErr(err), Text: text}
 			// TOCTOU: the profile id may have changed — surface the fresh id so
@@ -282,8 +311,8 @@ const resumeImportTmplSrc = `<style>
 {{if .PersonID}}
 <div class="kj-warn" role="alert">
   A profile already exists (person #{{.PersonID}}): {{.ExpCount}} experiences, {{.SkillCount}} skills, {{.ProjCount}} projects, {{.AchvCount}} achievements.
-  <strong>Merge</strong> keeps it and folds the new document in — manual edits survive.
-  <strong>Rebuild</strong> destroys it and rebuilds from the new text only.
+  <strong>Preview merge</strong> folds the new document in and shows the exact changes first — manual edits survive.
+  <strong>Rebuild</strong> destroys it and rebuilds from the new text only (requires the checkbox).
 </div>
 {{end}}
 
@@ -301,12 +330,12 @@ const resumeImportTmplSrc = `<style>
     </div>
     {{if .PersonID}}
     <div class="kj-check">
-      <input type="checkbox" id="confirm_replace" name="confirm_replace" value="1" required/>
+      <input type="checkbox" id="confirm_replace" name="confirm_replace" value="1"/>
       <label for="confirm_replace">Apply to the existing profile (#{{.PersonID}})</label>
     </div>
     {{end}}
     {{if .PersonID}}
-    <button type="submit" name="mode" value="merge" class="kj-btn">Merge updates</button>
+    <button type="submit" name="mode" value="merge" class="kj-btn">Preview merge</button>
     <button type="submit" name="mode" value="rebuild" class="kj-btn" style="background:#7f1d1d;color:#fecaca">Rebuild from scratch</button>
     {{else}}
     <button type="submit" class="kj-btn">Build master resume</button>
@@ -428,3 +457,220 @@ func renderResumeImportResult(w http.ResponseWriter, r *http.Request, p *resourc
 		slog.Error("adminui: render resume import result", "err", err)
 	}
 }
+
+// --- merge preview/apply ---
+
+// mergeApplyPayload is the signed state carried between the merge preview
+// render and the apply POST — stateless, tamper-proof, account-bound, expiring.
+type mergeApplyPayload struct {
+	AccountID  string           `json:"a"`
+	ExpiresAt  int64            `json:"e"`
+	HasChanges bool             `json:"c"` // empty-diff previews mint payloads that refuse on apply
+	Plan       *jobs.ResumePlan `json:"plan"`
+}
+
+// Import POST modes — the whitelist also lives in the handler switch.
+const (
+	modeMerge   = "merge"
+	modeApply   = "apply"
+	modeRebuild = "rebuild"
+)
+
+const mergePayloadTTL = 15 * time.Minute
+
+// mergePayloadKey derives a domain-separated subkey from the CSRF key — merge
+// payloads and CSRF tokens then share no HMAC space, so a wire-format change
+// on either side can never bridge them.
+func mergePayloadKey(key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("merge-apply-payload-v1"))
+	return mac.Sum(nil)
+}
+
+func signMergePayload(key []byte, p *mergeApplyPayload) (string, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, mergePayloadKey(key))
+	mac.Write(raw)
+	return base64.RawURLEncoding.EncodeToString(raw) + "." +
+		base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+// verifyMergePayload checks the signature, the TTL, and that the payload was
+// minted for THIS session account — a payload lifted from another user's form
+// cannot apply a plan to a foreign profile.
+func verifyMergePayload(key []byte, tok string, aid uuid.UUID) (*jobs.ResumePlan, error) {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 2 {
+		return nil, errors.New("malformed merge payload")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, errors.New("malformed merge payload")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, errors.New("malformed merge payload")
+	}
+	mac := hmac.New(sha256.New, mergePayloadKey(key))
+	mac.Write(raw)
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		return nil, errors.New("bad merge payload signature")
+	}
+	var p mergeApplyPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, errors.New("malformed merge payload")
+	}
+	if p.AccountID != aid.String() {
+		return nil, errors.New("merge payload belongs to another account")
+	}
+	if time.Now().Unix() > p.ExpiresAt {
+		return nil, errors.New("merge preview expired — run Preview merge again")
+	}
+	if p.Plan == nil {
+		return nil, errors.New("empty merge plan")
+	}
+	if !p.HasChanges {
+		return nil, errors.New("the merge produced no changes — nothing to apply")
+	}
+	return p.Plan, nil
+}
+
+// handleResumeMerge runs the merge sub-flow: "merge" plans and renders the
+// diff preview; "apply" verifies the signed payload and writes atomically.
+func handleResumeMerge(bctx context.Context, w http.ResponseWriter, r *http.Request, p *resource.Panel,
+	csrfKey []byte, cookieName string, aid uuid.UUID, mode, resumeText, fileName string,
+	render func(importView)) {
+
+	if mode == modeMerge {
+		slog.Info("adminui: resume merge plan start",
+			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText))
+		plan, err := planResumeBuild(bctx, aid, resumeText, true)
+		if err != nil {
+			render(importView{ErrMsg: "Merge failed: " + truncateErr(err), Text: resumeText})
+			return
+		}
+		diff, err := diffResumePlan(plan.Baseline, plan)
+		if err != nil {
+			render(importView{ErrMsg: "Diff failed: " + truncateErr(err), Text: resumeText})
+			return
+		}
+		tok, err := signMergePayload(csrfKey, &mergeApplyPayload{
+			AccountID:  aid.String(),
+			ExpiresAt:  time.Now().Add(mergePayloadTTL).Unix(),
+			HasChanges: !diff.Empty,
+			Plan:       plan,
+		})
+		if err != nil {
+			render(importView{ErrMsg: "Could not sign the preview — internal error.", Text: resumeText})
+			return
+		}
+		renderMergePreview(w, r, p, csrf.Issue(csrfKey, sessionValue(r, cookieName), csrf.DefaultTTL), diff, tok, plan.Truncated)
+		return
+	}
+
+	// mode == modeApply
+	plan, err := verifyMergePayload(csrfKey, r.FormValue("merge_payload"), aid)
+	if err != nil {
+		render(importView{ErrMsg: "Merge apply refused: " + truncateErr(err)})
+		return
+	}
+	slog.Info("adminui: resume merge apply start", "account", aid, "person_id", plan.PersonID)
+	res, err := applyResumePlan(bctx, aid, plan, plan.PersonID)
+	if err != nil {
+		msg := "Apply failed: " + truncateErr(err)
+		if strings.Contains(err.Error(), "already exists") ||
+			strings.Contains(err.Error(), "changed since the merge started") ||
+			strings.Contains(err.Error(), "id changed under the rebuild lock") {
+			msg += " — the profile changed after the preview; run Preview merge again."
+		}
+		render(importView{ErrMsg: msg})
+		return
+	}
+	slog.Info("adminui: resume merge applied",
+		"account", aid, "person_id", res.PersonID, "vectors", res.VectorsStored,
+		"graph_nodes", res.GraphNodes)
+	renderResumeImportResult(w, r, p, res)
+}
+
+// renderMergePreview renders the diff page between the current profile and
+// the merge candidate.
+func renderMergePreview(w http.ResponseWriter, r *http.Request, p *resource.Panel, csrfToken string, diff *jobs.ResumeDiff, payload string, truncated bool) {
+	var sb strings.Builder
+	sb.WriteString(`<div class="page-header"><h2>&#x1F50D; Merge Preview</h2>
+<p class="kj-muted">The proposed merge — nothing is written until you apply.</p></div>`)
+	if truncated {
+		sb.WriteString(`<div class="kj-warn" role="alert">The resume text was truncated before parsing — review carefully.</div>`)
+	}
+	if diff.Empty {
+		sb.WriteString(`<div class="kj-section"><p class="kj-muted">No changes — the document adds nothing new to the current profile.</p></div>`)
+	} else {
+		if len(diff.Person) > 0 {
+			sb.WriteString(`<div class="kj-section"><h3>Profile</h3>`)
+			writeFieldChanges(&sb, diff.Person)
+			sb.WriteString(`</div>`)
+		}
+		for _, s := range diff.Sections {
+			if len(s.Added)+len(s.Removed)+len(s.Changed) == 0 {
+				continue
+			}
+			sb.WriteString(`<div class="kj-section"><h3>` + htmlEsc(s.Name) + `</h3>`)
+			for _, e := range s.Added {
+				sb.WriteString(`<div class="kj-diff kj-add">+ ` + htmlEsc(e.Label) + `</div>`)
+			}
+			for _, e := range s.Removed {
+				sb.WriteString(`<div class="kj-diff kj-del">&minus; ` + htmlEsc(e.Label) + `</div>`)
+			}
+			for _, e := range s.Changed {
+				sb.WriteString(`<div class="kj-diff kj-chg">~ ` + htmlEsc(e.Label) + `</div>`)
+				writeFieldChanges(&sb, e.Changes)
+			}
+			sb.WriteString(`</div>`)
+		}
+	}
+	sb.WriteString(`<div class="kj-section"><form method="POST" action="` + htmlEsc(r.URL.Path) + `">`)
+	sb.WriteString(`<input type="hidden" name="_csrf" value="` + htmlEsc(csrfToken) + `"/>`)
+	sb.WriteString(`<input type="hidden" name="merge_payload" value="` + htmlEsc(payload) + `"/>`)
+	sb.WriteString(`<input type="hidden" name="mode" value="apply"/>`)
+	if !diff.Empty {
+		sb.WriteString(`<button type="submit" class="kj-btn">Apply merge</button> `)
+	}
+	sb.WriteString(`<a class="kj-btn" style="background:var(--bg-deep,#0f172a);color:var(--text-secondary,#94a3b8)" href="` + htmlEsc(r.URL.Path) + `">Cancel</a>`)
+	sb.WriteString(`</form></div>`)
+	body := previewStyles + sb.String()
+	if err := p.RenderPageHTML(w, r, "Merge Preview", "resume", body); err != nil {
+		slog.Error("adminui: render merge preview", "err", err)
+	}
+}
+
+const previewStyles = `<style>
+  .kj-section{background:var(--bg-surface,#1e293b);border:1px solid var(--border,#334155);border-radius:var(--radius-lg,.75rem);padding:1.25rem 1.5rem;margin-bottom:1.25rem}
+  .kj-muted{color:var(--text-secondary,#94a3b8);font-size:.875rem;line-height:1.55}
+  .kj-warn{margin-bottom:1rem;padding:.75rem;border-radius:.375rem;background:rgba(234,179,8,.10);border:1px solid rgba(234,179,8,.35);color:#fde68a;font-size:.8125rem}
+  .kj-diff{font-size:.875rem;padding:.2rem .4rem;border-radius:.25rem;margin:.15rem 0}
+  .kj-add{color:#86efac}
+  .kj-del{color:#fca5a5;text-decoration:line-through}
+  .kj-chg{color:#fde68a}
+  .kj-field-diff{font-size:.8rem;color:var(--text-secondary,#94a3b8);margin-left:1.5rem}
+  .kj-old{color:#fca5a5}
+  .kj-new{color:#86efac}
+  .kj-btn{display:inline-block;padding:.4rem .9rem;border-radius:.375rem;font-size:.8125rem;cursor:pointer;border:none;background:var(--accent,#3b82f6);color:#0f172a;font-weight:600;text-decoration:none}
+</style>`
+
+func writeFieldChanges(sb *strings.Builder, ch []jobs.FieldChange) {
+	for _, c := range ch {
+		old := c.Old
+		if old == "" {
+			old = "—"
+		}
+		nv := c.New
+		if nv == "" {
+			nv = "—"
+		}
+		sb.WriteString(`<div class="kj-field-diff">` + htmlEsc(c.Field) + `: <span class="kj-old">` + htmlEsc(old) + `</span> → <span class="kj-new">` + htmlEsc(nv) + `</span></div>`)
+	}
+}
+
+func htmlEsc(s string) string { return template.HTMLEscapeString(s) }

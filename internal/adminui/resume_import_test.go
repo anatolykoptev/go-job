@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -287,37 +288,23 @@ func TestResumeImport_TenantScope(t *testing.T) {
 	require.Equal(t, userID, (*calls)[0].aid)
 }
 
-// stubMerge swaps the merge seam for a recorder — same pattern as stubBuild.
-func stubMerge(t *testing.T, res *jobs.MasterResumeBuildResult, err error) *[]buildCall {
-	t.Helper()
-	calls := new([]buildCall)
-	prev := mergeMasterResume
-	mergeMasterResume = func(ctx context.Context, aid uuid.UUID, text string, pid int) (*jobs.MasterResumeBuildResult, error) {
-		*calls = append(*calls, buildCall{aid, text, pid})
-		return res, err
-	}
-	t.Cleanup(func() { mergeMasterResume = prev })
-	return calls
-}
-
-// TestResumeImport_MergeMode — mode=merge routes to the merge seam (never the
-// destructive build seam), still under the same consent + session identity.
+// TestResumeImport_MergeMode — mode=merge routes to the PLAN seam and renders
+// the preview (never the destructive build seam, never an immediate write);
+// rebuild still routes to the build seam under consent; unknown mode → 400.
 func TestResumeImport_MergeMode(t *testing.T) {
 	fx := newSelfServeFixture(t)
 	wireResumeDB(t)
-	mergeCalls := stubMerge(t, &jobs.MasterResumeBuildResult{PersonID: 7}, nil)
+	planCalls := stubPlan(t, &jobs.ResumePlan{PersonID: 7, Baseline: "{}"}, nil)
 	buildCalls := stubBuild(t, &jobs.MasterResumeBuildResult{PersonID: 7}, nil)
 	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
 
 	pid := seedPerson(t, uuid.MustParse(fx.op.ID))
 
 	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
-		url.Values{"resume_text": {"Jane Doe updated"}, "mode": {"merge"},
-			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
+		url.Values{"resume_text": {"Jane Doe updated"}, "mode": {"merge"}})
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Len(t, *mergeCalls, 1)
-	require.Equal(t, pid, (*mergeCalls)[0].pid)
-	require.Equal(t, uuid.MustParse(fx.op.ID), (*mergeCalls)[0].aid)
+	require.Len(t, *planCalls, 1)
+	require.Equal(t, uuid.MustParse(fx.op.ID), (*planCalls)[0].aid)
 	require.Empty(t, *buildCalls)
 
 	// mode=rebuild (or absent) still routes to the destructive seam
@@ -326,19 +313,179 @@ func TestResumeImport_MergeMode(t *testing.T) {
 			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, *buildCalls, 1)
-	require.Len(t, *mergeCalls, 1) // unchanged
-
-	// merge without consent → confirm page, no seam call
-	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
-		url.Values{"resume_text": {"Jane"}, "mode": {"merge"}})
-	require.Contains(t, w.Body.String(), "already exists")
-	require.Len(t, *mergeCalls, 1)
+	require.Len(t, *planCalls, 1) // unchanged
 
 	// unknown mode → 400, neither seam fires
 	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
 		url.Values{"resume_text": {"Jane"}, "mode": {"bogus"},
 			"replace_person_id": {strconv.Itoa(pid)}, "confirm_replace": {"1"}})
 	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Len(t, *mergeCalls, 1)
+	require.Len(t, *planCalls, 1)
 	require.Len(t, *buildCalls, 1)
+}
+
+// --- merge preview/apply ---
+
+type planCall struct {
+	aid   uuid.UUID
+	text  string
+	merge bool
+}
+
+func stubPlan(t *testing.T, res *jobs.ResumePlan, err error) *[]planCall {
+	t.Helper()
+	calls := new([]planCall)
+	prev := planResumeBuild
+	planResumeBuild = func(ctx context.Context, aid uuid.UUID, text string, merge bool) (*jobs.ResumePlan, error) {
+		*calls = append(*calls, planCall{aid, text, merge})
+		return res, err
+	}
+	t.Cleanup(func() { planResumeBuild = prev })
+	return calls
+}
+
+type applyCall struct {
+	aid  uuid.UUID
+	plan *jobs.ResumePlan
+	pid  int
+}
+
+func stubApply(t *testing.T, res *jobs.MasterResumeBuildResult, err error) *[]applyCall {
+	t.Helper()
+	calls := new([]applyCall)
+	prev := applyResumePlan
+	applyResumePlan = func(ctx context.Context, aid uuid.UUID, plan *jobs.ResumePlan, pid int) (*jobs.MasterResumeBuildResult, error) {
+		*calls = append(*calls, applyCall{aid, plan, pid})
+		return res, err
+	}
+	t.Cleanup(func() { applyResumePlan = prev })
+	return calls
+}
+
+// mode=merge plans and renders the diff — no consent checkbox needed (the
+// preview destroys nothing), no write seam fires.
+func TestResumeImport_MergePreview(t *testing.T) {
+	fx := newSelfServeFixture(t)
+	wireResumeDB(t)
+	planCalls := stubPlan(t, &jobs.ResumePlan{
+		PersonID: 1,
+		Baseline: `{"person":{"name":"Old Name"},"skills":[{"name":"OldSkill","category":"","level":""}]}`,
+	}, nil)
+	applyCalls := stubApply(t, nil, nil)
+	buildCalls := stubBuild(t, nil, nil)
+	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
+
+	seedPerson(t, uuid.MustParse(fx.op.ID))
+
+	// No confirm_replace — preview requires no consent.
+	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"resume_text": {"Jane updated resume"}, "mode": {"merge"}})
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, *planCalls, 1)
+	require.True(t, (*planCalls)[0].merge)
+	require.Empty(t, *applyCalls)
+	require.Empty(t, *buildCalls)
+	body := w.Body.String()
+	require.Contains(t, body, "Apply merge")
+	require.Contains(t, body, "merge_payload")
+	// The stub plan differs from the baseline → the diff surfaces removals.
+	require.Contains(t, body, "OldSkill")
+}
+
+// mode=apply verifies the signed payload and calls the write seam with the
+// plan's own person id as the consent.
+func TestResumeImport_MergeApply(t *testing.T) {
+	fx := newSelfServeFixture(t)
+	wireResumeDB(t)
+	applyCalls := stubApply(t, &jobs.MasterResumeBuildResult{PersonID: 9}, nil)
+	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
+	aid := uuid.MustParse(fx.op.ID)
+	seedPerson(t, aid)
+
+	tok, err := signMergePayload([]byte(fx.csrfKey), &mergeApplyPayload{
+		AccountID: aid.String(), HasChanges: true,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		Plan:      &jobs.ResumePlan{PersonID: 5, Baseline: "{}"},
+	})
+	require.NoError(t, err)
+
+	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"mode": {"apply"}, "merge_payload": {tok}})
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, *applyCalls, 1)
+	require.Equal(t, aid, (*applyCalls)[0].aid)
+	require.Equal(t, 5, (*applyCalls)[0].pid)
+}
+
+// Tampered / foreign / expired payloads are all refused without a write.
+func TestResumeImport_MergeApplyPayloadGuards(t *testing.T) {
+	fx := newSelfServeFixture(t)
+	wireResumeDB(t)
+	applyCalls := stubApply(t, &jobs.MasterResumeBuildResult{}, nil)
+	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
+	aid := uuid.MustParse(fx.op.ID)
+
+	good := func() string {
+		tok, err := signMergePayload([]byte(fx.csrfKey), &mergeApplyPayload{
+			AccountID: aid.String(), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+			HasChanges: true, Plan: &jobs.ResumePlan{PersonID: 5},
+		})
+		require.NoError(t, err)
+		return tok
+	}
+
+	// tampered signature — flip the last sig char
+	bad := good()
+	c := bad[len(bad)-1]
+	flip := "A"
+	if c == 'A' {
+		flip = "B"
+	}
+	bad = bad[:len(bad)-1] + flip
+	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"mode": {"apply"}, "merge_payload": {bad}})
+	require.Contains(t, w.Body.String(), "refused")
+	require.Empty(t, *applyCalls)
+
+	// foreign account id inside a validly-signed payload
+	other, err := signMergePayload([]byte(fx.csrfKey), &mergeApplyPayload{
+		AccountID: uuid.NewString(), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		HasChanges: true, Plan: &jobs.ResumePlan{PersonID: 5},
+	})
+	require.NoError(t, err)
+	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"mode": {"apply"}, "merge_payload": {other}})
+	require.Contains(t, w.Body.String(), "refused")
+	require.Empty(t, *applyCalls)
+
+	// expired
+	exp, err := signMergePayload([]byte(fx.csrfKey), &mergeApplyPayload{
+		AccountID: aid.String(), ExpiresAt: time.Now().Add(-time.Minute).Unix(),
+		HasChanges: true, Plan: &jobs.ResumePlan{PersonID: 5},
+	})
+	require.NoError(t, err)
+	w = selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"mode": {"apply"}, "merge_payload": {exp}})
+	require.Contains(t, w.Body.String(), "refused")
+	require.Empty(t, *applyCalls)
+}
+
+// A payload minted for an empty diff (HasChanges=false) must refuse on apply —
+// otherwise a crafted form would run a full wipe+rewrite for nothing.
+func TestResumeImport_MergeApplyNoopRefused(t *testing.T) {
+	fx := newSelfServeFixture(t)
+	wireResumeDB(t)
+	applyCalls := stubApply(t, &jobs.MasterResumeBuildResult{}, nil)
+	cookies := selfServeLogin(t, fx.handler, "admin-selfserve@t.example", "admin-pass-12345")
+	aid := uuid.MustParse(fx.op.ID)
+
+	tok, err := signMergePayload([]byte(fx.csrfKey), &mergeApplyPayload{
+		AccountID: aid.String(), ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		HasChanges: false, Plan: &jobs.ResumePlan{PersonID: 5},
+	})
+	require.NoError(t, err)
+	w := selfServePost(t, fx.handler, cookies, fx.csrfKey, adminBasePath+"/resume/import",
+		url.Values{"mode": {"apply"}, "merge_payload": {tok}})
+	require.Contains(t, w.Body.String(), "refused")
+	require.Empty(t, *applyCalls)
 }
