@@ -173,19 +173,22 @@ func resumeImportPost(p *resource.Panel, acctOf accountResolver, csrfKey []byte,
 			return
 		}
 
+		// Whitelist the mode BEFORE the build-start log — an unrecognized mode
+		// must not log a build that never runs.
+		mode := r.FormValue("mode")
+		if mode != "" && mode != "merge" && mode != "rebuild" {
+			http.Error(w, "unknown mode", http.StatusBadRequest)
+			return
+		}
 		slog.Info("adminui: resume import build start",
-			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText))
+			"account", aid, "file", fileName, "runes", utf8.RuneCountInString(resumeText), "mode", mode)
 		bctx, cancel := context.WithTimeout(ctx, resumeImportBuildTTL)
 		defer cancel()
 		var res *jobs.MasterResumeBuildResult
-		switch mode := r.FormValue("mode"); mode {
-		case "merge":
+		if mode == "merge" {
 			res, err = mergeMasterResume(bctx, aid, resumeText, replaceID)
-		case "", "rebuild":
+		} else {
 			res, err = buildMasterResume(bctx, aid, resumeText, replaceID)
-		default:
-			http.Error(w, "unknown mode", http.StatusBadRequest)
-			return
 		}
 		if err != nil {
 			v := importView{ErrMsg: "Build failed: " + truncateErr(err), Text: text}
