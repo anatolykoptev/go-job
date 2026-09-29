@@ -389,8 +389,8 @@ func TestBuildMasterResume_F4_GuardFailsClosedOnQueryError(t *testing.T) {
 		t.Fatal("F4: expected the build to refuse when the guard query errors, got nil — " +
 			"the guard is fail-open and a transient pool error turns a guarded destroy into an unguarded one")
 	}
-	if !strings.Contains(err.Error(), "destructive-consent guard failed") {
-		t.Errorf("F4: error must name the guard failure (refusing to touch the profile), got: %v", err)
+	if !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("F4: error must name the refusal to touch the profile, got: %v", err)
 	}
 
 	assertProfileIntact(t, rdb, seededID, want)

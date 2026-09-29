@@ -352,3 +352,99 @@ func TestProfileSnapshotJSON_OrphanDeterministic(t *testing.T) {
 		t.Fatal("orphan sub-projects vanished from the snapshot")
 	}
 }
+
+// PlanResumeBuild is read-only: it produces the candidate without touching
+// the profile — the write only happens through ApplyResumePlan.
+func TestPlanResumeBuild_NoWrite(t *testing.T) {
+	_, rdb := testResumeDBClean(t)
+	seededID, _ := seedFullProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
+	withStubbedLLM(t)
+
+	plan, err := PlanResumeBuild(context.Background(), rdb.AccountID(), "new resume text", true)
+	if err != nil {
+		t.Fatalf("PlanResumeBuild: %v", err)
+	}
+	if plan == nil || plan.Baseline == "" || plan.PersonID != seededID {
+		t.Fatalf("plan lacks baseline/person: %+v", plan)
+	}
+	assertProfileIntact(t, rdb, seededID, want)
+}
+
+// The stub LLM ignores the baseline, so the merge candidate is the canned
+// parse — enrichment must be carried through the plan into the write.
+func TestApplyResumePlan_WritesAndPreserves(t *testing.T) {
+	_, rdb := testResumeDBClean(t)
+	seededID, _ := seedFullProfile(t, rdb)
+	withStubbedLLM(t)
+
+	plan, err := PlanResumeBuild(context.Background(), rdb.AccountID(), "new text", true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	res, err := ApplyResumePlan(context.Background(), rdb.AccountID(), plan, plan.PersonID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.PersonID == seededID {
+		t.Fatal("expected a fresh person id")
+	}
+	p, err := rdb.GetPerson(context.Background(), res.PersonID)
+	if err != nil || p.Name != "Rebuilt Person" {
+		t.Fatalf("apply did not write parsed person: %+v err=%v", p, err)
+	}
+	if p.Headline != "Seeded Headline" || p.HourlyRateCents != 15000 {
+		t.Fatal("apply lost preserved person fields")
+	}
+	up, err := rdb.GetUpworkProfile(context.Background(), res.PersonID)
+	if err != nil || up.Missing || up.Profile.Title != "Up Title" {
+		t.Fatal("apply lost upwork profile")
+	}
+}
+
+// A profile edit landing BETWEEN plan and apply must refuse the write — the
+// plan was computed against a baseline that no longer matches.
+func TestApplyResumePlan_DriftRefuses(t *testing.T) {
+	_, rdb := testResumeDBClean(t)
+	seededID := seedProfile(t, rdb)
+	want := snapshotProfile(t, rdb, seededID)
+	withStubbedLLM(t)
+
+	plan, err := PlanResumeBuild(context.Background(), rdb.AccountID(), "new text", true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, err := rdb.InsertSkill(context.Background(), seededID, SkillRecord{Name: "BetweenPlanAndApply"}); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	_, err = ApplyResumePlan(context.Background(), rdb.AccountID(), plan, plan.PersonID)
+	if err == nil || !strings.Contains(err.Error(), "changed since the merge started") {
+		t.Fatalf("expected drift refusal, got %v", err)
+	}
+	// Only the "concurrent" skill was added — the profile is otherwise intact.
+	got := snapshotProfile(t, rdb, seededID)
+	if got.personCount != want.personCount || got.skills != want.skills+1 {
+		t.Fatalf("profile mangled by refused apply: %+v vs %+v", got, want)
+	}
+}
+
+// A plan built when no profile existed applies as a fresh build; if a profile
+// appeared meanwhile, consent must refuse it (the plan's person id was 0).
+func TestApplyResumePlan_ProfileAppeared(t *testing.T) {
+	_, rdb := testResumeDBClean(t)
+	withStubbedLLM(t)
+
+	plan, err := PlanResumeBuild(context.Background(), rdb.AccountID(), "text", true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.PersonID != 0 {
+		t.Fatalf("plan on empty profile: person %d", plan.PersonID)
+	}
+	// A profile materializes between preview and apply.
+	seedProfile(t, rdb)
+	_, err = ApplyResumePlan(context.Background(), rdb.AccountID(), plan, plan.PersonID)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected consent refusal for new profile, got %v", err)
+	}
+}

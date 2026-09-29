@@ -338,7 +338,31 @@ func BuildMergedResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	return buildMasterResume(ctx, accountID, resumeText, replacePersonID, true)
 }
 
-func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int, merge bool) (*MasterResumeBuildResult, error) { //nolint:funlen
+func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText string, replacePersonID int, merge bool) (*MasterResumeBuildResult, error) {
+	plan, err := PlanResumeBuild(ctx, accountID, resumeText, merge)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyResumePlan(ctx, accountID, plan, replacePersonID)
+}
+
+// ResumePlan is the parsed + enriched candidate produced by PlanResumeBuild —
+// everything ApplyResumePlan needs to write the profile without another LLM
+// round-trip. It is the intermediate state the merge-preview flow holds
+// between "see the diff" and "apply".
+type ResumePlan struct {
+	Parsed             parsedResume     `json:"parsed"`
+	Enrichment         enrichmentResult `json:"enrichment"`
+	Baseline           string           `json:"baseline,omitempty"` // merge: profile JSON at plan time
+	PersonID           int              `json:"person_id"`          // profile the plan was built against (0 = none)
+	Truncated          bool             `json:"truncated,omitempty"`
+	TruncatedFromRunes int              `json:"truncated_from_runes,omitempty"`
+}
+
+// PlanResumeBuild runs the read-only half of a master-resume build: prompt,
+// parse, enrichment. No consent check, no transaction, nothing written — a
+// plan only becomes a write through ApplyResumePlan.
+func PlanResumeBuild(ctx context.Context, accountID uuid.UUID, resumeText string, merge bool) (*ResumePlan, error) {
 	db := GetResumeDB()
 	if db == nil {
 		return nil, errors.New("resume database not configured (set DATABASE_URL)")
@@ -359,14 +383,16 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	}
 	prompt := fmt.Sprintf(masterResumeParsePrompt, resumeTrunc)
 	var mergeBaseline string
+	planPersonID := 0
 	if merge {
-		mp, bl, err := mergePrompt(ctx, rdb, resumeTrunc)
+		mp, bl, pid, err := mergePrompt(ctx, rdb, resumeTrunc)
 		if err != nil {
 			return nil, err
 		}
 		if mp != "" {
 			prompt = mp
 			mergeBaseline = bl
+			planPersonID = pid
 		}
 	}
 
@@ -412,6 +438,39 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("master_resume_build: caller deadline exceeded before write phase: %w", err)
 	}
+
+	return &ResumePlan{
+		Parsed:             parsed,
+		Enrichment:         enrichment,
+		Baseline:           mergeBaseline,
+		PersonID:           planPersonID,
+		Truncated:          isTruncated,
+		TruncatedFromRunes: origLen,
+	}, nil
+}
+
+// ApplyResumePlan writes a plan produced by PlanResumeBuild through the same
+// atomic replace path: consent guard (pre-tx AND in-tx under the advisory
+// lock), merge drift check against the plan baseline, preserved-state
+// capture/restore, clear + insert + vectors + graph — one transaction.
+func ApplyResumePlan(ctx context.Context, accountID uuid.UUID, plan *ResumePlan, replacePersonID int) (*MasterResumeBuildResult, error) { //nolint:funlen
+	db := GetResumeDB()
+	if db == nil {
+		return nil, errors.New("resume database not configured (set DATABASE_URL)")
+	}
+	if accountID == uuid.Nil {
+		return nil, ErrNoAccountScope
+	}
+	if plan == nil {
+		return nil, errors.New("master_resume_build: nil plan")
+	}
+	rdb := db.ForAccount(accountID)
+	parsed := plan.Parsed
+	enrichment := plan.Enrichment
+	mergeBaseline := plan.Baseline
+	isTruncated := plan.Truncated
+	origLen := plan.TruncatedFromRunes
+	merge := mergeBaseline != ""
 
 	// 4. Explicit, non-replayable destructive consent (pre-tx early refuse).
 	// A profile already exists and the caller did not name its id in
@@ -561,8 +620,10 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	// Track skill name → skill ID for graph edges
 	skillIDs := make(map[string]int)
 
-	// Track experience company → expID for enrichment linking
+	// Track experience company → expID for enrichment linking; expCompanyOrder
+	// keeps insertion order so the partial-match pass below is deterministic.
 	expByCompany := make(map[string]int)
+	var expCompanyOrder []string
 
 	// 5. Insert standalone skills (both explicit and implicit from parse)
 	for _, s := range parsed.Skills {
@@ -581,7 +642,7 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 			slog.Debug("insert skill failed", slog.String("name", s.Name), slog.Any("error", err))
 			continue
 		}
-		skillIDs[strings.ToLower(s.Name)] = sid
+		skillIDs[strings.ToLower(strings.TrimSpace(s.Name))] = sid
 		result.Skills++
 		if s.IsImplicit {
 			result.ImplicitSkills++
@@ -604,7 +665,12 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 			continue
 		}
 		result.Experiences++
-		expByCompany[strings.ToLower(exp.Company)] = expID
+		if c := strings.ToLower(strings.TrimSpace(exp.Company)); c != "" {
+			if _, dup := expByCompany[c]; !dup {
+				expCompanyOrder = append(expCompanyOrder, c)
+			}
+			expByCompany[c] = expID
+		}
 
 		// Update extended metadata
 		if exp.Domain != "" || exp.TeamSize != nil || exp.BudgetUSD != nil || exp.IsVolunteer {
@@ -786,10 +852,14 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	// 11. Insert domains (from parse + enrichment)
 	allDomains := make(map[string]bool)
 	for _, d := range parsed.Domains {
-		allDomains[d] = true
+		if d = strings.TrimSpace(d); d != "" {
+			allDomains[d] = true
+		}
 	}
 	for _, d := range enrichment.Domains {
-		allDomains[d] = true
+		if d = strings.TrimSpace(d); d != "" {
+			allDomains[d] = true
+		}
 	}
 	for d := range allDomains {
 		domID, err := rdb.InsertDomain(ctx, personID, d)
@@ -804,11 +874,15 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 	// 12. Insert methodologies (from parse + enrichment)
 	allMethods := make(map[string]string) // name → description
 	for _, m := range parsed.Methodologies {
-		allMethods[m.Name] = m.Description
+		if n := strings.TrimSpace(m.Name); n != "" {
+			allMethods[n] = m.Description
+		}
 	}
 	for _, m := range enrichment.Methodologies {
-		if _, exists := allMethods[m.Name]; !exists {
-			allMethods[m.Name] = m.Description
+		if n := strings.TrimSpace(m.Name); n != "" {
+			if _, exists := allMethods[n]; !exists {
+				allMethods[n] = m.Description
+			}
 		}
 	}
 	for name, desc := range allMethods {
@@ -823,7 +897,7 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 
 	// 13. Apply enrichment: implicit skills
 	for _, is := range enrichment.ImplicitSkills {
-		if _, exists := skillIDs[strings.ToLower(is.Name)]; exists {
+		if _, exists := skillIDs[strings.ToLower(strings.TrimSpace(is.Name))]; exists {
 			continue // already have this skill
 		}
 		sid := ensureSkill(ctx, rdb, personID, is.Name, is.Category, is.Level, true, "inferred", skillIDs, result)
@@ -840,7 +914,7 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 
 	// 14. Apply enrichment: sub-projects
 	for _, sp := range enrichment.SubProjects {
-		parentExpID := findExperienceByHint(expByCompany, sp.ParentExperience)
+		parentExpID := findExperienceByHint(expByCompany, expCompanyOrder, sp.ParentExperience)
 		var parentPtr *int
 		if parentExpID > 0 {
 			parentPtr = &parentExpID
@@ -882,7 +956,7 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 
 	// 15. Apply enrichment: skill adjacencies (IMPLIES_SKILL edges)
 	for _, adj := range enrichment.SkillAdjacencies {
-		fromID, ok := skillIDs[strings.ToLower(adj.From)]
+		fromID, ok := skillIDs[strings.ToLower(strings.TrimSpace(adj.From))]
 		if !ok {
 			continue
 		}
@@ -895,8 +969,8 @@ func buildMasterResume(ctx context.Context, accountID uuid.UUID, resumeText stri
 
 	// 16. Apply enrichment: career trajectory (EVOLVED_TO edges)
 	for _, ct := range enrichment.CareerTrajectory {
-		fromExpID := findExperienceByHint(expByCompany, ct.From)
-		toExpID := findExperienceByHint(expByCompany, ct.To)
+		fromExpID := findExperienceByHint(expByCompany, expCompanyOrder, ct.From)
+		toExpID := findExperienceByHint(expByCompany, expCompanyOrder, ct.To)
 		if fromExpID > 0 && toExpID > 0 {
 			graphBuf.addEdge("Exp", fromExpID, "EVOLVED_TO", "Exp", toExpID)
 		}
@@ -1024,7 +1098,10 @@ func describeExistingProfile(ctx context.Context, rdb *ResumeAccount, personID i
 
 // ensureSkill inserts or retrieves a skill, updating the tracking map and result counter.
 func ensureSkill(ctx context.Context, rdb *ResumeAccount, personID int, name, category, level string, isImplicit bool, source string, skillIDs map[string]int, result *MasterResumeBuildResult) int {
-	key := strings.ToLower(name)
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return 0
+	}
 	if sid, ok := skillIDs[key]; ok {
 		return sid
 	}
@@ -1044,15 +1121,19 @@ func ensureSkill(ctx context.Context, rdb *ResumeAccount, personID int, name, ca
 }
 
 // findExperienceByHint looks up an experience ID by matching company name (case-insensitive).
-func findExperienceByHint(expByCompany map[string]int, hint string) int {
-	hint = strings.ToLower(hint)
+func findExperienceByHint(expByCompany map[string]int, companyOrder []string, hint string) int {
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return 0 // a blank hint must not attach — "" substring-matches every company
+	}
 	if id, ok := expByCompany[hint]; ok {
 		return id
 	}
-	// Partial match
-	for company, id := range expByCompany {
-		if strings.Contains(company, hint) || strings.Contains(hint, company) {
-			return id
+	// Partial match in deterministic insertion order; blank companies never
+	// match (a "" company would substring-match every hint).
+	for _, company := range companyOrder {
+		if company != "" && (strings.Contains(company, hint) || strings.Contains(hint, company)) {
+			return expByCompany[company]
 		}
 	}
 	return 0
