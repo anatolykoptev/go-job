@@ -245,6 +245,15 @@ func parseAlgoraJob(body, jobURL string) (*engine.JobListing, error) {
 	// --- Tier 1: Open Graph meta ---
 	title, ogURL := extractAlgoraOGMeta(doc)
 
+	// ox-browser POST /fetch follows redirects natively, so a deleted job
+	// might redirect to the org's board page (returning 200 OK). Validate
+	// that the canonical URL is actually a job page to catch redirects.
+	if ogURL != "" {
+		if _, _, ok := parseAlgoraJobURL(ogURL); !ok {
+			return nil, errAlgoraJobGone
+		}
+	}
+
 	// Canonical URL from og:url; fall back to input jobURL.
 	canonical := ogURL
 	if canonical == "" {
