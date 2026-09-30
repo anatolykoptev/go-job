@@ -1,13 +1,17 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
@@ -39,6 +43,56 @@ type AlgoraBounty struct {
 
 const algoraScrapeCacheKey = "algora_scrape"
 
+// algoraOxFetchFetch is the HTML transport for Algora: ox-browser POST /fetch.
+var algoraOxFetchFetch = func(ctx context.Context, pageURL string, headers map[string]string) (status int, body []byte, err error) {
+	fetchURL := strings.TrimRight(engine.Cfg.OxBrowserURL, "/") + "/fetch"
+	payload, err := json.Marshal(map[string]any{
+		"url":     pageURL,
+		"headers": headers,
+		"timeout": int(engine.Cfg.FetchTimeout.Seconds()),
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("algora ox-browser /fetch marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchURL, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, fmt.Errorf("algora ox-browser /fetch request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if engine.Cfg.HTTPClient == nil {
+		return 0, nil, errors.New("algora ox-browser /fetch: HTTPClient not configured")
+	}
+	resp, err := engine.Cfg.HTTPClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("algora ox-browser /fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return 0, nil, fmt.Errorf("algora ox-browser /fetch body: %w", readErr)
+	}
+
+	var oxResp struct {
+		Status     int               `json:"status"`
+		Headers    map[string]string `json:"headers"`
+		Body       string            `json:"body"`
+		CfDetected bool              `json:"cf_detected"`
+		Error      string            `json:"error,omitempty"`
+	}
+	if jsonErr := json.Unmarshal(respBody, &oxResp); jsonErr != nil {
+		return 0, nil, fmt.Errorf("algora ox-browser /fetch decode: %w", jsonErr)
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		if oxResp.CfDetected {
+			return 0, nil, errors.New("algora ox-browser: CF detected")
+		}
+		return oxResp.Status, []byte(oxResp.Body), nil
+	}
+
+	return 0, nil, fmt.Errorf("algora ox-browser /fetch: wrapper %d: %s", resp.StatusCode, oxResp.Error)
+}
 // SearchAlgora fetches bounties from Algora. Tries REST API first (if token configured),
 // falls back to HTML scraping. Results are cached for 15 min.
 func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error) {
@@ -88,26 +142,21 @@ func scrapeAlgoraBounties(ctx context.Context, limit int) ([]engine.BountyListin
 	fetchCtx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, algoraBountiesURL, nil)
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentChrome,
+		"Accept":     "text/html,application/xhtml+xml",
 	}
-	req.Header.Set("User-Agent", engine.UserAgentChrome)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := engine.RetryHTTP(fetchCtx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
+	body, err := engine.RetryDo(fetchCtx, engine.DefaultRetryConfig, func() ([]byte, error) {
+		status, b, fetchErr := algoraOxFetchFetch(fetchCtx, algoraBountiesURL, headers)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("algora.io returned status %d", status)
+		}
+		return b, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("algora.io returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
 		return nil, err
 	}

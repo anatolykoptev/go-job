@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -101,37 +100,22 @@ func FetchAlgoraJob(ctx context.Context, jobURL string) (*engine.JobListing, err
 	return listing, nil
 }
 
-// fetchAlgoraJobRaw performs a single no-redirect HTTP GET and returns the response body.
-// On 3xx → returns ("", errAlgoraJobGone).
+// fetchAlgoraJobRaw performs a single HTTP GET and returns the response body.
 // On non-200 → returns ("", errAlgoraJobGone).
 // On 200 → returns (body, nil).
-func fetchAlgoraJobRaw(ctx context.Context, client *http.Client, jobURL string) (string, error) {
-	noRedirectClient := &http.Client{
-		Transport: client.Transport,
-		Timeout:   client.Timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+func fetchAlgoraJobRaw(ctx context.Context, _ *http.Client, jobURL string) (string, error) {
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentChrome,
+		"Accept":     "text/html,application/xhtml+xml",
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
+	status, b, err := algoraOxFetchFetch(ctx, jobURL, headers)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", engine.UserAgentChrome)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	resp, err := noRedirectClient.Do(req) //nolint:gosec // intentional outbound HTTP
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		return "", errAlgoraJobGone
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
+	return string(b), nil
 }
 
 // DiscoverAlgoraOrgJobs scrapes algora.io/<org>/jobs for ACTIVE job links and
@@ -144,28 +128,23 @@ func DiscoverAlgoraOrgJobs(ctx context.Context, org string) ([]engine.JobListing
 	fetchCtx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, boardURL, nil)
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentChrome,
+		"Accept":     "text/html,application/xhtml+xml",
 	}
-	req.Header.Set("User-Agent", engine.UserAgentChrome)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := engine.RetryHTTP(fetchCtx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
+	raw, err := engine.RetryDo(fetchCtx, engine.DefaultRetryConfig, func() ([]byte, error) {
+		status, b, fetchErr := algoraOxFetchFetch(fetchCtx, boardURL, headers)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("algora-jobs: board status %d for %s", status, boardURL)
+		}
+		return b, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("algora-jobs: board fetch %s: %w", boardURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("algora-jobs: board status %d for %s", resp.StatusCode, boardURL)
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	if err != nil {
-		return nil, err
 	}
 
 	// Extract all single-job links from the board page.
