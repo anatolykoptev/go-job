@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -82,28 +81,18 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentBot,
+		"Accept":     "application/json",
+	}
+
+	status, body, err := FetchHTMLWithStealth(ctx, http.MethodGet, apiURL, headers, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/json")
 
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("RemoteOK API returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("RemoteOK API returned status %d", status)
 	}
 
 	jobs, err := parseRemoteOKResponse(body)
@@ -201,28 +190,18 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wwrRSSURL, nil)
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentBot,
+		"Accept":     "application/xml, application/rss+xml",
+	}
+
+	status, body, err := FetchHTMLWithStealth(ctx, http.MethodGet, wwrRSSURL, headers, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/xml, application/rss+xml")
 
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("WWR RSS returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("WWR RSS returned status %d", status)
 	}
 
 	jobs, err := parseWWRResponse(body)
@@ -449,28 +428,18 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	headers := map[string]string{
+		"User-Agent": engine.UserAgentBot,
+		"Accept":     "application/json",
+	}
+
+	status, body, err := FetchHTMLWithStealth(ctx, http.MethodGet, u.String(), headers, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/json")
 
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("remotive API returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		return nil, err
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("remotive API returned status %d", status)
 	}
 
 	var rr remotiveResponse
@@ -526,7 +495,7 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 // llmRemoteWorkOutput is the JSON structure expected from the LLM for remote work search.
 type llmRemoteWorkOutput struct {
 	Jobs    []engine.RemoteJobListing `json:"jobs"`
-	Summary string                   `json:"summary"`
+	Summary string                    `json:"summary"`
 }
 
 // SummarizeRemoteWorkResults calls the LLM with remote-work-specific prompt and parses structured jobs.
