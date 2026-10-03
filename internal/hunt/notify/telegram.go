@@ -29,8 +29,7 @@ import (
 	kit "github.com/anatolykoptev/go-kit/telegram"
 	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 	"github.com/anatolykoptev/go-kit/telegram/tgapi5"
-
-	"github.com/anatolykoptev/go_job/internal/redact"
+	"github.com/anatolykoptev/go-kit/telegram/tgsafe"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -87,7 +86,7 @@ func (n *ProductNotifier) maxAgeOrZero() time.Duration {
 // layer that sees that error before the caller wraps and logs it.
 // endpoint is a tgbotapi endpoint format ("%s" token, "%s" method).
 func newTelegramBot(token, endpoint string, c *http.Client) (*tgbotapi.BotAPI, error) {
-	return tgbotapi.NewBotAPIWithClient(token, endpoint, redact.NewHTTPClient(c, token))
+	return tgbotapi.NewBotAPIWithClient(token, endpoint, tgsafe.NewHTTPClient(c, token))
 }
 
 // NewFromEnv constructs a ProductNotifier whose bot client scrubs the bot

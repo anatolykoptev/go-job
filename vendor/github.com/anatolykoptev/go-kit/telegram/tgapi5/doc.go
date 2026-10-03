@@ -15,6 +15,13 @@
 //	deleter   := tgapi5.NewMessageDeleter(bot, metrics)
 //	inline    := tgapi5.NewInlineAnswerer(bot)
 //
+// # Building the bot without leaking the token
+//
+// tgbotapi.NewBotAPI uses a plain http.Client, so every failed API call is a
+// *url.Error whose text carries bot<TOKEN>, and GetUpdatesChan prints each
+// failed poll through the SDK logger. Build the bot with NewSafeBotAPI and call
+// SetSafeLogger once at startup; see package tgsafe for the primitives.
+//
 // # Transport coupling
 //
 // This package imports tgbotapi/v5 directly. Consumers that need a
