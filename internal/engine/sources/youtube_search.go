@@ -2,6 +2,7 @@ package sources
 
 import (
 	"github.com/anatolykoptev/go_job/internal/engine"
+	"github.com/anatolykoptev/go_job/internal/redact"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,7 +118,9 @@ func doYouTubeDataSearch(ctx context.Context, query, language string, limit int,
 		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
 	})
 	if err != nil {
-		return nil, fmt.Errorf("youtube data API: %w", err)
+		// The key rides in the query string, so the *url.Error from Client.Do
+		// carries it. Scrub before the error is wrapped, logged or returned.
+		return nil, fmt.Errorf("youtube data API: %w", redact.Error(err, apiKey))
 	}
 	defer resp.Body.Close()
 

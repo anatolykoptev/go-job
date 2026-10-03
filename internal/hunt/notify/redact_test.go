@@ -2,11 +2,9 @@ package notify_test
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,59 +14,9 @@ import (
 	"github.com/anatolykoptev/go_job/internal/hunt/notify"
 )
 
-// TestRedactingTransport_ReplacesTokenInURLError verifies that when the base
-// transport returns a *url.Error, the token is replaced with "[REDACTED]" in
-// the error's URL field and thus in the error string.
-//
-// REAL-CODE: this exercises the shipped RedactingTransport.RoundTrip. If the
-// redaction guard is removed from RoundTrip, the token leaks into err.Error().
-func TestRedactingTransport_ReplacesTokenInURLError(t *testing.T) {
-	token := "123:ABCsecret"
-
-	// A base transport that always fails with a *url.Error whose URL contains
-	// the token — mirroring how the Telegram Bot API embeds the token in the
-	// request URL (https://api.telegram.org/bot<token>/getMe).
-	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		// Simulate the real http.Client behaviour: on a connection failure the
-		// *url.Error wraps the request URL (which contains the token for
-		// Telegram API calls). We construct one directly to deterministically
-		// reproduce the shape without depending on network timing.
-		return nil, &url.Error{
-			Op:  "Get",
-			URL: "https://api.telegram.org/bot" + token + "/getMe",
-			Err: errConnectionRefused,
-		}
-	})
-
-	transport := notify.NewRedactingTransport(base, token)
-
-	// Call RoundTrip directly (not via http.Client.Do) to test the transport
-	// in isolation. http.Client.Do wraps the transport error in its own
-	// *url.Error using the original request URL — that outer wrapper is handled
-	// by the RedactingSlogHandler (second defense layer) in production.
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.telegram.org/bot"+token+"/getMe", nil)
-	resp, err := transport.RoundTrip(req)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	if err == nil {
-		t.Fatal("expected an error from the failing transport, got nil")
-	}
-
-	msg := err.Error()
-	if strings.Contains(msg, "ABCsecret") {
-		t.Errorf("error message leaked the token: %q", msg)
-	}
-	if !strings.Contains(msg, "[REDACTED]") {
-		t.Errorf("error message does not contain [REDACTED]: %q", msg)
-	}
-}
-
-// TestRedactingSlogHandler_RedactsTokenFromLog verifies that the
-// RedactingSlogHandler replaces the token with "[REDACTED]" in log output.
-//
-// REAL-CODE: this exercises the shipped RedactingSlogHandler. If the redaction
-// in the handler is removed, the token leaks into the log output.
+// TestRedactingSlogHandler_RedactsTokenFromLog covers the string-attribute path
+// (a URL logged with slog.String). The error path, which is what production
+// hits, is covered by chain_test.go.
 func TestRedactingSlogHandler_RedactsTokenFromLog(t *testing.T) {
 	token := "123:ABCsecret"
 
@@ -151,17 +99,3 @@ func TestBotDebugNeverEnabled(t *testing.T) {
 		t.Error("bot.Debug is true; must be false to avoid logging the token")
 	}
 }
-
-// roundTripFunc is an http.RoundTripper that delegates to a function.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-// errConnectionRefused is a sentinel error for the inner Err field.
-var errConnectionRefused = &connErr{}
-
-type connErr struct{}
-
-func (e *connErr) Error() string { return "connection refused" }
