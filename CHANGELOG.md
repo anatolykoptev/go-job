@@ -2,6 +2,42 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.0](https://github.com/anatolykoptev/go-job/compare/v1.21.0...v1.22.0) (2026-10-03)
+
+
+### Features
+
+* **accounts,adminui:** P6 self-serve — pending registration, account keys, operator activation ([c468e0b](https://github.com/anatolykoptev/go-job/commit/c468e0b94235e661321744bab0afcd27089fe271))
+* **accounts,adminui:** P6 self-serve — pending registration, account keys, operator activation ([7b96bd7](https://github.com/anatolykoptev/go-job/commit/7b96bd789de356ce96092d635e6ae11cd6884cac))
+* **accounts,adminui:** panel_accounts bootstrap + bcrypt/TOTP auth driver with hmac rollback (P0) ([5e220e1](https://github.com/anatolykoptev/go-job/commit/5e220e1af54c9acbf8fe1f2d49dfcddf83be3cfb))
+* **accounts,cmd/gojob-admin:** operator account/key provisioning CLI (ADR-12) ([26bea54](https://github.com/anatolykoptev/go-job/commit/26bea543f7adb2157db32dd083c293dc251f3a0e))
+* **accounts,mcp:** mcp_api_keys DB bearer verifier + edge AccountFrom seam (P1) ([0b680fe](https://github.com/anatolykoptev/go-job/commit/0b680fe9d80e4d7ff044346c996c964401b9281a))
+* **accounts:** multi-account tenancy — auth, identity, scoping, constrain (P0–P5) ([1a06df7](https://github.com/anatolykoptev/go-job/commit/1a06df7ef645513da972410bb7f19808d92f6242))
+* **accounts:** P4 account scope for resume/vectors/graph/oversize/applications ([c2a09bd](https://github.com/anatolykoptev/go-job/commit/c2a09bd53c2653c12512a9164a555204897ea6bf))
+* **accounts:** P5 data-gated constrain + consolidated deny matrix (ADR-13) ([6eff91a](https://github.com/anatolykoptev/go-job/commit/6eff91a502f4f5c9b55ae351ef23d354ae58cb49))
+* **accounts:** password_hash required — no key-only accounts ([#505](https://github.com/anatolykoptev/go-job/issues/505)) ([b1d4ea9](https://github.com/anatolykoptev/go-job/commit/b1d4ea9b3bbef51268c61711b4ae6572afe229ee))
+* **adminui:** self-serve password change + email normalization (P6.1) ([0ae069b](https://github.com/anatolykoptev/go-job/commit/0ae069b69a5d444d12cfadc68da2dfa5250a3c80))
+* **adminui:** self-serve password change + email normalization at write seams ([a6c71f6](https://github.com/anatolykoptev/go-job/commit/a6c71f6acc95074990c0cdeb6885173e69e687c5))
+* **adminui:** self-serve resume import (paste or file) ([#508](https://github.com/anatolykoptev/go-job/issues/508)) ([02cbbc4](https://github.com/anatolykoptev/go-job/commit/02cbbc4e38d121f1a5366c6c7335e0fc4d955c8e))
+* **adminui:** session revocation on password rotation ([#507](https://github.com/anatolykoptev/go-job/issues/507)) ([57ffa7c](https://github.com/anatolykoptev/go-job/commit/57ffa7c84d6c9839a1d30c377a90049eb86eabf0))
+* **hunt,accounts,adminui,huntworker:** account-scoped job scores via account_job_scores (ADR-15) ([0156fbe](https://github.com/anatolykoptev/go-job/commit/0156fbecb4e72965c256d60e89f8ab7b9f327853))
+* **hunt,accounts,huntworker,adminui:** account-scoped ratings + per-account hunt settings (ADR-6/ADR-7/ADR-15) ([1301750](https://github.com/anatolykoptev/go-job/commit/1301750d1ecdd15604bcb7cd85b3e2121698f619))
+* **resume:** merge diff-preview — plan/apply split with signed payload ([#512](https://github.com/anatolykoptev/go-job/issues/512)) ([1ed83d2](https://github.com/anatolykoptev/go-job/commit/1ed83d2e5fdbb6214cfa597c1e53989cae723dc0))
+* **resume:** merge mode for resume import ([#510](https://github.com/anatolykoptev/go-job/issues/510)) ([4a21bb8](https://github.com/anatolykoptev/go-job/commit/4a21bb82dcc22b1f922ede795b0f67f6ca42ee78))
+
+
+### Bug Fixes
+
+* **accounts,adminui:** Retry-1 integration-review findings (P0) ([51c0564](https://github.com/anatolykoptev/go-job/commit/51c0564790cde3f731f3e74f7aa2a57c3a9cae92))
+* **accounts,mcp,huntworker:** Retry-1 review findings (P1) ([ece81b4](https://github.com/anatolykoptev/go-job/commit/ece81b41495db4f2a123da2e5c5f8979c523c3e8))
+* **accounts:** P4 post-test fixes — backfill param split, lint set, 008 additive-only ([5dad216](https://github.com/anatolykoptev/go-job/commit/5dad216196cf734cf9670bda0cf255dc5f1cc64f))
+* **accounts:** upsert notify_chat_id on existing settings row ([27918fe](https://github.com/anatolykoptev/go-job/commit/27918feebf0383ea0e8758fa3759c732515ef0c6))
+* **adminui:** move resume import link into the Resume pages ([#509](https://github.com/anatolykoptev/go-job/issues/509)) ([21cfa4e](https://github.com/anatolykoptev/go-job/commit/21cfa4eb3c1e57f1faae593a21ce102da0fbc2a5))
+* **adminui:** review findings — acctOf on password page, parameterized unavailable render, Makefile pin covers password mounts ([794dcb1](https://github.com/anatolykoptev/go-job/commit/794dcb141745ec37768660852cf69d5683a2ab78))
+* **adminui:** validate import mode before build-start log ([#511](https://github.com/anatolykoptev/go-job/issues/511)) ([a4e03c9](https://github.com/anatolykoptev/go-job/commit/a4e03c9ffcbfb2beebff3d42ff968aeee0a90393))
+* **build:** make the version stamp resolve instead of falling back to "dev" ([#479](https://github.com/anatolykoptev/go-job/issues/479)) ([764b414](https://github.com/anatolykoptev/go-job/commit/764b4148980dcb20f5e71bb5957454ade737d4ad))
+* **security:** redact bot token from Telegram request errors ([#514](https://github.com/anatolykoptev/go-job/issues/514)) ([49ef7b3](https://github.com/anatolykoptev/go-job/commit/49ef7b3ce505f58c64f05d3c5457892991f987dc))
+
 ## [1.21.0](https://github.com/anatolykoptev/go-job/compare/v1.20.0...v1.21.0) (2026-08-05)
 
 
