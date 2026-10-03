@@ -31,6 +31,8 @@ clean:
 # t.Skip'd DB round-trip tests run live. Without it they skip cleanly.
 # go vet and go test run on ./internal/... (all internal packages).
 preflight:
+	@echo "==> fitness: capped response readers must detect truncation"
+	@if grep -R -n --include='*.go' 'io\.ReadAll(io\.LimitReader(' internal/engine/jobs internal/hunt/discovery | grep -vE '(errors|bodylimit|_test|algora_attempt|github_prs)\.go:'; then echo "FAIL: bare capped reader silently truncates -- use readLimitedBody"; exit 1; fi
 	@echo "==> fitness: no inline math.Round*100 clone in resume_edit.go (use parseDollarsToCents)"
 	@! grep -n 'math\.Round.*\*[[:space:]]*100' internal/adminui/resume_edit.go || (echo "FAIL: inline math.Round*100 cents parse found in resume_edit.go -- use parseDollarsToCents" && exit 1)
 	@echo "==> fitness: no inline Sprintf dollar-display+/hr in upwork.go (use centsToDollars)"

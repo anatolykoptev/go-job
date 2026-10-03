@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -114,7 +113,7 @@ func SearchUNDPJobs(ctx context.Context, query, _location string, limit int) ([]
 		return nil, fmt.Errorf("undp API status %d", resp.StatusCode)
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	raw, err := readLimitedBody(resp.Body, 4*1024*1024)
 	if err != nil {
 		return nil, err
 	}

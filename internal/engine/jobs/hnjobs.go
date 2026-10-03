@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -143,7 +142,7 @@ func fetchHNItem(ctx context.Context, id int64) (*hnItemResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, err := readLimitedBody(resp.Body, 64*1024)
 	if err != nil {
 		return nil, err
 	}

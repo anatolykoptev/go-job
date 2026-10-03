@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -80,7 +79,7 @@ func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, er
 		return nil, fmt.Errorf("algora tRPC returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	body, err := readLimitedBody(resp.Body, 2*1024*1024)
 	if err != nil {
 		return nil, err
 	}
