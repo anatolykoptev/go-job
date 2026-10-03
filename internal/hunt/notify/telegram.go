@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -28,6 +29,8 @@ import (
 	kit "github.com/anatolykoptev/go-kit/telegram"
 	kitnotify "github.com/anatolykoptev/go-kit/telegram/notify"
 	"github.com/anatolykoptev/go-kit/telegram/tgapi5"
+
+	"github.com/anatolykoptev/go_job/internal/redact"
 
 	"github.com/anatolykoptev/go_job/internal/hunt"
 )
@@ -78,17 +81,25 @@ func (n *ProductNotifier) maxAgeOrZero() time.Duration {
 	return time.Duration(v)
 }
 
-// NewFromEnv constructs a ProductNotifier with a redacting HTTP client so the
-// bot token is never leaked in *url.Error messages (PF-6).
+// newTelegramBot builds the bot on a client whose errors are scrubbed. Every
+// bot in this package goes through here: http.Client.Do returns a *url.Error
+// carrying the full request URL (and so the token), and the wrapper is the only
+// layer that sees that error before the caller wraps and logs it.
+// endpoint is a tgbotapi endpoint format ("%s" token, "%s" method).
+func newTelegramBot(token, endpoint string, c *http.Client) (*tgbotapi.BotAPI, error) {
+	return tgbotapi.NewBotAPIWithClient(token, endpoint, redact.NewHTTPClient(c, token))
+}
+
+// NewFromEnv constructs a ProductNotifier whose bot client scrubs the bot
+// token from request errors (PF-6).
 //
 // Instead of calling kitnotify.NewProductSinkFromEnv (which creates its own bot
 // via tgbotapi.NewBotAPI with a plain http.Client), we build the bot locally
-// with a RedactingTransport-wrapped client and then hand the bot to
-// kitnotify.NewProductSink.
+// via newTelegramBot and then hand the bot to kitnotify.NewProductSink.
 //
 // SECURITY NOTE (#182): The Telegram Bot API embeds the token in the URL path
-// (https://api.telegram.org/bot<token>/...). The RedactingTransport scrubs the
-// token from *url.Error and slog output, but the token IS still visible in:
+// (https://api.telegram.org/bot<token>/...). The redacting client and slog
+// handler scrub the token from errors and log output, but the token IS still visible in:
 //   - outbound proxy access logs (if a proxy intercepts HTTPS)
 //   - network monitoring/PCAP (if TLS is terminated by a middlebox)
 //
@@ -96,7 +107,7 @@ func (n *ProductNotifier) maxAgeOrZero() time.Duration {
 // uses URL-path auth, not a Bearer header. Migrating to a header-based client
 // would require forking the vendor library. The risk is accepted because:
 //  1. go-job connects directly to api.telegram.org (no proxy in the path)
-//  2. The redacting transport covers the go-job-side leak vectors (logs/errors)
+//  2. The redacting client and slog handler cover the go-job-side leak vectors (logs/errors)
 //  3. The token has limited scope (send messages to specific chat IDs only)
 //
 // Required env:
@@ -116,10 +127,7 @@ func NewFromEnv(m *kitmetrics.Registry) (*ProductNotifier, error) {
 		return nil, fmt.Errorf("hunt notify: %w", err)
 	}
 
-	// Build the bot with a redacting HTTP client so *url.Error failures never
-	// expose the token in their URL field.
-	redactingClient := newRedactingClient(token)
-	bot, err := tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, redactingClient)
+	bot, err := newTelegramBot(token, tgbotapi.APIEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("hunt notify: create bot: %w", err)
 	}
@@ -276,7 +284,7 @@ func (n *ProductNotifier) HealthCheck(ctx context.Context) error {
 	if n.token == "" {
 		return nil // no token to validate (test constructor)
 	}
-	bot, err := tgbotapi.NewBotAPIWithClient(n.token, tgbotapi.APIEndpoint, newRedactingClient(n.token))
+	bot, err := newTelegramBot(n.token, tgbotapi.APIEndpoint, nil)
 	if err != nil {
 		return fmt.Errorf("hunt notify: health check create bot: %w", err)
 	}
