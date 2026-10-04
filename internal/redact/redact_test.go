@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/go-kit/telegram/tgsafe"
 	"github.com/anatolykoptev/go_job/internal/redact"
 )
 
@@ -35,7 +36,7 @@ func realClientErr(t *testing.T, target string, do func(*http.Request) (*http.Re
 	return err
 }
 
-func TestHTTPClient_ScrubsRealClientErrors(t *testing.T) {
+func TestTgsafeHTTPClient_ScrubsRealClientErrors(t *testing.T) {
 	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -58,7 +59,7 @@ func TestHTTPClient_ScrubsRealClientErrors(t *testing.T) {
 				t.Fatalf("control: raw client error no longer carries the token (%q); test proves nothing", leaked)
 			}
 
-			err := realClientErr(t, target, redact.NewHTTPClient(raw).Do)
+			err := realClientErr(t, target, tgsafe.NewHTTPClient(raw).Do)
 			if strings.Contains(err.Error(), fakeToken) || strings.Contains(err.Error(), "AAabcdef") {
 				t.Fatalf("token leaked: %q", err)
 			}
@@ -73,11 +74,11 @@ func TestHTTPClient_ScrubsRealClientErrors(t *testing.T) {
 	}
 }
 
-func TestHTTPClient_ScrubsQueryKey(t *testing.T) {
+func TestTgsafeHTTPClient_ScrubsQueryKey(t *testing.T) {
 	const key = "AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0"
 	raw := &http.Client{Timeout: 300 * time.Millisecond}
 	target := "https://telegram-redact-test.invalid/v3/search?q=x&key=" + url.QueryEscape(key)
-	err := realClientErr(t, target, redact.NewHTTPClient(raw, key).Do)
+	err := realClientErr(t, target, tgsafe.NewHTTPClient(raw, key).Do)
 	if strings.Contains(err.Error(), key) {
 		t.Fatalf("key leaked: %q", err)
 	}
