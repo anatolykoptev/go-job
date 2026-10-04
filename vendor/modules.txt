@@ -38,7 +38,7 @@ github.com/anatolykoptev/go-engine/sources
 github.com/anatolykoptev/go-engine/text
 github.com/anatolykoptev/go-engine/websearch
 github.com/anatolykoptev/go-engine/webtext
-# github.com/anatolykoptev/go-kit v0.97.12
+# github.com/anatolykoptev/go-kit v0.97.17
 ## explicit; go 1.26.3
 github.com/anatolykoptev/go-kit/admintable
 github.com/anatolykoptev/go-kit/breaker
@@ -63,6 +63,7 @@ github.com/anatolykoptev/go-kit/telegram/broadcast
 github.com/anatolykoptev/go-kit/telegram/miniapp
 github.com/anatolykoptev/go-kit/telegram/notify
 github.com/anatolykoptev/go-kit/telegram/tgapi5
+github.com/anatolykoptev/go-kit/telegram/tgsafe
 github.com/anatolykoptev/go-kit/uploads
 # github.com/anatolykoptev/go-linkedin v0.4.13
 ## explicit; go 1.26

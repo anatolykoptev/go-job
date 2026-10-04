@@ -125,7 +125,7 @@ func NewProductSinkFromEnv(prefix string, m *metrics.Registry) (ProductSink, err
 	if err != nil {
 		return nil, fmt.Errorf("notify: NewProductSinkFromEnv: %w", err)
 	}
-	bot, err := tgbotapi.NewBotAPI(token)
+	bot, err := tgapi5.NewSafeBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("notify: NewProductSinkFromEnv: create bot: %w", err)
 	}
