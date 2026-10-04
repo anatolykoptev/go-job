@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.1](https://github.com/anatolykoptev/go-job/compare/v1.22.0...v1.22.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **security:** use go-kit tgsafe for the bot client and redaction ([#516](https://github.com/anatolykoptev/go-job/issues/516)) ([19f0d3d](https://github.com/anatolykoptev/go-job/commit/19f0d3d66e7cb4879fa5a46e8bd42aada688f784))
+
 ## [1.22.0](https://github.com/anatolykoptev/go-job/compare/v1.21.0...v1.22.0) (2026-10-03)
 
 
