@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.22.4](https://github.com/anatolykoptev/go-stealth/compare/v1.22.3...v1.22.4) (2026-10-08)
+
+
+### Fixed
+
+* **proxypool:** refresh Webshare credentials periodically and on 407 ([#55](https://github.com/anatolykoptev/go-stealth/issues/55)) ([#56](https://github.com/anatolykoptev/go-stealth/issues/56)) ([b46e7be](https://github.com/anatolykoptev/go-stealth/commit/b46e7beb099fd8f8b71071e141b838e5384632a8))
+
+## [1.22.3](https://github.com/anatolykoptev/go-stealth/compare/v1.22.2...v1.22.3) (2026-08-04)
+
+
+### Documentation
+
+* **readme:** correct the profile count and drop links to private repos ([1032c7b](https://github.com/anatolykoptev/go-stealth/commit/1032c7bd488b11ef20b68f5bd566c2784556572a))
+
+## [1.22.2](https://github.com/anatolykoptev/go-stealth/compare/v1.22.1...v1.22.2) (2026-07-27)
+
+
+### Changed
+
+* **pacing:** delegate jitter/pacer to go-kit/pacing ([#51](https://github.com/anatolykoptev/go-stealth/issues/51)) ([3bb7486](https://github.com/anatolykoptev/go-stealth/commit/3bb7486bf1be87aec9045ed9c1e0209da4b574fa))
+
+## [1.22.1](https://github.com/anatolykoptev/go-stealth/compare/v1.22.0...v1.22.1) (2026-07-26)
+
+
+### Fixed
+
+* detect Cloudflare 403 managed challenges via cf-mitigated header ([#49](https://github.com/anatolykoptev/go-stealth/issues/49)) ([9471dd4](https://github.com/anatolykoptev/go-stealth/commit/9471dd4538b6e7a8c4bf510d76952d7a5dc36dd3))
+
 ## [1.22.0](https://github.com/anatolykoptev/go-stealth/compare/v1.21.2...v1.22.0) (2026-07-26)
 
 
