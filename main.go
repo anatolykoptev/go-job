@@ -207,6 +207,7 @@ func main() {
 		// override needed (it defaults to 30s, the correct header-read deadline).
 		WriteTimeout:   600 * time.Second,
 		SessionTimeout: 10 * time.Minute,
+		Stateless:      new(bool),
 		// ToolTimeout is the per-tool execution deadline enforced by
 		// ToolTimeoutMiddleware. The 90s default is fine for cheap DB/parse tools
 		// but too tight for tools that fan out web research and/or chain multiple
