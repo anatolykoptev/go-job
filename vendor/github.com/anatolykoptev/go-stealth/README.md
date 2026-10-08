@@ -9,7 +9,7 @@ Generic anti-ban toolkit for Go — TLS fingerprinting, proxy rotation, rate lim
 
 ## Features
 
-- **TLS Fingerprinting** — 18 browser profiles (Chrome, Firefox, Safari, Edge) across 5 OS via [tls-client](https://github.com/bogdanfinn/tls-client)
+- **TLS Fingerprinting** — 29 browser profiles via [tls-client](https://github.com/bogdanfinn/tls-client): Chrome, Firefox, Safari, Brave and Edge, across macOS, Windows, Linux, Android and iOS
 - **Proxy Rotation** — static list or [Webshare](https://www.webshare.io/) API, per-proxy health tracking with auto-skip
 - **Rate Limiting** — per-key sliding window + per-domain limiter with wildcard matching
 - **Middleware** — composable Handler/Middleware/Chain pattern (logging, retry, rate limit, client hints)
@@ -146,8 +146,8 @@ contract.
 
 - [go-twitter](https://github.com/anatolykoptev/go-twitter) — Twitter/X scraping
 - [go-threads](https://github.com/anatolykoptev/go-threads) — Threads.net scraping
-- [go-search](https://github.com/anatolykoptev/go-search) — Web search MCP server
-- [go-hully](https://github.com/anatolykoptev/go-hully) — Crypto intelligence
+
+Plus private services in the same fleet: a web-search MCP server and a crypto-intelligence pipeline.
 
 ## License
 

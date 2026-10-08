@@ -10,7 +10,7 @@ require (
 	github.com/anatolykoptev/go-linkedin v0.4.13
 	github.com/anatolykoptev/go-mcpserver v0.18.0
 	github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b
-	github.com/anatolykoptev/go-stealth v1.22.0
+	github.com/anatolykoptev/go-stealth v1.22.4
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
