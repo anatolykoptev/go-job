@@ -35,6 +35,32 @@ func TestFetchRenderedHTML_MockServer(t *testing.T) {
 	}
 }
 
+// TestFetchRenderedHTML_SendsInternalSecret: go-wowa requires
+// X-Internal-Secret, so the render call must send INTERNAL_SERVICE_SECRET.
+//
+// Falsification: delete the X-Internal-Secret block in fetchRenderedHTML
+// (gowowa_render.go) and this test sees an empty header → RED.
+func TestFetchRenderedHTML_SendsInternalSecret(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_SECRET", "s3cret")
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Internal-Secret")
+		_, _ = w.Write([]byte(`{"url":"https://example.com","html":"<html></html>"}`))
+	}))
+	defer srv.Close()
+
+	orig := goWowaRenderURL
+	goWowaRenderURL = srv.URL
+	defer func() { goWowaRenderURL = orig }()
+
+	if _, err := fetchRenderedHTML(context.Background(), "https://example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "s3cret" {
+		t.Fatalf("X-Internal-Secret = %q, want s3cret", got)
+	}
+}
+
 // TestFetchRenderedHTML_NonOKStatus verifies that a non-200 response returns an error.
 func TestFetchRenderedHTML_NonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
