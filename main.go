@@ -205,9 +205,11 @@ func main() {
 		// keeps idle pooled connections alive across pauses between tool calls — so
 		// the first MCP call after an idle window no longer drops. No ReadTimeout
 		// override needed (it defaults to 30s, the correct header-read deadline).
-		WriteTimeout:   600 * time.Second,
-		SessionTimeout: 10 * time.Minute,
-		Stateless:      new(bool),
+		WriteTimeout: 600 * time.Second,
+		// Stateless on purpose: GET /mcp answers 405 + Allow: POST, which rmcp
+		// reads as "no standalone stream". The 2026-10-08 stateful flip assumed
+		// that would stop the rmcp SSE error loop; it did not (rate unchanged)
+		// and cost session expiry plus MCP 2026-07-28.
 		// ToolTimeout is the per-tool execution deadline enforced by
 		// ToolTimeoutMiddleware. The 90s default is fine for cheap DB/parse tools
 		// but too tight for tools that fan out web research and/or chain multiple

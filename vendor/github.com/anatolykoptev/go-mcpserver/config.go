@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,6 +42,11 @@ const (
 	defaultMaxConcurrentTools = 100
 	portEnvVar                = "MCP_PORT"
 )
+
+// defaultMaxRequestBodyBytes is go-mcpserver's own cap for POST /mcp bodies
+// when Config.MaxRequestBodyBytes is 0: 16 MiB, so base64 payloads that worked
+// on go-sdk v1.6.1 (no limit) keep working. The go-sdk v1.8.0 default is 4 MiB.
+const defaultMaxRequestBodyBytes int64 = 16 << 20
 
 // Config controls how the MCP server runs.
 type Config struct {
@@ -113,6 +119,36 @@ type Config struct {
 	// reverse proxy on localhost that you control.
 	DisableLocalhostProtection bool
 
+	// CancelOnClientDisconnect makes the tool handler's context cancel when the
+	// client aborts the POST (disconnect or cancel), so a tool whose caller is
+	// gone stops instead of running to ToolTimeout. nil = true; set to a pointer
+	// to false for the old behaviour. Applies to stateless handlers only (the
+	// default): go-sdk's StreamableHTTPOptions.PropagateRequestCancellation
+	// covers 2026-07-28 requests, and a go-mcpserver wrapper covers
+	// 2025-11-25 and older ones. Stateful mode is unchanged - a session may
+	// resume a dropped POST stream.
+	//
+	// Trade-off: a tool cancelled midway must already be idempotent or
+	// transactional - ToolTimeout can cut it at any point in the same way.
+	CancelOnClientDisconnect *bool
+
+	// MaxRequestBodyBytes caps the size of a single POST /mcp request body;
+	// larger requests are rejected with 413 Request Entity Too Large. 0 = 16 MiB
+	// (go-mcpserver default; go-sdk v1.8.0 itself defaults to 4 MiB and v1.6.1
+	// had no limit). A negative value disables the limit entirely (go-sdk
+	// semantics) - do not use that on servers exposed to untrusted clients.
+	// Honoured by Run and Build as well as Serve.
+	MaxRequestBodyBytes int64
+
+	// SupportedProtocolVersions restricts the MCP protocol versions the server
+	// advertises and negotiates (e.g. {"2025-11-25"} to opt out of 2026-07-28
+	// without a code revert). nil/empty = every version the SDK supports. The
+	// list can only narrow, never widen; a version the SDK does not implement
+	// makes NewServer panic at startup (go-sdk behaviour). Applied only at
+	// server creation by NewServer/Serve; a value set on a Config passed to
+	// Run/Build is ignored (see the startup warning).
+	SupportedProtocolVersions []string
+
 	// KeepAlive sets the interval for periodic ping requests. If the peer
 	// fails to respond, the session is automatically closed. 0 = disabled.
 	// Recommended for stateful mode: 30s. Applied only at server creation by
@@ -135,6 +171,13 @@ type Config struct {
 	Logger     *slog.Logger    // nil → auto (stdout HTTP / stderr stdio, LevelInfo)
 	OnShutdown func()          // called before HTTP shutdown
 
+	// Transport selects the MCP transport. TransportStdio ("stdio") runs over
+	// stdin/stdout; "" (empty) or TransportHTTP ("http") = HTTP. Prefer
+	// passing a parsed flag value over relying on the legacy --stdio os.Args
+	// scan — a cobra/pflag layer would reject the flag before Run ever sees
+	// it (vaelor #857).
+	Transport string
+
 	// onRESTBridgeCleanup is set internally by Run() to receive the REST bridge
 	// cleanup function from buildHandler, so it can be called AFTER srv.Shutdown()
 	// completes (not on signal receipt, which would close sessions mid-request).
@@ -148,6 +191,9 @@ func validate(cfg Config) error {
 	if cfg.Version == "" {
 		return errors.New("mcpserver: Config.Version is required")
 	}
+	if cfg.Transport != "" && cfg.Transport != TransportStdio && cfg.Transport != TransportHTTP {
+		return fmt.Errorf("mcpserver: unknown transport %q", cfg.Transport)
+	}
 	return nil
 }
 
@@ -160,6 +206,9 @@ func withDefaults(cfg Config) Config {
 		}
 	}
 	applyTimeoutDefaults(&cfg)
+	if cfg.MaxRequestBodyBytes == 0 {
+		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
+	}
 	if !cfg.LogSkipDefaults && cfg.LogSkipPaths == nil {
 		cfg.LogSkipPaths = defaultLogSkipPaths()
 	}
@@ -182,6 +231,7 @@ func withDefaults(cfg Config) Config {
 func (c Config) withoutServerOpts() Config {
 	c.KeepAlive = 0
 	c.SchemaCache = nil
+	c.SupportedProtocolVersions = nil
 	return c
 }
 
@@ -189,8 +239,8 @@ func (c Config) withoutServerOpts() Config {
 // Config passed to Run/Build, since those options are only honoured by
 // NewServer/Serve.
 func warnIgnoredServerOpts(cfg Config, logger *slog.Logger) {
-	if cfg.KeepAlive != 0 || cfg.SchemaCache != nil {
-		logger.Warn("mcpserver: Config.KeepAlive/SchemaCache set on Run/Build are ignored — server options apply only via NewServer/Serve; set them there or remove them from the Run/Build Config")
+	if cfg.KeepAlive != 0 || cfg.SchemaCache != nil || len(cfg.SupportedProtocolVersions) > 0 {
+		logger.Warn("mcpserver: Config.KeepAlive/SchemaCache/SupportedProtocolVersions set on Run/Build are ignored — server options apply only via NewServer/Serve; set them there or remove them from the Run/Build Config")
 	}
 }
 
@@ -251,6 +301,9 @@ func applyMCPMiddleware(server *mcp.Server, cfg Config) {
 	if len(cfg.MCPSendingMiddleware) > 0 {
 		server.AddSendingMiddleware(cfg.MCPSendingMiddleware...)
 	}
+	// Registered last = outermost: sees the tools/list result after every
+	// other middleware (e.g. ToolFilter) has shaped it.
+	server.AddReceivingMiddleware(portableToolsListMiddleware())
 }
 
 func defaultLogSkipPaths() []string {

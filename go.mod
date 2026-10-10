@@ -8,14 +8,14 @@ require (
 	github.com/anatolykoptev/go-engine v1.55.0
 	github.com/anatolykoptev/go-kit v0.97.18
 	github.com/anatolykoptev/go-linkedin v0.4.13
-	github.com/anatolykoptev/go-mcpserver v0.18.0
+	github.com/anatolykoptev/go-mcpserver v0.21.0
 	github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b
 	github.com/anatolykoptev/go-stealth v1.23.0
 	github.com/anatolykoptev/go-twitter v0.6.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/stretchr/testify v1.11.1
