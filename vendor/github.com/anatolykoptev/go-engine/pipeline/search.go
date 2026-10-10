@@ -102,13 +102,13 @@ func (p *Pipeline) searchSources(ctx context.Context, query string) []sources.Re
 // metricPipelineSourceResult is the per-source fan-out outcome counter for the
 // pipeline path. Encoded as name{source=<label>,outcome=ok|fail} so the
 // go-kit/metrics Prometheus bridge surfaces it as
-// go_search_source_result_total{source="yep",outcome="fail"}.
+// source_result_total{source="yep",outcome="fail"}.
 //
 // Uses the same metric name as search/direct.go recordSourceResult so that
 // both the pipeline fan-out and the direct fan-out share a single alertable
 // counter. A source failing 100% is invisible if a sibling silently covers it;
 // this counter makes that failure rate alertable.
-const metricPipelineSourceResult = "go_search_source_result_total"
+const metricPipelineSourceResult = "source_result_total"
 
 // recordPipelineSourceResult increments the per-source outcome counter. Nil-safe.
 func recordPipelineSourceResult(m *metrics.Registry, source, outcome string) {
@@ -126,7 +126,7 @@ func collectPipelineResults(ch <-chan pipelineSourceResult, m *metrics.Registry,
 	for r := range ch {
 		if m != nil {
 			m.ObserveSeconds(
-				kitmetrics.Label("go_search_search_source_duration_seconds", "source", r.name),
+				kitmetrics.Label("search_source_duration_seconds", "source", r.name),
 				r.dur,
 			)
 		}

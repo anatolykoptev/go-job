@@ -137,10 +137,10 @@ func braveAPIFetch(ctx context.Context, reqURL string, headers map[string]string
 
 // incrSourceResult records a per-source result counter.
 // Key format matches the Prometheus label emitted by the gosearch registry:
-// gosearch_go_search_source_result_total{source=X,outcome=Y}
+// gosearch_source_result_total{source=X,outcome=Y}
 func incrSourceResult(m *metrics.Registry, source, outcome string) {
 	if m == nil {
 		return
 	}
-	m.Incr(fmt.Sprintf("go_search_source_result_total{source=%s,outcome=%s}", source, outcome))
+	m.Incr(fmt.Sprintf("source_result_total{source=%s,outcome=%s}", source, outcome))
 }
