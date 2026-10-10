@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.4](https://github.com/anatolykoptev/go-job/compare/v1.22.3...v1.22.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* **jobs:** send X-Internal-Secret on the go-wowa render call ([#519](https://github.com/anatolykoptev/go-job/issues/519)) ([85fe03a](https://github.com/anatolykoptev/go-job/commit/85fe03af5a8bb999f0ee209b5394f54cbe269b27))
+
 ## [1.22.3](https://github.com/anatolykoptev/go-job/compare/v1.22.2...v1.22.3) (2026-10-08)
 
 
