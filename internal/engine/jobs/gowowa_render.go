@@ -23,6 +23,9 @@ var goWowaRenderURL = func() string {
 
 const goWowaRenderTimeout = 90 * time.Second
 
+// goWowaSecretHeader carries INTERNAL_SERVICE_SECRET to go-wowa.
+const goWowaSecretHeader = "X-Internal-Secret" //nolint:gosec // G101: header name, not a credential
+
 type goWowaRenderReq struct {
 	URL string `json:"url"`
 }
@@ -49,6 +52,10 @@ func fetchRenderedHTML(ctx context.Context, targetURL string) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", engine.UserAgentBot)
+	// go-wowa rejects requests without a credential on every route but /health.
+	if secret := os.Getenv("INTERNAL_SERVICE_SECRET"); secret != "" {
+		req.Header.Set(goWowaSecretHeader, secret)
+	}
 
 	client := engine.Cfg.HTTPClient
 	if client == nil {
