@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-engine/fetch"
+	"github.com/anatolykoptev/go-engine/metrics"
 	"github.com/anatolykoptev/go-engine/sources"
 	"github.com/anatolykoptev/go-engine/websearch"
 )
@@ -234,8 +235,30 @@ func runWikipedia(ctx context.Context, cfg DirectConfig, query, language string)
 }
 
 // runMarginalia fetches Marginalia indie-web search results.
+//
+// The daily budget is enforced BEFORE the request is issued: an exhausted
+// budget sheds promptly with ErrMarginaliaQuotaExhausted (a distinguishable
+// shed outcome, not an engine failure) and the outbound HTTP call is never
+// made. When cfg.MarginaliaBudget is nil a package-level default budget
+// (limit = defaultMarginaliaDailyBudget) is used so the courtesy quota is
+// protected even under operator misconfiguration; wiring a budget with the
+// consumer's *metrics.Registry additionally publishes the remaining gauge.
+//
+// isNilInterface (not a plain == nil) guards the typed-nil pitfall: an
+// interface holding a typed-nil *MarginaliaBudget passes `!= nil` and then
+// panics on Acquire. This is the same guard used for MojeekBrowser.
+//
+// The HTTP caller (searchMarginaliaDirect) is unexported, so runMarginalia is
+// the sole guarded entry point — no external code can bypass the budget check.
 func runMarginalia(ctx context.Context, cfg DirectConfig, query string) ([]sources.Result, error) {
-	return SearchMarginaliaDirect(ctx, cfg.Browser, query, cfg.Metrics)
+	budget := cfg.MarginaliaBudget
+	if isNilInterface(budget) {
+		budget = defaultMarginaliaBudget
+	}
+	if !budget.Acquire() {
+		return nil, ErrMarginaliaQuotaExhausted
+	}
+	return searchMarginaliaDirect(ctx, cfg.Browser, query, cfg.MarginaliaKey, cfg.Metrics)
 }
 
 // runMojeek fetches Mojeek search results via HTML scraping.
@@ -309,17 +332,17 @@ func runOxEscalation(ctx context.Context, cfg DirectConfig, query string, merged
 	resultCh := make(chan oxOut, len(eligible))
 	var wg sync.WaitGroup
 
-	for _, label := range eligible {
-		// TryAcquire: non-blocking — skip if semaphore full to avoid queuing
-		// on the shared Chromium resource (go-wowa ContextPool is the authoritative
-		// server-side bound; client TryAcquire is a courtesy first-line cap).
-		select {
-		case sem <- struct{}{}:
-		default:
-			slog.Debug("ox escalation: semaphore full, skipping engine", slog.String("engine", label))
-			recordOxEscalation(cfg.Metrics, label, "skipped")
-			continue
-		}
+	// Acquire ALL semaphore slots BEFORE launching any goroutine. This
+	// separates admission from execution so a fast-completing goroutine cannot
+	// release its slot before the next engine's TryAcquire — which would let an
+	// instant-return stub bypass the cap (both engines run sequentially instead
+	// of one being skipped). With real ~30s renders the interleaving never
+	// mattered, but the acquire-then-launch ordering makes the cap deterministic
+	// regardless of goroutine scheduling.
+	acquired := acquireOxSlots(sem, eligible, cfg.Metrics)
+
+	// Launch phase: run only the engines that acquired a slot.
+	for _, label := range acquired {
 		wg.Add(1)
 		go func(l string) {
 			defer wg.Done()
@@ -353,6 +376,26 @@ func runOxEscalation(ctx context.Context, cfg DirectConfig, query string, merged
 		all = append(all, r.results...)
 	}
 	return all
+}
+
+// acquireOxSlots TryAcquires the ox-escalation semaphore for each eligible
+// engine, returning the labels that got a slot. Engines that do not get a slot
+// are recorded with outcome="skipped". All acquires complete before any
+// goroutine is launched so a fast-completing goroutine cannot release its slot
+// before the next engine's TryAcquire (which would bypass the cap under
+// instant-return stubs).
+func acquireOxSlots(sem chan<- struct{}, eligible []string, m *metrics.Registry) []string {
+	var acquired []string
+	for _, label := range eligible {
+		select {
+		case sem <- struct{}{}:
+			acquired = append(acquired, label)
+		default:
+			slog.Debug("ox escalation: semaphore full, skipping engine", slog.String("engine", label))
+			recordOxEscalation(m, label, "skipped")
+		}
+	}
+	return acquired
 }
 
 // runOxEngine dispatches to the engine-specific ox-browser SERP runner.
@@ -400,6 +443,12 @@ func runOxDDG(ctx context.Context, cfg DirectConfig, query string) ([]sources.Re
 		return nil, "fail"
 	}
 	if len(results) == 0 {
+		// A 200+parseable page with zero results is ambiguous: genuine empty
+		// SERP vs DDG serving its anomaly/captcha variant to the escalated
+		// profile. Classify so "empty" means a real SERP with nothing found.
+		if isDDGRateLimited([]byte(html)) {
+			return nil, "captcha"
+		}
 		return nil, "empty"
 	}
 	return results, "ok"
@@ -421,6 +470,9 @@ func runOxBrave(ctx context.Context, cfg DirectConfig, query string) ([]sources.
 		return nil, "fail"
 	}
 	if len(results) == 0 {
+		if websearch.IsBraveRateLimited([]byte(html)) {
+			return nil, "captcha"
+		}
 		return nil, "empty"
 	}
 	return results, "ok"
@@ -443,6 +495,13 @@ func runOxBing(ctx context.Context, cfg DirectConfig, query string) ([]sources.R
 		return nil, "fail"
 	}
 	if len(results) == 0 {
+		// #317: a 200+parseable page with zero results is ambiguous — genuine
+		// empty SERP vs Bing serving its "unusual traffic" gate to the
+		// escalated profile (escalation fires exactly when the engine is
+		// already hostile). Classify so "empty" means a real SERP.
+		if websearch.IsBingRateLimited([]byte(html)) {
+			return nil, "captcha"
+		}
 		return nil, "empty"
 	}
 	return results, "ok"

@@ -66,7 +66,7 @@ func (b *Bing) Search(ctx context.Context, query string, opts SearchOpts) ([]Res
 
 	u := BingSearchURL(query, opts)
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(b.browser)
 	headers["referer"] = bingReferer
 	headers["accept"] = acceptHTML
 
@@ -80,7 +80,7 @@ func (b *Bing) Search(ctx context.Context, query string, opts SearchOpts) ([]Res
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("bing status %d", status)
 	}
-	if isBingRateLimited(data) {
+	if IsBingRateLimited(data) {
 		return nil, &ErrRateLimited{Engine: "bing"}
 	}
 
@@ -107,55 +107,79 @@ func ParseBingHTML(data []byte) ([]Result, error) {
 	var results []Result
 
 	doc.Find("#b_results > li.b_algo").Each(func(_ int, s *goquery.Selection) {
-		// Primary path: h2 > a (classic Bing SERP layout)
-		link := s.Find("h2 a").First()
-		title := strings.TrimSpace(link.Text())
-		href, exists := link.Attr("href")
-
-		// Fallback: a.tilk with cite (new Bing SERP layout from ox-browser /fetch)
-		if !exists || title == "" || href == "" {
-			tilk := s.Find("a.tilk").First()
-			href, exists = tilk.Attr("href")
-			if !exists || href == "" {
-				// Last resort: use cite text as URL
-				citeText := strings.TrimSpace(s.Find("cite").First().Text())
-				if citeText == "" {
-					return
-				}
-				href = citeText
-				if !strings.HasPrefix(href, "http") {
-					href = "https://" + href
-				}
-			}
-			if title == "" {
-				title = strings.TrimSpace(tilk.AttrOr("aria-label", ""))
-				if title == "" {
-					title = strings.TrimSpace(s.Find("cite").First().Text())
-				}
-			}
+		r, ok := parseBingResult(s)
+		if ok {
+			results = append(results, r)
 		}
-
-		if title == "" || href == "" {
-			return
-		}
-
-		// Unwrap Bing redirect URLs: /ck/a?...&u=<base64url>&...
-		href = bingUnwrapURL(href)
-
-		snippet := strings.TrimSpace(
-			s.Find(".b_caption p, p.b_lineclamp2, p.b_lineclamp3, p.b_lineclamp4").First().Text(),
-		)
-
-		results = append(results, Result{
-			Title:    title,
-			Content:  snippet,
-			URL:      href,
-			Score:    directResultScore,
-			Metadata: map[string]string{"engine": "bing"},
-		})
 	})
 
 	return results, nil
+}
+
+// parseBingResult extracts a single result from one li.b_algo selection.
+// Returns ok=false when no usable title/href can be recovered.
+func parseBingResult(s *goquery.Selection) (Result, bool) {
+	// Primary path: h2 > a (classic Bing SERP layout)
+	link := s.Find("h2 a").First()
+	title := strings.TrimSpace(link.Text())
+	href, exists := link.Attr("href")
+
+	// Fallback: a.tilk with cite (new Bing SERP layout from ox-browser /fetch)
+	if !exists || title == "" || href == "" {
+		h, t, ok := parseBingTilkFallback(s, title)
+		if !ok {
+			return Result{}, false
+		}
+		href, title = h, t
+	}
+
+	if title == "" || href == "" {
+		return Result{}, false
+	}
+
+	// Unwrap Bing redirect URLs: /ck/a?...&u=<base64url>&...
+	href = bingUnwrapURL(href)
+
+	snippet := strings.TrimSpace(
+		s.Find(".b_caption p, p.b_lineclamp2, p.b_lineclamp3, p.b_lineclamp4").First().Text(),
+	)
+
+	return Result{
+		Title:    title,
+		Content:  snippet,
+		URL:      href,
+		Score:    directResultScore,
+		Metadata: map[string]string{"engine": "bing"},
+	}, true
+}
+
+// parseBingTilkFallback re-derives href (and, when empty, title) from the
+// a.tilk / cite fallback path used by the new Bing SERP layout. The incoming
+// href is discarded; ok=false signals the result must be dropped.
+func parseBingTilkFallback(s *goquery.Selection, titleIn string) (href, title string, ok bool) {
+	tilk := s.Find("a.tilk").First()
+	tilkHref, exists := tilk.Attr("href")
+	if !exists || tilkHref == "" {
+		// Last resort: use cite text as URL
+		citeText := strings.TrimSpace(s.Find("cite").First().Text())
+		if citeText == "" {
+			return "", "", false
+		}
+		href = citeText
+		if !strings.HasPrefix(href, "http") {
+			href = "https://" + href
+		}
+	} else {
+		href = tilkHref
+	}
+	title = titleIn
+	if title == "" {
+		title = strings.TrimSpace(tilk.AttrOr("aria-label", ""))
+		if title == "" {
+			title = strings.TrimSpace(s.Find("cite").First().Text())
+		}
+	}
+	return href, title, true
 }
 
 // bingUnwrapURL extracts the real URL from a Bing redirect link.
@@ -183,8 +207,8 @@ func bingUnwrapURL(rawURL string) string {
 	return string(decoded)
 }
 
-// isBingRateLimited checks if Bing blocked the request.
-func isBingRateLimited(body []byte) bool {
+// IsBingRateLimited checks if Bing blocked the request.
+func IsBingRateLimited(body []byte) bool {
 	lower := bytes.ToLower(body)
 	markers := [][]byte{
 		[]byte("captcha"),

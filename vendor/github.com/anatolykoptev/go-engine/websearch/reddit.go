@@ -57,7 +57,7 @@ func (r *Reddit) Search(ctx context.Context, query string, opts SearchOpts) ([]R
 	u := redditEndpoint + "?q=" + url.QueryEscape(query) +
 		"&limit=10&sort=relevance&t=" + t
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(r.browser)
 	headers["accept"] = acceptJSON
 
 	data, _, status, err := r.browser.Do(http.MethodGet, u, headers, nil)

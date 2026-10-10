@@ -12,6 +12,7 @@ import (
 	engllm "github.com/anatolykoptev/go-engine/llm"
 	"github.com/anatolykoptev/go-kit/env"
 	kitmetrics "github.com/anatolykoptev/go-kit/metrics"
+	"github.com/anatolykoptev/go-kit/svcauth"
 	linkedin "github.com/anatolykoptev/go-linkedin"
 	"github.com/anatolykoptev/go-stealth/proxypool"
 	twitter "github.com/anatolykoptev/go-twitter"
@@ -60,7 +61,7 @@ type Config struct {
 
 	// OxBrowserURL is the base URL of the self-hosted ox-browser solver
 	// (e.g. "http://ox-browser:8901"). When non-empty, the proxy fetcher gains
-	// an ox-browser /fetch-smart fallback tier: on any primary-fetch error
+	// an ox-browser /fetch fallback tier: on any primary-fetch error
 	// (notably DDG's 202 anti-bot wall from a datacenter IP), the fetch
 	// escalates to a real headless browser. Empty = disabled (graceful).
 	// Authoritative source is OX_BROWSER_URL env — do NOT hard-code the
@@ -323,6 +324,32 @@ func Init(c Config) {
 			IdleConnTimeout:     90 * time.Second,
 			TLSHandshakeTimeout: 10 * time.Second,
 		},
+	}
+
+	// ox-browser#173: ox-browser's inbound auth gate flips from soft to
+	// enforce — requests without X-Internal-Secret get 401. Wrap the shared
+	// client with go-kit svcauth so calls to the ox-browser origin (the
+	// craigslist /fetch tier in internal/engine/jobs/craigslist.go) carry
+	// INTERNAL_SERVICE_SECRET while every other origin carries none —
+	// svcauth also strips a caller-set X-Internal-Secret on unrouted origins.
+	//
+	// go-wowa is routed for exactly that strip rule: gowowa_render.go
+	// hand-sets the same header on this client, and without a matching route
+	// the wrap would strip it. The GOWOWA_URL fallback must match
+	// gowowa_render.go's default.
+	internalSecret := os.Getenv(svcauth.EnvInternalSecret)
+	if wrapped, wrapErr := svcauth.WrapClient(httpClient,
+		svcauth.Route{BaseURL: c.OxBrowserURL, Secret: internalSecret},
+		svcauth.Route{BaseURL: env.Str("GOWOWA_URL", "http://go-wowa:8906"), Secret: internalSecret},
+	); wrapErr != nil {
+		slog.Error("engine: svcauth wrap failed — ox-browser calls stay unauthenticated",
+			slog.Any("error", wrapErr))
+	} else {
+		httpClient = wrapped
+	}
+	if c.OxBrowserURL != "" && internalSecret == "" {
+		slog.Warn("engine: INTERNAL_SERVICE_SECRET unset — ox-browser calls will be " +
+			"rejected once its inbound auth gate enforces (ox-browser#173); set INTERNAL_SERVICE_SECRET")
 	}
 
 	// Populate computed Config fields for sub-packages (jobs, sources).

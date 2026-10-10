@@ -32,6 +32,14 @@ type SearchOutput struct {
 	Sources       []SourceItem   `json:"sources"`
 	LLMSkipped    bool           `json:"llm_skipped,omitempty"`
 	DegradeReason string         `json:"degrade_reason,omitempty"`
+	// CoveredAspects lists the dominant aspect phrases the merged corpus
+	// already covers (deep-mode iterate pass). The "learnings" surface: a
+	// caller iterating on this topic can steer follow-up queries toward
+	// under-covered ground instead of re-asking covered facets.
+	CoveredAspects []string `json:"covered_aspects,omitempty"`
+	// IteratedQueries lists the follow-up queries the deep iterate pass
+	// actually issued — the expansion is visible, not implicit.
+	IteratedQueries []string `json:"iterated_queries,omitempty"`
 }
 
 // OutputOpts controls the size and shape of SearchOutput.

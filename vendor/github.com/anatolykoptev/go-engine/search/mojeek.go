@@ -42,7 +42,7 @@ func SearchMojeekDirect(ctx context.Context, bc BrowserDoer, query string, m *me
 	}
 	u := mojeekEndpoint + "?q=" + url.QueryEscape(query)
 
-	headers := websearch.ChromeHeaders()
+	headers := websearch.ChromeHeadersFor(bc)
 	headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 
 	data, _, status, err := bc.Do(http.MethodGet, u, headers, nil)

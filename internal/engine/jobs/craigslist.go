@@ -430,11 +430,11 @@ func isOxBrowserCascadeError(oxErr string) bool {
 	return strings.Contains(oxErr, "solver") || strings.Contains(oxErr, "cf_clearance")
 }
 
-// craigslistOxBrowserFetch is the RSS Tier-3 transport: ox-browser /fetch-smart.
+// craigslistOxBrowserFetch is the RSS Tier-3 transport: ox-browser /fetch.
 // Reuses engine.FetchProxyBody, which owns the stealth → ox-browser cascade
 // wired in config.go via fetch.WithOxBrowser(Config.OxBrowserURL). When the
 // stealth tier already failed, FetchProxyBody's direct-first classifier
-// escalates to the ox-browser /fetch-smart fallback.
+// escalates to the ox-browser /fetch fallback.
 //
 // Returns (status, body, err) matching the stealth tier signature.
 var craigslistOxBrowserFetch = func(ctx context.Context, feedURL string, headers map[string]string) (status int, body []byte, err error) {
@@ -657,7 +657,7 @@ func buildCraigslistResult(title, href, location, posted string) engine.SearxngR
 // fetchCraigslistRSS fetches and parses the Craigslist RSS feed using a two-tier
 // transport ladder:
 //  1. Stealth (go-stealth Chrome-TLS) — cheap, no browser, right tier for a static XML feed.
-//  2. ox-browser /fetch-smart — anti-bot fallback, reuses the FetchProxyBody cascade.
+//  2. ox-browser /fetch — anti-bot fallback, reuses the FetchProxyBody cascade.
 //
 // On 403/429 from stealth, escalates to ox-browser. If both refuse, returns
 // errCraigslistBlocked. If a tier errors (transport/parse/deadline), returns
@@ -702,7 +702,7 @@ func fetchCraigslistRSS(ctx context.Context, query, location string, limit int) 
 			slog.Int("status", status))
 	}
 
-	// Tier 2: ox-browser /fetch-smart (reuses FetchProxyBody cascade).
+	// Tier 2: ox-browser /fetch (reuses FetchProxyBody cascade).
 	oxStatus, oxBody, oxErr := craigslistOxBrowserFetch(ctx, feedURL, headers)
 	if oxErr == nil && oxStatus == http.StatusOK && len(oxBody) > 0 {
 		results, parseErr := parseCraigslistRSS(oxBody, limit)
@@ -832,7 +832,7 @@ type tierOutcome struct {
 //  2. ox-browser POST /fetch — Chrome TLS/JA3 impersonation + proxy pool + CF solver,
 //     returns the same static markup as tier 1. Skipped (and reported) when
 //     engine.Cfg.OxBrowserURL is empty.
-//  3. RSS (stealth → ox-browser /fetch-smart) — last tier; currently blocked for
+//  3. RSS (stealth → ox-browser /fetch) — last tier; currently blocked for
 //     Craigslist, its failure must not decide the blocked verdict.
 //
 // Escalation rules:
@@ -905,7 +905,7 @@ func fetchCraigslistListings(ctx context.Context, query, location string, limit 
 		}
 	}
 
-	// --- Tier 3: RSS (stealth → ox-browser /fetch-smart) ---
+	// --- Tier 3: RSS (stealth → ox-browser /fetch) ---
 	rssResults, rssErr := fetchCraigslistRSS(ctx, query, location, limit)
 	if rssErr == nil {
 		if len(rssResults) > 0 {

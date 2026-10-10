@@ -50,7 +50,7 @@ func SearchWikipediaDirect(ctx context.Context, bc BrowserDoer, query, lang stri
 		lang, url.QueryEscape(query),
 	)
 
-	headers := websearch.ChromeHeaders()
+	headers := websearch.ChromeHeadersFor(bc)
 	headers["accept"] = "application/json"
 
 	data, _, status, err := bc.Do(http.MethodGet, apiURL, headers, nil)
