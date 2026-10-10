@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.6](https://github.com/anatolykoptev/go-job/compare/v1.22.5...v1.22.6) (2026-10-10)
+
+
+### Bug Fixes
+
+* **discovery:** send Bearer token to go-search REST bridge ([#526](https://github.com/anatolykoptev/go-job/issues/526)) ([e5fdb93](https://github.com/anatolykoptev/go-job/commit/e5fdb93c1506510113f2f11ba72145008705b4b5))
+
 ## [1.22.5](https://github.com/anatolykoptev/go-job/compare/v1.22.4...v1.22.5) (2026-10-10)
 
 
