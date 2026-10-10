@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.5](https://github.com/anatolykoptev/go-job/compare/v1.22.4...v1.22.5) (2026-10-10)
+
+
+### Bug Fixes
+
+* **oxbrowser:** authenticate every ox-browser call via go-kit svcauth (ox-browser[#173](https://github.com/anatolykoptev/go-job/issues/173)) ([#525](https://github.com/anatolykoptev/go-job/issues/525)) ([5ca4374](https://github.com/anatolykoptev/go-job/commit/5ca4374d25925e1e4722e850bfb847ca58b73a80))
+
 ## [1.22.4](https://github.com/anatolykoptev/go-job/compare/v1.22.3...v1.22.4) (2026-10-10)
 
 
