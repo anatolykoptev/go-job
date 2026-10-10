@@ -57,7 +57,7 @@ func TestClient_DiscoverBoardURLs_RequestContract(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	_, err := c.DiscoverBoardURLs(context.Background(), "engineer site:boards.greenhouse.io")
 	require.NoError(t, err)
 
@@ -108,7 +108,7 @@ func TestClient_DiscoverBoardURLs_OK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer site:boards.greenhouse.io")
 	require.NoError(t, err)
 	require.Len(t, results, 2)
@@ -150,7 +150,7 @@ func TestClient_DiscoverBoardURLs_DDGUnwrapAndFilter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer site:jobs.lever.co")
 	require.NoError(t, err)
 	require.Len(t, results, 2, "expected exactly 2 board URLs (DDG-wrapped lever + clean ashby)")
@@ -169,7 +169,7 @@ func TestClient_DiscoverBoardURLs_5xx_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer site:boards.greenhouse.io")
 	assert.Nil(t, results)
 	assert.Error(t, err)
@@ -185,7 +185,7 @@ func TestClient_DiscoverBoardURLs_IsError_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
 	assert.Nil(t, results)
 	assert.Error(t, err)
@@ -205,7 +205,7 @@ func TestClient_DiscoverBoardURLs_Timeout_ReturnsError(t *testing.T) {
 		srv.Close()
 	}()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	c.timeout = 50 * time.Millisecond
 
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
@@ -220,7 +220,7 @@ func TestClient_DiscoverBoardURLs_EmptyResults_ReturnsNilNil(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
 	assert.Nil(t, err)
 	assert.Nil(t, results)
@@ -253,7 +253,7 @@ func TestClient_DiscoverBoardURLs_AllURLsEmpty_ReturnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
 	assert.Nil(t, results, "malformed all-URL-empty response must not return results")
 	assert.Error(t, err, "malformed all-URL-empty response must return error (triggers local fallback)")
@@ -277,7 +277,7 @@ func TestClient_DiscoverBoardURLs_NonBoardURLsFiltered(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "engineer")
 	assert.Nil(t, err, "all-non-board results should return nil error (legitimate empty, not schema drift)")
 	assert.Nil(t, results)
@@ -313,7 +313,7 @@ func TestDiscovery_Degraded_FallsBack(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
 
 	assert.Nil(t, results, "degraded response must return nil results")
@@ -345,7 +345,7 @@ func TestDiscovery_Degraded_NoSelfDuplicatingWrap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	_, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
 	require.Error(t, err)
 
@@ -378,7 +378,7 @@ func TestDiscovery_CleanZero_NoFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
 
 	assert.Nil(t, results, "clean zero must return nil results")
@@ -399,7 +399,7 @@ func TestDiscovery_ResultsPresent_Used(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io acme")
 
 	require.NoError(t, err, "healthy results must not return an error")
@@ -427,7 +427,7 @@ func TestDiscovery_TransportError_FallsBack(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, "")
 	results, err := c.DiscoverBoardURLs(context.Background(), "site:boards.greenhouse.io engineer")
 
 	assert.Nil(t, results, "transport error must return nil results")
@@ -448,5 +448,26 @@ func TestDefaultDiscoveryTimeout_ExceedsRawWebSearchServerCap(t *testing.T) {
 		t.Fatalf("defaultDiscoveryTimeout (%v) must exceed go-search raw_web_search server ToolTimeout (%v) "+
 			"so Degraded responses arrive before go-job gives up; increase defaultDiscoveryTimeout",
 			defaultDiscoveryTimeout, rawWebSearchServerCap)
+	}
+}
+
+// TestClient_SendsBearer: go-search REST auth is migrating to
+// REST_AUTH_MODE=required — the client must forward GO_SEARCH_TOKEN.
+//
+// Falsification: delete the Authorization block in callRawWebSearch
+// (client.go) and the server sees an empty header → RED.
+func TestClient_SendsBearer(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"{\"results\":[]}"}],"is_error":false}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL, "tok123").RawSearch(context.Background(), "q"); err != nil {
+		t.Fatalf("RawSearch: %v", err)
+	}
+	if got != "Bearer tok123" {
+		t.Fatalf("Authorization = %q, want Bearer tok123", got)
 	}
 }
