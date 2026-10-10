@@ -359,7 +359,7 @@ func SearchLinkedInJobs(ctx context.Context, query, location, experience, jobTyp
 type linkedInTierFunc func(ctx context.Context, targetURL string, headers map[string]string) (status int, body []byte, err error)
 
 // linkedInTierAFetch is the Tier-A fetch: engine.FetchProxyBody, which owns the
-// direct Chrome-TLS → Webshare proxy pool → ox-browser /fetch-smart cascade
+// direct Chrome-TLS → Webshare proxy pool → ox-browser /fetch cascade
 // (wired in internal/engine/config.go via fetch.WithDirectFirst(true) and
 // fetch.WithOxBrowser when OX_BROWSER_URL is set). Overridable in tests.
 //
@@ -377,7 +377,7 @@ var linkedInTierBFetch linkedInTierFunc = linkedInTierBRender
 // linkedInRequest fetches a LinkedIn URL through a two-tier fallback cascade:
 //
 //  1. Tier A: engine.FetchProxyBody (direct Chrome-TLS → Webshare proxy pool →
-//     ox-browser /fetch-smart anti-bot fallback).
+//     ox-browser /fetch anti-bot fallback).
 //  2. Tier B: fetchRenderedHTML (go-wowa headless Chrome render).
 //
 // Each response is classified via classifyLinkedInResponse. The first tier that
@@ -467,7 +467,7 @@ func linkedInRequest(ctx context.Context, targetURL string) ([]byte, error) {
 
 // linkedInTierAProxy is the Tier-A fetch: engine.FetchProxyBody routes through
 // the go-engine Fetcher, which owns the direct Chrome-TLS → Webshare proxy
-// pool → ox-browser /fetch-smart cascade (wired in internal/engine/config.go
+// pool → ox-browser /fetch cascade (wired in internal/engine/config.go
 // via fetch.WithDirectFirst(true) and fetch.WithOxBrowser when OX_BROWSER_URL
 // is set). A nil/misconfigured proxy fetcher returns an error which the
 // cascade treats as a tier failure → escalates to Tier B (go-wowa render).

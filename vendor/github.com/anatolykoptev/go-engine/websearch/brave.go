@@ -17,6 +17,12 @@ import (
 const (
 	braveEndpoint = "https://search.brave.com/search"
 	braveReferer  = "https://search.brave.com/"
+
+	// Bytes of leading/trailing context around a "captcha" occurrence
+	// inspected to decide whether it sits inside an i18n JSON key-value
+	// pair (isCaptchaInI18nContext) rather than plain HTML text.
+	captchaContextLeading  = 20
+	captchaContextTrailing = 30
 )
 
 // BraveSearchURL returns the GET URL for the Brave Search HTML SERP endpoint.
@@ -65,7 +71,7 @@ func (b *Brave) Search(ctx context.Context, query string, opts SearchOpts) ([]Re
 
 	u := BraveSearchURL(query, opts)
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(b.browser)
 	headers["referer"] = braveReferer
 	headers["accept"] = acceptHTML
 
@@ -79,7 +85,7 @@ func (b *Brave) Search(ctx context.Context, query string, opts SearchOpts) ([]Re
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("brave status %d", status)
 	}
-	if isBraveRateLimited(data) {
+	if IsBraveRateLimited(data) {
 		return nil, &ErrRateLimited{Engine: "brave"}
 	}
 
@@ -124,12 +130,12 @@ func ParseBraveHTML(data []byte) ([]Result, error) {
 	return results, nil
 }
 
-// isBraveRateLimited checks if Brave blocked the request.
+// IsBraveRateLimited checks if Brave blocked the request.
 // Context-aware: "captcha" appears in Brave's i18n translation JSON
 // (e.g. "Switch to traditional captcha":"Switch to traditional CAPTCHA") even
 // on normal result pages. We distinguish i18n context (key":"value) from a
 // real captcha page where "captcha" appears in plain HTML text.
-func isBraveRateLimited(body []byte) bool {
+func IsBraveRateLimited(body []byte) bool {
 	lower := bytes.ToLower(body)
 
 	// Strong markers — always indicate rate limiting
@@ -171,8 +177,8 @@ func isCaptchaInI18nContext(lower []byte) bool {
 		}
 		pos += idx
 		// Check surrounding context for JSON key-value pattern
-		start := max(0, pos-20)
-		end := min(len(lower), pos+30)
+		start := max(0, pos-captchaContextLeading)
+		end := min(len(lower), pos+captchaContextTrailing)
 		context := lower[start:end]
 		// i18n pattern: "captcha":"... or "captcha": "...
 		if !bytes.Contains(context, []byte(`":"`)) && !bytes.Contains(context, []byte(`": "`)) {

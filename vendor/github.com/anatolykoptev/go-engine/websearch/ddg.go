@@ -108,7 +108,7 @@ func (d *DDG) searchHTML(ctx context.Context, query, region, timeRange string) (
 	df := timeRangeToDDG(timeRange)
 	formBody := fmt.Sprintf("q=%s&kl=%s&df=%s", url.QueryEscape(query), url.QueryEscape(region), url.QueryEscape(df))
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(d.browser)
 	headers["referer"] = "https://html.duckduckgo.com/"
 	headers["content-type"] = "application/x-www-form-urlencoded"
 
@@ -122,7 +122,7 @@ func (d *DDG) searchHTML(ctx context.Context, query, region, timeRange string) (
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("ddg html status %d", status)
 	}
-	if isDDGRateLimited(data) {
+	if IsDDGRateLimited(data) {
 		return nil, &ErrRateLimited{Engine: "ddg"}
 	}
 
@@ -136,7 +136,7 @@ func (d *DDG) getVQD(ctx context.Context, query string) (string, error) {
 
 	u := ddgHomepage + "?q=" + url.QueryEscape(query)
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(d.browser)
 	headers["referer"] = ddgHomepage
 
 	data, _, status, err := d.browser.Do(http.MethodGet, u, headers, nil)
@@ -168,7 +168,7 @@ func (d *DDG) searchDJS(ctx context.Context, query, vqd, region, timeRange strin
 	}
 	u := ddgDJSEndpoint + "?" + params.Encode()
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(d.browser)
 	headers["referer"] = ddgHomepage
 	headers["accept"] = "application/json, text/javascript, */*; q=0.01"
 

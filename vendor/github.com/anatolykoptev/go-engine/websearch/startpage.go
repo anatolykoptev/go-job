@@ -67,7 +67,7 @@ func (sp *Startpage) Search(ctx context.Context, query string, opts SearchOpts) 
 		formBody += "&with_date=" + withDate
 	}
 
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(sp.browser)
 	headers["referer"] = startpageReferer
 	headers["content-type"] = "application/x-www-form-urlencoded"
 	headers["accept"] = acceptHTML

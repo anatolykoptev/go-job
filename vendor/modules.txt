@@ -26,8 +26,8 @@ github.com/RadhiFadlillah/whatlanggo
 github.com/a-h/templ
 github.com/a-h/templ/runtime
 github.com/a-h/templ/safehtml
-# github.com/anatolykoptev/go-engine v1.51.5
-## explicit; go 1.26
+# github.com/anatolykoptev/go-engine v1.55.0
+## explicit; go 1.26.3
 github.com/anatolykoptev/go-engine/extract
 github.com/anatolykoptev/go-engine/fetch
 github.com/anatolykoptev/go-engine/llm
@@ -38,7 +38,7 @@ github.com/anatolykoptev/go-engine/sources
 github.com/anatolykoptev/go-engine/text
 github.com/anatolykoptev/go-engine/websearch
 github.com/anatolykoptev/go-engine/webtext
-# github.com/anatolykoptev/go-kit v0.97.17
+# github.com/anatolykoptev/go-kit v0.97.18
 ## explicit; go 1.26.3
 github.com/anatolykoptev/go-kit/admintable
 github.com/anatolykoptev/go-kit/breaker
@@ -58,6 +58,7 @@ github.com/anatolykoptev/go-kit/render/typst
 github.com/anatolykoptev/go-kit/rerank
 github.com/anatolykoptev/go-kit/retry
 github.com/anatolykoptev/go-kit/strutil
+github.com/anatolykoptev/go-kit/svcauth
 github.com/anatolykoptev/go-kit/telegram
 github.com/anatolykoptev/go-kit/telegram/broadcast
 github.com/anatolykoptev/go-kit/telegram/miniapp
@@ -84,7 +85,7 @@ github.com/anatolykoptev/go-panel/resource
 github.com/anatolykoptev/go-panel/shell
 github.com/anatolykoptev/go-panel/shell/internal/assets
 github.com/anatolykoptev/go-panel/tenant
-# github.com/anatolykoptev/go-stealth v1.22.4
+# github.com/anatolykoptev/go-stealth v1.23.0
 ## explicit; go 1.26.3
 github.com/anatolykoptev/go-stealth
 github.com/anatolykoptev/go-stealth/internal/uri

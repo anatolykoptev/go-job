@@ -285,7 +285,8 @@ func New(opts ...Option) *Client {
 	}
 
 	var kitOpts []kitllm.Option
-	if len(cfg.modelChain) > 0 && len(cfg.proxyURLs) > 1 {
+	switch {
+	case len(cfg.modelChain) > 0 && len(cfg.proxyURLs) > 1:
 		// Multi-proxy mode: build cross-product of proxies × models.
 		// Local proxy first, remote as fallback for each model.
 		proxies := buildProxySpecs(cfg.proxyURLs, cfg.proxyKeys, cfg.apiKey)
@@ -308,7 +309,7 @@ func New(opts ...Option) *Client {
 		if cfg.perAttemptTimeout > 0 {
 			kitOpts = append(kitOpts, kitllm.WithPerAttemptTimeout(cfg.perAttemptTimeout))
 		}
-	} else if len(cfg.modelChain) > 0 {
+	case len(cfg.modelChain) > 0:
 		// Model chain takes precedence: kit's WithEndpoints disables
 		// WithFallbackKeys rotation, so the chain wins when both are set.
 		//
@@ -345,7 +346,7 @@ func New(opts ...Option) *Client {
 		if cfg.perAttemptTimeout > 0 {
 			kitOpts = append(kitOpts, kitllm.WithPerAttemptTimeout(cfg.perAttemptTimeout))
 		}
-	} else if len(cfg.fallbacks) > 0 {
+	case len(cfg.fallbacks) > 0:
 		kitOpts = append(kitOpts, kitllm.WithFallbackKeys(cfg.fallbacks))
 	}
 

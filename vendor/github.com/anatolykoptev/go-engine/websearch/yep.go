@@ -58,7 +58,7 @@ func (y *Yep) Search(ctx context.Context, query string, opts SearchOpts) ([]Resu
 	}
 
 	u := yepEndpoint + "?" + args.Encode()
-	headers := ChromeHeaders()
+	headers := ChromeHeadersFor(y.browser)
 	headers["accept"] = acceptJSON
 	headers["referer"] = "https://yep.com/"
 

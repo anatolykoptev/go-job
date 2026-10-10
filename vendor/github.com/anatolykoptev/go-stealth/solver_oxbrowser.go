@@ -19,6 +19,8 @@ type OxBrowserSolverConfig struct {
 
 	// ProxyFn, if non-nil, routes requests to ox-browser through a proxy.
 	// Compatible with http.Transport.Proxy — pass proxyPool.TransportProxy().
+	// With ProxyFn set, no X-Internal-Secret is sent to ox-browser: the
+	// request itself transits the external proxy, which would see the header.
 	ProxyFn func(*http.Request) (*url.URL, error)
 }
 
@@ -33,6 +35,9 @@ type OxBrowserSolver struct {
 }
 
 // NewOxBrowserSolver creates a CookieProvider backed by ox-browser.
+// Its calls to ox-browser carry X-Internal-Secret from
+// INTERNAL_SERVICE_SECRET when set — unless cfg.ProxyFn routes them through
+// an external proxy (see NewOxBrowserClientWithProxy).
 func NewOxBrowserSolver(cfg OxBrowserSolverConfig) *OxBrowserSolver {
 	ttl := cfg.CacheTTL
 	if ttl == 0 {

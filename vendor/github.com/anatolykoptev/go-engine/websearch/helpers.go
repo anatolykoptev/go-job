@@ -2,10 +2,11 @@ package websearch
 
 import (
 	"bytes"
-	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"strings"
+
+	stealth "github.com/anatolykoptev/go-stealth"
 )
 
 var reHTMLTag = regexp.MustCompile(`<[^>]*>`)
@@ -22,30 +23,54 @@ func CleanHTML(s string) string {
 	return strings.TrimSpace(reHTMLTag.ReplaceAllString(s, ""))
 }
 
-// chromeUserAgents is a pool of Chrome-like User-Agents for rotation.
-var chromeUserAgents = []string{
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-	"Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0",
+// resolveUserAgent returns the User-Agent that matches the TLS fingerprint
+// the fleet's stealth client presents. When d is a *stealth.BrowserClient
+// (the production concrete type behind every websearch.BrowserDoer),
+// Identity().UserAgent is the exact UA paired with the installed TLS profile
+// — the matched pair go-stealth guarantees by construction. When d is nil or
+// a test mock (no *stealth.BrowserClient concrete type), the UA is resolved
+// from the default TLS profile (ProfileChrome131 — the profile every
+// stealth.NewClient() in this repo installs, since no callsite uses
+// WithProfile) via UserAgentForProfile, so the UA matches the fleet's
+// canonical identity regardless.
+//
+// This replaces the former chromeUserAgents hardcoded pool, which rotated
+// through Chrome 131/130, Safari 17.2, and Firefox 115 UAs over a Chrome 131
+// JA3 — a self-inconsistent pair (no real Firefox 115 produces a Chrome 131
+// handshake) that was a stronger bot signal than being merely out of date.
+func resolveUserAgent(d any) string {
+	if bc, ok := d.(*stealth.BrowserClient); ok && bc != nil {
+		return bc.Identity().UserAgent
+	}
+	return stealth.UserAgentForProfile(stealth.ProfileChrome131)
 }
 
-// ChromeHeaders returns browser-like HTTP headers for direct scraping.
-func ChromeHeaders() map[string]string {
+// ChromeHeadersFor returns browser-like HTTP headers for direct scraping,
+// with the User-Agent derived from d's identity so it agrees with the JA3
+// fingerprint the presenting stealth client actually sends. d is the
+// BrowserDoer the caller will issue the request through; pass nil to resolve
+// from the default profile (ProfileChrome131).
+func ChromeHeadersFor(d any) map[string]string {
 	return map[string]string{
 		"accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 		"accept-language": "en-US,en;q=0.9",
 		"accept-encoding": "gzip, deflate, br",
-		"user-agent":      chromeUserAgents[rand.IntN(len(chromeUserAgents))], //nolint:gosec // not crypto
+		"user-agent":      resolveUserAgent(d),
 	}
 }
 
-// isDDGRateLimited checks whether the DDG response body indicates CAPTCHA.
-func isDDGRateLimited(body []byte) bool {
+// ChromeHeaders returns browser-like HTTP headers for direct scraping.
+//
+// Deprecated: use ChromeHeadersFor(d) with the request's BrowserDoer so the
+// User-Agent is derived from the client's identity instead of the default
+// profile. Kept for backward compatibility and for callers without a doer in
+// hand (tests, ad-hoc scraping).
+func ChromeHeaders() map[string]string {
+	return ChromeHeadersFor(nil)
+}
+
+// IsDDGRateLimited checks whether the DDG response body indicates CAPTCHA.
+func IsDDGRateLimited(body []byte) bool {
 	low := bytes.ToLower(body)
 	for _, marker := range [][]byte{
 		[]byte("please try again"),

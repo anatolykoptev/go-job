@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/anatolykoptev/go-stealth/compare/v1.22.4...v1.23.0) (2026-10-10)
+
+
+### Added
+
+* **oxbrowser:** send X-Internal-Secret to ox-browser via go-kit svcauth (ox-browser[#173](https://github.com/anatolykoptev/go-stealth/issues/173)) ([#59](https://github.com/anatolykoptev/go-stealth/issues/59)) ([876152f](https://github.com/anatolykoptev/go-stealth/commit/876152f11ec9d51ac0f2665039dd53c5635d2d6d))
+
 ## [1.22.4](https://github.com/anatolykoptev/go-stealth/compare/v1.22.3...v1.22.4) (2026-10-08)
 
 
