@@ -137,15 +137,18 @@ type rawSearchEnvelope struct {
 // HTTP+JSON, no MCP envelope, no SSE, no Accept negotiation).
 type Client struct {
 	baseURL string
+	token   string
 	http    *http.Client
 	timeout time.Duration
 }
 
 // NewClient constructs a Client targeting the given go-search base URL.
-// baseURL should be e.g. "http://10.9.0.10:8890".
-func NewClient(baseURL string) *Client {
+// baseURL should be e.g. "http://10.9.0.10:8890". token is the REST bridge
+// bearer credential (GO_SEARCH_TOKEN, empty = unauthenticated).
+func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: baseURL,
+		token:   token,
 		http:    &http.Client{Timeout: defaultDiscoveryTimeout + 2*time.Second},
 		timeout: defaultDiscoveryTimeout,
 	}
@@ -261,6 +264,9 @@ func (c *Client) callRawWebSearch(ctx context.Context, query string) (*rawSearch
 		return nil, fmt.Errorf("discovery: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

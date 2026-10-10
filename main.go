@@ -535,7 +535,7 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 	// The same Client instance serves both roles: DiscoverBoardURLs (ATS host
 	// filtered) for discovery, RawSearch (unfiltered) for person/salary research.
 	if goSearchURL := env.Str("GO_SEARCH_URL", ""); goSearchURL != "" {
-		searchClient := discovery.NewClient(goSearchURL)
+		searchClient := discovery.NewClient(goSearchURL, env.Str("GO_SEARCH_TOKEN", ""))
 		jobs.SetATSDiscoverer(searchClient)
 		engine.SetRawSearcher(searchClient)
 		slog.Info("go-search client wired (ATS discovery + raw web search)",
