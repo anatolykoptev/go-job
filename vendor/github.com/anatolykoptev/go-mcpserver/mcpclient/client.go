@@ -19,8 +19,10 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -40,6 +42,12 @@ var clientImpl = &mcp.Implementation{
 // the MCP server cannot be reached at the transport level (dial failure, connection
 // refused, etc.).
 var ErrUnreachable = errors.New("mcpclient: server unreachable")
+
+// ErrRejected is returned when the server was reached but refused the request:
+// a JSON-RPC error response, or an HTTP 4xx status (413 body too large, 400,
+// 401, 403, 404 ...). It is never suppressed by WithUnreachableTolerant -
+// retrying or ignoring it would hide a request that can never succeed.
+var ErrRejected = errors.New("mcpclient: server rejected request")
 
 // ErrToolError is returned when the tool ran but the server set IsError on the
 // result. It is always surfaced regardless of WithUnreachableTolerant.
@@ -135,10 +143,12 @@ func (c *Client) CallText(ctx context.Context, tool string, args map[string]any)
 func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (*mcp.CallToolResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	rec := &statusRecorder{}
+	callCtx = context.WithValue(callCtx, statusRecorderKey{}, rec)
 
 	sess, err := c.session_(callCtx)
 	if err != nil {
-		return nil, c.unreachableErr(err)
+		return nil, c.classifyErr(err, rec)
 	}
 	// In non-reuse mode, the session was created solely for this call and is
 	// never cached; close it when the call completes so the SSE goroutine and
@@ -154,7 +164,7 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (*m
 	if err != nil {
 		// Transport-level error — drop the session so the next call reconnects.
 		c.dropSession()
-		return nil, c.unreachableErr(err)
+		return nil, c.classifyErr(err, rec)
 	}
 	if result.IsError {
 		return result, fmt.Errorf("%w: %s", ErrToolError, textFrom(result))
@@ -229,16 +239,18 @@ func (c *Client) connect(ctx context.Context) (*mcp.ClientSession, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
+	// Always wrap the transport: statusTransport records the HTTP status of
+	// rejected responses so classifyErr can tell "server said no" (413, 400 ...)
+	// from "server unreachable" - the SDK reduces both to a plain error string.
+	var rt http.RoundTripper = &statusTransport{base: httpClient.Transport}
 	if c.bearer != "" {
-		httpClient = &http.Client{
-			Transport: &bearerTransport{
-				base:  httpClient.Transport,
-				token: c.bearer,
-			},
-			CheckRedirect: httpClient.CheckRedirect,
-			Jar:           httpClient.Jar,
-			Timeout:       httpClient.Timeout,
-		}
+		rt = &bearerTransport{base: rt, token: c.bearer}
+	}
+	httpClient = &http.Client{
+		Transport:     rt,
+		CheckRedirect: httpClient.CheckRedirect,
+		Jar:           httpClient.Jar,
+		Timeout:       httpClient.Timeout,
 	}
 
 	transport := &mcp.StreamableClientTransport{
@@ -272,6 +284,81 @@ func (c *Client) dropSession() {
 	if sess != nil {
 		_ = sess.Close()
 	}
+}
+
+// statusRecorderKey carries a per-call *statusRecorder through the request
+// context to statusTransport.
+type statusRecorderKey struct{}
+
+// statusRecorder remembers the last HTTP status seen for one Call.
+type statusRecorder struct{ status atomic.Int32 }
+
+// statusTransport records every response status into the statusRecorder the
+// request context carries (if any), then passes the response through untouched.
+type statusTransport struct{ base http.RoundTripper }
+
+func (t *statusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err == nil {
+		if rec, ok := req.Context().Value(statusRecorderKey{}).(*statusRecorder); ok {
+			rec.status.Store(int32(resp.StatusCode)) //nolint:gosec // HTTP status fits int32
+		}
+	}
+	return resp, err
+}
+
+// rejectedStatus reports whether an HTTP status means the server was reached
+// and refused the request. 5xx and 429/408 are transient and stay "unreachable"
+// (mirrors the go-sdk's own transient set: 429, 500, 502, 503, 504).
+func rejectedStatus(code int) bool {
+	if code < http.StatusBadRequest || code >= http.StatusInternalServerError {
+		return false
+	}
+	return code != http.StatusTooManyRequests && code != http.StatusRequestTimeout
+}
+
+// classifyErr turns a Connect/CallTool error into ErrRejected (server reached
+// and said no: JSON-RPC error or HTTP 4xx) or, for transport-level failures,
+// defers to unreachableErr.
+func (c *Client) classifyErr(err error, rec *statusRecorder) error {
+	if err == nil {
+		return nil
+	}
+	if hasServerRPCError(err) || rejectedStatus(int(rec.status.Load())) {
+		return fmt.Errorf("%w: %w", ErrRejected, err)
+	}
+	return c.unreachableErr(err)
+}
+
+// codeRejectedByTransport is the SDK's own sentinel (jsonrpc2.ErrRejected,
+// code -32005) that it wraps around transient transport failures such as 503.
+// It is a *jsonrpc.Error in the chain but does NOT mean the server answered.
+const codeRejectedByTransport = -32005
+
+// hasServerRPCError reports whether err's tree holds a JSON-RPC error the
+// server actually sent, ignoring the SDK's transport-rejection sentinel.
+func hasServerRPCError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if we, ok := err.(*jsonrpc.Error); ok && we.Code != codeRejectedByTransport { //nolint:errorlint // walking the tree manually
+		return true
+	}
+	switch u := err.(type) { //nolint:errorlint // walking the tree manually
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if hasServerRPCError(e) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return hasServerRPCError(u.Unwrap())
+	}
+	return false
 }
 
 // unreachableErr wraps err as ErrUnreachable and, when tolerant mode is on,

@@ -20,8 +20,8 @@ github.com/anatolykoptev/go-kit v0.97.18 h1:ohhljqPLNhdz0CZHss+hLHS0j8A5cWZqQLLR
 github.com/anatolykoptev/go-kit v0.97.18/go.mod h1:YzADfXVpzihE6j+v4WuiQYU4EuCPI8sXxrZdhexTaH0=
 github.com/anatolykoptev/go-linkedin v0.4.13 h1:MAG4ptkK4lQ45xZSVQChY6Rd9RiHxEQ+5C4u8FVVg04=
 github.com/anatolykoptev/go-linkedin v0.4.13/go.mod h1:+GVz8ut1z/AKZ7U3ybkt9WG4pqE1oSvYzuV827WRjwk=
-github.com/anatolykoptev/go-mcpserver v0.18.0 h1:NuDgzucheEzJUDmcebM1C7NdfCz2IUKGr9vVqkjICXk=
-github.com/anatolykoptev/go-mcpserver v0.18.0/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
+github.com/anatolykoptev/go-mcpserver v0.21.0 h1:1LZ+pFTnjSDFvcb6O6e0SawBevzt/jDEi/3vg6RlN84=
+github.com/anatolykoptev/go-mcpserver v0.21.0/go.mod h1:4KB3DrB9+4pLCXslJFoVx6Q8+67a/R8OcbZ3XM8dcw4=
 github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b h1:pVFWdTNapEVjmgBW9QuYvJUvyt20Z1B+3uR8MSVAxSw=
 github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b/go.mod h1:z5pRiCqUO5e3lYXK4r5DGN8RZJKJW6QleEP9Vuz40sk=
 github.com/anatolykoptev/go-stealth v1.23.0 h1:ToI5DPYUsuw5baPXDAFdF410+XLtTnRx9xtxIZnODO8=
@@ -150,8 +150,8 @@ github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-runewidth v0.0.10/go.mod h1:RAqKPSqVFrSLVXbA8x7dzmKdmGzieGRCM46jaSJTDAk=
-github.com/modelcontextprotocol/go-sdk v1.6.1 h1:0zOSupjKUxPKSocPT1Wtago+mUHU2/uZ4xSOY0FGReU=
-github.com/modelcontextprotocol/go-sdk v1.6.1/go.mod h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ=
+github.com/modelcontextprotocol/go-sdk v1.8.0 h1:KIvahhYqwtbeniWVPs3TcXEA7b8jEtwfBpOTAI+Urx4=
+github.com/modelcontextprotocol/go-sdk v1.8.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=

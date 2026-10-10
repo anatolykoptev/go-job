@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -127,6 +128,10 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+			// Cancel the tool when the HTTP client has gone away (see
+			// trackClientDisconnect); a no-op when the request is untracked.
+			clientCtx := clientRequestCtx(ctx)
+			defer cancelOnClientGone(clientCtx, cancel)()
 
 			// Keep the response stream warm while the tool runs so long calls
 			// aren't abandoned by clients/proxies before the result is ready.
@@ -165,7 +170,7 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 				return &mcp.CallToolResult{
 					IsError: true,
 					Content: []mcp.Content{&mcp.TextContent{
-						Text: fmt.Sprintf("tool %q timed out after %s", params.Name, timeout),
+						Text: abortText(ctx, clientCtx, params.Name, timeout, start),
 					}},
 				}, nil
 			}
@@ -225,6 +230,36 @@ func startToolKeepalive(ctx context.Context, req mcp.Request, toolName string, i
 		}
 	}()
 	return func() { close(done) }
+}
+
+// cancelOnClientGone arranges for cancel to run when clientCtx (the HTTP
+// request context from trackClientDisconnect) is done. The returned func
+// releases the registration; both are no-ops when clientCtx is nil.
+func cancelOnClientGone(clientCtx context.Context, cancel context.CancelFunc) (stop func()) {
+	if clientCtx == nil {
+		return func() {}
+	}
+	stopAfter := context.AfterFunc(clientCtx, cancel)
+	return func() { stopAfter() }
+}
+
+// abortText is the tool result text when ctx ended before the tool returned.
+// A client disconnect (clientCtx done) is logged once at Info; other
+// cancellations (notifications/cancelled, session close, REST ctx cancel) are
+// reported as a plain cancel; a deadline is a timeout.
+func abortText(ctx, clientCtx context.Context, tool string, timeout time.Duration, start time.Time) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Sprintf("tool %q timed out after %s", tool, timeout)
+	case clientCtx != nil && clientCtx.Err() != nil:
+		slog.Info("tool cancelled: client disconnected",
+			slog.String("tool", tool),
+			slog.Duration("elapsed", time.Since(start)),
+		)
+		return fmt.Sprintf("tool %q cancelled: client disconnected", tool)
+	default:
+		return fmt.Sprintf("tool %q cancelled", tool)
+	}
 }
 
 func resolveTimeout(name string, args json.RawMessage, cfg Config) time.Duration {

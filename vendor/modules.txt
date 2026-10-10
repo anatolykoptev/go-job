@@ -69,7 +69,7 @@ github.com/anatolykoptev/go-kit/uploads
 # github.com/anatolykoptev/go-linkedin v0.4.13
 ## explicit; go 1.26
 github.com/anatolykoptev/go-linkedin
-# github.com/anatolykoptev/go-mcpserver v0.18.0
+# github.com/anatolykoptev/go-mcpserver v0.21.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 github.com/anatolykoptev/go-mcpserver/mcpclient
@@ -315,9 +315,10 @@ github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.20
 ## explicit; go 1.15
 github.com/mattn/go-isatty
-# github.com/modelcontextprotocol/go-sdk v1.6.1
+# github.com/modelcontextprotocol/go-sdk v1.8.0
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
+github.com/modelcontextprotocol/go-sdk/internal/authutil
 github.com/modelcontextprotocol/go-sdk/internal/json
 github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2
 github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug
@@ -527,6 +528,7 @@ golang.org/x/oauth2
 golang.org/x/oauth2/internal
 # golang.org/x/sync v0.22.0
 ## explicit; go 1.25.0
+golang.org/x/sync/errgroup
 golang.org/x/sync/semaphore
 golang.org/x/sync/singleflight
 # golang.org/x/sys v0.47.0
