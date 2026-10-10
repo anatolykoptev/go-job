@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/anatolykoptev/go-kit/pacing"
 )
 
 // DefaultHeaderOrder is the Chrome request-header order, taken from the
@@ -43,11 +46,14 @@ type BrowserClient struct {
 	doer         HTTPDoer
 	headerOrder  []string
 	proxyPool    ProxyPoolProvider // nil = no auto-rotation
+	poolCloser   io.Closer         // non-nil only for pools the client owns (option-created)
 	middlewares  []Middleware
 	handler      Handler // lazy-built from middlewares + base handler
 	debug        bool
 	blockRetries int // extra retry attempts on 403/429 (requires proxyPool)
 	identity     BrowserIdentity
+	closeOnce    sync.Once
+	closeErr     error
 
 	// requestURLGuard is the pre-request (tier-3) SSRF check on the initial
 	// target URL, evaluated before the (possibly proxied) fetch. nil = no
@@ -101,6 +107,7 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 		doer:            doer,
 		headerOrder:     order,
 		proxyPool:       cfg.proxyPool,
+		poolCloser:      cfg.poolCloser,
 		debug:           cfg.debug,
 		blockRetries:    cfg.blockRetries,
 		requestURLGuard: cfg.requestURLGuard,
@@ -224,6 +231,20 @@ func (bc *BrowserClient) GetCookieValue(rawURL, name string) string {
 	return bc.doer.GetCookieValue(rawURL, name)
 }
 
+// Close releases resources the client owns. Only pools the client created
+// itself — via WithWebshareCountry or WithWebshareRotating — are closed
+// (this stops the Webshare credential refresher); a pool supplied through
+// WithProxyPool belongs to the caller and is left alone. Idempotent; returns
+// the owned pool's first close error, if any.
+func (bc *BrowserClient) Close() error {
+	bc.closeOnce.Do(func() {
+		if bc.poolCloser != nil {
+			bc.closeErr = bc.poolCloser.Close()
+		}
+	})
+	return bc.closeErr
+}
+
 // DoWithHeaderOrder executes a request with a custom header order.
 // Middleware and proxy rotation are applied.
 func (bc *BrowserClient) DoWithHeaderOrder(method, urlStr string, headers map[string]string, body io.Reader, order []string) ([]byte, map[string]string, int, error) {
@@ -287,6 +308,15 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 			if errors.Is(err, ErrSSRFBlocked) {
 				return nil, nil, 0, err
 			}
+			// A proxy 407 reaches here as a transport ERROR, not a response:
+			// both real backends tunnel through CONNECT and surface the
+			// rejection in err (the resp.StatusCode == 407 check below never
+			// sees it). Report it so a refreshing pool re-fetches credentials.
+			if bc.proxyPool != nil && isProxyAuthError(err) {
+				if r, ok := bc.proxyPool.(authFailureReporter); ok {
+					r.ReportAuthFailure()
+				}
+			}
 			// Retry on proxy errors (502, connection refused, etc.) with a new proxy.
 			if attempt < maxAttempts-1 && bc.proxyPool != nil {
 				slog.Debug("request error, retrying with new proxy",
@@ -301,13 +331,25 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 			return nil, nil, 0, err
 		}
 
+		// A 407 is the proxy rejecting its credentials — report it so a pool
+		// that can refresh (e.g. *proxypool.Webshare) re-fetches them, then
+		// return the response as-is. Not a block status: every pool entry
+		// shares the same account credentials, so rotation cannot help.
+		if bc.proxyPool != nil && resp.StatusCode == http.StatusProxyAuthRequired {
+			if r, ok := bc.proxyPool.(authFailureReporter); ok {
+				r.ReportAuthFailure()
+			}
+		}
+
 		if attempt < maxAttempts-1 && isBlockStatus(resp.StatusCode) {
 			slog.Debug("block status, retrying with new proxy",
 				slog.String("url", req.URL),
 				slog.Int("status", resp.StatusCode),
 				slog.Int("attempt", attempt+1))
-			jitter := time.Duration(100+rand.IntN(200)) * time.Millisecond //nolint:mnd,gosec
-			time.Sleep(jitter)
+			// 100–300ms jitter between block-status retries via canonical pacing.
+			// doWithRetry has no context parameter; background context is safe
+			// here — this is a short bounded sleep (max 300ms) inside a retry loop.
+			_ = (pacing.Jitter{Min: 100 * time.Millisecond, Max: 300 * time.Millisecond}).Sleep(context.Background())
 			continue
 		}
 
@@ -318,9 +360,29 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 	return nil, nil, 0, nil
 }
 
+// isProxyAuthError reports whether a transport error is the proxy's 407
+// rejection of its credentials. Neither backend exposes a typed error for it:
+// tls-client returns a plain "Proxy responded with non 200 code: 407 <reason>",
+// and net/http strips the status code entirely, leaving only the reason
+// phrase ("proxyconnect"/"Get ...": Proxy Authentication Required). Matching
+// either form covers both backends — the reason-phrase check catches
+// net/http and tls-client's standard-reason text, the "non 200 code: 407"
+// form catches tls-client when a proxy answers 407 with a custom reason.
+func isProxyAuthError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Proxy Authentication Required") ||
+		strings.Contains(msg, "non 200 code: 407")
+}
+
 // transportProxyProvider is a subset of proxypool.ProxyPool used for type assertion.
 type transportProxyProvider interface {
 	TransportProxy() func(*http.Request) (*url.URL, error)
+}
+
+// authFailureReporter mirrors proxypool.AuthFailureReporter for type
+// assertion — pools that react to HTTP 407 (e.g. *proxypool.Webshare).
+type authFailureReporter interface {
+	ReportAuthFailure()
 }
 
 // oxBrowserProxyFn extracts a TransportProxy function from pool if it supports it.

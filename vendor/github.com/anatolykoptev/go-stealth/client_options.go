@@ -3,6 +3,7 @@ package stealth
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ type ClientOption func(*clientConfig)
 type clientConfig struct {
 	proxyURL           string
 	proxyPool          ProxyPoolProvider
+	poolCloser         io.Closer // set only when an option created the pool itself (client-owned; caller-supplied pools are never closed)
 	profile            TLSProfile
 	identity           *BrowserIdentity
 	timeout            int

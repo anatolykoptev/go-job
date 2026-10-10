@@ -2,6 +2,20 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.3](https://github.com/anatolykoptev/go-job/compare/v1.22.2...v1.22.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **mcp:** enable stateful sessions for standalone GET stream ([#522](https://github.com/anatolykoptev/go-job/issues/522)) ([80891d7](https://github.com/anatolykoptev/go-job/commit/80891d7222c88bace544f2c29b6a5e971cca61ea))
+
+## [1.22.2](https://github.com/anatolykoptev/go-job/compare/v1.22.1...v1.22.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **deps:** bump go-stealth to v1.22.4 (Webshare credential refresh) ([#520](https://github.com/anatolykoptev/go-job/issues/520)) ([bd288ba](https://github.com/anatolykoptev/go-job/commit/bd288ba652866240b9fd5f5f96faaff3676fe2b8))
+
 ## [1.22.1](https://github.com/anatolykoptev/go-job/compare/v1.22.0...v1.22.1) (2026-10-04)
 
 
