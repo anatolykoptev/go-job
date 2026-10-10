@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.7](https://github.com/anatolykoptev/go-job/compare/v1.22.6...v1.22.7) (2026-10-10)
+
+
+### Bug Fixes
+
+* **mcp:** back to stateless + go-mcpserver v0.21.0 (MCP 2026-07-28) ([#530](https://github.com/anatolykoptev/go-job/issues/530)) ([1b22bd7](https://github.com/anatolykoptev/go-job/commit/1b22bd7a2a30502ee1ca4db76093399e0f44907f))
+
 ## [1.22.6](https://github.com/anatolykoptev/go-job/compare/v1.22.5...v1.22.6) (2026-10-10)
 
 
