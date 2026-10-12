@@ -636,7 +636,12 @@ func buildUnavailableSpine(
 		if llm, ok := llmByURL[k]; ok {
 			jobs.FillStructuredFromLLM(&s, llm)
 		}
-		s.Relevance = scoreByURL[k]
+		if _, scored := scoreByURL[k]; scored {
+			s.Relevance = scoreByURL[k]
+			s.RelevanceSource = "gate"
+		} else {
+			s.RelevanceSource = "none"
+		}
 		finalJobs = append(finalJobs, s)
 		nStructured++
 	}
@@ -646,6 +651,7 @@ func buildUnavailableSpine(
 			// No URL — cannot match a structured listing; it is LLM-only. No
 			// gate score is available (the URL never reached scoreByURL).
 			j.Relevance = 0
+			j.RelevanceSource = "none"
 			finalJobs = append(finalJobs, j)
 			nLLMOnly++
 			continue
@@ -658,7 +664,12 @@ func buildUnavailableSpine(
 			continue // dedup across LLM-only
 		}
 		seenStructured[k] = true
-		j.Relevance = scoreByURL[k]
+		if _, scored := scoreByURL[k]; scored {
+			j.Relevance = scoreByURL[k]
+			j.RelevanceSource = "gate"
+		} else {
+			j.RelevanceSource = "none"
+		}
 		finalJobs = append(finalJobs, j)
 		nLLMOnly++
 	}
@@ -688,7 +699,12 @@ func buildHealthySelection(
 	for i := range llmJobs {
 		j := llmJobs[i]
 		if j.URL == "" {
+		if j.URL == "" {
 			j.Relevance = 0
+			j.RelevanceSource = "none"
+			finalJobs = append(finalJobs, j)
+			continue
+		}
 			finalJobs = append(finalJobs, j)
 			continue
 		}
@@ -699,11 +715,21 @@ func buildHealthySelection(
 		seenStructured[k] = true
 		if s, ok := m.Match(j); ok {
 			jobs.FillStructuredFromLLM(&s, j)
-			s.Relevance = scoreByURL[k]
+			if _, scored := scoreByURL[k]; scored {
+				s.Relevance = scoreByURL[k]
+				s.RelevanceSource = "gate"
+			} else {
+				s.RelevanceSource = "none"
+			}
 			finalJobs = append(finalJobs, s)
 			continue
 		}
-		j.Relevance = scoreByURL[k]
+		if _, scored := scoreByURL[k]; scored {
+			j.Relevance = scoreByURL[k]
+			j.RelevanceSource = "gate"
+		} else {
+			j.RelevanceSource = "none"
+		}
 		finalJobs = append(finalJobs, j)
 	}
 	return finalJobs
