@@ -103,6 +103,7 @@ func fetchAllSecurityPrograms(ctx context.Context) ([]engine.SecurityProgram, er
 
 		programs, err := src.parser(data)
 		if err != nil {
+			engine.IncrSecurityFetchErrors(src.platform, "parse")
 			engine.IncrHuntSourceOutcome("security", src.platform, "parse_error")
 			slog.Warn("security: parse failed",
 				slog.String("platform", src.platform),
@@ -150,13 +151,16 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", engine.UserAgentBot)
 
+	platform := securityPlatformForURL(url)
 	resp, err := engine.Cfg.HTTPClient.Do(req)
 	if err != nil {
+		engine.IncrSecurityFetchErrors(platform, "transport")
 		return nil, fmt.Errorf("security request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		engine.IncrSecurityFetchErrors(platform, "status")
 		return nil, fmt.Errorf("security source returned status %d", resp.StatusCode)
 	}
 
@@ -166,15 +170,8 @@ func fetchSecuritySource(ctx context.Context, url string) ([]byte, error) {
 		// confusing downstream JSON parse error), but fetchAllSecurityPrograms
 		// swallows it when a sibling source succeeds. Bump the per-platform
 		// truncation counter so the failure is visible in Prometheus regardless.
-		//
-		// NOTE: this covers ONLY the truncation exit. The ATS fetchers
-		// (ats.go:555/567/574/577 and the lever/ashby siblings) additionally
-		// increment at the transport, status, and parse exits — four exits per
-		// platform. Full parity for the security fetcher (status + transport +
-		// parse exits, plus widening validSecurityFetchErrorReasons) is a
-		// follow-up, not this round.
 		if isBodyTruncated(err) {
-			engine.IncrSecurityFetchErrors(securityPlatformForURL(url), "truncated")
+			engine.IncrSecurityFetchErrors(platform, "truncated")
 		}
 		return nil, fmt.Errorf("security: read body: %w", err)
 	}
