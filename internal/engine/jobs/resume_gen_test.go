@@ -68,6 +68,33 @@ func TestAssembleResumeHeader(t *testing.T) {
 	}
 }
 
+// TestAssembleResumeHeader_EmptyHeadline pins the omit-when-empty behaviour:
+// an empty headline omits the #text(...semibold...) line, the #v(2.4mm) gap
+// before it, and the #linebreak() after it — never an empty content bracket.
+// resume_scaffold relies on this for its optional headline input.
+func TestAssembleResumeHeader_EmptyHeadline(t *testing.T) {
+	contacts := buildResumeContacts("Berlin", "jane@example.com", "", "")
+	got := assembleResumeHeader("Jane Doe", "", contacts)
+
+	if strings.Contains(got, "semibold") {
+		t.Errorf("empty headline must omit the semibold #text line — got %q", got)
+	}
+	if strings.Contains(got, "#linebreak()") {
+		t.Errorf("empty headline must omit #linebreak() — got %q", got)
+	}
+	// Exactly one #v(2.4mm) would be wrong here — it must be absent.
+	if strings.Contains(got, "#v(2.4mm)") {
+		t.Errorf("empty headline must omit the #v(2.4mm) name→headline gap — got %q", got)
+	}
+	// The name line and contacts line are still present.
+	if !strings.Contains(got, "Jane Doe") {
+		t.Errorf("name line missing for empty headline — got %q", got)
+	}
+	if !strings.Contains(got, "jane\\@example.com") {
+		t.Errorf("contacts line missing for empty headline — got %q", got)
+	}
+}
+
 // TestBuildResumeContacts pins the contact line assembly.
 //   - M5: field order (location, email, github, linkedin) and the
 //     "  ·  " separator (two spaces, middle dot, two spaces);
