@@ -1,6 +1,26 @@
 # go_job vs Competitors — Detailed Comparison
 
-> Last updated: 2026-06-26
+> Last updated: 2026-07-31
+
+## How to read this document
+
+Everything below is a **feature** comparison, and features are the shallow layer. Sources,
+filters, caching and TLS fingerprinting are all copyable in a weekend by anyone who decides
+to; anti-bot bypass in particular is an arms race won by infrastructure scale, and several
+of these boards will open an API eventually.
+
+The rows that would actually be hard for a competitor to match are not in the tables,
+because no competitor in this space has them either:
+
+| Durable difference | Where it lives |
+|---|---|
+| Longitudinal record — what you saw, rejected, applied to, and how it went | `hunt_jobs`, `hunt_ratings`, `application_persist`, `resume_memory` |
+| Provenance — every claim about you traceable to a recorded fact | `master_resume` (`is_master` / `parent_id` / atomic promotion) |
+| Determinism you can audit — a ranked list that shows its arithmetic | `job_quality_score`, `job_match_score`; ranking pass 1 (planned) |
+| Continuous operation — push, not pull | hunt ingest + Telegram notify |
+
+Read the feature tables as "table stakes we have covered", not as the moat. The moat is
+stated in [`architecture/principles.md`](architecture/principles.md).
 
 ---
 
@@ -112,29 +132,34 @@
 
 ## Part 3: What go_job Should Add
 
-### High Priority — Job Search Gaps
+### High priority — the ranking layer
 
-| Feature | Effort | Notes |
-|---------|--------|-------|
-| **Glassdoor** | Medium | Salary data + company reviews — critical for compensation research |
-| **ZipRecruiter** | Medium | Large US market, many exclusive postings |
+Not a source. A source is a commodity; the decision made over the sources is not.
 
-### Medium Priority — Additional Sources
+Today the relevance decision is taken inside an LLM prompt, which means it cannot be
+tested, mutated or regression-guarded — and on 2026-07-31 it returned zero jobs on five
+consecutive live queries without anything going red. The work is specified in
+[roadmap.md → Phase 12](roadmap.md) and
+[principles.md §5](architecture/principles.md#5-the-search-architecture):
+a mechanical pass 1 (BM25 + embeddings fused with RRF) that always shows its arithmetic,
+then a model pass over the top-K fed **the user's own history** rather than the query text.
 
-These sources are not yet integrated:
+That second pass is the only part of this comparison a chat window cannot reproduce.
+
+### Medium priority — additional sources
 
 | Source | Effort | Notes |
 |--------|--------|-------|
 | **Glassdoor** | Medium | Salary data + company reviews |
 | **ZipRecruiter** | Medium | Large US market, many exclusive postings |
 
-### Low Priority — Automation
+### Already shipped — previously listed here as gaps
 
-| Feature | Notes |
+| Feature | Where |
 |---------|-------|
-| **Job tracking** (save/status) | Store applied/interested jobs in local JSON/SQLite |
-| **Duplicate detection** | Dedup across sources by title+company+location |
-| **Alert/watch mode** | Periodic re-search + notify on new matches |
+| Job tracking (save/status) | `job_tracker`, Postgres `hunt_jobs` + `hunt_ratings` (ADR-002) |
+| Duplicate detection | `DedupByDomain` + hunt-store upsert on URL |
+| Alert/watch mode | hunt ingest cycle + Telegram notify (`internal/hunt/notify`) |
 
 ---
 
@@ -142,7 +167,7 @@ These sources are not yet integrated:
 
 ```
 Job Search ──────────────────────────────────────────────────────────────
-  go_job (this)    ← MCP, 15+ sources, 28 tools, LLM summary, Go, no auth
+  go_job (this)    ← MCP, 17 connectors, 32 tools, Go, no auth, persistent hunt store
   jobspy-mcp       ← MCP, wraps JobSpy, 7 sources incl. Glassdoor
   linkedin-mcp-server ← MCP, Playwright, 899★, LinkedIn only
   AIHawk           ← Bot, 29k★, auto-apply, LinkedIn+Indeed

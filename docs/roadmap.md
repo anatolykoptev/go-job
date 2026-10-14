@@ -1,7 +1,7 @@
 # go_job — Career Assistant Roadmap
 
 > AIHawk-level career assistant through a Claude Code / MCP agent + go_job MCP server.
-> Last updated: 2026-07-30
+> Last updated: 2026-07-31
 
 ---
 
@@ -13,7 +13,11 @@ Full career pipeline through a single AI agent:
 Find Jobs → Research → Prepare Application → Interview Prep → Track Pipeline → Negotiate Offer
 ```
 
-No browser automation. No credentials. Pure API + LLM.
+No browser automation. No credentials — public APIs, SearXNG and RSS only.
+
+Those are engineering choices, not the product's edge. The edge is the accumulated
+record and the auditability of the decisions made over it — see
+[`architecture/principles.md`](architecture/principles.md).
 
 ---
 
@@ -86,7 +90,7 @@ No browser automation. No credentials. Pure API + LLM.
 
 **Filters (updated):** experience, job_type, remote, time_range, salary, platform (incl. twitter, google, inspira, undp, un), location, limit, offset, blacklist
 
-**Total: 28 MCP tools, 15+ job sources**
+**Total: 32 MCP tools, 17 source connectors**
 
 ---
 
@@ -155,6 +159,34 @@ is a silent read of someone else's rows.
 the `NOT NULL` flip. That flip is the one-way door; everything before it is
 reversible.
 
+### Phase 12 — Mechanical ranking, then history-grounded judgement (HIGH PRIORITY)
+
+> **Why:** five live queries on 2026-07-31 returned zero jobs each. The mechanism was not
+> a bug in a ranking function — there was no ranking function. The model was asked both to
+> decide relevance and to reprint the candidate set, so a *successful* search overflowed the
+> token cap and a *failed* one parsed cleanly. The only outcome that survived the pipeline
+> was failure.
+
+The target pipeline is specified in
+[`architecture/principles.md` §5](architecture/principles.md#5-the-search-architecture).
+Summary of the work, in order:
+
+| Step | Change | Acceptance |
+|---|---|---|
+| A ✅ | ATS connectors emit typed `JobListing`; `ApplyStructuredPrecedence` merges additively | A Lever posting with `salaryRange` returns numeric `salary_min`/`salary_max`, not `"not specified"` (#418, merged) |
+| B | The remaining connectors do the same | No structured source round-trips its own fields through the model |
+| C | Pass 1 — BM25 + embeddings fused with RRF over the collected set, using `go-kit/rerank` | The ranked list is reproducible from the inputs and shows per-term contributions |
+| D | Every deciding line leaves the prompts (`ONLY jobs relevant to the query keywords`; `which … look most promising`) — deleted, not softened | No prompt in `prompt_jobs.go` contains an accept/reject rule |
+| E | Pass 2 — the model runs over the top-K **with the user's history as context**, answering "given what they rejected and converted on, what is this one" | The judgement is unreproducible in a chat window, and is labelled separately from the mechanical score |
+| F | Thresholds set from traffic histograms; skills/seniority from a taxonomy match | Every threshold in the pipeline traces to a measured distribution |
+
+**A cross-encoder is not the mechanical fix.** It is a smaller opaque model taking the same
+decision, and it cannot show its arithmetic. Use it for ordering or not at all — see
+principles §3. Earlier plans that recommended one as the fix are superseded.
+
+Related issues: #406 (the disabled `JOB_SEARCH_MIN_RELEVANCE` gate — resolve with the
+measured verdict, the cosine band was 0.031 wide), #405, #414, #428, #379, #336.
+
 ### Phase 9 — Advanced Interview (LOW PRIORITY, HIGH IMPACT)
 
 > Beyond Q&A generation — interactive practice and live coaching.
@@ -171,7 +203,6 @@ reversible.
 |---------|--------|-------|
 | **Glassdoor source** | Medium | Salary data + company reviews via SearXNG |
 | **ZipRecruiter** | Medium | Large US market |
-| **Alert/watch mode** | Medium | Periodic re-search + Telegram notify on new matches |
 | **PDF resume parsing** | Medium | Extract text from uploaded PDF |
 | **LinkedIn profile scrape** | High | Extract experience from LinkedIn profile URL |
 
@@ -183,7 +214,7 @@ reversible.
 User (Telegram / Claude Code / API)
         |
         v
-go_job MCP server (port 8891, 28 tools)
+go_job MCP server (port 8891, 32 tools)
   +-- job_search            (15+ sources: LinkedIn, Greenhouse, Lever, YC, HN,
   |                          Indeed, Habr, RemoteOK, WWR, Remotive, Twitter/X,
   |                          Google Jobs, Inspira, UNDP, Freelancer; limit/offset/blacklist)
@@ -227,7 +258,7 @@ internal/hunt/notify/telegram.go
 
 | Store | Location | Purpose |
 |-------|----------|---------|
-| Job tracker | `$UPLOADS_ROOT/go-job/tracker/tracker.db` (default `$HOME/uploads/go-job/tracker/tracker.db`) | SQLite, persists across restarts |
+| Job tracker | Postgres `hunt_jobs` + `hunt_ratings` via `DATABASE_URL` | Single source of truth for tracked jobs ([ADR-002](adr/ADR-go-job-002-retire-sqlite-tracker.md)) |
 | User profile | `$UPLOADS_ROOT/go-job/profile/profile.json` (default `$HOME/uploads/go-job/profile/profile.json`) | Default platform, limit, location, remote, blacklist |
 | L1 cache | in-memory (sync.Map) | Fast, lost on restart |
 | L2 cache | Redis (optional) | Persistent, shared across instances |
@@ -238,8 +269,20 @@ internal/hunt/notify/telegram.go
 
 1. **No browser automation** — all sources use public APIs, SearXNG, or RSS. No Selenium/Playwright.
 2. **No credentials required** — LinkedIn Guest API, public ATS boards, open APIs only. Twitter via go-twitter (open accounts fallback).
-3. **LLM for intelligence** — resume analysis, cover letters, salary aggregation, interview prep all use the configured LLM.
+3. **Compute what can be computed; the model earns its keep on what cannot.**
+   `job_quality_score` and `job_match_score` are deterministic by construction, and
+   `JobListing.QualityScore` is documented in code as "0-100 deterministic
+   posting-quality score (no LLM)" — that is the target shape for every deciding number.
+   Measured at `main@d039007`, the LLM is still reached from 18 call sites across 14
+   files, including `interview_prep`, `pitch_generate`, `offer_compare`, `skill_gap` and
+   `resume_generate`. Those are fed a resume plus a job description — input a user could
+   paste into a chat window — so they are the weakest surface, not the strongest, and
+   the backlog is to feed them the user's own history instead. Detail and the full
+   inventory: [`architecture/principles.md`](architecture/principles.md).
 4. **Resume as text** — user pastes resume text directly; no PDF parsing needed for agent workflow.
-5. **SQLite for tracker** — simple, portable, no external dependencies.
+5. **One store for tracked jobs** — Postgres `hunt_jobs` + `hunt_ratings`. The original
+   SQLite `tracker.db` was retired by [ADR-002](adr/ADR-go-job-002-retire-sqlite-tracker.md);
+   two stores for one domain produced divergent IDs and unlinkable `fit_score`s. SQLite
+   survives only inside the one-shot `cmd/migrate-tracker`.
 6. **Interview prep over auto-apply** — auto-apply is risky (ToS) and low-signal. Interview preparation has higher ROI for candidates with non-traditional backgrounds.
 7. **Single-user by construction** — one profile, one tracker, one document store; identity is implicit everywhere rather than passed. This was the right call for a personal tool and is the assumption Phase 11 removes. Read it as a scope boundary, not as an architecture that happens to have one user in it.
