@@ -32,6 +32,20 @@ var ErrNoAPIKey = errors.New("source: API key not configured")
 // Maps to outcome=parse_fail in the metric classifier.
 var ErrParse = errors.New("source: response parse failure")
 
+// ErrBlocked is returned when a source observed a genuine anti-bot refusal —
+// HTTP 401/403/429/503 from the stealth tier, a Cloudflare/PerimeterX challenge
+// page served with 200, ox-browser cf_detected, or an exhausted ox-browser
+// solver cascade — and no transport tier produced content.
+//
+// It is deliberately distinct from a transport error (dial timeout, connection
+// refused, context deadline) and from a genuine empty result. Before this
+// sentinel existed a refused source returned zero results, which the caller
+// could not tell apart from "no jobs matched" (#348).
+//
+// Returned by FetchStealthHTML and therefore by every connector migrated onto
+// the shared ladder. errors.Is(err, ErrBlocked) is the supported check.
+var ErrBlocked = errors.New("source: blocked (anti-bot refusal detected)")
+
 // ErrBodyTruncated is returned when a response body hit the read-cap DoS
 // ceiling mid-read: the reader consumed the cap and there were more bytes
 // available, meaning the source exceeds the ceiling. Makes the failure visible
