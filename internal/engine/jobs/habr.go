@@ -14,7 +14,7 @@ import (
 	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
-// Habr Career (career.habr.com) — Russian-language job board for IT professionals.
+// Habr Career (career.habr.com) â Russian-language job board for IT professionals.
 // Uses the public JSON API (no auth required).
 
 const habrCareerAPIBase = "https://career.habr.com/api/frontend/vacancies"
@@ -31,7 +31,7 @@ type habrVacanciesResponse struct {
 // Habr Career switched from object to plain-string format (schema drift 2026):
 // the legacy shape was {"employment":{"title":"Full-time"}} and the current
 // shape is {"employment":"Full-time"}. A plain json.Unmarshal into a struct
-// fails on the string form → the whole vacancy is rejected → 0 jobs (P4(b)).
+// fails on the string form â the whole vacancy is rejected â 0 jobs (P4(b)).
 type habrEmployment struct {
 	Title string
 }
@@ -103,37 +103,26 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	// #348: route through ox-browser POST /fetch — Chrome TLS impersonation
+	// bypasses the anti-bot blocking of datacenter IPs that broke Craigslist (#346).
+	oxResp, err := engine.OxFetchGet(ctx, u.String())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("habr career API (via ox-browser): %w", err)
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // Habr API URL, intentional outbound request
-	})
-	if err != nil {
-		return nil, fmt.Errorf("habr career API: %w", err)
+	if oxResp.Status != http.StatusOK {
+		return nil, fmt.Errorf("habr career API status %d", oxResp.Status)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("habr career API status %d", resp.StatusCode)
+	if oxResp.CFDetected {
+		slog.Warn("habr: cloudflare challenge detected", slog.String("cf_type", oxResp.CFType))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
-	}
+	body := []byte(oxResp.Body)
 
 	var apiResp habrVacanciesResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		// Wrap with ErrParse so PlatformOutcome classifies unexpected schema failures
 		// as outcome=parse_fail (visible in metrics without reading logs).
 		// Employment schema drift (string vs object) is now handled by habrEmployment
-		// UnmarshalJSON — this path covers any other future schema changes.
+		// UnmarshalJSON â this path covers any other future schema changes.
 		return nil, fmt.Errorf("habr career parse: %w: %w", ErrParse, err)
 	}
 
@@ -149,7 +138,7 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 		}
 
 		var contentParts []string
-		contentParts = append(contentParts, "**Source:** Хабр Карьера")
+		contentParts = append(contentParts, "**Source:** Ð¥Ð°Ð±Ñ ÐÐ°ÑÑÐµÑÐ°")
 
 		if v.Company.Title != "" {
 			contentParts = append(contentParts, "**Company:** "+v.Company.Title)
@@ -219,11 +208,11 @@ func formatHabrSalary(from, to *int, currency string) string {
 	}
 	switch {
 	case from != nil && to != nil:
-		return fmt.Sprintf("%d – %d %s", *from, *to, cur)
+		return fmt.Sprintf("%d â %d %s", *from, *to, cur)
 	case from != nil:
-		return fmt.Sprintf("от %d %s", *from, cur)
+		return fmt.Sprintf("Ð¾Ñ %d %s", *from, cur)
 	case to != nil:
-		return fmt.Sprintf("до %d %s", *to, cur)
+		return fmt.Sprintf("Ð´Ð¾ %d %s", *to, cur)
 	default:
 		return ""
 	}
