@@ -28,8 +28,14 @@ func parseUserByScreenName(body []byte) (*TwitterUser, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal UserByScreenName: %w", err)
 	}
-	if len(raw.Errors) > 0 {
+	// Data wins over errors[]: a suspended handle can arrive as a partial
+	// response with both a UserUnavailable result and errors[] — the typed
+	// result yields the deterministic ErrNotFound, errors[] alone is generic.
+	if raw.Data.User.Result.TypeName == "" && len(raw.Errors) > 0 {
 		return nil, fmt.Errorf("twitter API error: %s", raw.Errors[0].Message)
+	}
+	if len(raw.Errors) > 0 {
+		slog.Debug("UserByScreenName errors[] alongside data", slog.String("first", raw.Errors[0].Message))
 	}
 	return parseUserResult(raw.Data.User.Result)
 }
@@ -72,16 +78,33 @@ func parseRetweeterList(body []byte) ([]*TwitterUser, string, error) {
 	return extractUsersFromTimeline(tl)
 }
 
-// parseTweetDetail parses TweetDetail GraphQL response.
-// The response wraps tweets in a threaded conversation timeline.
-func parseTweetDetail(body []byte) ([]*Tweet, error) {
+// parseTweetDetail parses a TweetDetail GraphQL response. focalID is the
+// requested tweet: when non-empty and absent from the extracted page the
+// result is a deterministic miss — ErrNotFound, not a silently substituted
+// tweets[0] (a deleted focal still returns ancestors/replies that would
+// otherwise be misidentified as the requested tweet).
+func parseTweetDetail(body []byte, focalID string) ([]*Tweet, error) {
+	type itemContentRef = json.RawMessage
+	type moduleItem struct {
+		EntryID string `json:"entryId"`
+		Item    struct {
+			ItemContent itemContentRef `json:"itemContent"`
+		} `json:"item"`
+	}
+	type convEntry struct {
+		EntryID string `json:"entryId"`
+		Content struct {
+			ItemContent itemContentRef `json:"itemContent"`
+			// conversationthread-* modules carry replies/ancestors nested
+			// under items[].item.itemContent — the live TweetDetail shape.
+			Items []moduleItem `json:"items"`
+		} `json:"content"`
+	}
 	type conversationData struct {
 		Instructions []struct {
-			Entries []struct {
-				Content struct {
-					ItemContent json.RawMessage `json:"itemContent"`
-				} `json:"content"`
-			} `json:"entries"`
+			Type    string      `json:"type"`
+			Entries []convEntry `json:"entries"`
+			Entry   *convEntry  `json:"entry"` // TimelinePinEntry delivers the focal tweet here
 		} `json:"instructions"`
 	}
 	var raw struct {
@@ -90,6 +113,9 @@ func parseTweetDetail(body []byte) ([]*Tweet, error) {
 			V2 conversationData `json:"threaded_conversation_with_injections_v2"`
 			V1 conversationData `json:"threaded_conversation_with_injections"`
 		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal TweetDetail: %w", err)
@@ -99,17 +125,63 @@ func parseTweetDetail(body []byte) ([]*Tweet, error) {
 	if len(conv.Instructions) == 0 {
 		conv = raw.Data.V1
 	}
-	tl := timelineObj{Instructions: make([]timelineInstruction, 0)}
-	for _, instr := range conv.Instructions {
-		entries := make([]timelineEntry, 0, len(instr.Entries))
-		for _, e := range instr.Entries {
-			entries = append(entries, timelineEntry{
-				Content: timelineContent{ItemContent: e.Content.ItemContent},
-			})
-		}
-		tl.Instructions = append(tl.Instructions, timelineInstruction{Entries: entries})
+	// errors[] is fatal only when no usable conversation data arrived —
+	// X routinely ships partial pages alongside non-fatal GraphQL errors.
+	if len(conv.Instructions) == 0 && len(raw.Errors) > 0 {
+		return nil, fmt.Errorf("twitter API error: %s", raw.Errors[0].Message)
 	}
-	return extractTweetsFromTimeline(tl, "")
+	if len(raw.Errors) > 0 {
+		slog.Debug("TweetDetail errors[] alongside data", slog.String("first", raw.Errors[0].Message), slog.Int("count", len(raw.Errors)))
+	}
+	tl := timelineObj{Instructions: make([]timelineInstruction, 0)}
+	pushContent := func(instr *timelineInstruction, entryID string, ic itemContentRef) {
+		if ic == nil || isPromotedItem(entryID, ic) {
+			return
+		}
+		instr.Entries = append(instr.Entries, timelineEntry{
+			EntryID: entryID,
+			Content: timelineContent{ItemContent: ic},
+		})
+	}
+	for _, instr := range conv.Instructions {
+		ti := timelineInstruction{Entries: make([]timelineEntry, 0)}
+		if instr.Entry != nil {
+			pushContent(&ti, instr.Entry.EntryID, instr.Entry.Content.ItemContent)
+		}
+		for _, e := range instr.Entries {
+			pushContent(&ti, e.EntryID, e.Content.ItemContent)
+			for _, it := range e.Content.Items {
+				pushContent(&ti, it.EntryID, it.Item.ItemContent)
+			}
+		}
+		tl.Instructions = append(tl.Instructions, ti)
+	}
+	tweets, err := extractTweetsFromTimeline(tl, "")
+	if err != nil {
+		return nil, err
+	}
+	if focalID != "" {
+		for _, t := range tweets {
+			if t.ID == focalID {
+				return tweets, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: tweet %s absent from conversation page", ErrNotFound, focalID)
+	}
+	return tweets, nil
+}
+
+// isPromotedItem reports whether a timeline item is an ad: promoted entries
+// carry promotedMetadata inside itemContent and/or a promoted-* entryId.
+// Promoted tweets must not surface as conversation replies.
+func isPromotedItem(entryID string, itemContent json.RawMessage) bool {
+	if strings.HasPrefix(entryID, "promoted-") || strings.Contains(entryID, "-promoted-") {
+		return true
+	}
+	var probe struct {
+		Promoted json.RawMessage `json:"promotedMetadata"`
+	}
+	return json.Unmarshal(itemContent, &probe) == nil && probe.Promoted != nil
 }
 
 // parseTweetTimeline parses UserTweets timeline response.
@@ -148,11 +220,21 @@ func parseSearchTimeline(body []byte) ([]*Tweet, error) {
 				} `json:"search_timeline"`
 			} `json:"search_by_raw_query"`
 		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal search timeline: %w", err)
 	}
-	return extractTweetsFromTimeline(raw.Data.SearchByRawQuery.SearchTimeline.Timeline, "")
+	tl := raw.Data.SearchByRawQuery.SearchTimeline.Timeline
+	if len(tl.Instructions) == 0 && len(raw.Errors) > 0 {
+		return nil, fmt.Errorf("twitter API error: %s", raw.Errors[0].Message)
+	}
+	if len(raw.Errors) > 0 {
+		slog.Debug("search timeline errors[] alongside data", slog.String("first", raw.Errors[0].Message))
+	}
+	return extractTweetsFromTimeline(tl, "")
 }
 
 // --- T5 read-cluster timeline parsers ---
@@ -402,7 +484,48 @@ type userResult struct {
 	TypeName string `json:"__typename"`
 	ID       string `json:"id"`
 	RestID   string `json:"rest_id"`
-	Legacy   struct {
+	// Core holds identity fields that X moved out of `legacy` during the 2026-06
+	// GraphQL migration (name / screen_name / created_at). When present it is
+	// authoritative; legacy.* is the pre-migration fallback. Verified by live
+	// capture against UserByScreenName + UserTweets on 2026-06-23.
+	Core struct {
+		Name       string `json:"name"`
+		ScreenName string `json:"screen_name"`
+		CreatedAt  string `json:"created_at"`
+	} `json:"core"`
+	// Avatar is the post-migration profile-image location
+	// (legacy.profile_image_url_https is null for the new shape).
+	Avatar struct {
+		ImageURL string `json:"image_url"`
+	} `json:"avatar"`
+	// Verification is the post-migration legacy-verified location
+	// (legacy.verified is null for the new shape).
+	Verification struct {
+		Verified bool `json:"verified"`
+	} `json:"verification"`
+	// ProfileBio is the post-migration bio location; the live cz_binance
+	// capture (2026-06-23) carries it alongside a still-populated
+	// legacy.description, the same migration-in-progress signature as core.*.
+	ProfileBio struct {
+		Description string `json:"description"`
+	} `json:"profile_bio"`
+	// RelationshipCounts is the post-migration followers/following location.
+	// The 2026-10 schema rollout drops `legacy` ENTIRELY for some requests
+	// (verified by live capture 2026-10-17: elonmusk via UserByScreenName
+	// arrived with core/avatar/profile_bio populated and no legacy key at
+	// all — a hard cut, not the hybrid in-progress shape seen for core.*).
+	// Pointer so presence (not value) selects the source: a genuine zero
+	// count must not fall back to a stale legacy value.
+	RelationshipCounts *struct {
+		Followers int `json:"followers"`
+		Following int `json:"following"`
+	} `json:"relationship_counts"`
+	// TweetCounts is the post-migration statuses_count location
+	// (media_tweets also lives here but has no TwitterUser field).
+	TweetCounts *struct {
+		Tweets int `json:"tweets"`
+	} `json:"tweet_counts"`
+	Legacy struct {
 		Name            string `json:"name"`
 		ScreenName      string `json:"screen_name"`
 		FollowersCount  int    `json:"followers_count"`
@@ -415,6 +538,90 @@ type userResult struct {
 		ProfileImageURL string `json:"profile_image_url_https"`
 	} `json:"legacy"`
 	IsBlueVerified bool `json:"is_blue_verified"`
+}
+
+// screenName returns the handle, preferring the post-migration core.screen_name
+// and falling back to the pre-migration legacy.screen_name.
+func (r userResult) screenName() string {
+	if r.Core.ScreenName != "" {
+		return r.Core.ScreenName
+	}
+	return r.Legacy.ScreenName
+}
+
+// displayName returns the display name, preferring core.name then legacy.name.
+func (r userResult) displayName() string {
+	if r.Core.Name != "" {
+		return r.Core.Name
+	}
+	return r.Legacy.Name
+}
+
+// createdAtRaw returns the raw created_at string, preferring core then legacy.
+func (r userResult) createdAtRaw() string {
+	if r.Core.CreatedAt != "" {
+		return r.Core.CreatedAt
+	}
+	return r.Legacy.CreatedAt
+}
+
+// avatarURL returns the profile image URL, preferring the post-migration
+// avatar.image_url then legacy.profile_image_url_https.
+func (r userResult) avatarURL() string {
+	if r.Avatar.ImageURL != "" {
+		return r.Avatar.ImageURL
+	}
+	return r.Legacy.ProfileImageURL
+}
+
+// bio returns the profile description, preferring the post-migration
+// profile_bio.description then the pre-migration legacy.description.
+func (r userResult) bio() string {
+	if r.ProfileBio.Description != "" {
+		return r.ProfileBio.Description
+	}
+	return r.Legacy.Description
+}
+
+// isVerified reports verification from any of three sources: the blue check
+// (is_blue_verified), the post-migration verification.verified, or the
+// pre-migration legacy.verified.
+func (r userResult) isVerified() bool {
+	return r.IsBlueVerified || r.Verification.Verified || r.Legacy.Verified
+}
+
+// followers returns the follower count, preferring the post-migration
+// relationship_counts.followers when that object is present and falling back
+// to legacy.followers_count for the still-served old shape.
+func (r userResult) followers() int {
+	if r.RelationshipCounts != nil {
+		return r.RelationshipCounts.Followers
+	}
+	return r.Legacy.FollowersCount
+}
+
+// following returns the friends count from relationship_counts.following when
+// present, else legacy.friends_count.
+func (r userResult) following() int {
+	if r.RelationshipCounts != nil {
+		return r.RelationshipCounts.Following
+	}
+	return r.Legacy.FriendsCount
+}
+
+// tweets returns the statuses count from tweet_counts.tweets when present,
+// else legacy.statuses_count.
+func (r userResult) tweets() int {
+	if r.TweetCounts != nil {
+		return r.TweetCounts.Tweets
+	}
+	return r.Legacy.StatusesCount
+}
+
+// listed stays legacy-only: no post-migration listed_count location has been
+// observed in live captures (the no-legacy shape simply drops the field).
+func (r userResult) listed() int {
+	return r.Legacy.ListedCount
 }
 
 type tweetResult struct {
@@ -437,6 +644,9 @@ type tweetResult struct {
 	Views struct {
 		Count string `json:"count"`
 	} `json:"views"`
+	// TweetWithVisibilityResults nests the real tweet under "tweet";
+	// any future *Results wrapper would land in the same field.
+	Tweet *tweetResult `json:"tweet"`
 }
 
 // --- Extraction helpers ---
@@ -508,46 +718,69 @@ func extractTweetsFromTimeline(tl timelineObj, defaultAuthorID string) ([]*Tweet
 				slog.Debug("skip tweet parse error", slog.Any("error", err))
 				continue
 			}
+			t.promoted = isPromotedItem(entry.EntryID, entry.Content.ItemContent)
 			tweets = append(tweets, t)
 		}
 	}
 	return tweets, nil
 }
 
+// parseTwitterTime parses X's created_at format. An empty input yields the zero
+// time silently (absent field is normal). A non-empty value that fails to parse
+// also yields the zero time but logs a breadcrumb: this is the silent-zero
+// failure class — if X migrates the created_at format the way it migrated the
+// identity fields out of legacy.*, the field would otherwise zero with no
+// signal. The site label identifies which path surfaced the unparseable value.
+func parseTwitterTime(raw, site string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse("Mon Jan 02 15:04:05 +0000 2006", raw)
+	if err != nil {
+		slog.Debug("created_at non-empty but unparseable; field zeroed",
+			slog.String("site", site),
+			slog.String("raw", raw),
+			slog.Any("error", err))
+		return time.Time{}
+	}
+	return t
+}
+
 func parseUserResult(r userResult) (*TwitterUser, error) {
 	if r.TypeName == "UserUnavailable" {
-		return nil, fmt.Errorf("user unavailable (suspended or restricted)")
+		return nil, fmt.Errorf("%w: user unavailable (suspended or restricted)", ErrNotFound)
 	}
 	if r.RestID == "" {
-		return nil, fmt.Errorf("empty user rest_id (typename=%s)", r.TypeName)
+		return nil, fmt.Errorf("%w: empty user rest_id (typename=%s)", ErrNotFound, r.TypeName)
 	}
-	var createdAt time.Time
-	if r.Legacy.CreatedAt != "" {
-		t, err := time.Parse("Mon Jan 02 15:04:05 +0000 2006", r.Legacy.CreatedAt)
-		if err == nil {
-			createdAt = t
-		}
-	}
-	bio := strings.TrimSpace(r.Legacy.Description)
+	createdAt := parseTwitterTime(r.createdAtRaw(), "user")
+	bio := strings.TrimSpace(r.bio())
+	avatarURL := r.avatarURL()
 	return &TwitterUser{
 		ID:          r.RestID,
-		Handle:      r.Legacy.ScreenName,
-		DisplayName: r.Legacy.Name,
+		Handle:      r.screenName(),
+		DisplayName: r.displayName(),
 		Bio:         bio,
-		Followers:   r.Legacy.FollowersCount,
-		Following:   r.Legacy.FriendsCount,
-		TweetCount:  r.Legacy.StatusesCount,
-		ListedCount: r.Legacy.ListedCount,
+		Followers:   r.followers(),
+		Following:   r.following(),
+		TweetCount:  r.tweets(),
+		ListedCount: r.listed(),
 		CreatedAt:   createdAt,
-		IsVerified:  r.Legacy.Verified || r.IsBlueVerified,
-		HasAvatar:   r.Legacy.ProfileImageURL != "" && !strings.Contains(r.Legacy.ProfileImageURL, "default_profile"),
+		IsVerified:  r.isVerified(),
+		HasAvatar:   avatarURL != "" && !strings.Contains(avatarURL, "default_profile"),
 		HasBio:      bio != "",
 	}, nil
 }
 
 func parseTweetResult(r tweetResult, defaultAuthorID string) (*Tweet, error) {
+	// Unwrap *Results shells (TweetWithVisibilityResults for sensitive
+	// tweets): the payload nests the real tweet one level down. Loop —
+	// not a fixed depth — so a stacked wrapper still decodes.
+	for r.RestID == "" && r.Tweet != nil {
+		r = *r.Tweet
+	}
 	if r.RestID == "" {
-		return nil, fmt.Errorf("empty tweet rest_id")
+		return nil, fmt.Errorf("empty tweet rest_id (typename=%s)", r.TypeName)
 	}
 
 	authorID := defaultAuthorID
@@ -555,13 +788,7 @@ func parseTweetResult(r tweetResult, defaultAuthorID string) (*Tweet, error) {
 		authorID = r.Legacy.UserIDStr
 	}
 
-	var createdAt time.Time
-	if r.Legacy.CreatedAt != "" {
-		t, err := time.Parse("Mon Jan 02 15:04:05 +0000 2006", r.Legacy.CreatedAt)
-		if err == nil {
-			createdAt = t
-		}
-	}
+	createdAt := parseTwitterTime(r.Legacy.CreatedAt, "tweet")
 
 	views := 0
 	if r.Views.Count != "" {
@@ -571,11 +798,12 @@ func parseTweetResult(r tweetResult, defaultAuthorID string) (*Tweet, error) {
 	text := r.Legacy.FullText
 	mentions := extractTokenMentions(text)
 
+	author := r.Core.UserResults.Result
 	return &Tweet{
 		ID:            r.RestID,
 		AuthorID:      authorID,
-		AuthorHandle:  r.Core.UserResults.Result.Legacy.ScreenName,
-		AuthorName:    r.Core.UserResults.Result.Legacy.Name,
+		AuthorHandle:  author.screenName(),
+		AuthorName:    author.displayName(),
 		Text:          text,
 		CreatedAt:     createdAt,
 		Views:         views,
@@ -716,4 +944,57 @@ func extractTokenMentions(text string) []string {
 		}
 	}
 	return result
+}
+
+// parseSearchUsersTimeline parses a People-tab SearchTimeline response —
+// same envelope as parseSearchTimeline, user entries instead of tweets.
+func parseSearchUsersTimeline(body []byte) ([]*TwitterUser, error) {
+	var raw struct {
+		Data struct {
+			SearchByRawQuery struct {
+				SearchTimeline struct {
+					Timeline timelineObj `json:"timeline"`
+				} `json:"search_timeline"`
+			} `json:"search_by_raw_query"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal search users timeline: %w", err)
+	}
+	tl := raw.Data.SearchByRawQuery.SearchTimeline.Timeline
+	if len(tl.Instructions) == 0 && len(raw.Errors) > 0 {
+		return nil, fmt.Errorf("twitter API error: %s", raw.Errors[0].Message)
+	}
+	if len(raw.Errors) > 0 {
+		slog.Debug("search users errors[] alongside data", slog.String("first", raw.Errors[0].Message))
+	}
+	users, _, err := extractUsersFromTimeline(tl)
+	return users, err
+}
+
+// splitConversation picks the focal tweet (ID match, else first entry) out of
+// a TweetDetail conversation page and returns the rest as replies in entry
+// order. Every copy of the focal ID is excluded from replies — the focal
+// reappears inside its own conversationthread-* module as the anchor item.
+func splitConversation(tweets []*Tweet, focalID string) (focal *Tweet, replies []*Tweet) {
+	if len(tweets) == 0 {
+		return nil, nil
+	}
+	focalIdx := 0
+	for i, t := range tweets {
+		if t.ID == focalID {
+			focalIdx = i
+			break
+		}
+	}
+	focal = tweets[focalIdx]
+	for i, t := range tweets {
+		if i != focalIdx && t.ID != focal.ID {
+			replies = append(replies, t)
+		}
+	}
+	return focal, replies
 }

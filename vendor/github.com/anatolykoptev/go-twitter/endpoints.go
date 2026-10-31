@@ -2,12 +2,16 @@ package twitter
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 )
 
+// twitterBase is the GraphQL root. A var (not const) only so tests can point the
+// client at an httptest server; production code never assigns it.
+var twitterBase = "https://x.com/i/api/graphql"
+
 const (
-	twitterBase   = "https://x.com/i/api/graphql"
 	twitterAPIURL = "https://api.twitter.com"
 
 	// accountSettingsURL is the authenticated REST endpoint used by
@@ -54,11 +58,10 @@ func (e Endpoint) URL() string {
 
 // EndpointURL returns the URL for a named operation, or an error if unknown.
 func EndpointURL(operation string) (string, error) {
-	ep, ok := Endpoints[operation]
-	if !ok {
+	if _, ok := Endpoints[operation]; !ok {
 		return "", fmt.Errorf("unknown operation: %s", operation)
 	}
-	return ep.URL(), nil
+	return endpointFor(operation).URL(), nil
 }
 
 // Endpoints maps operation names to their current GraphQL IDs and feature flags.
@@ -86,6 +89,12 @@ var Endpoints = map[string]Endpoint{
 	"ListLatestTweetsTimeline": {ID: "27HKUy8ulrflZ9Tole038g", Name: "ListLatestTweetsTimeline", Features: gqlFeatures()}, // seed — auto-maintained by gql-sync
 	"CommunityTweetsTimeline":  {ID: "Mvs5UOOEkpXVMDZtUcxR-Q", Name: "CommunityTweetsTimeline", Features: gqlFeatures()},  // seed — auto-maintained by gql-sync
 	"BlueVerifiedFollowers":    {ID: "OBBd6Dw-4qEYbsu3hGkyxg", Name: "BlueVerifiedFollowers", Features: gqlFeatures()},    // seed — auto-maintained by gql-sync
+	// Device-notification timeline: fallback source for the device_follow.json
+	// feed (tweets from accounts the viewer belled). x-web (Vite/Relay) stack:
+	// the ID is params.id of the chunk tweet-notifications-*.js (variables:
+	// tweetNotificationsProviders). gql-sync cannot extract it yet (#119); env
+	// override is the hotfix path.
+	"tweetNotificationsQuery": {ID: "tNwvgqJyhttOF1-7q_v3qA", Name: "tweetNotificationsQuery"},
 
 	// T5.5 engagement mutations (account-pinned POST, mirror CreateTweet).
 	//
@@ -134,6 +143,7 @@ var envOverrides = map[string]string{
 	"ListLatestTweetsTimeline": "TWITTER_QID_LIST_LATEST_TWEETS_TIMELINE",
 	"CommunityTweetsTimeline":  "TWITTER_QID_COMMUNITY_TWEETS_TIMELINE",
 	"BlueVerifiedFollowers":    "TWITTER_QID_BLUE_VERIFIED_FOLLOWERS",
+	"tweetNotificationsQuery":  "TWITTER_QID_TWEET_NOTIFICATIONS_QUERY",
 
 	// T5.5 engagement mutations.
 	"FavoriteTweet":   "TWITTER_QID_FAVORITE_TWEET",
@@ -142,17 +152,46 @@ var envOverrides = map[string]string{
 	"DeleteRetweet":   "TWITTER_QID_DELETE_RETWEET",
 }
 
+// knownManualQueryIDs is the explicit allowlist of Endpoints operations whose
+// queryID is NOT extracted by cmd/gql-sync from the public unauthenticated x.com
+// bundles. Every entry carries a one-line reason. A new endpoint added to
+// Endpoints without either a generated queryID or an entry here fails
+// TestQueryIDCompleteness.
+var knownManualQueryIDs = map[string]string{
+	// T5 read cluster — route-split chunks for these ops are not reachable from
+	// the unauthenticated x.com/home warm page, so gql-sync cannot seed them.
+	"Bookmarks":                "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"HomeTimeline":             "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"HomeLatestTimeline":       "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"ListLatestTweetsTimeline": "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"CommunityTweetsTimeline":  "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"BlueVerifiedFollowers":    "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+	"tweetNotificationsQuery":  "requires authenticated session; not in the unauthenticated x.com bundles gql-sync walks",
+
+	// T5.5 engagement mutations — the public bundles carry these only as Relay
+	// persisted-query hashes, which are a different identifier and return HTTP 422
+	// when used as GraphQL-path queryIDs.
+	"FavoriteTweet":   "requires authenticated session; public bundles carry the Relay hash, not the GraphQL-path queryID",
+	"UnfavoriteTweet": "requires authenticated session; public bundles carry the Relay hash, not the GraphQL-path queryID",
+	"CreateRetweet":   "requires authenticated session; public bundles carry the Relay hash, not the GraphQL-path queryID",
+	"DeleteRetweet":   "requires authenticated session; public bundles carry the Relay hash, not the GraphQL-path queryID",
+}
+
 // ApplyEnvOverrides reads TWITTER_QID_* env vars and overrides queryIds in Endpoints.
 // Called automatically by init(); can also be called manually in tests.
 func ApplyEnvOverrides() {
+	pinned := make(map[string]struct{})
 	for name, envKey := range envOverrides {
 		if qid := os.Getenv(envKey); qid != "" {
 			if ep, ok := Endpoints[name]; ok {
 				ep.ID = qid
 				Endpoints[name] = ep
+				pinned[name] = struct{}{}
 			}
 		}
 	}
+	// A pinned op is never replaced by a runtime-refreshed id (see endpointFor).
+	envPinned.Store(&pinned)
 }
 
 // applyGeneratedOverrides applies the cmd/gql-sync-generated queryIDs (in
@@ -186,8 +225,18 @@ func init() {
 // cmd/gql-sync-generated baseline (features_gen.go) when present, falling back to
 // the committed literal when generation has not run (or produced nothing). The
 // returned map is always a fresh COPY so a caller mutating per-op features can
-// never corrupt the shared package-level source.
+// never corrupt the shared package-level source. A runtime-refreshed baseline
+// (queryid_refresh.go) takes precedence over the compiled one.
 func gqlFeatures() map[string]any {
+	if snap := activeQID.Load(); snap != nil && snap.features != nil {
+		return maps.Clone(snap.features)
+	}
+	return compiledGQLFeatures()
+}
+
+// compiledGQLFeatures is the compiled baseline: the generated set when present,
+// else the committed literal. Fresh copy on every call.
+func compiledGQLFeatures() map[string]any {
 	if len(generatedFeatures) > 0 {
 		out := make(map[string]any, len(generatedFeatures))
 		for k, v := range generatedFeatures {
