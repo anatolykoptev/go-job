@@ -22,15 +22,37 @@ type Account struct {
 	UserAgent  string
 	Profile    stealth.BrowserProfile
 
+	// credsAuthoritative marks AuthToken/CT0 as freshly leased by a credential
+	// service: loadOrLogin then ignores the on-disk session entirely. Set only
+	// by tryWithAccount; unexported on purpose (no public API).
+	credsAuthoritative bool
+
 	active       bool
 	reactivateAt time.Time
 	client       *stealth.BrowserClient
 
-	mu               sync.Mutex
-	ct0RefreshedAt   time.Time
-	proxyBackoff     time.Time
-	proxyConsecFails int
-	rateLimiter      *ratelimit.Limiter
+	// proxyClientFailed marks an account whose pinned per-account proxy client
+	// could not be built in NewClient. Deliberately NOT the soft-deactivation
+	// `active` flag: pool.Next re-activates any account with a past reactivateAt
+	// (SetActive(true)), which would resurrect it. This flag is write-once and
+	// gates IsActive, so no reactivation path can make the account selectable.
+	proxyClientFailed bool
+
+	mu                 sync.Mutex
+	ct0RefreshedAt     time.Time
+	proxyBackoff       time.Time
+	proxyConsecFails   int
+	consecHeaderless88 int // consecutive code-88s with no parseable x-rate-limit-remaining
+	inFlight           int // requests currently holding this account's slot (ClientConfig.MaxInFlightPerAccount)
+	rateLimiter        *ratelimit.Limiter
+
+	// Header-derived rate-limit state (see ratelimit_state.go), per endpoint.
+	// rlState is the last known X window; blockedUntil is every explicit block
+	// (429, code 88, an exhausted window). Both are consulted instead of the
+	// local request counter once an endpoint has header state.
+	rlState      map[string]rateLimitState
+	blockedUntil map[string]time.Time
+	clock        func() time.Time // nil = time.Now; tests inject a fake
 
 	pool.HealthTracker
 }
@@ -39,16 +61,43 @@ type Account struct {
 func (a *Account) ID() string { return a.Username }
 
 // IsActive implements pool.Identity.
-func (a *Account) IsActive() bool { return a.active }
+//
+// Guarded by a.mu: the pool flips these fields (SetActive/SetReactivateAt) under
+// its own lock while readers such as the metrics gauge callback run unlocked
+// relative to the pool, so the Account must synchronise them itself.
+func (a *Account) IsActive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.active && !a.proxyClientFailed
+}
+
+// markProxyClientFailed permanently disables the account for this Client.
+func (a *Account) markProxyClientFailed() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.proxyClientFailed = true
+}
 
 // SetActive implements pool.Identity.
-func (a *Account) SetActive(v bool) { a.active = v }
+func (a *Account) SetActive(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.active = v
+}
 
 // ReactivateAt implements pool.Identity.
-func (a *Account) ReactivateAt() time.Time { return a.reactivateAt }
+func (a *Account) ReactivateAt() time.Time {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reactivateAt
+}
 
 // SetReactivateAt implements pool.Identity.
-func (a *Account) SetReactivateAt(t time.Time) { a.reactivateAt = t }
+func (a *Account) SetReactivateAt(t time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reactivateAt = t
+}
 
 // CT0Age returns the time since the ct0 token was last refreshed.
 func (a *Account) CT0Age() time.Duration {
@@ -92,20 +141,147 @@ func (a *Account) SetCredentials(authToken, ct0 string) {
 	a.ct0RefreshedAt = time.Now()
 }
 
-// AllowRequest checks if this account can make a request to the given endpoint.
-func (a *Account) AllowRequest(endpoint string) bool {
+// RecordSuccess records a successful request and clears the consecutive
+// header-less-88 counter: a successful response proves the credentials work,
+// so a later run of header-less 88s starts from zero. It shadows the embedded
+// HealthTracker method on purpose — every success path (200, post-relogin,
+// CSRF recovery, accepted 131) funnels through it, so the reset cannot be
+// missed at a new call site.
+func (a *Account) RecordSuccess() {
+	a.HealthTracker.RecordSuccess()
 	a.mu.Lock()
-	if a.rateLimiter == nil {
-		a.mu.Unlock()
-		return true
-	}
-	rl := a.rateLimiter
+	a.consecHeaderless88 = 0
 	a.mu.Unlock()
-	return rl.Allow(endpoint)
 }
 
-// MarkEndpointRateLimited marks an endpoint as rate-limited for this account.
-func (a *Account) MarkEndpointRateLimited(endpoint string, until time.Time) {
+// noteRateLimited88 examines a code-88 response classified errRateLimited and
+// returns the account's run length of consecutive header-less 88s. The run
+// advances only when the response carried NO parseable x-rate-limit-remaining
+// header: an 88 WITH the header — 0 or more requests remaining — is explained
+// by its window and returns 0 without touching the counter. A banned account
+// that answers header-less 88s on every endpoint crosses
+// headerless88BanThreshold and is escalated to a ban by the caller.
+func (a *Account) noteRateLimited88(respHdrs map[string]string) int {
+	if _, ok := rateLimitRemaining(respHdrs); ok {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.consecHeaderless88++
+	return a.consecHeaderless88
+}
+
+// tryAcquireFlight takes one in-flight slot when the account is below limit.
+// A limit <= 0 is uncapped and always succeeds. The call must run inside the
+// pick that selects the account (the pool filter under pool.mu): selection and
+// slot-taking are then atomic, so concurrent callers cannot both pass a
+// capacity check before either takes a slot.
+func (a *Account) tryAcquireFlight(limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.inFlight >= limit {
+		return false
+	}
+	a.inFlight++
+	return true
+}
+
+// flightFull reports whether the account is at its in-flight cap — the
+// read-only twin of tryAcquireFlight used where the eligibility check must not
+// take a slot (the cap-wait decision). A limit <= 0 is never full.
+func (a *Account) flightFull(limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inFlight >= limit
+}
+
+// releaseFlight returns one in-flight slot. Every request path releases it
+// when the attempt ends — success or error — via defer.
+func (a *Account) releaseFlight() {
+	a.mu.Lock()
+	if a.inFlight > 0 {
+		a.inFlight--
+	}
+	a.mu.Unlock()
+}
+
+// InFlight reports the account's current in-flight request count. The
+// twitter.client.pool.inflight gauge sums it across the pool; tests assert on
+// it.
+func (a *Account) InFlight() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inFlight
+}
+
+// AllowRequest checks if this account can make a request to the given endpoint.
+// While the endpoint's header window is live (see endpointGate) the account is
+// allowed unless explicitly blocked: the headers are the authority and the
+// local counter is skipped. Otherwise (cold start, headers absent, or the
+// window expired) the local counter decides.
+//
+// Under header authority each allowed pick spends one slot of the window's
+// remaining estimate, so N concurrent callers cannot all pass on the strength of
+// one stale response: when the estimate reaches the headroom the endpoint is held
+// until the reset. The next response folds in by the recordWindow merge rule
+// (minimum within a window), so the estimate never rises inside a window.
+// A pick that never produces a response (transport error) keeps its slot spent
+// until the window resets: conservative, bounded by the window.
+func (a *Account) AllowRequest(endpoint string) bool {
+	authority, blocked, now, lim := a.endpointGate(endpoint)
+	if !authority {
+		return lim == nil || lim.Allow(endpoint)
+	}
+	if now.Before(blocked) {
+		return false
+	}
+	// Spend a slot and, if that exhausts the estimate, hold the endpoint, all
+	// under one lock: a check-then-act split would let a burst of callers pass
+	// before the first of them blocks the endpoint.
+	a.mu.Lock()
+	if now.Before(a.blockedUntil[endpoint]) { // re-check: a concurrent pick may have just held it
+		a.mu.Unlock()
+		return false
+	}
+	if st, ok := a.rlState[endpoint]; ok && st.remaining > 0 {
+		st.remaining--
+		a.rlState[endpoint] = st
+	}
+	until, held := a.holdLocked(endpoint, now)
+	rl := a.rateLimiter
+	a.mu.Unlock()
+	if held && rl != nil {
+		rl.MarkRateLimited(endpoint, until)
+	}
+	return true
+}
+
+// endpointGate snapshots, under one lock, everything the eligibility methods
+// need: whether the header window is authoritative for the endpoint, its
+// explicit block, the account clock, and the local limiter.
+//
+// The window is authoritative only until its resetAt. After that the state
+// proves nothing (X may have stopped sending headers for the operation), so the
+// local counter takes over again until a response renews the window.
+func (a *Account) endpointGate(endpoint string) (authority bool, blocked, now time.Time, rl *ratelimit.Limiter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now = a.nowLocked()
+	st, ok := a.rlState[endpoint]
+	return ok && now.Before(st.resetAt), a.blockedUntil[endpoint], now, a.rateLimiter
+}
+
+// UpdateEndpointLimit sets this account's per-window request cap for the given
+// endpoint, overriding the static default. Driven by the x-rate-limit-limit
+// response header so the limiter self-tunes to X's real per-account-per-endpoint
+// budget. Non-positive limits are ignored by the underlying limiter.
+func (a *Account) UpdateEndpointLimit(endpoint string, limit int) {
 	a.mu.Lock()
 	if a.rateLimiter == nil {
 		a.mu.Unlock()
@@ -113,30 +289,59 @@ func (a *Account) MarkEndpointRateLimited(endpoint string, until time.Time) {
 	}
 	rl := a.rateLimiter
 	a.mu.Unlock()
+	rl.UpdateLimit(endpoint, limit)
+}
+
+// SyncRateLimit reads the x-rate-limit-limit header from a response and updates
+// this account's per-endpoint cap when the header carries a valid positive
+// value. A no-op when the header is absent or malformed (the prior cap stands).
+// Called on every observed response (200 and 429) so the cap tracks X's real,
+// possibly-shifting per-account budget.
+func (a *Account) SyncRateLimit(endpoint string, respHdrs map[string]string) {
+	if limit, ok := parseRateLimitLimit(respHdrs[xRateLimitLimit]); ok {
+		a.UpdateEndpointLimit(endpoint, limit)
+	}
+}
+
+// MarkEndpointRateLimited marks an endpoint as rate-limited for this account.
+func (a *Account) MarkEndpointRateLimited(endpoint string, until time.Time) {
+	a.mu.Lock()
+	if a.blockedUntil == nil {
+		a.blockedUntil = make(map[string]time.Time)
+	}
+	a.blockedUntil[endpoint] = until
+	rl := a.rateLimiter
+	a.mu.Unlock()
+	if rl == nil {
+		return
+	}
 	rl.MarkRateLimited(endpoint, until)
 }
 
 // IsEndpointRateLimited returns true if the endpoint is currently blocked.
 func (a *Account) IsEndpointRateLimited(endpoint string) bool {
-	a.mu.Lock()
-	if a.rateLimiter == nil {
-		a.mu.Unlock()
+	authority, blocked, now, rl := a.endpointGate(endpoint)
+	if authority {
+		return now.Before(blocked)
+	}
+	if rl == nil {
 		return false
 	}
-	rl := a.rateLimiter
-	a.mu.Unlock()
 	return rl.IsRateLimited(endpoint)
 }
 
 // EndpointAvailableAt returns when this account will be available for the given endpoint.
 func (a *Account) EndpointAvailableAt(endpoint string) time.Time {
-	a.mu.Lock()
-	if a.rateLimiter == nil {
-		a.mu.Unlock()
+	authority, blocked, now, rl := a.endpointGate(endpoint)
+	if authority {
+		if now.Before(blocked) {
+			return blocked
+		}
 		return time.Time{}
 	}
-	rl := a.rateLimiter
-	a.mu.Unlock()
+	if rl == nil {
+		return time.Time{}
+	}
 	return rl.AvailableAt(endpoint)
 }
 

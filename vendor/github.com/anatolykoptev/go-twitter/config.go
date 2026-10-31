@@ -3,8 +3,28 @@ package twitter
 import (
 	"time"
 
+	stealth "github.com/anatolykoptev/go-stealth"
 	"github.com/anatolykoptev/go-stealth/ratelimit"
 	"github.com/anatolykoptev/go-twitter/captcha"
+	"github.com/anatolykoptev/go-twitter/xtid"
+	"go.opentelemetry.io/otel/metric"
+)
+
+const (
+	// defaultAccountPaceMin / defaultAccountPaceRandom give a per-account
+	// realized spacing of [0.8s, 2.0s). This spaces a single account's bursts
+	// for stealth while staying far under the per-account-per-endpoint rate
+	// ceiling (e.g. 187/15m ≈ one Followers req / 4.8s per account) and far
+	// above the aggregate scrape demand, so the pace never caps throughput.
+	defaultAccountPaceMin    = 800 * time.Millisecond
+	defaultAccountPaceRandom = 1200 * time.Millisecond
+
+	// defaultMaxInFlightPerAccount is nitter's maxConcurrentReqs value: two
+	// concurrent requests per account. It bounds how many of one account's
+	// requests can be in flight at once (pool picks and account-pinned calls
+	// alike) — a burst waits for a slot instead of firing the whole fan-out
+	// through one credential.
+	defaultMaxInFlightPerAccount = 2
 )
 
 // ClientConfig holds all configuration for the Twitter client.
@@ -15,7 +35,9 @@ type ClientConfig struct {
 	// DefaultProxy is the proxy URL for accounts without per-account proxies.
 	DefaultProxy string
 
-	// SessionTTL controls how long saved sessions are considered valid.
+	// SessionTTL controls how long saved sessions are considered valid. It
+	// configures the default file store only; a custom SessionStore owns its
+	// own expiry policy.
 	SessionTTL time.Duration
 
 	// AuthCooldown is the soft-deactivation duration for auth errors.
@@ -42,11 +64,25 @@ type ClientConfig struct {
 
 	// MetricsHook is called on each API request for external metrics collection.
 	// endpoint is the operation name, success and rateLimited indicate the outcome.
+	//
+	// Deprecated: use MeterProvider. MetricsHook carries no latency or error
+	// class; it keeps working unchanged for existing consumers.
 	MetricsHook func(endpoint string, success, rateLimited bool)
 
-	// SessionDir overrides the default session persistence directory.
+	// MeterProvider supplies the OpenTelemetry meter provider for the client's
+	// metrics (see docs/metrics.md). nil = otel.GetMeterProvider(), which is a
+	// no-op until the application installs an SDK provider.
+	MeterProvider metric.MeterProvider
+
+	// SessionDir overrides the default session persistence directory used by
+	// the default file store. Ignored when SessionStore is set.
 	// Default: ~/.go-twitter/sessions
 	SessionDir string
+
+	// SessionStore persists per-account sessions. nil = a FileSessionStore
+	// built from SessionDir and SessionTTL (the historical behaviour). Set it
+	// to make an external credential store the single source of truth.
+	SessionStore SessionStore
 
 	// ProxyBackoffInitial is the initial backoff for proxy failures.
 	ProxyBackoffInitial time.Duration
@@ -64,12 +100,73 @@ type ClientConfig struct {
 	// where guest tokens from datacenter IPs return persistent 403 errors.
 	// Default: false (guest fallback enabled for backward compatibility).
 	DisableGuestFallback bool
+
+	// AccountPaceMin is the minimum human-pace delay between consecutive requests
+	// MADE BY THE SAME ACCOUNT, applied AFTER the pool selects an account and IN
+	// ADDITION TO the anti-fingerprint jitter. Pacing is keyed by account, not by
+	// domain: each account self-paces its own request rhythm via an independent
+	// timestamp, so a low-frequency caller (seed) is never starved by a global
+	// gate that a high-frequency caller (KOL/VC) holds. It is anti-burst stealth
+	// spacing UNDER the per-account-per-endpoint rate-limit ceiling, never a
+	// throughput cap below it.
+	//
+	// Together with AccountPaceRandom the realized inter-request spacing for one
+	// account is [AccountPaceMin, AccountPaceMin+AccountPaceRandom) (variable,
+	// never below AccountPaceMin). Default: 800ms. Set AccountPaceDisabled to off.
+	AccountPaceMin time.Duration
+
+	// AccountPaceRandom is the random jitter added on top of AccountPaceMin for
+	// the per-account spacing (see AccountPaceMin). Default: 1.2s.
+	AccountPaceRandom time.Duration
+
+	// AccountPaceDisabled turns off the per-account human pace entirely. When
+	// true only the anti-fingerprint jitter applies. Default: false (pacing
+	// enabled with safe defaults).
+	AccountPaceDisabled bool
+
+	// RequestJitter opts in to a random delay before every pool GET/POST (see
+	// WithRequestJitter). nil (the default) and a zero Jitter send immediately.
+	// The pinned write path (doPOST) and media upload keep stealth.DefaultJitter
+	// regardless, and the per-account pacer is independent of this field.
+	RequestJitter *stealth.Jitter
+	// MaxInFlightPerAccount caps the number of requests a single account may
+	// have in flight at once — the in-process counterpart of nitter's
+	// maxConcurrentReqs. A pool pick that would exceed the cap skips the
+	// account; when every eligible account is at the cap the call waits for a
+	// slot (bounded by the caller's ctx and the shared pool-wait budget, see
+	// twitter.client.pool.wait.duration). Account-pinned paths (doPOST, media
+	// upload) wait for the pinned account's slot the same way.
+	// Default: 2. A negative value disables the cap.
+	// The cap bounds in-flight SLOTS, not sockets: a cancelled request releases
+	// its slot at once, but its socket can outlive the slot until go-stealth's
+	// own request timeout.
+	MaxInFlightPerAccount int
+
+	// sharedXtid, when set, replaces the per-client xtid manager so key
+	// material, the refresh schedule, the per-kind negative cache, the init
+	// singleflight and the init-failed alert survive across short-lived clients
+	// (the *WithSocial path). The manager's own hook owns the alert; NewClient
+	// does not overwrite it. Unexported: package-internal wiring, no public API.
+	sharedXtid *xtid.Manager
+
+	// sharedPacer, when set, replaces the per-client account pacer so spacing
+	// survives across clients that serve the same account (the per-call clients
+	// behind the *WithSocial helpers). Internal; see socialPacerFor.
+	sharedPacer *ratelimit.KeyedPacer
+
+	// skipPoolGauge suppresses the twitter.client.pool.accounts callback. The
+	// gauge has no per-client attribute, so a one-account per-call client would
+	// overwrite the series of the long-lived pool (see docs/metrics.md).
+	skipPoolGauge bool
 }
 
 // defaults fills in zero-value config fields with sensible defaults.
 func (cfg *ClientConfig) defaults() {
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 24 * time.Hour
+	}
+	if cfg.SessionStore == nil {
+		cfg.SessionStore = &FileSessionStore{Dir: cfg.SessionDir, TTL: cfg.SessionTTL}
 	}
 	if cfg.AuthCooldown == 0 {
 		cfg.AuthCooldown = 1 * time.Hour
@@ -79,6 +176,15 @@ func (cfg *ClientConfig) defaults() {
 	}
 	if cfg.NonResponsiveCooldown == 0 {
 		cfg.NonResponsiveCooldown = 5 * time.Minute
+	}
+	if cfg.AccountPaceMin == 0 {
+		cfg.AccountPaceMin = defaultAccountPaceMin
+	}
+	if cfg.AccountPaceRandom == 0 {
+		cfg.AccountPaceRandom = defaultAccountPaceRandom
+	}
+	if cfg.MaxInFlightPerAccount == 0 {
+		cfg.MaxInFlightPerAccount = defaultMaxInFlightPerAccount
 	}
 	if cfg.RateLimit.RequestsPerWindow == 0 {
 		cfg.RateLimit = ratelimit.DefaultConfig
