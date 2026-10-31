@@ -92,12 +92,14 @@ github.com/anatolykoptev/go-stealth/internal/uri
 github.com/anatolykoptev/go-stealth/pool
 github.com/anatolykoptev/go-stealth/proxypool
 github.com/anatolykoptev/go-stealth/ratelimit
-# github.com/anatolykoptev/go-twitter v0.7.0
+# github.com/anatolykoptev/go-twitter v0.7.1
 ## explicit; go 1.26.3
 github.com/anatolykoptev/go-twitter
 github.com/anatolykoptev/go-twitter/captcha
 github.com/anatolykoptev/go-twitter/internal/bundle
 github.com/anatolykoptev/go-twitter/internal/gqlextract
+github.com/anatolykoptev/go-twitter/internal/xtidprobe
+github.com/anatolykoptev/go-twitter/internal/xwebnative
 github.com/anatolykoptev/go-twitter/social
 github.com/anatolykoptev/go-twitter/xpff
 github.com/anatolykoptev/go-twitter/xtid

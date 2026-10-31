@@ -26,8 +26,8 @@ github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b h1:pVFW
 github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b/go.mod h1:z5pRiCqUO5e3lYXK4r5DGN8RZJKJW6QleEP9Vuz40sk=
 github.com/anatolykoptev/go-stealth v1.23.0 h1:ToI5DPYUsuw5baPXDAFdF410+XLtTnRx9xtxIZnODO8=
 github.com/anatolykoptev/go-stealth v1.23.0/go.mod h1:vIzZU/EZkgZhHU3lp1rnBNvaXFpdjk5XMdJB0BhQGuE=
-github.com/anatolykoptev/go-twitter v0.7.0 h1:+FtiZ2XsGE97fz7nLaA2QoMeiYaQJA1j/cy+Z1eoCzI=
-github.com/anatolykoptev/go-twitter v0.7.0/go.mod h1:PVT0p0CzQgSQJaYAOM90yluNQ8++JaJRBiWaVE1yNbU=
+github.com/anatolykoptev/go-twitter v0.7.1 h1:ilYba2IKI1nMKyL0sZPWhBcP3QgumXopiWiPlhTpEmQ=
+github.com/anatolykoptev/go-twitter v0.7.1/go.mod h1:PVT0p0CzQgSQJaYAOM90yluNQ8++JaJRBiWaVE1yNbU=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/andybalholm/cascadia v1.3.3 h1:AG2YHrzJIm4BZ19iwJ/DAua6Btl3IwJX+VI4kktS1LM=
