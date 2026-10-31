@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.8](https://github.com/anatolykoptev/go-job/compare/v1.22.7...v1.22.8) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** go-twitter v0.7.1 — x-client-transaction-id accepted by X again ([#537](https://github.com/anatolykoptev/go-job/issues/537)) ([5567796](https://github.com/anatolykoptev/go-job/commit/55677969473685673a4fccaa6e88f97dcb6a67ab))
+
 ## [1.22.7](https://github.com/anatolykoptev/go-job/compare/v1.22.6...v1.22.7) (2026-10-10)
 
 
