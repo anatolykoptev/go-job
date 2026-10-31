@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,111 +16,116 @@ import (
 // arkosePublicKey is Twitter's well-known FunCaptcha public key for login flows.
 const arkosePublicKey = "0152B4EB-D2DC-460A-89A1-629838B529C9"
 
-// sessionDir returns the directory for persisting session cookies.
-func sessionDir(override string) string {
-	if override != "" {
-		return override
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".go-twitter", "sessions")
+// reloginOutcomeRecorder is implemented by gates (e.g. the default
+// reloginBreaker) that track consecutive relogin outcomes per account. relogin()
+// feeds the outcome back so the gate can trip after repeated failures and reset
+// on success. A gate that does not implement it (e.g. go-social's external gate)
+// simply receives no feedback — Allowed still governs.
+type reloginOutcomeRecorder interface {
+	RecordFailure(username string)
+	RecordSuccess(username string)
 }
 
-// sessionPath returns the file path for a given username's session.
-func sessionPath(dir, username string) string {
-	return filepath.Join(dir, username+".json")
-}
-
-// savedSession holds serialized cookie data for persistence.
-type savedSession struct {
-	AuthToken string    `json:"auth_token"`
-	CT0       string    `json:"ct0"`
-	SavedAt   time.Time `json:"saved_at"`
-}
-
-// saveSession persists auth_token and ct0 to disk.
-func saveSession(dir, username, authToken, ct0 string) error {
-	d := sessionDir(dir)
-	if err := os.MkdirAll(d, 0700); err != nil {
-		return fmt.Errorf("create session dir: %w", err)
-	}
-	s := savedSession{AuthToken: authToken, CT0: ct0, SavedAt: time.Now()}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := sessionPath(d, username)
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("write session %s: %w", path, err)
-	}
-	slog.Debug("session saved", slog.String("user", username))
-	return nil
-}
-
-// loadSession loads a persisted session from disk.
-func loadSession(dir, username string, ttl time.Duration) (authToken, ct0 string, err error) {
-	data, err := os.ReadFile(sessionPath(sessionDir(dir), username))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", "", nil
-		}
-		return "", "", err
-	}
-	var s savedSession
-	if err := json.Unmarshal(data, &s); err != nil {
-		return "", "", err
-	}
-	if time.Since(s.SavedAt) > ttl {
-		slog.Debug("session expired", slog.String("user", username))
-		return "", "", nil
-	}
-	return s.AuthToken, s.CT0, nil
-}
-
-// relogin clears auth credentials and performs a fresh login.
+// relogin clears auth credentials and performs a fresh login. The gate is
+// consulted (and credentials are preserved) BEFORE the destructive clear, so an
+// OPEN breaker neither destroys a still-valid session nor hammers the
+// WAF-blocked login endpoint.
 func (c *Client) relogin(acc *Account) error {
 	if c.reloginGate != nil {
 		if ok, reason := c.reloginGate.Allowed(context.Background(), acc.Username); !ok {
 			slog.Warn("twitter: auto-relogin blocked by gate",
 				slog.String("user", acc.Username), slog.String("reason", reason))
+			c.metrics.recordRelogin(outcomeBreakerOpen)
 			return fmt.Errorf("relogin blocked: %s", reason)
 		}
 	}
+	rec, _ := c.reloginGate.(reloginOutcomeRecorder)
 	slog.Info("attempting relogin", slog.String("user", acc.Username))
 
-	bc := c.clientForAccount(acc)
+	bc, err := c.clientForAccount(acc)
+	if err != nil {
+		// Before the destructive credential clear: an account with no transport
+		// must neither lose its session nor attempt a direct login.
+		return err
+	}
 
 	acc.SetCredentials("", "")
-	_ = os.Remove(sessionPath(sessionDir(c.cfg.SessionDir), acc.Username))
+	// If the stale session could not be deleted, reloading it would adopt the
+	// token that just failed: go straight to the password login instead.
+	delErr := c.deleteSession(acc)
 
-	if err := c.loadOrLogin(acc, bc); err != nil {
+	if err := c.establishCredentials(acc, bc, delErr != nil); err != nil {
+		if rec != nil {
+			rec.RecordFailure(acc.Username)
+		}
+		c.metrics.recordRelogin(outcomeFailed)
 		return fmt.Errorf("relogin %s: %w", acc.Username, err)
 	}
 
+	if rec != nil {
+		rec.RecordSuccess(acc.Username)
+	}
 	acc.Reset()
+	c.metrics.recordRelogin(outcomeOK)
 	slog.Info("relogin succeeded", slog.String("user", acc.Username))
 	return nil
 }
 
-// loadOrLogin attempts to load a persisted session, falling back to login.
+// loadOrLogin establishes the account's credentials.
+//
+// Accounts flagged credsAuthoritative (set only by tryWithAccount: the
+// credential service leases fresh tokens on every call) use the provided pair
+// and never touch the session file — it is neither read nor written here, so a
+// stale file cannot override a leased token.
+//
+// Every other account (ParseAccounts, direct Account literals) keeps the
+// original order, which long-lived clients rely on: an unexpired on-disk
+// session first (it holds the newest token after an in-process relogin, so a
+// restart must not fall back to the stale static config token), then provided
+// credentials, then a fresh password login.
 func (c *Client) loadOrLogin(acc *Account, client *stealth.BrowserClient) error {
-	authToken, ct0, err := loadSession(c.cfg.SessionDir, acc.Username, c.cfg.SessionTTL)
-	if err != nil {
-		slog.Warn("error loading session", slog.String("user", acc.Username), slog.Any("error", err))
+	return c.establishCredentials(acc, client, false)
+}
+
+// establishCredentials is loadOrLogin with an escape hatch: skipStore bypasses
+// the stored-session read (used by relogin after a failed Delete).
+//
+// A store Load error other than ErrSessionNotFound means the stored state is
+// unknown. Provided credentials are then used as-is (nothing is saved); with
+// none, the account fails rather than falling through to a password login,
+// so a flaky store cannot trigger a login storm against x.com.
+func (c *Client) establishCredentials(acc *Account, client *stealth.BrowserClient, skipStore bool) error {
+	if acc.credsAuthoritative && acc.AuthToken != "" && acc.CT0 != "" {
+		acc.ct0RefreshedAt = time.Now()
+		slog.Info("using leased credentials", slog.String("user", acc.Username))
+		return nil
+	}
+
+	var authToken, ct0 string
+	if !skipStore {
+		var loadErr error
+		authToken, ct0, loadErr = c.loadSession(acc)
+		if loadErr != nil {
+			if acc.AuthToken != "" && acc.CT0 != "" {
+				acc.ct0RefreshedAt = time.Now()
+				slog.Info("using provided credentials (session store unavailable)", slog.String("user", acc.Username))
+				return nil
+			}
+			return fmt.Errorf("session store unavailable for %s, not logging in: %w", acc.Username, loadErr)
+		}
 	}
 	if authToken != "" && ct0 != "" {
 		acc.AuthToken = authToken
 		acc.CT0 = ct0
 		acc.ct0RefreshedAt = time.Now()
-		slog.Info("loaded session from disk", slog.String("user", acc.Username), slog.String("sample_key", "session_load"))
+		slog.Info(c.sessionLoadedMsg(), slog.String("user", acc.Username), slog.String("sample_key", "session_load"))
 		return nil
 	}
 
 	if acc.AuthToken != "" && acc.CT0 != "" {
 		acc.ct0RefreshedAt = time.Now()
 		slog.Info("using provided credentials", slog.String("user", acc.Username))
-		if err := saveSession(c.cfg.SessionDir, acc.Username, acc.AuthToken, acc.CT0); err != nil {
-			slog.Warn("session save failed", slog.String("user", acc.Username), slog.Any("error", err))
-		}
+		c.saveSession(acc, acc.AuthToken, acc.CT0)
 		return nil
 	}
 
@@ -134,9 +137,7 @@ func (c *Client) loadOrLogin(acc *Account, client *stealth.BrowserClient) error 
 		return fmt.Errorf("login failed for %s: %w", acc.Username, err)
 	}
 
-	if err := saveSession(c.cfg.SessionDir, acc.Username, acc.AuthToken, acc.CT0); err != nil {
-		slog.Warn("session save failed", slog.String("user", acc.Username), slog.Any("error", err))
-	}
+	c.saveSession(acc, acc.AuthToken, acc.CT0)
 	return nil
 }
 
