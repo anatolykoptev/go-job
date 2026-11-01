@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.22.9](https://github.com/anatolykoptev/go-job/compare/v1.22.8...v1.22.9) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** go-twitter v0.7.2 — transaction-id parity with the reference, limit hooks ([#539](https://github.com/anatolykoptev/go-job/issues/539)) ([02e2053](https://github.com/anatolykoptev/go-job/commit/02e205356c573d7676b083bc3e204f6051b3f1fe))
+
 ## [1.22.8](https://github.com/anatolykoptev/go-job/compare/v1.22.7...v1.22.8) (2026-10-31)
 
 
