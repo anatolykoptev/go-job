@@ -11,7 +11,7 @@ require (
 	github.com/anatolykoptev/go-mcpserver v0.21.0
 	github.com/anatolykoptev/go-panel v0.23.13-0.20260928083354-a6ff5313871b
 	github.com/anatolykoptev/go-stealth v1.23.0
-	github.com/anatolykoptev/go-twitter v0.7.1
+	github.com/anatolykoptev/go-twitter v0.7.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
