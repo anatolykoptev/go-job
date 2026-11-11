@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// YouTube search — Data API v3 with scraping fallback, parallel transcript fetching,
+// YouTube search — Data API v3 with HTML-parsing fallback, parallel transcript fetching,
 // and LLM summarization.
 
 const (
@@ -48,7 +48,7 @@ type ytDataItemSnippet struct {
 	ChannelTitle string `json:"channelTitle"`
 }
 
-// --- ytInitialData scraping types ---
+// --- ytInitialData parsing types ---
 
 type ytSearchResult struct {
 	VideoRenderer *struct {

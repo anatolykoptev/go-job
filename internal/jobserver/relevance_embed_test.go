@@ -89,13 +89,13 @@ func TestRelevanceEmbedBudget_CandidateCapIsOneChunk(t *testing.T) {
 	results := make([]engine.SearxngResult, maxRelevanceCandidates)
 	for i := range results {
 		results[i] = engine.SearxngResult{
-			Title:   "scraping job",
+			Title:   "crawling job",
 			URL:     "http://example.com/" + itoaTest(i),
-			Content: "scraping",
+			Content: "crawling",
 		}
 	}
 
-	got, degraded, _ := applyRelevanceGate(context.Background(), "scraping", results)
+	got, degraded, _ := applyRelevanceGate(context.Background(), "crawling", results)
 	if degraded != "" {
 		t.Fatalf("gate must succeed on a full cap of candidates, got degraded=%q", degraded)
 	}

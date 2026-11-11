@@ -16,7 +16,7 @@ import (
 // tool that echoes the username back as text content.
 func newHullyStub(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "go-hully-stub", Version: "1.0"}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "analysis-stub", Version: "1.0"}, nil)
 
 	type analyzeArgs struct {
 		Username string `json:"username"`
@@ -30,7 +30,7 @@ func newHullyStub(t *testing.T) *httptest.Server {
 		}, nil
 	})
 
-	ts := mcpserver.NewTestServer(t, srv, mcpserver.Config{Name: "go-hully-stub", Version: "1.0.0"})
+	ts := mcpserver.NewTestServer(t, srv, mcpserver.Config{Name: "analysis-stub", Version: "1.0.0"})
 	return ts
 }
 
@@ -56,7 +56,7 @@ func TestCallGoHully_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestCallGoHully_Unavailable verifies that when go-hully is unreachable,
+// TestCallGoHully_Unavailable verifies that when the analysis service is unreachable,
 // callGoHully returns a non-nil error. This is critical: the caller in
 // ResearchPerson branches on err!=nil to record "(analysis failed)" instead
 // of silently emitting an empty result. WithUnreachableTolerant is NOT set on
@@ -72,7 +72,7 @@ func TestCallGoHully_Unavailable(t *testing.T) {
 
 	_, err := callGoHully(context.Background(), "analyze_account", map[string]any{"username": "x"})
 	if err == nil {
-		t.Fatal("expected error when go-hully is unreachable, got nil")
+		t.Fatal("expected error when the analysis service is unreachable, got nil")
 	}
 	if !errors.Is(err, mcpclient.ErrUnreachable) {
 		t.Fatalf("want ErrUnreachable, got %T: %v", err, err)

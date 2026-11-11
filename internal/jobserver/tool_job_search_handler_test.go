@@ -158,7 +158,7 @@ func TestJobSearchHandler_B1_GateEmptiedSummaryReachOutput(t *testing.T) {
 	defer cancel()
 
 	input := engine.JobSearchInput{
-		Query:    "web scraping anti-bot",
+		Query:    "web crawling anti-bot",
 		Platform: "test-handler-platform",
 	}
 

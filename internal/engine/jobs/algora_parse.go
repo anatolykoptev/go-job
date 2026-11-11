@@ -76,7 +76,7 @@ func extractTitleFromBlock(block, amount string) string {
 	return best
 }
 
-// isTitleNoise returns true if the title is a scraping artifact (e.g. "tip 14 hours ago").
+// isTitleNoise returns true if the title is an HTML-parsing artifact (e.g. "tip 14 hours ago").
 func isTitleNoise(title string) bool {
 	if reTitleNoise.MatchString(strings.TrimSpace(title)) {
 		return true
