@@ -1,6 +1,6 @@
 # go_job
 
-Job search, resume optimization, career research, and application tracking — a Go MCP server exposing **28 tools** across LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Twitter/X, Google Jobs, and more.
+Job search, resume optimization, career research, and application tracking — a Go MCP server exposing **34 tools** (the tables below list the main ones; `internal/jobserver/tool_*.go` is complete) across LinkedIn, Greenhouse, Lever, YC, HN, Indeed, Хабр, RemoteOK, WeWorkRemotely, Twitter/X, Google Jobs, and more.
 
 ## MCP Tools
 
@@ -106,7 +106,7 @@ go_job/
 │   │       ├── match.go       # Jaccard keyword scoring (job_match_score)
 │   │       ├── resume.go      # resume_analyze, cover_letter_generate, resume_tailor
 │   │       ├── research.go    # research tool (salary / company / person)
-│   │       ├── tracker.go     # Job application tracker (SQLite)
+│   │       ├── tracker.go     # Job application tracker (Postgres hunt tables)
 │   │       ├── profile.go     # User profile persistence
 │   │       └── ...            # algora, twitter, linkedin, bounty, opportunity, etc.
 │   │   └── sources/           # Pluggable source connectors
@@ -115,7 +115,7 @@ go_job/
 │   │       ├── hackernews.go  # HN source
 │   │       └── ...
 │   ├── jobserver/
-│   │   ├── register.go        # Tool registrations (28 MCP tools)
+│   │   ├── register.go        # Tool registrations (34 MCP tools)
 │   │   └── tool_*.go          # Per-tool handler files
 │   └── hunt/                  # Hunt store + notifications
 │       ├── notify/
@@ -142,7 +142,7 @@ go_job/
 - `action=add` (title+company required), `action=list`, `action=update` (id required).
 
 ### Data Storage
-- **Job tracker DB**: `$UPLOADS_ROOT/go-job/tracker/tracker.db` (SQLite, table `jobs`). Default path: `$HOME/uploads/go-job/tracker/tracker.db`. Override via `UPLOADS_ROOT`.
+- **Job tracker and hunt data**: PostgreSQL (`hunt_jobs`, `hunt_ratings`, accounts, resumes); the old SQLite `tracker.db` was retired, see `docs/adr/ADR-go-job-002-retire-sqlite-tracker.md`. Needs `DATABASE_URL`.
 - **User profile**: `$UPLOADS_ROOT/go-job/profile/profile.json`. Default: `$HOME/uploads/go-job/profile/profile.json`.
 - **L1 cache**: in-memory (`sync.Map`), lost on restart.
 - **L2 cache**: Redis (optional), persistent.
@@ -183,9 +183,17 @@ make restart  # restart only
 | `REDIS_URL` | (optional) | Redis for L2 cache |
 | `CACHE_TTL` | `900` | Cache TTL in seconds |
 | `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for tracker DB + user profile |
-| `DATABASE_URL` | (optional) | Postgres for oversized payload spillover |
+| `DATABASE_URL` | (optional) | PostgreSQL for the hunt store, accounts, resumes and oversized-payload spillover; without it the data plane is off |
 | `TELEGRAM_BOT_TOKEN` | (required for notifications) | Telegram bot token |
 | `HUNT_NOTIFY_CHAT_ID` | (required for notifications) | Notification recipient chat ID |
+
+## Operator admin UI
+
+A separate go-panel admin server (`ADMIN_PORT`, default `8896`) serves the hunt, account and resume
+pages. `AUTH_DRIVER` selects the login: bcrypt plus TOTP with per-account identity by default
+(needs `DATABASE_URL` and `ADMIN_TOTP_ENC_KEY`), or `hmac` as a single-operator rollback mode
+(`ADMIN_HMAC_KEY`, `ADMIN_PASSWORD`, `ADMIN_USERNAME`). MCP calls authenticate with per-account
+bearer keys. Tokens and keys come from the environment; none is committed.
 
 ## Health check
 
@@ -211,3 +219,17 @@ Large MCP responses can exceed the MCP envelope limit (~25KB). go-job spills ove
 When a tool response exceeds `GO_JOB_OVERSIZE_THRESHOLD_BYTES` (default 24576), the client receives a small envelope with `oversize_id` and a `sample`. Use the `oversize` tool to retrieve the full payload.
 
 Requires `DATABASE_URL`. Gracefully falls back to direct response if unset.
+
+## Status
+
+Released with release-please (`v1.x`, see [CHANGELOG.md](CHANGELOG.md)); the MCP tool names and
+arguments are the public contract.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); coding agents start at [CLAUDE.md](CLAUDE.md). Every
+document is listed in [docs/INDEX.md](docs/INDEX.md).
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE).
