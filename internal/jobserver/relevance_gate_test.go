@@ -28,7 +28,7 @@ import (
 // whose margin is realistic (~0.03, matching the measured e5-large gap).
 //
 // EmbedQuery returns the query vector; Embed returns per-text vectors based
-// on whether the text contains the on-topic marker "scraping".
+// on whether the text contains the on-topic marker "crawling".
 type relevanceFakeEmbedder struct {
 	queryVec []float32
 }
@@ -36,7 +36,7 @@ type relevanceFakeEmbedder struct {
 func (f *relevanceFakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
-		if containsScraping(t) {
+		if containsCrawling(t) {
 			out[i] = []float32{1, 0, 0} // on-topic: aligned with query
 		} else {
 			out[i] = []float32{0, 1, 0} // off-topic: orthogonal to query
@@ -71,7 +71,7 @@ type relevanceNarrowEmbedder struct {
 func (f *relevanceNarrowEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
-		if containsScraping(t) {
+		if containsCrawling(t) {
 			out[i] = []float32{0.86, 0.51} // on-topic: cosine ≈ 0.86
 		} else {
 			out[i] = []float32{0.83, 0.56} // off-topic: cosine ≈ 0.83
@@ -179,8 +179,8 @@ func (relevancePartialBatchEmbedder) EmbedQuery(_ context.Context, _ string) ([]
 func (relevancePartialBatchEmbedder) Dimension() int { return 3 }
 func (relevancePartialBatchEmbedder) Close() error   { return nil }
 
-func containsScraping(s string) bool {
-	for _, sub := range []string{"scraping", "anti-bot", "browser automation"} {
+func containsCrawling(s string) bool {
+	for _, sub := range []string{"crawling", "anti-bot", "browser automation"} {
 		if len(s) >= len(sub) && stringContains(s, sub) {
 			return true
 		}
@@ -235,13 +235,13 @@ func TestRelevanceGate_FiltersOffTopicResults(t *testing.T) {
 	withRelevanceConfig(t, 0.5, 1)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("expected no degradation, got reason=%q", degraded)
@@ -253,7 +253,7 @@ func TestRelevanceGate_FiltersOffTopicResults(t *testing.T) {
 		t.Fatalf("expected 2 on-topic results kept, got %d: %+v", len(got), got)
 	}
 	for _, r := range got {
-		if !containsScraping(r.Title + " " + r.Content) {
+		if !containsCrawling(r.Title + " " + r.Content) {
 			t.Errorf("off-topic result survived the gate: %q", r.Title)
 		}
 	}
@@ -315,11 +315,11 @@ func TestRelevanceGate_ThresholdZeroKeepsEverything(t *testing.T) {
 	withRelevanceConfig(t, 0.0, 1)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend"},
 	}
 
-	got, degraded, _ := applyRelevanceGate(context.Background(), "scraping", results)
+	got, degraded, _ := applyRelevanceGate(context.Background(), "crawling", results)
 
 	if degraded != "" {
 		t.Fatalf("expected no degradation, got reason=%q", degraded)
@@ -337,10 +337,10 @@ func TestRelevanceGate_SortsByScoreDesc(t *testing.T) {
 
 	results := []engine.SearxngResult{
 		{Title: "Off-topic", URL: "http://example.com/off", Content: "frontend"},        // cosine 0
-		{Title: "On-topic", URL: "http://example.com/on", Content: "scraping anti-bot"}, // cosine 1
+		{Title: "On-topic", URL: "http://example.com/on", Content: "crawling anti-bot"}, // cosine 1
 	}
 
-	got, _, _ := applyRelevanceGate(context.Background(), "scraping", results)
+	got, _, _ := applyRelevanceGate(context.Background(), "crawling", results)
 
 	if len(got) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(got))
@@ -394,13 +394,13 @@ func TestRelevanceGate_B1_AllBelowThresholdReturnsEmpty(t *testing.T) {
 	t.Cleanup(func() { jobSearchMinRelevance = origMin })
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("gate ran successfully (all below threshold), expected degraded=\"\", got %q", degraded)
@@ -430,13 +430,13 @@ func TestRelevanceGate_B2_FloorEngagedIsObservable(t *testing.T) {
 	withRelevanceConfig(t, 0.845, 3)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},     // on-topic 0.86
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},     // on-topic 0.86
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},                // off-topic 0.83
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic 0.86
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                      // off-topic 0.83
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("gate ran successfully, expected degraded=\"\", got %q", degraded)
@@ -483,7 +483,7 @@ func relevanceOutcomeDeltas(fn func()) map[string]int64 {
 func TestRelevanceGate_CounterInvariantHoldsOnEveryPath(t *testing.T) {
 	engine.InitTestRegistry()
 
-	onTopicA := engine.SearxngResult{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"}
+	onTopicA := engine.SearxngResult{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"}
 	onTopicB := engine.SearxngResult{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}
 	offTopicA := engine.SearxngResult{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"}
 	offTopicB := engine.SearxngResult{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"}
@@ -509,7 +509,7 @@ func TestRelevanceGate_CounterInvariantHoldsOnEveryPath(t *testing.T) {
 
 			var degraded string
 			d := relevanceOutcomeDeltas(func() {
-				_, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", tc.results)
+				_, degraded, _ = applyRelevanceGate(context.Background(), "web crawling anti-bot", tc.results)
 			})
 			if degraded != "" {
 				t.Fatalf("gate degraded (%q) — counters would not be emitted, case is vacuous", degraded)
@@ -542,12 +542,12 @@ func TestRelevanceGate_FloorSilentWhenEverythingPasses(t *testing.T) {
 	withRelevanceConfig(t, 0.5, 5)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("gate ran successfully, expected degraded=\"\", got %q", degraded)
@@ -580,7 +580,7 @@ func TestRelevanceGate_N1_FloorEngagedWhenFewerCandidatesThanFloor(t *testing.T)
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("gate ran successfully, expected degraded=\"\", got %q", degraded)
@@ -882,10 +882,10 @@ func TestRelevanceGate_M3_CapTruncatesAndNotices(t *testing.T) {
 	// Build maxRelevanceCandidates+5 results.
 	results := make([]engine.SearxngResult, maxRelevanceCandidates+5)
 	for i := range results {
-		results[i] = engine.SearxngResult{Title: "scraping job", URL: "http://example.com/" + itoaTest(i), Content: "scraping"}
+		results[i] = engine.SearxngResult{Title: "crawling job", URL: "http://example.com/" + itoaTest(i), Content: "crawling"}
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "scraping", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "crawling", results)
 	if degraded != "" {
 		t.Fatalf("cap is NOT fail-open, expected degraded=\"\", got %q", degraded)
 	}

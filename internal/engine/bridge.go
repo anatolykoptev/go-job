@@ -24,7 +24,7 @@ import (
 // BrowserClient is the stealth browser client type used for proxy HTTP calls.
 //
 // SECURITY NOTE (#186): go-stealth uses InsecureSkipVerify=true for TLS to
-// avoid anti-bot fingerprinting. This is intentional for web scraping — MITM
+// avoid anti-bot fingerprinting. This is intentional for web fetching — MITM
 // risk is accepted as part of the threat model. Sensitive data (API keys,
 // credentials, tokens) MUST NEVER be transmitted through stealth clients.
 // Only public web page content is fetched through this path.

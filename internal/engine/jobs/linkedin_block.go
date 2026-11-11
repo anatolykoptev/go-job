@@ -109,7 +109,7 @@ func classifyLinkedInResponse(status int, body []byte) linkedInBlockKind {
 
 // classifyLinkedInError maps a go-linkedin Voyager error to a block kind via
 // errors.As on the typed Voyager errors returned since go-linkedin v0.4.9.
-// Replaces the previous regex/substring scraping of error strings, which broke
+// Replaces the previous regex/substring matching of error strings, which broke
 // silently on any wording change and could not see through error wrapping
 // (review finding #299).
 //

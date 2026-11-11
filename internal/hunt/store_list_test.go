@@ -174,7 +174,7 @@ func TestStore_ListRatings_Basic(t *testing.T) {
 
 	results, err := acct.ListRatings(ctx, hunt.RatingFilter{Limit: 10})
 	require.NoError(t, err)
-	assert.Len(t, results, 2, "should return both ratings for user krolik")
+	assert.Len(t, results, 2, "should return both ratings for the default user")
 }
 
 // --- OutcomeError separated from OutcomeSkipped ---

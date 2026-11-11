@@ -51,7 +51,7 @@ type algoraAPIBounty struct {
 }
 
 // searchAlgoraAPI fetches bounties from Algora's public tRPC API.
-// Returns nil, nil to signal caller should try scraping fallback.
+// Returns nil, nil to signal caller should try the HTML-parsing fallback.
 func searchAlgoraAPI(ctx context.Context, limit int) ([]engine.BountyListing, error) {
 	engine.IncrAlgoraRequests()
 

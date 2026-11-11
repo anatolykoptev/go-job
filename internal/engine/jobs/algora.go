@@ -40,13 +40,13 @@ type AlgoraBounty struct {
 const algoraScrapeCacheKey = "algora_scrape"
 
 // SearchAlgora fetches bounties from Algora. Tries REST API first (if token configured),
-// falls back to HTML scraping. Results are cached for 15 min.
+// falls back to HTML parsing. Results are cached for 15 min.
 func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 30
 	}
 
-	// Try scrape cache first (shared by both API and scraping paths).
+	// Try scrape cache first (shared by both API and HTML-parsing paths).
 	if cached, ok := engine.CacheLoadJSON[[]engine.BountyListing](ctx, algoraScrapeCacheKey); ok {
 		slog.Debug("algora: using cached results", slog.Int("results", len(cached)))
 		if len(cached) > limit {
@@ -58,7 +58,7 @@ func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error
 	// Try API first.
 	bounties, err := searchAlgoraAPI(ctx, limit)
 	if err != nil {
-		slog.Warn("algora: API failed, falling back to scraping", slog.Any("error", err))
+		slog.Warn("algora: API failed, falling back to HTML parsing", slog.Any("error", err))
 	}
 	if len(bounties) > 0 {
 		engine.CacheStoreJSON(ctx, algoraScrapeCacheKey, "", bounties)
@@ -66,7 +66,7 @@ func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error
 		return bounties, nil
 	}
 
-	// Fallback: HTML scraping.
+	// Fallback: HTML parsing.
 	bounties, err = scrapeAlgoraBounties(ctx, limit)
 	if err != nil {
 		return nil, err
@@ -81,7 +81,7 @@ func SearchAlgora(ctx context.Context, limit int) ([]engine.BountyListing, error
 	return bounties, nil
 }
 
-// scrapeAlgoraBounties fetches bounties by scraping the algora.io HTML page.
+// scrapeAlgoraBounties fetches bounties by parsing the algora.io HTML page.
 func scrapeAlgoraBounties(ctx context.Context, limit int) ([]engine.BountyListing, error) {
 	engine.IncrAlgoraRequests()
 

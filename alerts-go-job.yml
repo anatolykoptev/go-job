@@ -13,7 +13,7 @@
 #
 # DOCUMENTATION COPY — not deployed from this repo.
 # The authoritative file Prometheus reads is
-#   ~/deploy/krolik-server/config/prometheus/alerts-go-job.yml
+#   <deploy repo>/config/prometheus/alerts-go-job.yml
 # (mounted to /etc/prometheus/rules in the Prometheus container).
 # Edits here do NOT deploy. Update the authoritative file on the deploy host
 # and reload Prometheus there. This mirror exists for review and diffing only;
