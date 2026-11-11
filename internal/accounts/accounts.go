@@ -273,6 +273,8 @@ func BackfillLegacyJobScores(ctx context.Context, pool *pgxpool.Pool, accountID 
 // sharing (entry_kind, entry_id) but differing in user_name would violate
 // UNIQUE(entry_kind, entry_id, account_id) once stamped with the same
 // operator id, so the freshest updated_at row wins and the rest delete.
+// Rows colliding with an ALREADY-stamped operator row are dropped first so an
+// interleaved or repeated backfill can never violate the UNIQUE.
 // Single-operator deployments carry at most one row per (kind,id) — the
 // DELETE is a no-op safety net there.
 func BackfillHuntRatingsAccount(ctx context.Context, pool *pgxpool.Pool, accountID string) error {
@@ -293,10 +295,12 @@ func BackfillHuntRatingsAccount(ctx context.Context, pool *pgxpool.Pool, account
 	}
 	if _, err := pool.Exec(ctx, `
 		DELETE FROM hunt_ratings a USING hunt_ratings b
-		WHERE a.account_id IS NULL AND b.account_id IS NULL
+		WHERE a.account_id IS NULL
+		  AND (b.account_id IS NULL OR b.account_id = $1)
+		  AND a.id <> b.id
 		  AND a.entry_kind = b.entry_kind AND a.entry_id = b.entry_id
 		  AND (a.updated_at < b.updated_at
-		       OR (a.updated_at = b.updated_at AND a.id < b.id))`); err != nil {
+		       OR (a.updated_at = b.updated_at AND a.id < b.id))`, aid); err != nil {
 		return fmt.Errorf("hunt_ratings backfill: dedupe: %w", err)
 	}
 	ct, err := pool.Exec(ctx,
