@@ -14,7 +14,7 @@ import (
 
 const goHullyURL = "http://127.0.0.1:8892"
 
-// hullyClient is the shared mcpclient for go-hully.
+// hullyClient is the shared mcpclient for the Twitter-analysis service.
 // WithUnreachableTolerant is NOT set (defaults to false) so that errors surface
 // to the Twitter branch and it can record "(analysis failed)" — preserving the
 // original error-branch behavior where err!=nil triggers a degraded-text path.
@@ -39,8 +39,8 @@ type PersonProfile struct {
 	InterviewTips  string   `json:"interview_tips"`
 }
 
-// callGoHully calls a go-hully MCP tool via the shared mcpclient.
-// Returns empty string (not error) if go-hully is unavailable — it's optional.
+// callGoHully calls a Twitter-analysis MCP tool via the shared mcpclient.
+// Returns empty string (not error) if the service is unavailable — it's optional.
 func callGoHully(ctx context.Context, toolName string, params map[string]any) (string, error) {
 	return hullyClient.CallText(ctx, toolName, params)
 }
@@ -178,7 +178,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		ch <- sourceData{name: sourceHabr, text: strings.Join(snippets, "\n\n")}
 	}()
 
-	// Source 5: Twitter via go-hully
+	// Source 5: Twitter via the analysis service
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -197,7 +197,7 @@ func ResearchPerson(ctx context.Context, name, company, jobTitle string) (*Perso
 		}
 		text, err := callGoHully(ctx, "analyze_account", map[string]any{contactKeyUsername: handle})
 		if err != nil {
-			// go-hully optional — just record the handle
+			// analysis service optional — just record the handle
 			ch <- sourceData{name: "twitter", text: fmt.Sprintf("[Twitter] handle: @%s (analysis failed)", handle)}
 			return
 		}

@@ -54,7 +54,7 @@ SQLite row IDs (1-based, sequential) are NOT preserved. Migration maps each SQLi
 
 ### adminUser
 
-The single-operator assumption: `user_name = "krolik"` for all tracker ratings. This is per the single-tenant deployment model.
+The single-operator assumption: a single fixed default `user_name` for all tracker ratings. This is per the single-tenant deployment model.
 
 ## Migration
 

@@ -97,9 +97,9 @@
 
 | Project | Stars | Type | Key Features |
 |---------|-------|------|-------------|
-| **[feder-cr/Jobs_Applier_AI_Agent_AIHawk](https://github.com/feder-cr/Jobs_Applier_AI_Agent_AIHawk)** | 29 352★ | Python bot | LinkedIn + Indeed scraping, AI cover letters, auto-apply EasyApply, resume upload, ATS form filling |
+| **[feder-cr/Jobs_Applier_AI_Agent_AIHawk](https://github.com/feder-cr/Jobs_Applier_AI_Agent_AIHawk)** | 29 352★ | Python bot | LinkedIn + Indeed data extraction, AI cover letters, auto-apply EasyApply, resume upload, ATS form filling |
 | **[GodsScion/Auto_job_applier_linkedIn](https://github.com/GodsScion/Auto_job_applier_linkedIn)** | 1 630★ | Python bot | LinkedIn EasyApply automation, Selenium, undetected-chromedriver |
-| **[imon333/Job-apply-AI-agent](https://github.com/imon333/Job-apply-AI-agent)** | 107★ | Python + n8n | LinkedIn/Indeed/StepStone scraping, custom CV+cover letter per job, Google Sheets tracking |
+| **[imon333/Job-apply-AI-agent](https://github.com/imon333/Job-apply-AI-agent)** | 107★ | Python + n8n | LinkedIn/Indeed/StepStone data extraction, custom CV+cover letter per job, Google Sheets tracking |
 | **[AloysJehwin/job-app](https://github.com/AloysJehwin/job-app)** | 53★ | n8n workflow | Resume extraction, job matching, resume rewriting to fit JD, Google Drive/Sheets storage |
 
 ### Interview Preparation

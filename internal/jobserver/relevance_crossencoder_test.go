@@ -84,7 +84,7 @@ type rerankResult struct {
 }
 
 // flipRerankHandler returns cross-encoder scores that FLIP the cosine decision:
-// on-topic docs (containing scraping markers) get a LOW score (0.2, below the
+// on-topic docs (containing crawling markers) get a LOW score (0.2, below the
 // 0.5 midpoint → cross-encoder would reject); off-topic docs get a HIGH score
 // (0.8, above 0.5 → cross-encoder would keep). This is the adversarial input
 // for the shadow-invariant test: if ANY cross-encoder score reaches the
@@ -95,7 +95,7 @@ func flipRerankHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &req)
 	resp := rerankResponse{Results: make([]rerankResult, len(req.Documents))}
 	for i, doc := range req.Documents {
-		if containsScraping(doc) {
+		if containsCrawling(doc) {
 			resp.Results[i] = rerankResult{Index: i, RelevanceScore: 0.2} // on-topic → low (flip)
 		} else {
 			resp.Results[i] = rerankResult{Index: i, RelevanceScore: 0.8} // off-topic → high (flip)
@@ -113,7 +113,7 @@ func agreeRerankHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &req)
 	resp := rerankResponse{Results: make([]rerankResult, len(req.Documents))}
 	for i, doc := range req.Documents {
-		if containsScraping(doc) {
+		if containsCrawling(doc) {
 			resp.Results[i] = rerankResult{Index: i, RelevanceScore: 0.8}
 		} else {
 			resp.Results[i] = rerankResult{Index: i, RelevanceScore: 0.2}
@@ -207,7 +207,7 @@ func TestCrossEncoderShadow_T1_Invariant_ReturnsUnchanged(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
@@ -217,7 +217,7 @@ func TestCrossEncoderShadow_T1_Invariant_ReturnsUnchanged(t *testing.T) {
 	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
 	withRelevanceRerankerNil(t)
 	withRelevanceConfig(t, 0.845, 0)
-	refGot, refDegraded, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	refGot, refDegraded, _ := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	if refDegraded != "" {
 		t.Fatalf("reference run degraded: %q", refDegraded)
 	}
@@ -226,7 +226,7 @@ func TestCrossEncoderShadow_T1_Invariant_ReturnsUnchanged(t *testing.T) {
 	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
 	withRelevanceReranker(t, flipRerankHandler)
 	withRelevanceConfig(t, 0.845, 0)
-	shadowGot, shadowDegraded, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	shadowGot, shadowDegraded, _ := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	if shadowDegraded != "" {
 		t.Fatalf("shadow run gate degraded (cross-encoder must be invisible): %q", shadowDegraded)
 	}
@@ -259,7 +259,7 @@ func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 	}
 
@@ -267,7 +267,7 @@ func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 	withRelevanceEmbedder(t, &relevanceNarrowEmbedder{queryVec: []float32{1, 0}})
 	withRelevanceRerankerNil(t)
 	withRelevanceConfig(t, 0.845, 0)
-	refGot, _, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	refGot, _, _ := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	refURLs := resultURLs(refGot)
 
 	cases := []struct {
@@ -286,7 +286,7 @@ func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 			var got []engine.SearxngResult
 			var degraded string
 			d := crossEncoderDegradedDelta(func() {
-				got, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+				got, degraded, _ = applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 			})
 			if degraded != "" {
 				t.Fatalf("T2: cross-encoder failure must be invisible to the gate (degraded=%q)", degraded)
@@ -316,7 +316,7 @@ func TestCrossEncoderShadow_T2_FailureInvisibleAndDegraded(t *testing.T) {
 		var got []engine.SearxngResult
 		var degraded string
 		d := crossEncoderDegradedDelta(func() {
-			got, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+			got, degraded, _ = applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 		})
 		if degraded != "" {
 			t.Fatalf("T2: unconfigured cross-encoder must be invisible to the gate (degraded=%q)", degraded)
@@ -352,7 +352,7 @@ func TestCrossEncoderShadow_T3_AgreementDistinguishesDirections(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},  // on-topic
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},  // on-topic
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},             // off-topic
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                   // off-topic
@@ -364,7 +364,7 @@ func TestCrossEncoderShadow_T3_AgreementDistinguishesDirections(t *testing.T) {
 
 	var degraded string
 	d := agreementDeltas(func() {
-		_, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+		_, degraded, _ = applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	})
 	if degraded != "" {
 		t.Fatalf("gate degraded: %q", degraded)
@@ -394,7 +394,7 @@ func TestCrossEncoderShadow_T4_HistogramsRecorded(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 	}
@@ -403,7 +403,7 @@ func TestCrossEncoderShadow_T4_HistogramsRecorded(t *testing.T) {
 	withRelevanceReranker(t, agreeRerankHandler)
 	withRelevanceConfig(t, 0.0, 0) // keep all so all 3 are scored + shadow-scored
 
-	got, degraded, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, _ := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	if degraded != "" {
 		t.Fatalf("gate degraded: %q", degraded)
 	}
@@ -431,13 +431,13 @@ func TestCrossEncoderShadow_T5_Control_ExistingGateStillGreen(t *testing.T) {
 	withRelevanceConfig(t, 0.5, 1)
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"},
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},
 	}
 
-	got, degraded, notice := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	got, degraded, notice := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 
 	if degraded != "" {
 		t.Fatalf("expected no degradation, got reason=%q", degraded)
@@ -449,17 +449,17 @@ func TestCrossEncoderShadow_T5_Control_ExistingGateStillGreen(t *testing.T) {
 		t.Fatalf("expected 2 on-topic results kept, got %d: %+v", len(got), got)
 	}
 	for _, r := range got {
-		if !containsScraping(r.Title + " " + r.Content) {
+		if !containsCrawling(r.Title + " " + r.Content) {
 			t.Errorf("off-topic result survived the gate: %q", r.Title)
 		}
 	}
 }
 
-// containsScraping and stringContains are reused from relevance_gate_test.go
+// containsCrawling and stringContains are reused from relevance_gate_test.go
 // (same package).
 
 // partialRerankHandler returns cross-encoder scores for ONLY the on-topic docs
-// (containing scraping markers). Off-topic docs get NO result — the rerank
+// (containing crawling markers). Off-topic docs get NO result — the rerank
 // client fills them with Score=0. This is the adversarial input for the
 // missing-score test: the shadow must detect the missing scores and exclude
 // them from the histogram and agreement counter.
@@ -469,7 +469,7 @@ func partialRerankHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(body, &req)
 	resp := rerankResponse{Results: []rerankResult{}}
 	for i, doc := range req.Documents {
-		if containsScraping(doc) {
+		if containsCrawling(doc) {
 			resp.Results = append(resp.Results, rerankResult{Index: i, RelevanceScore: 0.8})
 		}
 		// off-topic docs: no result returned — client fills with Score=0
@@ -491,7 +491,7 @@ func TestCrossEncoderShadow_T6_MissingScoreExcludedFromHistogram(t *testing.T) {
 	engine.InitTestRegistry()
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},   // on-topic
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},   // on-topic
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},              // off-topic
 		{Title: "Senior Automation Engineer", URL: "http://example.com/3", Content: "browser automation testing"}, // on-topic
 		{Title: "Frontend Engineer", URL: "http://example.com/4", Content: "react frontend"},                    // off-topic
@@ -506,7 +506,7 @@ func TestCrossEncoderShadow_T6_MissingScoreExcludedFromHistogram(t *testing.T) {
 	var agreeDelta map[string]int64
 	missingDelta = missingScoresDelta(func() {
 		agreeDelta = agreementDeltas(func() {
-			_, degraded, _ = applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+			_, degraded, _ = applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 		})
 	})
 	if degraded != "" {
@@ -558,12 +558,12 @@ func TestCrossEncoderShadow_T7_DropWhenBoundHit(t *testing.T) {
 	})
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 		{Title: "Web Developer", URL: "http://example.com/2", Content: "frontend web development"},
 	}
 
 	before := engine.GetMetrics()
-	_, degraded, _ := applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+	_, degraded, _ := applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 	after := engine.GetMetrics()
 
 	if degraded != "" {
@@ -622,13 +622,13 @@ func TestCrossEncoderShadow_T8_DispatchDoesNotBlock(t *testing.T) {
 	})
 
 	results := []engine.SearxngResult{
-		{Title: "Web Scraping Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
+		{Title: "Web Crawling Engineer", URL: "http://example.com/1", Content: "anti-bot browser automation"},
 	}
 
 	// The gate must return without waiting for the blocked handler.
 	done := make(chan struct{})
 	go func() {
-		applyRelevanceGate(context.Background(), "web scraping anti-bot", results)
+		applyRelevanceGate(context.Background(), "web crawling anti-bot", results)
 		close(done)
 	}()
 	select {
