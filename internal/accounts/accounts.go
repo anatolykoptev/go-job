@@ -128,7 +128,7 @@ var accountHuntSettingsSchema string
 // BackfillResumeAccountData. All are one-shot and idempotent. LAST comes the
 // P5 constrain (ConstrainAccountColumns): the ADR-13 data-gate that SETs NOT
 // NULL on every expand-half account_id once zero NULLs remain — and refuses
-// the boot, listing per-table counts, when they do.
+// the constrain step (degrading bootstrapAccounts), listing per-table counts, when they do.
 //
 // A nil pool is the no-DB deployment shape (DATABASE_URL unset): Bootstrap is
 // skipped and returns (nil, nil, nil) — never a nil-deref inside EnsureSchema.

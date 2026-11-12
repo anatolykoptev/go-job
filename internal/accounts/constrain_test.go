@@ -2,7 +2,7 @@ package accounts_test
 
 // constrain_test.go — the P5 data gate's proof (plan ADR-13): Bootstrap's
 // constrain step SETs NOT NULL on every expand-half account_id once zero
-// NULLs remain, refuses the boot loudly when they don't, and is a no-op on
+// NULLs remain, refuses the constrain step loudly when they don't, and is a no-op on
 // the second run.
 //
 // RED-on-revert: deleting the ConstrainAccountColumns call from Bootstrap
@@ -133,8 +133,11 @@ func TestBootstrap_ConstrainRefusesDirtyData(t *testing.T) {
 		_, _, _ = accounts.Bootstrap(context.Background(), pool, accounts.OperatorSeed{})
 	})
 
+	beforeRefusals := accounts.ConstrainRefusalsTotal()
 	_, _, err = accounts.Bootstrap(ctx, pool, accounts.OperatorSeed{})
 	require.Error(t, err, "Bootstrap must refuse to constrain dirty data")
+	assert.Equal(t, beforeRefusals+1, accounts.ConstrainRefusalsTotal(),
+		"a refused constrain must increment ConstrainRefusalsTotal")
 	assert.Contains(t, err.Error(), "constrain refused")
 	assert.Contains(t, err.Error(), "hunt_ratings=1",
 		"the refusal must name the table and its NULL count")
