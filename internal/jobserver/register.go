@@ -49,6 +49,10 @@ func RegisterTools(server *mcp.Server, authority *applications.Authority) {
 	registerMasterResumeBuild(server)
 	registerResumeGenerate(server)
 	registerResumeEnrich(server)
+	// Resume authoring (caller-owned body): scaffold + lint + render to drafts.
+	registerResumeScaffold(server)
+	registerResumeLint(server)
+	registerResumeRender(server, authority)
 	// Resume Profile & Memory
 	registerResumeProfile(server)
 	registerResumeProfileSync(server)
