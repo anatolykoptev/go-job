@@ -431,6 +431,8 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 	oversize.SetPurgeMetricHooks(engine.IncrOversizePurgeDeleted, engine.IncrOversizePurgeErrors)
 	// Hunt corpus retention metric hooks (same import-cycle shape).
 	hunt.SetRetentionMetricHooks(engine.IncrHuntRetentionPruned, engine.IncrHuntRetentionErrors)
+	// #499: wire the accounts constrain refusal metric hook before bootstrapAccounts.
+	accounts.SetConstrainRefusalHook(engine.IncrAccountsConstrainRefusals)
 
 	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
 	var huntNotifier hunt.Notifier
