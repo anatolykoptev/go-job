@@ -34,24 +34,28 @@ const (
 	// events visible so operators can tune enrichMaxConcurrent.
 	MetricEnrichSemSkipped = "enrich_semaphore_skipped_total"
 	// OBS-6: admin UI HTTP metrics — request rate, error rate, latency.
-	MetricAdminRequests         = "admin_requests_total"
-	MetricAdminErrors           = "admin_errors_total"
-	MetricAdminRequestDuration  = "admin_request_duration_seconds"
-	MetricFetchRequests         = "fetch_requests_total"
-	MetricFetchErrors           = "fetch_errors_total"
-	MetricFreelancerAPIRequests = "freelancer_api_requests_total"
-	MetricRemoteOKRequests      = "remoteok_requests_total"
-	MetricWWRRequests           = "wwr_requests_total"
-	MetricYouTubeSearchRequests = "youtube_search_requests_total"
-	MetricYouTubeTranscriptReqs = "youtube_transcript_requests_total"
-	MetricHNJobsRequests        = "hn_jobs_requests_total"
-	MetricGreenhouseRequests    = "greenhouse_requests_total"
-	MetricLeverRequests         = "lever_requests_total"
-	MetricAshbyRequests         = "ashby_requests_total"
-	MetricYCJobsRequests        = "yc_jobs_requests_total"
-	MetricIndeedRequests        = "indeed_requests_total"
-	MetricHabrRequests          = "habr_requests_total"
-	MetricCraigslistRequests    = "craigslist_requests_total"
+	MetricAdminRequests        = "admin_requests_total"
+	MetricAdminErrors          = "admin_errors_total"
+	MetricAdminRequestDuration = "admin_request_duration_seconds"
+	// #499: accounts schema constrain refusal counter (gojob_accounts_constrain_refusals_total).
+	// Incremented when ConstrainAccountColumns or EnsurePasswordRequired refuses on dirty rows
+	// and bootstrapAccounts degrades, giving alerts a counter tripwire beyond slog.Error.
+	MetricAccountsConstrainRefusals = "accounts_constrain_refusals_total"
+	MetricFetchRequests             = "fetch_requests_total"
+	MetricFetchErrors               = "fetch_errors_total"
+	MetricFreelancerAPIRequests     = "freelancer_api_requests_total"
+	MetricRemoteOKRequests          = "remoteok_requests_total"
+	MetricWWRRequests               = "wwr_requests_total"
+	MetricYouTubeSearchRequests     = "youtube_search_requests_total"
+	MetricYouTubeTranscriptReqs     = "youtube_transcript_requests_total"
+	MetricHNJobsRequests            = "hn_jobs_requests_total"
+	MetricGreenhouseRequests        = "greenhouse_requests_total"
+	MetricLeverRequests             = "lever_requests_total"
+	MetricAshbyRequests             = "ashby_requests_total"
+	MetricYCJobsRequests            = "yc_jobs_requests_total"
+	MetricIndeedRequests            = "indeed_requests_total"
+	MetricHabrRequests              = "habr_requests_total"
+	MetricCraigslistRequests        = "craigslist_requests_total"
 	// MetricCraigslistDiscoveryFallback is a labelled counter that fires when
 	// the discovery fallback serves results AFTER the direct tiers (HTML/RSS)
 	// were refused or errored. Without it, a permanently IP-blocked connector
@@ -908,7 +912,7 @@ func FormatMetrics() string {
 	// OBS-6: enrichment semaphore skipped counter pre-touched at 0.
 	keys = append(keys, MetricEnrichSemSkipped)
 	// OBS-6: admin UI HTTP counters pre-touched at 0.
-	keys = append(keys, MetricAdminRequests, MetricAdminErrors)
+	keys = append(keys, MetricAdminRequests, MetricAdminErrors, MetricAccountsConstrainRefusals)
 	// Hunt source freshness gauges + outcome counters pre-touched at 0 for
 	// every known source, so a source that has never succeeded is visible as
 	// a 0-value series (not missing) and rate()-floor alerts see 0 before the
@@ -1307,6 +1311,9 @@ func warmAlertBoundedMetrics() {
 	// Pre-register job_search_crossencoder_missing_scores_total so the FIRST
 	// missing-score event after a restart is visible to increase()-based alerts.
 	reg.Add(MetricJobSearchCrossEncoderMissingScores, 0)
+	// #499: pre-register accounts_constrain_refusals_total at 0 so increase()- and
+	// threshold-based alerts observe a 0->1 transition on the first boot refusal.
+	reg.Add(MetricAccountsConstrainRefusals, 0)
 	// Pre-register job_search_extraction_total{outcome} so the FIRST
 	// unparseable LLM response after a restart is visible to increase()-
 	// based alerts (same gap warmAlertBoundedMetrics fixes for the other
@@ -1863,6 +1870,9 @@ func IncrOversizePurgeErrors()         { reg.Incr(MetricOversizePurgeErrors) }
 
 // OBS-6: enrichment semaphore skipped — bumped when enrichSem is full.
 func IncrEnrichSemSkipped() { reg.Incr(MetricEnrichSemSkipped) }
+
+// IncrAccountsConstrainRefusals bumps gojob_accounts_constrain_refusals_total (#499).
+func IncrAccountsConstrainRefusals() { reg.Incr(MetricAccountsConstrainRefusals) }
 
 // AdminMetricsMiddleware wraps an http.Handler with request count, error count,
 // and latency histogram. OBS-6: makes admin UI traffic and error rate visible.

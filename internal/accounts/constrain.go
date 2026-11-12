@@ -8,9 +8,11 @@ package accounts
 //
 //   - For every account-bearing table that still ships a nullable account_id
 //     (hunt_ratings, resume_persons, resume_vectors, oversize_responses) it
-//     first counts `account_id IS NULL` rows. ANY positive count fails the
-//     boot loudly, naming each table with its count — the constrain REFUSES
-//     on dirty data instead of dying mid-migration on a constraint violation.
+//     first counts `account_id IS NULL` rows. ANY positive count refuses the
+//     constrain step loudly (causing bootstrapAccounts to degrade with bcrypt
+//     admin self-disabled while the process keeps serving and MCP verify stays
+//     live), naming each table with its count — the constrain REFUSES on dirty
+//     data instead of dying mid-migration on a constraint violation.
 //     The operator fixes ownership (or deletes the rows) and reboots.
 //   - On clean data it issues ALTER COLUMN … SET NOT NULL, re-asserts the
 //     account_id FKs as UNCONDITIONAL guarded blocks (Bootstrap can assume
@@ -40,9 +42,39 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var (
+	constrainRefusalsTotal atomic.Int64
+	onConstrainRefusal     atomic.Pointer[func()]
+)
+
+// SetConstrainRefusalHook wires an optional callback invoked whenever a schema
+// constrain gate refuses on dirty rows (e.g. engine.IncrAccountsConstrainRefusals).
+// Wired from initEngine so internal/accounts need not import internal/engine (#499).
+func SetConstrainRefusalHook(fn func()) {
+	if fn == nil {
+		onConstrainRefusal.Store(nil)
+		return
+	}
+	onConstrainRefusal.Store(&fn)
+}
+
+// ConstrainRefusalsTotal returns the cumulative number of schema constrain
+// refusals observed in this process (#499).
+func ConstrainRefusalsTotal() int64 {
+	return constrainRefusalsTotal.Load()
+}
+
+func recordConstrainRefusal() {
+	constrainRefusalsTotal.Add(1)
+	if fn := onConstrainRefusal.Load(); fn != nil && *fn != nil {
+		(*fn)()
+	}
+}
 
 // accountConstrainSpec describes one expand-half account-bearing table the
 // constrain step owns: the table name, its account_id FK constraint name
@@ -89,8 +121,10 @@ var constrainTables = []accountConstrainSpec{
 // ConstrainAccountColumns is the P5 data-gated constrain step (plan ADR-13).
 // It runs at the END of Bootstrap — after EnsureSchema, the scope ensures,
 // the operator seed and every backfill — so the only reason a NULL
-// account_id can still exist is data no backfill owns. That state fails the
-// boot with a per-table count; clean state applies SET NOT NULL + re-asserts
+// account_id can still exist is data no backfill owns. That state refuses the
+// constrain step (degrading bootstrapAccounts while keeping MCP verify live)
+// with a per-table count and increments the refusal counter; clean state
+// applies SET NOT NULL + re-asserts
 // the FKs and UNIQUE scope swaps in a single implicit-transaction batch.
 //
 // Idempotent: a second run finds every column already NOT NULL, issues only
@@ -142,6 +176,7 @@ func ConstrainAccountColumns(ctx context.Context, pool *pgxpool.Pool) error {
 			"ALTER TABLE %s ALTER COLUMN account_id SET NOT NULL;\n", spec.table)
 	}
 	if len(dirty) > 0 {
+		recordConstrainRefusal()
 		return fmt.Errorf(
 			"constrain refused: NULL account_id rows remain [%s] — "+
 				"backfill them to a real panel_accounts id or delete them, then reboot "+
@@ -288,6 +323,7 @@ func EnsurePasswordRequired(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("constrain panel_accounts.password_hash: list: %w", err)
 		}
 		if len(emails) > 0 {
+			recordConstrainRefusal()
 			return fmt.Errorf("constrain refused: %d account(s) have no usable password_hash %v — "+
 				"key-only accounts were removed; set a password via "+
 				"`gojob-admin account set-password` (or delete the account), then reboot", len(emails), emails)
