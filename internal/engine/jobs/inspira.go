@@ -1,11 +1,9 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -20,7 +18,7 @@ import (
 //
 // Coverage: UN Secretariat HQ, Regional Commissions (ECA/ECE/ESCAP/ESCWA/ECLAC),
 // UNCTAD, UNEP, UN-Habitat, OCHA, OHCHR, UNODC, UNRWA, and most peace operations.
-// NOT covered: UNDP, UNICEF, UNHCR, UNOPS, ITU, WFP, FAO, ILO, WHO, UNESCO — those
+// NOT covered: UNDP, UNICEF, UNHCR, UNOPS, ITU, WFP, FAO, ILO, WHO, UNESCO â those
 // run their own portals.
 
 const inspiraAPI = "https://careers.un.org/api/public/opening/jo/list/filteredV2/en"
@@ -126,30 +124,20 @@ func SearchInspiraJobs(ctx context.Context, query, _location string, limit int) 
 		return nil, fmt.Errorf("inspira marshal: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inspiraAPI, bytes.NewReader(payload))
+	// #348: route through ox-browser POST /fetch — Chrome TLS impersonation
+	// bypasses the anti-bot blocking of datacenter IPs. Inspira's API requires
+	// a POST with a JSON filter config, so we use OxFetchPost.
+	oxResp, err := engine.OxFetchPost(ctx, inspiraAPI, payload, "application/json")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("inspira request (via ox-browser): %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // careers.un.org public API
-	})
-	if err != nil {
-		return nil, fmt.Errorf("inspira request: %w", err)
+	if oxResp.Status != http.StatusOK {
+		return nil, fmt.Errorf("inspira API status %d", oxResp.Status)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("inspira API status %d", resp.StatusCode)
+	if oxResp.CFDetected {
+		slog.Warn("inspira: cloudflare challenge detected", slog.String("cf_type", oxResp.CFType))
 	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	if err != nil {
-		return nil, err
-	}
+	raw := []byte(oxResp.Body)
 
 	var ir inspiraResponse
 	if err := json.Unmarshal(raw, &ir); err != nil {
@@ -225,7 +213,7 @@ func inspiraJobToResult(j inspiraJob) engine.SearxngResult {
 
 // toTitleCase converts SHOUTY CASE place names to Title Case. UTF-8 aware
 // because the UN duty-station catalog contains accented and non-Latin names
-// (Côte d'Ivoire, Ñuble, N'Djamena, etc.).
+// (CÃ´te d'Ivoire, Ãuble, N'Djamena, etc.).
 func toTitleCase(s string) string {
 	words := strings.Fields(strings.ToLower(s))
 	for i, w := range words {

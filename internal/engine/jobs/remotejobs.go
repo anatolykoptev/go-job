@@ -82,29 +82,18 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	// #348: route through ox-browser POST /fetch to bypass anti-bot blocking.
+	oxResp, err := engine.OxFetchGet(ctx, apiURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("RemoteOK API (via ox-browser): %w", err)
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
-	if err != nil {
-		return nil, err
+	if oxResp.Status != http.StatusOK {
+		return nil, fmt.Errorf("RemoteOK API returned status %d", oxResp.Status)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("RemoteOK API returned status %d", resp.StatusCode)
+	if oxResp.CFDetected {
+		slog.Warn("remoteok: cloudflare challenge detected", slog.String("cf_type", oxResp.CFType))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
-	}
+	body := []byte(oxResp.Body)
 
 	jobs, err := parseRemoteOKResponse(body)
 	if err != nil {
@@ -201,29 +190,18 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 	ctx, cancel := context.WithTimeout(ctx, engine.Cfg.FetchTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wwrRSSURL, nil)
+	// #348: route through ox-browser POST /fetch to bypass anti-bot blocking.
+	oxResp, err := engine.OxFetchGet(ctx, wwrRSSURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("WWR RSS (via ox-browser): %w", err)
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/xml, application/rss+xml")
-
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // intentional outbound HTTP request
-	})
-	if err != nil {
-		return nil, err
+	if oxResp.Status != http.StatusOK {
+		return nil, fmt.Errorf("WWR RSS returned status %d", oxResp.Status)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("WWR RSS returned status %d", resp.StatusCode)
+	if oxResp.CFDetected {
+		slog.Warn("wwr: cloudflare challenge detected", slog.String("cf_type", oxResp.CFType))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
-	}
+	body := []byte(oxResp.Body)
 
 	jobs, err := parseWWRResponse(body)
 	if err != nil {
