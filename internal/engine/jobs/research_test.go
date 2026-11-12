@@ -2,9 +2,12 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anatolykoptev/go_job/internal/engine"
 )
 
 // --- ResearchCompanyBounded (optional-enrichment degradation) ---
@@ -239,3 +242,200 @@ func TestResearchCompany_ChannelsDrained(t *testing.T) {
 		t.Fatal("ResearchCompany blocked > 5s — goroutine leak or channel not drained")
 	}
 }
+
+func TestResearchCompany_UnrelatedSearchResultsReturnsInsufficientData(t *testing.T) {
+	origSearch := searchWebFn
+	origLLM := callResearchLLM
+	t.Cleanup(func() {
+		searchWebFn = origSearch
+		callResearchLLM = origLLM
+	})
+
+	searchWebFn = func(_ context.Context, _ string) []engine.SearxngResult {
+		return []engine.SearxngResult{
+			{
+				Title:   "Top 10 Tech Startups in 2025",
+				URL:     "https://techcrunch.com/2025/01/startups",
+				Content: "Acme Corp raised $50M in Series B funding with 200 employees.",
+			},
+		}
+	}
+	llmCalled := false
+	callResearchLLM = func(_ context.Context, _ string) (string, error) {
+		llmCalled = true
+		return `{}`, nil
+	}
+
+	res, err := ResearchCompany(context.Background(), "Mayatin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if llmCalled {
+		t.Fatal("expected LLM not to be called when no search result mentions target company")
+	}
+	if res.Matched {
+		t.Fatalf("expected Matched=false for unrelated search results, got %+v", res)
+	}
+	if res.Confidence != "none" {
+		t.Fatalf("expected Confidence=\"none\", got %q", res.Confidence)
+	}
+	if !strings.Contains(strings.ToLower(res.Summary), "insufficient data") {
+		t.Fatalf("expected Insufficient data summary, got %q", res.Summary)
+	}
+	if BuildCompanyContext("Mayatin", res) != "" {
+		t.Fatalf("expected BuildCompanyContext to return empty string for unmatched company, got %q", BuildCompanyContext("Mayatin", res))
+	}
+}
+
+func TestResearchCompany_StripsPlaceholdersAndMarksInsufficient(t *testing.T) {
+	origSearch := searchWebFn
+	origLLM := callResearchLLM
+	t.Cleanup(func() {
+		searchWebFn = origSearch
+		callResearchLLM = origLLM
+	})
+
+	searchWebFn = func(_ context.Context, _ string) []engine.SearxngResult {
+		return []engine.SearxngResult{
+			{
+				Title:   "Mayatin Directory Listing",
+				URL:     "https://example.com/mayatin",
+				Content: "Mayatin is listed in the directory.",
+			},
+		}
+	}
+	// Simulate LLM hallucinating template placeholders ("Public (NASDAQ: XYZ)", "N/A", "<primary industry>")
+	callResearchLLM = func(_ context.Context, _ string) (string, error) {
+		return `{
+			"name": "Mayatin",
+			"matched": true,
+			"confidence": "low",
+			"size": "unknown",
+			"founded": "N/A",
+			"industry": "<primary industry>",
+			"funding": "Public (NASDAQ: XYZ)",
+			"tech_stack": ["unknown", "<tech>"],
+			"culture_notes": "not available",
+			"recent_news": ["N/A"],
+			"glassdoor_rating": 4.2,
+			"website": "not disclosed",
+			"summary": "Generic company profile."
+		}`, nil
+	}
+
+	res, err := ResearchCompany(context.Background(), "Mayatin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Matched {
+		t.Fatalf("expected Matched=false when all fields are placeholders, got %+v", res)
+	}
+	if res.Confidence != "none" {
+		t.Fatalf("expected Confidence=\"none\", got %q", res.Confidence)
+	}
+	if res.Funding != "" || res.Industry != "" || res.Size != "" || res.GlassdoorRating != 0 {
+		t.Fatalf("expected all placeholder fields to be cleared, got %+v", res)
+	}
+	if !strings.Contains(strings.ToLower(res.Summary), "insufficient data") {
+		t.Fatalf("expected Insufficient data summary, got %q", res.Summary)
+	}
+}
+
+func TestResearchCompany_VerifiedNonITCompany(t *testing.T) {
+	origSearch := searchWebFn
+	origLLM := callResearchLLM
+	t.Cleanup(func() {
+		searchWebFn = origSearch
+		callResearchLLM = origLLM
+	})
+
+	searchWebFn = func(_ context.Context, _ string) []engine.SearxngResult {
+		return []engine.SearxngResult{
+			{
+				Title:   "Клиника доктора Маятина — mayatin.ru",
+				URL:     "https://mayatin.ru",
+				Content: "Mayatin medical clinic providing healthcare and diagnostics services.",
+			},
+		}
+	}
+	callResearchLLM = func(_ context.Context, _ string) (string, error) {
+		return `{
+			"name": "Mayatin Clinic",
+			"matched": true,
+			"confidence": "high",
+			"size": "",
+			"founded": "",
+			"industry": "Healthcare / Medical Clinic",
+			"funding": "Public (NASDAQ: XYZ)",
+			"tech_stack": [],
+			"culture_notes": "",
+			"recent_news": [],
+			"glassdoor_rating": 0,
+			"website": "https://mayatin.ru",
+			"summary": "Mayatin is a Russian medical clinic (mayatin.ru) providing healthcare services."
+		}`, nil
+	}
+
+	res, err := ResearchCompany(context.Background(), "Mayatin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Matched {
+		t.Fatalf("expected Matched=true for verified company, got %+v", res)
+	}
+	if res.Confidence != "high" {
+		t.Fatalf("expected Confidence=\"high\", got %q", res.Confidence)
+	}
+	if res.Industry != "Healthcare / Medical Clinic" {
+		t.Fatalf("expected Industry=\"Healthcare / Medical Clinic\", got %q", res.Industry)
+	}
+	if res.Funding != "" {
+		t.Fatalf("expected placeholder funding 'Public (NASDAQ: XYZ)' to be stripped, got %q", res.Funding)
+	}
+	if len(res.Sources) != 1 || res.Sources[0] != "https://mayatin.ru" {
+		t.Fatalf("expected Sources=[https://mayatin.ru], got %v", res.Sources)
+	}
+	ctxStr := BuildCompanyContext("Mayatin", res)
+	if !strings.Contains(ctxStr, "Healthcare / Medical Clinic") {
+		t.Fatalf("expected BuildCompanyContext to include verified industry, got %q", ctxStr)
+	}
+}
+
+func TestResearchSalary_SuccessAndErrorPaths(t *testing.T) {
+	origSearch := searchWebFn
+	origLLM := callResearchLLM
+	t.Cleanup(func() {
+		searchWebFn = origSearch
+		callResearchLLM = origLLM
+	})
+
+	searchWebFn = func(_ context.Context, _ string) []engine.SearxngResult {
+		return []engine.SearxngResult{
+			{
+				Title:   "Go Developer Salary Remote",
+				URL:     "https://levels.fyi/salaries/go",
+				Content: "Median salary for Remote Go Developer is $155,000.",
+			},
+		}
+	}
+	callResearchLLM = func(_ context.Context, _ string) (string, error) {
+		return "```json\n{\"role\":\"Go Developer\",\"location\":\"Remote\",\"currency\":\"USD\",\"p25\":130000,\"median\":155000,\"p75\":185000,\"sources\":[\"levels.fyi\"],\"notes\":\"Base salary\",\"updated_at\":\"2025\"}\n```", nil
+	}
+
+	sal, err := ResearchSalary(context.Background(), "Go Developer", "Remote", "senior")
+	if err != nil {
+		t.Fatalf("ResearchSalary unexpected error: %v", err)
+	}
+	if sal.Median != 155000 || sal.Currency != "USD" {
+		t.Fatalf("unexpected salary result: %+v", sal)
+	}
+
+	// Verify LLM error propagation
+	callResearchLLM = func(_ context.Context, _ string) (string, error) {
+		return "", errors.New("upstream llm failure")
+	}
+	if _, err := ResearchSalary(context.Background(), "Go Developer", "Remote", "senior"); err == nil {
+		t.Fatal("expected ResearchSalary to return error on LLM failure")
+	}
+}
+

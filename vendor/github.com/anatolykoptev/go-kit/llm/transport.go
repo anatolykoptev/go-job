@@ -160,9 +160,9 @@ func (c *Client) recordCooldownOutcome(ep Endpoint, err error) {
 		c.cooldown.recordSuccess(ep.Model)
 		return
 	}
-	if isQuotaError(err) {
-		var apiErr *APIError
-		_ = errors.As(err, &apiErr)
+	var apiErr *APIError
+	_ = errors.As(err, &apiErr)
+	if isQuotaError(err) || (apiErr != nil && isModelUnavailable(apiErr)) {
 		var retryAfter time.Duration
 		if apiErr != nil {
 			retryAfter = apiErr.RetryAfter
