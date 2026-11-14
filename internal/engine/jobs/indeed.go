@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -176,7 +175,7 @@ func doIndeedGraphQL(ctx context.Context, gqlQuery string) (*indeedGraphQLRespon
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("indeed graphql status %d", resp.StatusCode)
 		}
-		return io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+		return readLimitedBody(resp.Body, 2*1024*1024)
 	})
 	if err != nil {
 		return nil, err

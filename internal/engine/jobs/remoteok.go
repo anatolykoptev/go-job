@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -76,7 +75,7 @@ func fetchRemoteOKFreelance(ctx context.Context, tag string) ([]engine.Freelance
 		return nil, fmt.Errorf("remoteok returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	body, err := readLimitedBody(resp.Body, 5*1024*1024)
 	if err != nil {
 		return nil, err
 	}
