@@ -238,6 +238,31 @@ func TestBootstrap_PrecedesHuntMigrate_SourceGate(t *testing.T) {
 		"bootstrapAccounts must not be called from the admin path — initEngine's DB block is the only legal call site")
 }
 
+// TestBackfillHuntRatingsAccount_DedupeSQL_SourceGate verifies that
+// BackfillHuntRatingsAccount handles interleaved/repeated backfills by deduping
+// against both NULL and already-stamped operator rows, mirroring
+// BackfillResumeAccountData (issue #500).
+func TestBackfillHuntRatingsAccount_DedupeSQL_SourceGate(t *testing.T) {
+	src, err := os.ReadFile("accounts.go")
+	require.NoError(t, err)
+	s := string(src)
+
+	body := func(name string) string {
+		i := strings.Index(s, "func "+name+"(")
+		require.Positive(t, i, name+" definition missing from accounts.go")
+		rest := s[i:]
+		if j := strings.Index(rest[1:], "\nfunc "); j >= 0 {
+			return rest[:j+1]
+		}
+		return rest
+	}
+
+	ratingsBackfill := body("BackfillHuntRatingsAccount")
+	require.Contains(t, ratingsBackfill, "DELETE FROM hunt_ratings a USING hunt_ratings b")
+	require.Contains(t, ratingsBackfill, "(b.account_id IS NULL OR b.account_id = $1)")
+	require.Contains(t, ratingsBackfill, "a.id <> b.id")
+}
+
 // TestSetNotifyChatID_Upsert proves --notify-chat-id upserts: a pre-existing
 // settings row takes the new chat id and keeps its enabled flag (the former
 // ON CONFLICT DO NOTHING silently dropped updates to existing rows).
