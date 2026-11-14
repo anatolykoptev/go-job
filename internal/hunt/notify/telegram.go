@@ -80,12 +80,24 @@ func (n *ProductNotifier) maxAgeOrZero() time.Duration {
 	return time.Duration(v)
 }
 
+// defaultBotTimeout is the timeout applied to the Telegram bot HTTP client
+// when none is specified, preventing stalled api.telegram.org calls from hanging
+// startup (GetMe) or pinning goroutines during dispatch.
+const defaultBotTimeout = 30 * time.Second
+
 // newTelegramBot builds the bot on a client whose errors are scrubbed. Every
 // bot in this package goes through here: http.Client.Do returns a *url.Error
 // carrying the full request URL (and so the token), and the wrapper is the only
 // layer that sees that error before the caller wraps and logs it.
 // endpoint is a tgbotapi endpoint format ("%s" token, "%s" method).
 func newTelegramBot(token, endpoint string, c *http.Client) (*tgbotapi.BotAPI, error) {
+	if c == nil {
+		c = &http.Client{Timeout: defaultBotTimeout}
+	} else if c.Timeout == 0 {
+		cCopy := *c
+		cCopy.Timeout = defaultBotTimeout
+		c = &cCopy
+	}
 	return tgbotapi.NewBotAPIWithClient(token, endpoint, tgsafe.NewHTTPClient(c, token))
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
+	"github.com/anatolykoptev/go-kit/telegram/tgsafe"
 )
 
 // fakeToken has the real Telegram shape: 9-digit bot id, colon, "AA" + 33 chars.
@@ -111,11 +112,79 @@ func TestRedactingSlogHandler_AnyError(t *testing.T) {
 
 func TestRedactingSlogHandler_ErrorInGroupAndWithAttrs(t *testing.T) {
 	leaky := rawBotErr(t, "https://telegram-redact-test.invalid/bot%s/%s")
-	var buf bytes.Buffer
-	l := slog.New(NewRedactingSlogHandler(slog.NewTextHandler(&buf, nil), fakeToken)).With(slog.Any("with", leaky))
-	l.Warn("x", slog.Group("g", slog.Any("error", leaky)))
-	if strings.Contains(buf.String(), "AAabcdef") {
-		t.Fatalf("token leaked via group/With: %s", buf.String())
+	handlers := map[string]func(*bytes.Buffer) slog.Handler{
+		"production stream handler": func(b *bytes.Buffer) slog.Handler {
+			return newRedactingStreamHandler(b, fakeToken)
+		},
+		"wrapped text handler": func(b *bytes.Buffer) slog.Handler {
+			return NewRedactingSlogHandler(slog.NewTextHandler(b, nil), fakeToken)
+		},
+		"wrapped json handler": func(b *bytes.Buffer) slog.Handler {
+			return NewRedactingSlogHandler(slog.NewJSONHandler(b, nil), fakeToken)
+		},
+	}
+	for hn, mk := range handlers {
+		t.Run(hn, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := slog.New(mk(&buf)).With(slog.Any("with", leaky))
+			l.Warn("x", slog.Group("g", slog.Any("error", leaky)))
+			out := buf.String()
+			if strings.Contains(out, "AAabcdef") || strings.Contains(out, fakeToken) {
+				t.Fatalf("%s: token leaked via group/With: %s", hn, out)
+			}
+		})
+	}
+}
+
+func TestNewTelegramBot_DefaultTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"test","username":"testbot"}}`))
+	}))
+	defer srv.Close()
+
+	endpoint := srv.URL + "/bot%s/%s"
+
+	// Construction with nil *http.Client must set defaultBotTimeout.
+	bot, err := newTelegramBot(fakeToken, endpoint, nil)
+	if err != nil {
+		t.Fatalf("unexpected error constructing bot with nil client: %v", err)
+	}
+	hc, ok := bot.Client.(*tgsafe.HTTPClient)
+	if !ok {
+		t.Fatalf("expected *tgsafe.HTTPClient, got %T", bot.Client)
+	}
+	if hc.Client().Timeout != defaultBotTimeout {
+		t.Fatalf("expected defaultBotTimeout %v, got %v", defaultBotTimeout, hc.Client().Timeout)
+	}
+
+	// Construction with explicit zero-timeout client must also receive defaultBotTimeout.
+	zeroClient := &http.Client{Timeout: 0}
+	botZero, err := newTelegramBot(fakeToken, endpoint, zeroClient)
+	if err != nil {
+		t.Fatalf("unexpected error constructing bot with zero-timeout client: %v", err)
+	}
+	hcZero, ok := botZero.Client.(*tgsafe.HTTPClient)
+	if !ok {
+		t.Fatalf("expected *tgsafe.HTTPClient, got %T", botZero.Client)
+	}
+	if hcZero.Client().Timeout != defaultBotTimeout {
+		t.Fatalf("expected defaultBotTimeout %v, got %v", defaultBotTimeout, hcZero.Client().Timeout)
+	}
+
+	// Construction with explicit custom timeout must be preserved.
+	customTimeout := 42 * time.Second
+	customClient := &http.Client{Timeout: customTimeout}
+	botCustom, err := newTelegramBot(fakeToken, endpoint, customClient)
+	if err != nil {
+		t.Fatalf("unexpected error constructing bot with custom client: %v", err)
+	}
+	hcCustom, ok := botCustom.Client.(*tgsafe.HTTPClient)
+	if !ok {
+		t.Fatalf("expected *tgsafe.HTTPClient, got %T", botCustom.Client)
+	}
+	if hcCustom.Client().Timeout != customTimeout {
+		t.Fatalf("expected customTimeout %v, got %v", customTimeout, hcCustom.Client().Timeout)
 	}
 }
 
