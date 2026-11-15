@@ -140,3 +140,16 @@ func TestRequireTestDB_ServerCheck_WiredToKit(t *testing.T) {
 		t.Error("Skipf must NOT fire")
 	}
 }
+
+// TestRequireTestDB_MalformedDSN_NeverPrintsPassword: a parse failure must not
+// echo the DSN (pgx parse errors can quote it, password included).
+func TestRequireTestDB_MalformedDSN_NeverPrintsPassword(t *testing.T) {
+	f := &fakeTB{}
+	RequireTestDB(f, "postgres://u:hunter2secret@[invalid-bracket/db")
+	if !f.fatalfFired {
+		t.Fatal("expected Fatalf for malformed DSN")
+	}
+	if strings.Contains(f.lastMsg, "hunter2secret") {
+		t.Errorf("message leaks the password: %q", f.lastMsg)
+	}
+}
