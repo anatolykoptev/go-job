@@ -9,10 +9,21 @@ package dbtest
 // TestRequireTestDB_ProdDSN_Fatals goes RED (Fatalf does not fire).
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
+
+// stubScratch replaces the server-level check so the name-only unit tests below
+// need no database. TestRequireTestDB_ServerCheck_* cover the wiring itself.
+func stubScratch(t *testing.T, err error) {
+	t.Helper()
+	old := scratchCheck
+	scratchCheck = func(context.Context, string) error { return err }
+	t.Cleanup(func() { scratchCheck = old })
+}
 
 // fakeTB records whether Skipf / Fatalf fired and the last message.
 type fakeTB struct {
@@ -67,6 +78,7 @@ func TestRequireTestDB_ProdDSN_Fatals(t *testing.T) {
 
 // TestRequireTestDB_TestDSN_Passes: a *_test DB name must pass and return the name.
 func TestRequireTestDB_TestDSN_Passes(t *testing.T) {
+	stubScratch(t, nil)
 	f := &fakeTB{}
 	name := RequireTestDB(f, "postgres://u:p@h:5432/gojob_test")
 	if f.skipfFired {
@@ -91,5 +103,53 @@ func TestRequireTestDB_MalformedDSN_Fatals(t *testing.T) {
 	}
 	if f.skipfFired {
 		t.Error("Skipf must NOT fire for malformed DSN")
+	}
+}
+
+// TestRequireTestDB_ServerCheck_RefusesSharedServer: a *_test name on a server
+// that holds other databases must Fatalf, never pass and never skip.
+func TestRequireTestDB_ServerCheck_RefusesSharedServer(t *testing.T) {
+	stubScratch(t, errors.New("server h:5432 is not a scratch server: it holds non-test database(s) gojob"))
+	f := &fakeTB{}
+	name := RequireTestDB(f, "postgres://u:p@h:5432/gojob_test")
+	if !f.fatalfFired {
+		t.Fatal("expected Fatalf: *_test name on a server holding non-test databases")
+	}
+	if f.skipfFired {
+		t.Error("Skipf must NOT fire: a skip would hide the refusal")
+	}
+	if name != "" {
+		t.Errorf("must not return a name on refusal, got %q", name)
+	}
+	if !strings.Contains(f.lastMsg, "make test-db") {
+		t.Errorf("message must point at the safe recipe, got %q", f.lastMsg)
+	}
+}
+
+// TestRequireTestDB_ServerCheck_WiredToKit runs WITHOUT the stub: a *_test DSN
+// whose server cannot be inspected (nothing listens on port 1) must Fatalf.
+// It goes RED if the scratchCheck call is removed from RequireTestDB, because
+// the name-only path would then accept the DSN.
+func TestRequireTestDB_ServerCheck_WiredToKit(t *testing.T) {
+	f := &fakeTB{}
+	RequireTestDB(f, "postgres://u:p@127.0.0.1:1/gojob_test?sslmode=disable&connect_timeout=2")
+	if !f.fatalfFired {
+		t.Fatal("expected Fatalf: server behind the DSN could not be proven to be a scratch server")
+	}
+	if f.skipfFired {
+		t.Error("Skipf must NOT fire")
+	}
+}
+
+// TestRequireTestDB_MalformedDSN_NeverPrintsPassword: a parse failure must not
+// echo the DSN (pgx parse errors can quote it, password included).
+func TestRequireTestDB_MalformedDSN_NeverPrintsPassword(t *testing.T) {
+	f := &fakeTB{}
+	RequireTestDB(f, "postgres://u:hunter2secret@[invalid-bracket/db")
+	if !f.fatalfFired {
+		t.Fatal("expected Fatalf for malformed DSN")
+	}
+	if strings.Contains(f.lastMsg, "hunter2secret") {
+		t.Errorf("message leaks the password: %q", f.lastMsg)
 	}
 }

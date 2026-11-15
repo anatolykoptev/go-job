@@ -25,6 +25,10 @@ import (
 // service is fronted by a reverse proxy that strips or overrides these headers
 // from untrusted sources before calling ClientIP. Behind a misconfigured
 // deployment the returned IP is attacker-controlled.
+//
+// ClientIP trusts X-Real-IP/X-Forwarded-For without any peer check. For
+// spoof-resistant use, where headers are honoured only from a trusted proxy
+// peer, use [TrustedProxyClientIP].
 func ClientIP(r *http.Request) string {
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		candidate := strings.TrimSpace(xri)

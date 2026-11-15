@@ -7,9 +7,21 @@ package dbtest
 import (
 	"context"
 	"strings"
+	"time"
 
+	kitdbtest "github.com/anatolykoptev/go-kit/pgutil/dbtest"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// scratchCheck proves the server behind a DSN is an ephemeral test server (it
+// holds no database except postgres and *_test ones). It is a variable only so
+// the unit tests of this package can run without a database; production code
+// never reassigns it.
+var scratchCheck = kitdbtest.Check
+
+// scratchCheckTimeout bounds the catalog read so an unreachable server fails
+// the test fast instead of hanging it.
+const scratchCheckTimeout = 15 * time.Second
 
 // testingTB is the minimal surface RequireTestDB needs. It is satisfied by
 // *testing.T and *testing.B in real tests, and by the fake in dbtest_test.go
@@ -31,6 +43,12 @@ type testingTB interface {
 // of a bare `if dsn == "" { t.Skip(...) }`.
 //
 // Guard semantics — by design:
+//
+//   - dsn set, the SERVER holds any database other than postgres, the
+//     templates and *_test names → Fatalf. A "_test" name proves nothing: a
+//     "_test" database can be created on the shared production cluster. The
+//     server-level check in go-kit's pgutil/dbtest cannot be fooled by a name.
+//     A server that cannot be inspected is refused.
 //
 //   - empty dsn → Skipf: DATABASE_URL is unset, which is the normal state in
 //     CI without an integration Postgres. A skip is correct: the test is
@@ -54,7 +72,9 @@ func RequireTestDB(tb testingTB, dsn string) string {
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		tb.Fatalf("dbtest.RequireTestDB: parse DSN: %v", err)
+		// pgx parse errors can quote the DSN text, password included.
+		_ = err
+		tb.Fatalf("dbtest.RequireTestDB: cannot parse DSN (details withheld: they may contain credentials)")
 		return ""
 	}
 	name := cfg.ConnConfig.Database
@@ -66,6 +86,17 @@ func RequireTestDB(tb testingTB, dsn string) string {
 				"Guard class: TEST_DATABASE_URL→prod isolation "+
 				"(incident: TRUNCATE hunt_* CASCADE destroyed ~500 prod rows).",
 			name,
+		)
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scratchCheckTimeout)
+	defer cancel()
+	if err := scratchCheck(ctx, dsn); err != nil {
+		tb.Fatalf(
+			"dbtest.RequireTestDB: REFUSING to run: %v. "+
+				"Run the tests against a throwaway Postgres: `make test-db` "+
+				"(or the ephemeral service container in .github/workflows/preflight.yml), never the live cluster.",
+			err,
 		)
 		return ""
 	}

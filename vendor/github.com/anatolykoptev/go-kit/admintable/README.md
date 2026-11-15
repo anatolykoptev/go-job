@@ -5,7 +5,7 @@ a sort resolver (`Spec`) and a WHERE-filter builder (`FilterSpec`).
 
 Second go-kit/go-panel admin primitive. `Spec` ported from `go-nerv internal/admin/table`;
 `FilterSpec` extracted from a hand-coded pattern duplicated across ≥5 sites
-(oxpulse-admin subscriptions/stripe_events/analytics, go-nerv, go-piter).
+(oxpulse-admin subscriptions/stripe_events/analytics, go-nerv, a content-site admin).
 
 ## Security model
 
