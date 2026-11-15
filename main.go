@@ -107,6 +107,7 @@ func main() {
 	// stay disabled (fail-closed).
 	operatorAID, _ := uuid.Parse(operatorID)
 	authority := applications.New(adapter, legacyDir, operatorAID)
+	startHuntRetention(sigCtx, engine.GetHuntStore(), authority, huntFKReady.Load())
 	// Probe binary availability at startup: sets gojob_pdf_renderer_available
 	// gauge (1=present, 0=absent) so post-deploy verification is unambiguous.
 	if !adapter.Ready() {
@@ -428,6 +429,8 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 	hunt.SetEnrichSkipHook(engine.IncrEnrichSemSkipped)
 	// OBS-6: wire the oversize purge metric hooks (avoids import cycle).
 	oversize.SetPurgeMetricHooks(engine.IncrOversizePurgeDeleted, engine.IncrOversizePurgeErrors)
+	// Hunt corpus retention metric hooks (same import-cycle shape).
+	hunt.SetRetentionMetricHooks(engine.IncrHuntRetentionPruned, engine.IncrHuntRetentionErrors)
 
 	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
 	var huntNotifier hunt.Notifier
@@ -493,6 +496,9 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 			} else {
 				engine.SetHuntStore(hStore)
 				engine.SetHuntPersistEnabled(true)
+				// Fresh DB: Bootstrap ran before hunt_jobs existed, so install the
+				// account_job_scores -> hunt_jobs FK now (no-op when already there).
+				ensureHuntFK(sigCtx, rdb.Pool())
 
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.

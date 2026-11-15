@@ -256,7 +256,7 @@ func (a *AccountStore) CountScored(ctx context.Context) int {
 // including note by not touching them at all. Do not unify these paths without
 // understanding the divergence.
 func (a *AccountStore) Rate(ctx context.Context, kind string, entryID int64, triage, stage, note string) error {
-	_, err := a.s.pool.Exec(ctx, `
+	_, err := a.s.execRetentionShared(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, account_id, triage, stage, note, rated_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, account_id) DO UPDATE
@@ -285,7 +285,7 @@ func (a *AccountStore) Rate(ctx context.Context, kind string, entryID int64, tri
 // in UpdateTrackedJob; a second caller must implement the same pre-fetch or
 // pass the preserved note explicitly.
 func (a *AccountStore) RateExact(ctx context.Context, kind string, entryID int64, triage, stage, note string) error {
-	_, err := a.s.pool.Exec(ctx, `
+	_, err := a.s.execRetentionShared(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, account_id, triage, stage, note, rated_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, account_id) DO UPDATE
@@ -307,7 +307,7 @@ func (a *AccountStore) RateExact(ctx context.Context, kind string, entryID int64
 //
 // If no row exists, a new one is inserted with stage=” and note=NULL.
 func (a *AccountStore) SetTriage(ctx context.Context, kind string, entryID int64, triage string) error {
-	_, err := a.s.pool.Exec(ctx, `
+	_, err := a.s.execRetentionShared(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, account_id, triage, rated_at, updated_at)
 		VALUES ($1, $2, $3, $4, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, account_id) DO UPDATE
@@ -328,7 +328,7 @@ func (a *AccountStore) SetTriage(ctx context.Context, kind string, entryID int64
 //
 // If no row exists, a new one is inserted with an empty note (NULL).
 func (a *AccountStore) SetStage(ctx context.Context, kind string, entryID int64, stage string) error {
-	_, err := a.s.pool.Exec(ctx, `
+	_, err := a.s.execRetentionShared(ctx, `
 		INSERT INTO hunt_ratings (entry_kind, entry_id, account_id, stage, rated_at, updated_at)
 		VALUES ($1, $2, $3, $4, NOW(), NOW())
 		ON CONFLICT (entry_kind, entry_id, account_id) DO UPDATE
@@ -593,6 +593,10 @@ func (a *AccountStore) ToggleShortlistStar(ctx context.Context, entryID int64, a
 	// connection is ALWAYS returned to the pool on every return path — including
 	// early returns in the no-op branches and any unexpected panic.
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Order this rating write against the retention prune (see retentionLockKey).
+	if err := lockRetentionShared(ctx, tx); err != nil {
+		return false, fmt.Errorf("hunt: toggle star: retention lock: %w", err)
+	}
 
 	// Read current triage + stage — FOR UPDATE to lock the row.
 	// pgx.ErrNoRows → no prior row; treat as star-on. Any other error → surface.
