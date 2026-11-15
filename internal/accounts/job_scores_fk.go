@@ -41,8 +41,19 @@ func EnsureJobScoresJobFK(ctx context.Context, pool *pgxpool.Pool) (orphans int6
 		return 0, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Never wedge boot behind a long transaction: give up after 5s (the caller
+	// logs and continues; the next boot retries).
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		return 0, fmt.Errorf("set lock_timeout: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `LOCK TABLE account_job_scores IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return 0, fmt.Errorf("lock account_job_scores: %w", err)
+	}
+	// ON DELETE CASCADE seq-scans account_job_scores once per deleted job
+	// without this index (the UNIQUE key leads with account_id).
+	if _, err := tx.Exec(ctx,
+		`CREATE INDEX IF NOT EXISTS account_job_scores_job_id_idx ON account_job_scores (job_id)`); err != nil {
+		return 0, fmt.Errorf("create job_id index: %w", err)
 	}
 	var exists bool
 	if err := tx.QueryRow(ctx, `

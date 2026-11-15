@@ -56,4 +56,7 @@ func TestEnsureJobScoresJobFK(t *testing.T) {
 	var n int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM account_job_scores WHERE job_id = $1`, jobID).Scan(&n))
 	assert.Zero(t, n, "scores of a deleted job are removed")
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_indexes WHERE tablename = 'account_job_scores' AND indexname = 'account_job_scores_job_id_idx'`).Scan(&n))
+	assert.Equal(t, 1, n, "the cascade needs an index on job_id")
 }

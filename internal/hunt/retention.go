@@ -58,14 +58,20 @@ var prunedTables = []struct{ table, kind string }{
 // table. account_job_scores rows are derived (LLM fit score) and carry no user
 // signal; they cascade away with the job (FK in accounts.EnsureJobScoresJobFK).
 const pruneSQLTemplate = `
-	DELETE FROM {table} WHERE id IN (
+	DELETE FROM {table} d WHERE d.id IN (
 		SELECT t.id FROM {table} t
 		WHERE t.last_seen_at < NOW() - make_interval(days => $1::int)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM hunt_ratings r
 		      WHERE r.entry_kind = $2 AND r.entry_id = t.id)
 		ORDER BY t.last_seen_at
-		LIMIT $3)`
+		LIMIT $3)
+	  -- re-checked at delete time: a row refreshed or rated after the subquery
+	  -- picked it must not be deleted.
+	  AND d.last_seen_at < NOW() - make_interval(days => $1::int)
+	  AND NOT EXISTS (
+	      SELECT 1 FROM hunt_ratings r
+	      WHERE r.entry_kind = $2 AND r.entry_id = d.id)`
 
 // RetentionDays reads HUNT_RETENTION_DAYS: default 90, 0 or negative disables
 // the prune, a positive value below minRetentionDays is raised to it.
@@ -141,9 +147,16 @@ func SetRetentionMetricHooks(prunedFn func(kind string, n int64), errorFn func()
 	onRetentionError = errorFn
 }
 
-// StartRetention runs the prune once now and then every 24h until ctx is done.
-// HUNT_RETENTION_DAYS=0 disables it.
-func (s *Store) StartRetention(ctx context.Context) {
+// retentionBackfillBackoff is the first retry delay after a failed artifact
+// marker backfill; it doubles up to 32x.
+const retentionBackfillBackoff = time.Minute
+
+// StartRetention starts the retention loop in the background: first the
+// artifact marker backfill (retried with backoff until it succeeds, each
+// failure counted in hunt_retention_errors_total), then the prune once and
+// every 24h. HUNT_RETENTION_DAYS is read once, here, at boot: 0 disables the
+// loop entirely, backfill included; changing it needs a restart.
+func (s *Store) StartRetention(ctx context.Context, idx ArtifactIndex) {
 	if s == nil {
 		return
 	}
@@ -152,19 +165,42 @@ func (s *Store) StartRetention(ctx context.Context) {
 		slog.Info("hunt retention: disabled (HUNT_RETENTION_DAYS=0)")
 		return
 	}
-	go func() {
-		s.runRetention(ctx, days)
-		ticker := time.NewTicker(retentionInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.runRetention(ctx, days)
+	go s.RunRetentionLoop(ctx, days, idx, retentionBackfillBackoff)
+}
+
+// RunRetentionLoop blocks until ctx is done. The prune never runs before the
+// backfill has succeeded: pruning with an unmarked artifact job would orphan
+// its files. Exported for tests.
+func (s *Store) RunRetentionLoop(ctx context.Context, days int, idx ArtifactIndex, backoff time.Duration) {
+	delay := backoff
+	for {
+		if _, err := s.BackfillArtifactMarkers(ctx, idx); err == nil {
+			break
+		} else {
+			if onRetentionError != nil {
+				onRetentionError()
 			}
+			slog.Error("hunt retention: artifact marker backfill failed, prune NOT started; retrying",
+				slog.Any("error", err), slog.Duration("retry_in", delay))
 		}
-	}()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, backoff*32)
+	}
+	s.runRetention(ctx, days)
+	ticker := time.NewTicker(retentionInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runRetention(ctx, days)
+		}
+	}
 }
 
 func (s *Store) runRetention(ctx context.Context, days int) {

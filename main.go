@@ -499,8 +499,8 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 				// Fresh DB: Bootstrap ran before hunt_jobs existed, so install the
 				// account_job_scores -> hunt_jobs FK now (no-op when already there).
 				if _, err := accounts.EnsureJobScoresJobFK(sigCtx, rdb.Pool()); err != nil {
-					slog.Error("account_job_scores FK failed — exiting", slog.Any("error", err))
-					os.Exit(1)
+					// Not boot-fatal: orphan scores are inert, and the next boot retries.
+					slog.Warn("account_job_scores FK step failed; continuing", slog.Any("error", err))
 				}
 
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
