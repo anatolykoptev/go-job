@@ -2,6 +2,7 @@ package hunt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -74,13 +75,30 @@ func lockRetentionShared(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
+// pruneLockTimeout bounds how long one batch may wait, holding the exclusive
+// retention lock, on a row lock its DELETE needs (or on the advisory lock
+// itself). Writers queue behind the batch meanwhile, so it must stay short.
+const pruneLockTimeout = "5s"
+
+// errPruneLockTimeout marks a batch abandoned on lock_timeout (SQLSTATE 55P03).
+var errPruneLockTimeout = errors.New("hunt: prune batch lock timeout")
+
 // pruneBatch deletes one batch under the exclusive retention lock.
-func (s *Store) pruneBatch(ctx context.Context, q string, args ...any) (int64, error) {
+func (s *Store) pruneBatch(ctx context.Context, q string, args ...any) (n int64, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			n, err = 0, errPruneLockTimeout
+		}
+	}()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+pruneLockTimeout+`'`); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, retentionLockKey); err != nil {
 		return 0, err
 	}
@@ -177,6 +195,16 @@ func (s *Store) PruneStaleBatch(ctx context.Context, retentionDays, batch int) (
 		var total int64
 		for {
 			n, err := s.pruneBatch(ctx, q, retentionDays, pt.kind, batch)
+			if errors.Is(err, errPruneLockTimeout) {
+				// A row the batch needs is locked (an upsert or a user write in
+				// flight). Not a failure: end this run, the next cycle retries.
+				// Deliberately not counted in hunt_retention_errors_total (alerted
+				// on increase > 0); the Info line is the signal.
+				slog.Info("hunt retention: batch hit lock timeout, run ended; next cycle retries",
+					slog.String("table", pt.table), slog.String("lock_timeout", pruneLockTimeout))
+				res.add(pt.table, total)
+				return res, nil
+			}
 			if err != nil {
 				res.add(pt.table, total)
 				return res, fmt.Errorf("hunt: prune %s: %w", pt.table, err)
