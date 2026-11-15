@@ -16,8 +16,6 @@ const codeBlockMatchGroups = 3
 var (
 	reHeading     = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
 	reBlockquote  = regexp.MustCompile(`(?m)(^&gt;[ \t]?.*$\n?)+`)
-	reImage       = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
-	reLink        = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 	reBoldStar    = regexp.MustCompile(`\*\*\*(.+?)\*\*\*`)
 	reBold        = regexp.MustCompile(`\*\*(.+?)\*\*`)
 	reBoldUnder   = regexp.MustCompile(`__(.+?)__`)
@@ -64,6 +62,9 @@ var (
 // extracted first via placeholders to protect from transformation.
 // Calls RepairHTMLNesting at the end.
 func MarkdownToHTML(text string) string {
+	// NUL is the placeholder delimiter below; strip it (and invalid UTF-8) so
+	// input can neither forge a placeholder nor smuggle one into a URL.
+	text = SanitizeUTF8(text)
 	if text == "" {
 		return ""
 	}
@@ -265,53 +266,155 @@ func extractInlineCodes(text string) inlineCodeMatch {
 	return inlineCodeMatch{text: text, codes: codes}
 }
 
+// mdLink is one parsed markdown link or image.
+type mdLink struct {
+	label string
+	url   string
+	image bool
+}
+
 type linkMatch struct {
 	text  string
-	links []string
+	links []mdLink
+}
+
+// matchBracket returns the index of the `]` closing the `[` at s[open],
+// counting nested brackets, or -1.
+func matchBracket(s string, open int) int {
+	depth := 0
+	for j := open; j < len(s); j++ {
+		switch s[j] {
+		case '[':
+			depth++
+		case ']':
+			if depth--; depth == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// scanLinkURL returns the index of the `)` ending a link URL that starts at
+// s[start]. One level of balanced parentheses is allowed inside the URL; a
+// newline or deeper nesting is not. Returns -1 on failure.
+func scanLinkURL(s string, start int) int {
+	pd := 0
+	for k := start; k < len(s); k++ {
+		switch s[k] {
+		case '\n':
+			return -1
+		case '(':
+			if pd++; pd > 1 {
+				return -1
+			}
+		case ')':
+			if pd == 0 {
+				return k
+			}
+			pd--
+		}
+	}
+	return -1
+}
+
+// parseMDLink parses `[label](url)` (or `![alt](url)`) at the start of s.
+// The label may contain balanced brackets; the URL may contain one level of
+// balanced parentheses (`[w](https://en.wikipedia.org/wiki/Go_(game))`).
+// Returns the consumed byte length.
+func parseMDLink(s string) (l mdLink, n int, ok bool) {
+	i := 0
+	if strings.HasPrefix(s, "!") {
+		l.image = true
+		i = 1
+	}
+	if i >= len(s) || s[i] != '[' {
+		return l, 0, false
+	}
+	j := matchBracket(s, i)
+	if j < 0 || j+1 >= len(s) || s[j+1] != '(' {
+		return l, 0, false
+	}
+	l.label = s[i+1 : j]
+	if l.label == "" && !l.image {
+		return l, 0, false
+	}
+	k := scanLinkURL(s, j+2)
+	if k < 0 {
+		return l, 0, false
+	}
+	l.url = strings.TrimSpace(s[j+2 : k])
+	if l.url == "" {
+		return l, 0, false
+	}
+	return l, k + 1, true
+}
+
+// flattenLinks replaces every markdown link/image in s with its label, so a
+// link label never holds a nested anchor (Telegram does not nest <a>, and an
+// inner link must not smuggle in its own target).
+func flattenLinks(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '[' || s[i] == '!' {
+			if l, n, ok := parseMDLink(s[i:]); ok {
+				b.WriteString(flattenLinks(l.label))
+				i += n
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // extractLinks replaces markdown links and images with placeholders.
 // Images become links (Telegram has no <img>). Must run AFTER code extraction
 // but BEFORE EscapeHTML and inline formatting.
 func extractLinks(text string) linkMatch {
-	var links []string
-	idx := 0
-
-	// Images first: ![alt](url) — must run before link regex.
-	text = reImage.ReplaceAllStringFunc(text, func(m string) string {
-		match := reImage.FindStringSubmatch(m)
-		links = append(links, "IMG:"+match[1]+"\x00"+match[2])
-		placeholder := fmt.Sprintf("\x00LK%d\x00", idx)
-		idx++
-		return placeholder
-	})
-
-	// Regular links: [text](url).
-	text = reLink.ReplaceAllStringFunc(text, func(m string) string {
-		match := reLink.FindStringSubmatch(m)
-		links = append(links, "LNK:"+match[1]+"\x00"+match[2])
-		placeholder := fmt.Sprintf("\x00LK%d\x00", idx)
-		idx++
-		return placeholder
-	})
-
-	return linkMatch{text: text, links: links}
+	var links []mdLink
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if text[i] == '[' || text[i] == '!' {
+			if l, n, ok := parseMDLink(text[i:]); ok {
+				l.label = flattenLinks(l.label)
+				links = append(links, l)
+				fmt.Fprintf(&b, "\x00LK%d\x00", len(links)-1)
+				i += n
+				continue
+			}
+		}
+		b.WriteByte(text[i])
+		i++
+	}
+	return linkMatch{text: b.String(), links: links}
 }
+
+// hrefAttrEscaper makes a URL safe inside a double-quoted attribute. `&` is
+// left as-is (existing contract: URLs reach Telegram byte-for-byte).
+var hrefAttrEscaper = strings.NewReplacer(`"`, "&quot;", "<", "&lt;", ">", "&gt;")
 
 // restoreLinks replaces link placeholders with final HTML <a> tags.
 // Link text is run through MarkdownToHTML-style inline formatting so
-// bold/italic inside link text still works.
+// bold/italic inside link text still works. A link whose URL fails
+// isSafeHref (javascript:, data:, relative, ...) is rendered as its label
+// alone, URL omitted.
 func restoreLinks(text string, data linkMatch) string {
 	for i, link := range data.links {
 		placeholder := fmt.Sprintf("\x00LK%d\x00", i)
-		// Strip "IMG:" or "LNK:" prefix, then split text\x00url.
-		payload := link[4:] //nolint:mnd // skip 4-char prefix
-		parts := strings.SplitN(payload, "\x00", 2)
-		linkText, url := parts[0], parts[1]
-		// Apply inline formatting to link text (bold, italic, etc.).
-		formatted := formatInline(EscapeHTML(linkText))
+		formatted := formatInline(EscapeHTML(link.label))
+		// A URL still holding a code placeholder would have raw <code> markup
+		// restored into the href attribute; treat it as unsafe.
+		if !isSafeHref(link.url) || strings.ContainsRune(link.url, 0) {
+			text = strings.ReplaceAll(text, placeholder, formatted)
+			continue
+		}
+		if formatted == "" {
+			formatted = EscapeHTML(link.url)
+		}
 		text = strings.ReplaceAll(text, placeholder,
-			`<a href="`+url+`">`+formatted+`</a>`)
+			`<a href="`+hrefAttrEscaper.Replace(link.url)+`">`+formatted+`</a>`)
 	}
 	return text
 }

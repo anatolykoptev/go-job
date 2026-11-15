@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 // ErrSSRFBlocked wraps every error CheckURL, GuardedDialContext, or a
@@ -29,39 +32,73 @@ const (
 	guardedDialKeepAlive = 30 * time.Second
 )
 
-// extraBlockedCIDRs are the ranges neither net.IP's built-in predicates
-// (IsLoopback / IsPrivate / IsLinkLocalUnicast / IsLinkLocalMulticast /
-// IsUnspecified / IsMulticast) cover:
+// blockedPrefixes are the ranges the netip.Addr predicates (IsLoopback /
+// IsPrivate / IsLinkLocalUnicast / IsLinkLocalMulticast / IsMulticast /
+// IsUnspecified) do not cover. Sources: the IANA IPv4 and IPv6 Special-Purpose
+// Address Registries (RFC 6890 and updates) and the transition mechanisms that
+// embed an IPv4 address. Whole prefixes are blocked rather than unpacking the
+// embedded address: a carried public IPv4 inside a translation or tunnel prefix
+// is never a legitimate fetch target for this guard, and a prefix match cannot
+// be looser than a per-address judgement.
 //
-//   - 100.64.0.0/10  CGNAT (RFC 6598) — shared address space carriers use
-//     for NAT; not globally routable, frequently fronts internal services.
-//   - 64:ff9b::/96   NAT64 well-known prefix (RFC 6052) — embeds an IPv4
-//     address in the low 32 bits; blocking the whole prefix is simpler and
-//     safer than unpacking and re-checking the embedded address.
-//   - 2002::/16      6to4 (RFC 3056) — encodes a full IPv4 address in bits
-//     16-47; deprecated and rare in legitimate traffic, so blocking the
-//     entire range outright costs nothing.
-//   - ::/96          IPv4-compatible IPv6 (deprecated, RFC 4291 §2.5.5.1,
-//     distinct from the IPv4-MAPPED ::ffff:a.b.c.d form net.IP.To4()
-//     already unwraps) — embeds an IPv4 address in the low 32 bits with an
-//     all-zero high 96 bits.
-var extraBlockedCIDRs = mustParseCIDRs(
+// IPv4:
+//   - 0.0.0.0/8        "this network" (RFC 1122); Linux connects to 0.0.0.0/8
+//     as loopback.
+//   - 100.64.0.0/10    CGNAT (RFC 6598).
+//   - 192.0.0.0/24     IETF protocol assignments (RFC 6890): DS-Lite, NAT64
+//     discovery, PCP/TURN anycast.
+//   - 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24   documentation (RFC 5737).
+//   - 192.88.99.0/24   6to4 relay anycast (RFC 3068, deprecated by RFC 7526).
+//   - 198.18.0.0/15    benchmarking (RFC 2544).
+//   - 240.0.0.0/4      reserved (RFC 1112), includes 255.255.255.255 broadcast.
+//
+// IPv6 (an IPv4-mapped ::ffff:a.b.c.d is unmapped and judged as IPv4 before
+// any of these apply):
+//   - ::/96            IPv4-compatible (deprecated, RFC 4291); also ::, ::1.
+//   - ::ffff:0:0:0/96  IPv4-translated (SIIT, RFC 2765).
+//   - 64:ff9b::/96     NAT64 well-known prefix (RFC 6052).
+//   - 64:ff9b:1::/48   local-use NAT64 (RFC 8215).
+//   - 100::/64         discard-only (RFC 6666).
+//   - 2001::/23        IETF protocol assignments (RFC 2928), includes Teredo
+//     2001::/32 (RFC 4380), which embeds an obfuscated IPv4.
+//   - 2001:db8::/32    documentation (RFC 3849).
+//   - 2002::/16        6to4 (RFC 3056).
+//   - 3fff::/20        documentation (RFC 9637).
+//   - 5f00::/16        SRv6 SIDs (RFC 9602).
+//   - fec0::/10        deprecated site-local (RFC 3879).
+var blockedPrefixes = mustParsePrefixes(
+	"0.0.0.0/8",
 	"100.64.0.0/10",
-	"64:ff9b::/96",
-	"2002::/16",
+	"192.0.0.0/24",
+	"192.0.2.0/24",
+	"192.88.99.0/24",
+	"198.18.0.0/15",
+	"198.51.100.0/24",
+	"203.0.113.0/24",
+	"240.0.0.0/4",
 	"::/96",
+	"::ffff:0:0:0/96",
+	"64:ff9b::/96",
+	"64:ff9b:1::/48",
+	"100::/64",
+	"2001::/23",
+	"2001:db8::/32",
+	"2002::/16",
+	"3fff::/20",
+	"5f00::/16",
+	"fec0::/10",
 )
 
-func mustParseCIDRs(cidrs ...string) []*net.IPNet {
-	nets := make([]*net.IPNet, 0, len(cidrs))
+func mustParsePrefixes(cidrs ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(cidrs))
 	for _, c := range cidrs {
-		_, n, err := net.ParseCIDR(c)
+		p, err := netip.ParsePrefix(c)
 		if err != nil {
 			panic(fmt.Sprintf("httputil: invalid CIDR %q: %v", c, err))
 		}
-		nets = append(nets, n)
+		out = append(out, p)
 	}
-	return nets
+	return out
 }
 
 // allowedSchemes is the scheme allowlist CheckURL enforces. A caller that
@@ -78,33 +115,34 @@ var allowedSchemes = map[string]bool{
 // IsBlockedIP reports whether ip must never be dialed as a fetch/render
 // target. This is the single, framework-owned SSRF block-list — every other
 // primitive in this file (GuardedDialContext, NewSSRFGuardedClient,
-// CheckURL) is built on top of this one predicate. A nil IP is treated as
-// blocked (fail closed).
+// CheckURL) is built on top of this one predicate. A nil or malformed IP is
+// treated as blocked (fail closed).
 //
-// Go's net.IP predicates already unwrap IPv4-mapped-IPv6 addresses (e.g.
-// ::ffff:10.0.0.1 or ::ffff:127.0.0.1) to their IPv4 form before matching —
-// including against extraBlockedCIDRs, since net.IPNet.Contains performs
-// the same To4() unwrap internally — so no separate normalization step is
-// needed here.
+// An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is judged by the IPv4 address
+// it carries. Addresses in a transition prefix that embeds an IPv4 address
+// (NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated) are blocked
+// wholesale; see blockedPrefixes for the full list of ranges and sources.
 func IsBlockedIP(ip net.IP) bool {
-	if ip == nil {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() {
+	return isBlockedAddr(addr)
+}
+
+func isBlockedAddr(addr netip.Addr) bool {
+	addr = addr.Unmap().WithZone("")
+	if !addr.IsValid() {
 		return true
 	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsUnspecified() {
 		return true
 	}
-	// Cloud-metadata address 169.254.169.254 is already covered by
-	// IsLinkLocalUnicast (169.254.0.0/16); the explicit check below exists
-	// purely to make the intent unmissable in review or a future refactor
-	// of the link-local branch above.
-	if ip.Equal(net.IPv4(169, 254, 169, 254)) { //nolint:mnd // the well-known cloud-metadata address, not a tunable
+	if addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || addr.IsMulticast() {
 		return true
 	}
-	for _, n := range extraBlockedCIDRs {
-		if n.Contains(ip) {
+	for _, p := range blockedPrefixes {
+		if p.Contains(addr) {
 			return true
 		}
 	}
@@ -122,7 +160,30 @@ func IsBlockedIP(ip net.IP) bool {
 //
 // base == nil uses a Dialer with sane guarded-fetch defaults (10s connect
 // timeout, 30s keepalive).
+//
+// The guard is installed in the copy's ControlContext (Go ignores Control when
+// ControlContext is set), chained after the caller's ControlContext or, if
+// that is nil, their Control. A caller hook can refuse a connection but never
+// skip the check.
+//
+// This guards connections made by the returned dial function only. A
+// DialTLSContext or DialTLS on an http.Transport built around it bypasses this
+// check for HTTPS.
 func GuardedDialContext(base *net.Dialer) func(ctx context.Context, network, address string) (net.Conn, error) {
+	return guardedDialContext(base, nil)
+}
+
+// guardedDialContext is GuardedDialContext with an optional resolver seam.
+//
+// res == nil: the dialer resolves and connects natively (Happy Eyeballs
+// included) and its Control hook, which net.Dialer invokes for EVERY address
+// it attempts, enforces the policy on the literal address being connected to.
+//
+// res != nil: the host is resolved through res, the dial is refused outright if
+// ANY returned address is blocked (same rule as CheckURL), then each address is
+// dialed in order through the same Control-guarded dialer, so the connected
+// address is still the one checked.
+func guardedDialContext(base *net.Dialer, res Resolver) func(ctx context.Context, network, address string) (net.Conn, error) {
 	var d net.Dialer
 	switch {
 	case base != nil:
@@ -130,16 +191,92 @@ func GuardedDialContext(base *net.Dialer) func(ctx context.Context, network, add
 	default:
 		d = net.Dialer{Timeout: guardedDialTimeout, KeepAlive: guardedDialKeepAlive}
 	}
-	prevControl := d.Control
-	d.Control = func(network, address string, c syscall.RawConn) error {
-		if prevControl != nil {
+	// Go ignores Control when ControlContext is non-nil, so the guard always
+	// goes in ControlContext and Control is cleared on the copy. The caller's
+	// ControlContext is chained if set, otherwise their Control; if both are
+	// set Go would have used ControlContext, and so do we.
+	prevControl, prevControlCtx := d.Control, d.ControlContext
+	d.Control = nil
+	d.ControlContext = func(ctx context.Context, network, address string, c syscall.RawConn) error {
+		switch {
+		case prevControlCtx != nil:
+			if err := prevControlCtx(ctx, network, address, c); err != nil {
+				return err
+			}
+		case prevControl != nil:
 			if err := prevControl(network, address, c); err != nil {
 				return err
 			}
 		}
 		return DenyBlockedAddress(network, address)
 	}
-	return d.DialContext
+	if res == nil {
+		return d.DialContext
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || net.ParseIP(host) != nil || isUnixNetwork(network) {
+			return d.DialContext(ctx, network, address)
+		}
+		addrs, err := resolveChecked(ctx, res, host)
+		if err != nil {
+			return nil, err
+		}
+		return dialEach(ctx, &d, network, port, addrs)
+	}
+}
+
+// dialEach dials addrs in order and returns the first connection; if all fail,
+// the first error.
+func dialEach(ctx context.Context, d *net.Dialer, network, port string, addrs []net.IPAddr) (net.Conn, error) {
+	var firstErr error
+	for _, a := range addrs {
+		conn, err := d.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, firstErr
+}
+
+func isUnixNetwork(network string) bool {
+	switch network {
+	case "unix", "unixgram", "unixpacket":
+		return true
+	}
+	return false
+}
+
+// Resolver resolves a host name to IP addresses. *net.Resolver satisfies it;
+// pass a fake via WithResolver to test DNS-rebind and DNS-error behaviour
+// without the network.
+type Resolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+// resolveChecked resolves host through res and fails closed: a resolver error
+// (wrapped, the original stays in the chain), an empty answer, or ANY blocked
+// address in the answer is an ErrSSRFBlocked.
+func resolveChecked(ctx context.Context, res Resolver, host string) ([]net.IPAddr, error) {
+	addrs, err := res.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve %q: %w", ErrSSRFBlocked, host, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("%w: %q resolved to no addresses", ErrSSRFBlocked, host)
+	}
+	for _, a := range addrs {
+		if IsBlockedIP(a.IP) {
+			return nil, fmt.Errorf("%w: %s resolves to %s", ErrSSRFBlocked, host, a.IP)
+		}
+	}
+	return addrs, nil
 }
 
 // DenyBlockedAddress is the Control-hook body: it inspects the
@@ -150,12 +287,11 @@ func GuardedDialContext(base *net.Dialer) func(ctx context.Context, network, add
 // post-resolution address, simulating exactly what net/http passes after DNS
 // lookup, without needing a real DNS rebind) so a caller wiring a bespoke
 // Control-hook-shaped seam on an opaque transport this package does not
-// itself dial (e.g. a stealth/fingerprint-evasion client's own dialer hook)
+// itself dial (e.g. a stealth/fingerprint-masking client's own dialer hook)
 // can reuse the identical policy GuardedDialContext uses internally, rather
 // than duplicating it. See SSRFGuards for the paired redirect-guard closure.
 func DenyBlockedAddress(network, address string) error {
-	switch network {
-	case "unix", "unixgram", "unixpacket":
+	if isUnixNetwork(network) {
 		// A Unix domain socket dials a local filesystem path, not a network
 		// address (address is e.g. "/var/run/sidecar.sock", not host:port) —
 		// it is not an SSRF-to-internal-IP vector, since the caller already
@@ -187,9 +323,9 @@ func DenyBlockedAddress(network, address string) error {
 // is exactly the case wrapTransportTier's outer CheckURL layer exists to
 // cover) with DialContext replaced by GuardedDialContext, so every DIRECT
 // (non-proxied) connection made through it is SSRF-safe at connect time.
-func guardedTransport() *http.Transport {
+func guardedTransport(cfg ssrfConfig) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // http.DefaultTransport is always *http.Transport per stdlib contract
-	t.DialContext = GuardedDialContext(&net.Dialer{Timeout: guardedDialTimeout, KeepAlive: guardedDialKeepAlive})
+	t.DialContext = guardedDialContext(cfg.dialer, cfg.resolver)
 	return t
 }
 
@@ -218,8 +354,40 @@ func guardedTransport() *http.Transport {
 //     that resolves blocked at check time). http.Client re-invokes
 //     RoundTrip on every redirect hop, so each hop's real destination is
 //     re-checked too.
-func wrapTransportTier(t *http.Transport) http.RoundTripper {
-	return &guardedRoundTripper{next: t}
+func wrapTransportTier(t *http.Transport, cfg ssrfConfig) http.RoundTripper {
+	return &guardedRoundTripper{next: t, resolver: cfg.resolver}
+}
+
+// ssrfConfig is the resolved set of NewSSRFGuardedClient options.
+type ssrfConfig struct {
+	dialer   *net.Dialer
+	resolver Resolver
+}
+
+// SSRFOption customises NewSSRFGuardedClient.
+type SSRFOption func(*ssrfConfig)
+
+// WithDialer sets the base net.Dialer the guarded transport connects with.
+// Its ControlContext hook (or Control, when ControlContext is nil, as in
+// net.Dialer itself) is kept and runs first; the SSRF check runs after it on the
+// address actually being connected to, so a caller can add its own
+// connect-time restrictions (extra ranges, socket options) without losing the
+// guard. The dialer is copied, never mutated. Without this option the
+// transport uses a fresh dialer (10s connect timeout, 30s keepalive); a
+// DialContext already set on a caller's *http.Transport is replaced and cannot
+// be composed, so use this option to carry a Control hook.
+func WithDialer(d *net.Dialer) SSRFOption {
+	return func(c *ssrfConfig) { c.dialer = d }
+}
+
+// WithResolver replaces net.DefaultResolver for BOTH the pre-request CheckURL
+// tier and the connect-time dial, so tests can simulate DNS errors and
+// DNS-rebinding (a name that resolves public at check time and internal at
+// dial time) without the network. With a resolver set, the dial refuses a host
+// if any of its resolved addresses is blocked and dials the addresses
+// sequentially instead of racing them. A nil r keeps the default.
+func WithResolver(r Resolver) SSRFOption {
+	return func(c *ssrfConfig) { c.resolver = r }
 }
 
 // NewSSRFGuardedClient returns an SSRF-guarded *http.Client built on top of
@@ -233,7 +401,7 @@ func wrapTransportTier(t *http.Transport) http.RoundTripper {
 //     wrapped with the pre-request CheckURL layer (wrapTransportTier) — see
 //     wrapTransportTier's doc for why a proxy-configured Transport needs
 //     both layers, not just the dial-time one.
-//   - any other http.RoundTripper (e.g. a stealth/fingerprint-evasion
+//   - any other http.RoundTripper (e.g. a stealth/fingerprint-masking
 //     client whose Transport performs its own dial via a bespoke backend,
 //     with no DialContext/net.Dialer hook exposed at all): wrapped with
 //     ONLY the pre-request CheckURL layer — the necessarily WEAKER
@@ -242,22 +410,36 @@ func wrapTransportTier(t *http.Transport) http.RoundTripper {
 //     available without reaching into a dial mechanism this package does
 //     not own.
 //
+// A DialTLSContext or DialTLS set on a supplied *http.Transport is kept by
+// Clone and bypasses the connect-time check for HTTPS; only the pre-request
+// CheckURL tier covers such connections.
+//
+// Options (WithDialer, WithResolver) extend the guard without weakening it. The
+// client's CheckRedirect is kept, and every redirect hop re-enters the guarded
+// transport, so a redirect to a blocked address is refused like a direct one.
+//
 // The returned *http.Client is a shallow copy of base; base itself (and its
 // Transport) is never mutated.
-func NewSSRFGuardedClient(base *http.Client) *http.Client {
+func NewSSRFGuardedClient(base *http.Client, opts ...SSRFOption) *http.Client {
+	var cfg ssrfConfig
+	for _, o := range opts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
 	if base == nil {
-		return &http.Client{Transport: wrapTransportTier(guardedTransport())}
+		return &http.Client{Transport: wrapTransportTier(guardedTransport(cfg), cfg)}
 	}
 	cc := *base
 	switch t := base.Transport.(type) {
 	case nil:
-		cc.Transport = wrapTransportTier(guardedTransport())
+		cc.Transport = wrapTransportTier(guardedTransport(cfg), cfg)
 	case *http.Transport:
 		tc := t.Clone()
-		tc.DialContext = GuardedDialContext(&net.Dialer{Timeout: guardedDialTimeout, KeepAlive: guardedDialKeepAlive})
-		cc.Transport = wrapTransportTier(tc)
+		tc.DialContext = guardedDialContext(cfg.dialer, cfg.resolver)
+		cc.Transport = wrapTransportTier(tc, cfg)
 	default:
-		cc.Transport = &guardedRoundTripper{next: t}
+		cc.Transport = &guardedRoundTripper{next: t, resolver: cfg.resolver}
 	}
 	return &cc
 }
@@ -267,14 +449,15 @@ func NewSSRFGuardedClient(base *http.Client) *http.Client {
 // composes with ANY RoundTripper implementation — including a dial-guarded
 // *http.Transport (see wrapTransportTier, which layers this on top of the
 // *http.Transport tier too, to cover the proxy case) — it never touches the
-// wrapped one's internal dial mechanics, so a stealth/fingerprint-evasion
+// wrapped one's internal dial mechanics, so a stealth/fingerprint-masking
 // implementation is untouched on the allow path.
 type guardedRoundTripper struct {
-	next http.RoundTripper
+	next     http.RoundTripper
+	resolver Resolver // nil = net.DefaultResolver
 }
 
 func (g *guardedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := CheckURL(req.Context(), req.URL); err != nil {
+	if err := checkURL(req.Context(), req.URL, g.resolver); err != nil {
 		return nil, err
 	}
 	return g.next.RoundTrip(req)
@@ -303,7 +486,18 @@ func (g *guardedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 // (notably glibc's getaddrinfo via cgo) still parse these forms as literal
 // IPs, which would silently defeat this check if it fell through to a
 // same-string-but-different DNS lookup.
+//
+// A DNS failure is an ErrSSRFBlocked too (the resolver error stays in the
+// chain), so a caller that only tests errors.Is(err, ErrSSRFBlocked) fails
+// closed. A resolver answering with zero addresses is blocked as well.
 func CheckURL(ctx context.Context, u *url.URL) error {
+	return checkURL(ctx, u, nil)
+}
+
+func checkURL(ctx context.Context, u *url.URL, res Resolver) error {
+	if res == nil {
+		res = net.DefaultResolver
+	}
 	if u == nil {
 		return fmt.Errorf("%w: nil URL", ErrSSRFBlocked)
 	}
@@ -323,19 +517,8 @@ func CheckURL(ctx context.Context, u *url.URL) error {
 	if looksLikeAltEncodedIP(host) {
 		return fmt.Errorf("%w: host %q looks like a non-standard IP encoding", ErrSSRFBlocked, host)
 	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return fmt.Errorf("httputil: resolve %q: %w", host, err)
-	}
-	if len(addrs) == 0 {
-		return fmt.Errorf("%w: %q resolved to no addresses", ErrSSRFBlocked, host)
-	}
-	for _, a := range addrs {
-		if IsBlockedIP(a.IP) {
-			return fmt.Errorf("%w: %s resolves to %s", ErrSSRFBlocked, host, a.IP)
-		}
-	}
-	return nil
+	_, err := resolveChecked(ctx, res, host)
+	return err
 }
 
 // CheckRawURL parses rawURL and delegates to CheckURL. Convenience for
@@ -364,7 +547,7 @@ const maxSSRFRedirectHops = 10
 // SSRFGuards returns the pair of stdlib-typed closures an opaque-transport
 // HTTP client (one whose Transport performs its own dial/redirect via a
 // bespoke backend this package cannot reach — e.g. a stealth/
-// fingerprint-evasion client) installs to close the SAME two gaps
+// fingerprint-masking client) installs to close the SAME two gaps
 // NewSSRFGuardedClient already closes for a plain *http.Transport-backed
 // client:
 //
@@ -398,43 +581,77 @@ func SSRFGuards() (
 	return redirect, dial
 }
 
-// looksLikeAltEncodedIP reports whether host resembles an alternate-encoding
-// numeric IP literal (hex, pure-decimal, or octal-per-component) that
-// net.ParseIP rejects but a permissive resolver may still interpret as an IP
-// address — a classic SSRF filter bypass technique.
+// looksLikeAltEncodedIP reports whether the WHOLE host is an alternate
+// encoding of an IPv4 address that net.ParseIP rejects but a permissive
+// resolver (glibc getaddrinfo / inet_aton) still reads as one — a classic SSRF
+// filter bypass.
+//
+// inet_aton accepts one to four dot-separated parts, each decimal, octal
+// (leading 0) or hex (0x/0X prefix; a bare "0x" is zero), with the last part
+// filling the remaining bytes: "2130706433", "0x7f000001", "0x7f.0.0.1",
+// "0177.0.0.1", "127.1", "127.0.1". The host matches only if EVERY part has
+// one of those shapes, so DNS names that merely contain "0x" or a zero-led
+// label ("0x.org", "docs.0x.org", "01.example.com") are not matched. Numeric
+// range is deliberately not validated: an all-numeric host is not a DNS name
+// (a TLD is never numeric), so refusing an out-of-range one costs nothing and
+// cannot loosen the check. One trailing dot (an absolute name) is ignored, and
+// a non-ASCII host is checked in its IDNA ASCII form so full-width digits
+// cannot hide a numeric host.
 func looksLikeAltEncodedIP(host string) bool {
+	host = strings.TrimSuffix(host, ".")
 	if host == "" {
 		return false
 	}
-	if strings.Contains(strings.ToLower(host), "0x") {
-		return true
+	if !isASCII(host) {
+		ascii, err := idna.Lookup.ToASCII(host)
+		if err != nil {
+			return false
+		}
+		host = strings.TrimSuffix(ascii, ".")
 	}
-	allDigits := true
-	for _, r := range host {
-		if r < '0' || r > '9' {
-			allDigits = false
-			break
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 { //nolint:mnd // inet_aton takes at most 4 parts
+		return false
+	}
+	for _, p := range parts {
+		if !isNumericIPPart(p) {
+			return false
 		}
 	}
-	if allDigits {
-		// Pure-decimal integer form, e.g. "2130706433" == 127.0.0.1.
-		return true
-	}
-	for _, part := range strings.Split(host, ".") {
-		if len(part) < 2 || part[0] != '0' {
-			continue
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 { //nolint:mnd // ASCII boundary
+			return false
 		}
-		numeric := true
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				numeric = false
-				break
+	}
+	return true
+}
+
+// isNumericIPPart reports whether p is a decimal, octal or 0x-prefixed hex
+// number as inet_aton reads one.
+func isNumericIPPart(p string) bool {
+	if p == "" {
+		return false
+	}
+	if len(p) >= 2 && p[0] == '0' && (p[1] == 'x' || p[1] == 'X') {
+		for _, r := range p[2:] {
+			if !isHexDigit(r) {
+				return false
 			}
 		}
-		if numeric {
-			// Octal-looking dotted component, e.g. "012.0.0.1".
-			return true
+		return true // bare "0x" parses as zero in glibc
+	}
+	for _, r := range p {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+func isHexDigit(r rune) bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F'
 }
