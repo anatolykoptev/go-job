@@ -107,6 +107,7 @@ func main() {
 	// stay disabled (fail-closed).
 	operatorAID, _ := uuid.Parse(operatorID)
 	authority := applications.New(adapter, legacyDir, operatorAID)
+	startHuntRetention(sigCtx, engine.GetHuntStore(), authority)
 	// Probe binary availability at startup: sets gojob_pdf_renderer_available
 	// gauge (1=present, 0=absent) so post-deploy verification is unambiguous.
 	if !adapter.Ready() {
@@ -501,8 +502,6 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 					slog.Error("account_job_scores FK failed — exiting", slog.Any("error", err))
 					os.Exit(1)
 				}
-				// Daily prune of stale, never-rated corpus rows (HUNT_RETENTION_DAYS, 0 = off).
-				hStore.StartRetention(sigCtx)
 
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.

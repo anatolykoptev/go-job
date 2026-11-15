@@ -96,6 +96,7 @@ type Authority struct {
 	renderer  Renderer  // nil → PDF steps are no-ops (graceful degrade)
 	legacyDir string    // APPLICATIONS_DIR — fuzzy legacy lookup; may be empty
 	operator  uuid.UUID // owning account for pre-P4 artifacts
+	marker    JobMarker // nil → no DB marking (see SetJobMarker)
 }
 
 // New creates an Authority.
@@ -264,6 +265,15 @@ func (ac *AccountAuthority) LegacyResolveFromEntries(entries []os.DirEntry, comp
 func (ac *AccountAuthority) Persist(ctx context.Context, id int64, resumeMD, coverMD string) (Result, error) {
 	if ac.aid == uuid.Nil {
 		return Result{}, ErrNoAccountScope
+	}
+	// Mark the job BEFORE any file is written: retention keeps rated jobs, so a
+	// job with artifacts but no rating would be pruned and orphan the files.
+	// A failed mark aborts with nothing written, so a retry is clean.
+	if ac.a.marker != nil {
+		if err := ac.a.marker(ctx, ac.aid, id); err != nil {
+			appPersistTotal.WithLabelValues("error_mark").Inc()
+			return Result{}, fmt.Errorf("applications.Persist: mark job: %w", err)
+		}
 	}
 	var result Result
 	start := time.Now()
