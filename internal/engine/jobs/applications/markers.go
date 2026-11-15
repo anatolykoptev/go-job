@@ -16,9 +16,9 @@ import (
 
 // JobMarker records, in the corpus DB, that an account generated application
 // artifacts for a job. It is the consumer-side port that keeps this package
-// DB-free: main wires it to hunt.AccountStore.MarkArtifactJob. Retention
-// (hunt.PruneStale) keeps every job that has a hunt_ratings row, so marking
-// is what stops the prune from orphaning the files keyed by job id.
+// DB-free: main wires it to hunt.Store.PinJob. Retention (hunt.PruneStale)
+// keeps every pinned job (hunt_retention_pins), so pinning is what stops the
+// prune from orphaning the files keyed by job id.
 type JobMarker func(ctx context.Context, aid uuid.UUID, jobID int64) error
 
 // ErrNoJobMarker is returned by Persist when RequireJobMarker was called but no

@@ -268,8 +268,9 @@ func (ac *AccountAuthority) Persist(ctx context.Context, id int64, resumeMD, cov
 	if ac.aid == uuid.Nil {
 		return Result{}, ErrNoAccountScope
 	}
-	// Mark the job BEFORE any file is written: retention keeps rated jobs, so a
-	// job with artifacts but no rating would be pruned and orphan the files.
+	// Mark (pin) the job BEFORE any file is written: retention keeps pinned and
+	// rated jobs only, so a job with artifacts but no pin would be pruned and
+	// orphan the files.
 	// A failed mark aborts with nothing written, so a retry is clean.
 	if ac.a.marker == nil && ac.a.requireMarker {
 		appPersistTotal.WithLabelValues("error_mark").Inc()

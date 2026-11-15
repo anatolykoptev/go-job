@@ -28,6 +28,8 @@ func TestEnsureJobScoresJobFK(t *testing.T) {
 	// Back to the pre-FK state this change finds in production.
 	_, err = pool.Exec(ctx, `ALTER TABLE account_job_scores DROP CONSTRAINT IF EXISTS account_job_scores_job_id_fkey`)
 	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `TRUNCATE account_job_scores`) // earlier tests may leave orphans
+	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `TRUNCATE hunt_jobs CASCADE`)
 	require.NoError(t, err)
 	var jobID int64

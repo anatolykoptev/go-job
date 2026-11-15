@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// startHuntRetention wires application_persist to mark its job (so retention
+// startHuntRetention wires application_persist to pin its job (so retention
 // keeps it) and starts the retention loop, which backfills markers for
 // artifacts that already exist before its first prune. HUNT_RETENTION_DAYS is
 // read once, here: 0 skips everything (no marker, no backfill, no prune).
@@ -17,8 +17,8 @@ func startHuntRetention(ctx context.Context, hs *hunt.Store, authority *applicat
 		return
 	}
 	days := hunt.RetentionDays()
-	wireArtifactMarker(authority, func(ctx context.Context, aid uuid.UUID, jobID int64) error {
-		return hs.ForAccount(aid).MarkArtifactJob(ctx, jobID)
+	wireArtifactMarker(authority, func(ctx context.Context, _ uuid.UUID, jobID int64) error {
+		return hs.PinJob(ctx, jobID, hunt.PinArtifact)
 	}, days)
 	hs.StartRetention(ctx, authority)
 }

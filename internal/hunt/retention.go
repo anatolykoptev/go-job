@@ -51,7 +51,9 @@ var prunedTables = []struct{ table, kind string }{
 }
 
 // pruneSQLTemplate deletes one bounded batch of stale rows that no account has
-// rated. "Acted on" is any hunt_ratings row for the entry, whatever its
+// rated or pinned. Pinned = a hunt_retention_pins row (application artifacts
+// exist for the job, or its company has a legacy application directory); pins
+// are invisible to the tracker. "Acted on" is any hunt_ratings row for the entry, whatever its
 // account, triage (interesting/saved/discarded), pipeline stage
 // (claimed/applied/interview/offer/rejected) or note: the star toggle, the
 // triage buttons, the stage dropdown and the tracker tool all write that one
@@ -64,6 +66,9 @@ const pruneSQLTemplate = `
 		  AND NOT EXISTS (
 		      SELECT 1 FROM hunt_ratings r
 		      WHERE r.entry_kind = $2 AND r.entry_id = t.id)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM hunt_retention_pins p
+		      WHERE p.entry_kind = $2 AND p.entry_id = t.id)
 		ORDER BY t.last_seen_at
 		LIMIT $3)
 	  -- re-checked at delete time: a row refreshed or rated after the subquery
@@ -71,7 +76,10 @@ const pruneSQLTemplate = `
 	  AND d.last_seen_at < NOW() - make_interval(days => $1::int)
 	  AND NOT EXISTS (
 	      SELECT 1 FROM hunt_ratings r
-	      WHERE r.entry_kind = $2 AND r.entry_id = d.id)`
+	      WHERE r.entry_kind = $2 AND r.entry_id = d.id)
+	  AND NOT EXISTS (
+	      SELECT 1 FROM hunt_retention_pins p
+	      WHERE p.entry_kind = $2 AND p.entry_id = d.id)`
 
 // RetentionDays reads HUNT_RETENTION_DAYS: default 90, 0 or negative disables
 // the prune, a positive value below minRetentionDays is raised to it.

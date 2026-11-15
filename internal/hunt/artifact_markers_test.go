@@ -44,7 +44,7 @@ func artifactFixture(t *testing.T) (*hunt.Store, *hunt.AccountStore) {
 	require.NoError(t, s.Migrate(context.Background()))
 	acc := s.ForAccount(newScoreAccount(t, pool))
 	truncateJobs(t, pool)
-	_, err := pool.Exec(context.Background(), "TRUNCATE hunt_ratings")
+	_, err := pool.Exec(context.Background(), "TRUNCATE hunt_ratings, hunt_retention_pins")
 	require.NoError(t, err)
 	return s, acc
 }
@@ -61,8 +61,8 @@ func TestPersist_MarkedJobSurvivesPrune(t *testing.T) {
 	plain := staleUnratedJob(t, s, "plain", "Acme", "Eng2")
 
 	auth := applications.New(nil, "", acc.AccountID())
-	auth.SetJobMarker(func(ctx context.Context, aid uuid.UUID, id int64) error {
-		return s.ForAccount(aid).MarkArtifactJob(ctx, id)
+	auth.SetJobMarker(func(ctx context.Context, _ uuid.UUID, id int64) error {
+		return s.PinJob(ctx, id, hunt.PinArtifact)
 	})
 	_, err := auth.ForAccount(acc.AccountID()).Persist(ctx, marked, "# resume", "# cover")
 	require.NoError(t, err)
@@ -71,18 +71,43 @@ func TestPersist_MarkedJobSurvivesPrune(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, rowExists(t, s.Pool(), "hunt_jobs", marked), "job with generated artifacts must survive the prune")
 	assert.False(t, rowExists(t, s.Pool(), "hunt_jobs", plain), "control: an unmarked stale job is pruned")
-	assert.Equal(t, hunt.StageClaimed, readStage(t, s, acc, marked))
+	assert.Zero(t, ratingCount(t, s), "Persist must not create hunt_ratings rows (tracker/shortlist stay untouched)")
+	assert.Equal(t, "artifact", pinReason(t, s, marked))
 }
 
-// A marker must never overwrite a rating the user already set.
-func TestMarkArtifactJob_KeepsExistingRating(t *testing.T) {
+func ratingCount(t *testing.T, s *hunt.Store) int {
+	t.Helper()
+	var n int
+	require.NoError(t, s.Pool().QueryRow(context.Background(), `SELECT count(*) FROM hunt_ratings`).Scan(&n))
+	return n
+}
+
+func pinReason(t *testing.T, s *hunt.Store, id int64) string {
+	t.Helper()
+	var r string
+	require.NoError(t, s.Pool().QueryRow(context.Background(),
+		`SELECT reason FROM hunt_retention_pins WHERE entry_kind = 'job' AND entry_id = $1`, id).Scan(&r))
+	return r
+}
+
+// Pinning is idempotent, upgrades legacy_company to artifact (never the
+// reverse), leaves ratings alone, and refuses an unknown job.
+func TestPinJob(t *testing.T) {
 	s, acc := artifactFixture(t)
 	ctx := context.Background()
-	id := staleUnratedJob(t, s, "rated", "Acme", "Eng")
+	id := staleUnratedJob(t, s, "pin", "Acme", "Eng")
 	require.NoError(t, acc.SetStage(ctx, hunt.KindJob, id, hunt.StageOffer))
-	require.NoError(t, acc.MarkArtifactJob(ctx, id))
-	assert.Equal(t, hunt.StageOffer, readStage(t, s, acc, id), "higher stage must not be downgraded")
-	err := acc.MarkArtifactJob(ctx, 999999999)
+
+	require.NoError(t, s.PinJob(ctx, id, hunt.PinLegacyCompany))
+	require.NoError(t, s.PinJob(ctx, id, hunt.PinLegacyCompany))
+	assert.Equal(t, "legacy_company", pinReason(t, s, id))
+	require.NoError(t, s.PinJob(ctx, id, hunt.PinArtifact))
+	assert.Equal(t, "artifact", pinReason(t, s, id), "legacy_company is upgraded")
+	require.NoError(t, s.PinJob(ctx, id, hunt.PinLegacyCompany))
+	assert.Equal(t, "artifact", pinReason(t, s, id), "artifact is never downgraded")
+	assert.Equal(t, hunt.StageOffer, readStage(t, s, acc, id), "existing rating untouched")
+
+	err := s.PinJob(ctx, 999999999, hunt.PinArtifact)
 	assert.ErrorIs(t, err, hunt.ErrArtifactJobNotFound, "unknown job must error so Persist writes nothing")
 }
 
@@ -108,7 +133,11 @@ func TestBackfillArtifactMarkers(t *testing.T) {
 	auth := applications.New(nil, legacy, operator)
 	n, err := s.BackfillArtifactMarkers(ctx, auth)
 	require.NoError(t, err)
-	assert.Equal(t, int64(4), n, "scoped dir, legacy numeric dir and both Delta jobs (any age, any title) are marked")
+	assert.Equal(t, int64(4), n, "scoped dir, legacy numeric dir and both Delta jobs (any age, any title) are pinned")
+	assert.Zero(t, ratingCount(t, s), "backfill must create NO hunt_ratings rows")
+	assert.Equal(t, "artifact", pinReason(t, s, scoped))
+	assert.Equal(t, "artifact", pinReason(t, s, legacyNum))
+	assert.Equal(t, "legacy_company", pinReason(t, s, slugLive))
 
 	again, err := s.BackfillArtifactMarkers(ctx, auth)
 	require.NoError(t, err)
