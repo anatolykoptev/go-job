@@ -30,6 +30,10 @@ const (
 	// OBS-6: oversize purge outcome counters — make table growth visible.
 	MetricOversizePurgeDeleted = "oversize_purge_deleted_total"
 	MetricOversizePurgeErrors  = "oversize_purge_errors_total"
+	// Hunt corpus retention: rows pruned per kind (job|freelance|security) and
+	// failed prune runs. Alert: increase(gojob_hunt_retention_errors_total[2d]) > 0.
+	MetricHuntRetentionPruned = "hunt_retention_pruned_total"
+	MetricHuntRetentionErrors = "hunt_retention_errors_total"
 	// OBS-6: enrichment semaphore skipped counter — makes "semaphore full"
 	// events visible so operators can tune enrichMaxConcurrent.
 	MetricEnrichSemSkipped = "enrich_semaphore_skipped_total"
@@ -905,6 +909,11 @@ func FormatMetrics() string {
 	keys = append(keys, MetricSlugCacheL2Active)
 	// OBS-6: oversize purge counters pre-touched at 0.
 	keys = append(keys, MetricOversizePurgeDeleted, MetricOversizePurgeErrors)
+	// Hunt retention counters pre-touched at 0 (3 kinds = 3 series, bounded enum).
+	for _, kind := range []string{"job", "freelance", "security"} {
+		keys = append(keys, MetricHuntRetentionPruned+"{kind="+kind+"}")
+	}
+	keys = append(keys, MetricHuntRetentionErrors)
 	// OBS-6: enrichment semaphore skipped counter pre-touched at 0.
 	keys = append(keys, MetricEnrichSemSkipped)
 	// OBS-6: admin UI HTTP counters pre-touched at 0.
@@ -1860,6 +1869,18 @@ func IncrATSBreakerOpen() {
 // OBS-6: oversize purge outcome incrementors.
 func IncrOversizePurgeDeleted(n int64) { reg.Add(MetricOversizePurgeDeleted, n) }
 func IncrOversizePurgeErrors()         { reg.Incr(MetricOversizePurgeErrors) }
+
+// IncrHuntRetentionPruned adds n pruned rows to gojob_hunt_retention_pruned_total{kind}.
+// kind is one of the hunt.Kind* constants (bounded enum).
+func IncrHuntRetentionPruned(kind string, n int64) {
+	if n <= 0 {
+		return
+	}
+	reg.Add(MetricHuntRetentionPruned+"{kind="+kind+"}", n)
+}
+
+// IncrHuntRetentionErrors bumps gojob_hunt_retention_errors_total.
+func IncrHuntRetentionErrors() { reg.Incr(MetricHuntRetentionErrors) }
 
 // OBS-6: enrichment semaphore skipped — bumped when enrichSem is full.
 func IncrEnrichSemSkipped() { reg.Incr(MetricEnrichSemSkipped) }
