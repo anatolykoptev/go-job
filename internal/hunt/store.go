@@ -539,7 +539,19 @@ func (s *Store) GetFreelance(ctx context.Context, id int64) (*Freelance, error) 
 	return &f, nil
 }
 
-// UpsertSecurity inserts a new security program or updates last_seen_at on conflict.
+// securityLastSeenRefresh is how stale hunt_security.last_seen_at may get
+// before a re-ingest of an unchanged row rewrites it. The conflict branch
+// never touches content columns, so an unchanged re-ingest used to rewrite
+// every row every tick just to bump last_seen_at (about 150 updates per row,
+// never HOT because last_seen_at is indexed). last_seen_at is read for list
+// ordering and retention only, so day granularity is enough; RetentionDays
+// floors the retention window far above it.
+const securityLastSeenRefresh = 24 * time.Hour
+
+// UpsertSecurity inserts a new security program, or on conflict rewrites the
+// row only when status/closed_at change or last_seen_at is older than
+// securityLastSeenRefresh; an unchanged re-ingest writes nothing and reports
+// OutcomeMerged.
 // Status is preserved on conflict: once archived, a re-ingest with "open" does NOT revert it.
 func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, outcome Outcome, err error) {
 	status := sec.Status
@@ -557,12 +569,26 @@ func (s *Store) UpsertSecurity(ctx context.Context, sec Security) (id int64, out
 			    -- closed/merged is a terminal state for ingest; only enricher (UpdateStatus) can promote between non-open states
 			    status = CASE WHEN hunt_security.status = 'open' THEN EXCLUDED.status ELSE hunt_security.status END,
 			    closed_at = COALESCE(hunt_security.closed_at, EXCLUDED.closed_at)
+			WHERE hunt_security.last_seen_at < NOW() - make_interval(secs => $14)
+			   OR (hunt_security.status, hunt_security.closed_at) IS DISTINCT FROM (
+			       CASE WHEN hunt_security.status = 'open' THEN EXCLUDED.status ELSE hunt_security.status END,
+			       COALESCE(hunt_security.closed_at, EXCLUDED.closed_at))
 		RETURNING id, (xmax = 0) AS created`,
 		sec.DedupHash, sec.Name, sec.URL, sec.Platform,
 		nullStr(sec.ProgramType), nullInt(sec.MinBounty), nullInt(sec.MaxBounty),
 		nullSlice(sec.Targets), sec.Managed, nullStr(sec.Description), nullRaw(sec.Raw),
-		status, sec.ClosedAt,
+		status, sec.ClosedAt, securityLastSeenRefresh.Seconds(),
 	).Scan(&id, &created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The conflict branch skipped the row (WHERE false), so RETURNING is
+		// empty: the program exists and is unchanged.
+		err = s.pool.QueryRow(ctx,
+			`SELECT id FROM hunt_security WHERE dedup_hash = $1`, sec.DedupHash).Scan(&id)
+		if err != nil {
+			return 0, OutcomeError, fmt.Errorf("hunt: upsert security: lookup unchanged: %w", err)
+		}
+		return id, OutcomeMerged, nil
+	}
 	if err != nil {
 		return 0, OutcomeError, fmt.Errorf("hunt: upsert security: %w", err)
 	}

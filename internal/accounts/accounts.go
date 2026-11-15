@@ -189,6 +189,11 @@ func Bootstrap(ctx context.Context, pool *pgxpool.Pool, seed OperatorSeed) (*aut
 	if err := EnsureOversizeAccountScope(ctx, pool); err != nil {
 		return nil, nil, fmt.Errorf("accounts: oversize account scope: %w", err)
 	}
+	// account_job_scores.job_id -> hunt_jobs FK (cascade). No-op while
+	// hunt_jobs is absent (fresh DB); main re-runs it after hStore.Migrate.
+	if _, err := EnsureJobScoresJobFK(ctx, pool); err != nil {
+		return nil, nil, fmt.Errorf("accounts: job scores FK: %w", err)
+	}
 	op, err := seedOperator(ctx, pool, store, seed)
 	if err != nil {
 		return nil, nil, fmt.Errorf("accounts: seed operator: %w", err)

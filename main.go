@@ -428,6 +428,8 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 	hunt.SetEnrichSkipHook(engine.IncrEnrichSemSkipped)
 	// OBS-6: wire the oversize purge metric hooks (avoids import cycle).
 	oversize.SetPurgeMetricHooks(engine.IncrOversizePurgeDeleted, engine.IncrOversizePurgeErrors)
+	// Hunt corpus retention metric hooks (same import-cycle shape).
+	hunt.SetRetentionMetricHooks(engine.IncrHuntRetentionPruned, engine.IncrHuntRetentionErrors)
 
 	// huntNotifier is set when a valid Telegram bot is configured; nil otherwise.
 	var huntNotifier hunt.Notifier
@@ -493,6 +495,14 @@ func initEngine(sigCtx context.Context) (hunt.Notifier, *auth.PgxAccountStore, *
 			} else {
 				engine.SetHuntStore(hStore)
 				engine.SetHuntPersistEnabled(true)
+				// Fresh DB: Bootstrap ran before hunt_jobs existed, so install the
+				// account_job_scores -> hunt_jobs FK now (no-op when already there).
+				if _, err := accounts.EnsureJobScoresJobFK(sigCtx, rdb.Pool()); err != nil {
+					slog.Error("account_job_scores FK failed — exiting", slog.Any("error", err))
+					os.Exit(1)
+				}
+				// Daily prune of stale, never-rated corpus rows (HUNT_RETENTION_DAYS, 0 = off).
+				hStore.StartRetention(sigCtx)
 
 				// Wire status enrichment (lazy on-read GitHub check) and Telegram notify.
 				// Enricher: adapter wraps existing fetchIssueInfoBatch for testability.
