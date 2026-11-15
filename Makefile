@@ -4,7 +4,7 @@ SERVICE = go-job
 # times ~30x); CI overrides via GO_TEST_PARALLEL=2 on GitHub-hosted runners.
 GO_TEST_PARALLEL ?= 1
 
-.PHONY: build deploy restart clean lint preflight
+.PHONY: build deploy restart clean lint preflight test-db
 
 build:
 	GOWORK=off go build -o $(BINARY) .
@@ -17,6 +17,10 @@ deploy: build
 
 restart:
 	systemctl --user restart $(SERVICE)
+
+# DB-backed tests against a throwaway Postgres container (never the live cluster).
+test-db:
+	@bash scripts/test-db.sh
 
 lint:
 	GOWORK=off golangci-lint run ./...

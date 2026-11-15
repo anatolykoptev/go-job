@@ -2,6 +2,7 @@
 package telegram
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -116,8 +117,10 @@ func renderInlineElement(b *strings.Builder, n *html.Node, tag string, listCtx *
 		renderSpan(b, n, listCtx)
 	case "code":
 		renderCode(b, n, listCtx)
-	case "tg-spoiler":
-		renderPassThru(b, n, listCtx, "tg-spoiler")
+	case tagTGSpoiler:
+		renderPassThru(b, n, listCtx, tagTGSpoiler)
+	case "tg-emoji":
+		renderEmoji(b, n, listCtx)
 	default:
 		if passThruTags[tag] {
 			renderPassThru(b, n, listCtx, tag)
@@ -195,7 +198,7 @@ func renderAnchor(b *strings.Builder, n *html.Node, listCtx *listContext) {
 // renderSpan either keeps <span class="tg-spoiler"> or strips to text.
 func renderSpan(b *strings.Builder, n *html.Node, listCtx *listContext) {
 	cls := attrVal(n, "class")
-	if cls == "tg-spoiler" {
+	if cls == tagTGSpoiler {
 		b.WriteString(`<span class="tg-spoiler">`)
 		walkChildren(b, n, listCtx)
 		b.WriteString("</span>")
@@ -204,10 +207,14 @@ func renderSpan(b *strings.Builder, n *html.Node, listCtx *listContext) {
 	walkChildren(b, n, listCtx)
 }
 
+// reCodeLangClass is the only class value kept on <code>; the charset cannot
+// break out of the attribute.
+var reCodeLangClass = regexp.MustCompile(`^language-[\w+#.-]+$`)
+
 // renderCode keeps <code class="language-XYZ"> only; other class attrs stripped.
 func renderCode(b *strings.Builder, n *html.Node, listCtx *listContext) {
 	cls := attrVal(n, "class")
-	if strings.HasPrefix(cls, "language-") {
+	if reCodeLangClass.MatchString(cls) {
 		b.WriteString(`<code class="`)
 		b.WriteString(cls)
 		b.WriteString(`">`)
@@ -288,4 +295,20 @@ func isSafeHref(href string) bool {
 		}
 	}
 	return false
+}
+
+// reEmojiID is the only emoji-id value kept on <tg-emoji>.
+var reEmojiID = regexp.MustCompile(`^[0-9]+$`)
+
+// renderEmoji keeps <tg-emoji emoji-id="digits"> and strips it to its
+// fallback text when the id is missing or malformed.
+func renderEmoji(b *strings.Builder, n *html.Node, listCtx *listContext) {
+	id := attrVal(n, "emoji-id")
+	if !reEmojiID.MatchString(id) {
+		walkChildren(b, n, listCtx)
+		return
+	}
+	b.WriteString(`<tg-emoji emoji-id="` + id + `">`)
+	walkChildren(b, n, listCtx)
+	b.WriteString("</tg-emoji>")
 }

@@ -60,7 +60,7 @@
 // NewSSRFGuardedClient wraps an *http.Client in two tiers depending on its
 // Transport: a *http.Transport (or nil) gets DialContext replaced with
 // GuardedDialContext AND is wrapped in a pre-request CheckURL check; any
-// other http.RoundTripper (e.g. a stealth/fingerprint-evasion client with no
+// other http.RoundTripper (e.g. a stealth/fingerprint-masking client with no
 // exposed dial hook) gets ONLY the pre-request CheckURL check. Both layers
 // are needed on the *http.Transport tier because a proxy-configured
 // Transport (explicitly, or inherited via Proxy: http.ProxyFromEnvironment)

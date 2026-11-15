@@ -15,7 +15,7 @@
 // mention, etc.) via an own bot token, with bounded-rate fan-out, retry, and
 // dead-letter. It wraps the existing telegram/broadcast.Pacer and
 // telegram/tgapi5.BotSender; HTML→plaintext fallback is applied on
-// parse-entity errors (borrowed from go-hully's send pattern).
+// parse-entity errors (borrowed from a sibling service's send pattern).
 //
 // # Metric names
 //
