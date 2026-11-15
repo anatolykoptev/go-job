@@ -72,7 +72,9 @@ func RequireTestDB(tb testingTB, dsn string) string {
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		tb.Fatalf("dbtest.RequireTestDB: parse DSN: %v", err)
+		// pgx parse errors can quote the DSN text, password included.
+		_ = err
+		tb.Fatalf("dbtest.RequireTestDB: cannot parse DSN (details withheld: they may contain credentials)")
 		return ""
 	}
 	name := cfg.ConnConfig.Database
