@@ -55,7 +55,7 @@ const pinSQL = `
 // the job does not exist, so Persist cannot write files for a job nothing
 // protects.
 func (s *Store) PinJob(ctx context.Context, jobID int64, reason string) error {
-	if _, err := s.pool.Exec(ctx, pinSQL, []int64{jobID}, []string{reason}); err != nil {
+	if _, err := s.execRetentionShared(ctx, pinSQL, []int64{jobID}, []string{reason}); err != nil {
 		return fmt.Errorf("hunt: pin job: %w", err)
 	}
 	var pinned bool
@@ -115,7 +115,7 @@ func (s *Store) BackfillArtifactMarkers(ctx context.Context, idx ArtifactIndex) 
 	}
 	var written int64
 	if len(ids) > 0 {
-		tag, err := s.pool.Exec(ctx, pinSQL, ids, reasons)
+		tag, err := s.execRetentionShared(ctx, pinSQL, ids, reasons)
 		if err != nil {
 			return 0, fmt.Errorf("hunt: artifact backfill: %w", err)
 		}

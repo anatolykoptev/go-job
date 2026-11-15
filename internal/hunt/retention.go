@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-kit/env"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Retention of the shared hunt corpus. Postings are re-crawled from the ATS
@@ -29,6 +31,65 @@ const (
 	// retentionInterval is the prune cadence.
 	retentionInterval = 24 * time.Hour
 )
+
+// retentionLockKey is the transaction-level advisory lock that orders the
+// prune against every writer of hunt_ratings and hunt_retention_pins.
+//
+// The prune's NOT EXISTS sees only the snapshot of its own DELETE statement
+// (READ COMMITTED), so a rating or pin committed while a batch runs is
+// invisible to it and the job could be deleted. Instead each prune batch takes
+// the lock EXCLUSIVE before its DELETE and each writer takes it SHARED inside
+// its own transaction before writing, held to commit:
+//   - a writer in flight: the batch waits for its commit, then its DELETE
+//     (statement start is after the lock) sees the rating or pin;
+//   - a batch in flight: the writer waits for the batch to commit.
+//
+// Writers never block each other, only a running batch (milliseconds). A
+// writer that lands just after a batch deleted its job writes a rating for a
+// job that no longer exists; nothing can prevent that, the job was already gone.
+const retentionLockKey int64 = 0x68756e7472657431 // "huntret1"
+
+// execRetentionShared runs one write to hunt_ratings or hunt_retention_pins in
+// a transaction holding the shared retention lock. Every such writer must use
+// it (or lockRetentionShared inside its own tx).
+func (s *Store) execRetentionShared(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockRetentionShared(ctx, tx); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	tag, err := tx.Exec(ctx, sql, args...)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return tag, tx.Commit(ctx)
+}
+
+// lockRetentionShared takes the shared retention lock until tx ends.
+func lockRetentionShared(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, retentionLockKey)
+	return err
+}
+
+// pruneBatch deletes one batch under the exclusive retention lock.
+func (s *Store) pruneBatch(ctx context.Context, q string, args ...any) (int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, retentionLockKey); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
 
 // PruneResult counts the rows PruneStale removed per table.
 type PruneResult struct {
@@ -115,12 +176,11 @@ func (s *Store) PruneStaleBatch(ctx context.Context, retentionDays, batch int) (
 		q := strings.ReplaceAll(pruneSQLTemplate, "{table}", pt.table)
 		var total int64
 		for {
-			tag, err := s.pool.Exec(ctx, q, retentionDays, pt.kind, batch)
+			n, err := s.pruneBatch(ctx, q, retentionDays, pt.kind, batch)
 			if err != nil {
 				res.add(pt.table, total)
 				return res, fmt.Errorf("hunt: prune %s: %w", pt.table, err)
 			}
-			n := tag.RowsAffected()
 			total += n
 			if n < int64(batch) {
 				break
