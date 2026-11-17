@@ -53,7 +53,7 @@ func (chat *BaseChat) params() (Params, error) {
 	if err != nil {
 		return params, err
 	}
-	err = params.AddInterface("reply_parameters", chat.ReplyParameters)
+	err = params.AddInterfaceNonZero("reply_parameters", chat.ReplyParameters)
 	if err != nil {
 		return params, err
 	}
@@ -94,6 +94,25 @@ func (edit BaseEdit) params() (Params, error) {
 	err := params.AddInterface("reply_markup", edit.ReplyMarkup)
 
 	return params, err
+}
+
+// BaseEphemeralMessage identifies an ephemeral message received by a user.
+type BaseEphemeralMessage struct {
+	ChatConfig
+	ReceiverUserID     int64
+	EphemeralMessageID int
+}
+
+func (message BaseEphemeralMessage) params() (Params, error) {
+	params, err := message.ChatConfig.params()
+	if err != nil {
+		return params, err
+	}
+
+	params.AddNonZero64("receiver_user_id", message.ReceiverUserID)
+	params.AddNonZero("ephemeral_message_id", message.EphemeralMessageID)
+
+	return params, nil
 }
 
 // BaseSpoiler is base type of structures with spoilers.
