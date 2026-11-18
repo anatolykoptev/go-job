@@ -1,11 +1,9 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -126,29 +124,18 @@ func SearchInspiraJobs(ctx context.Context, query, _location string, limit int) 
 		return nil, fmt.Errorf("inspira marshal: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inspiraAPI, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"Content-Type": "application/json",
+		"Accept":       "application/json",
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", engine.UserAgentBot)
 
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // careers.un.org public API
-	})
+	statusCode, raw, err := StealthLadderFetch(ctx, http.MethodPost, inspiraAPI, headers, payload)
 	if err != nil {
 		return nil, fmt.Errorf("inspira request: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("inspira API status %d", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	if err != nil {
-		return nil, err
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("inspira API status %d", statusCode)
 	}
 
 	var ir inspiraResponse
