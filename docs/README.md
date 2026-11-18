@@ -97,7 +97,7 @@ go_job/
 │   │   │   ├── habr.go              # Хабр Карьера public JSON API
 │   │   │   ├── resume.go            # resume_analyze, cover_letter_generate, resume_tailor
 │   │   │   ├── research.go          # research tool (salary / company / person)
-│   │   │   ├── tracker.go           # job_tracker (SQLite, UPLOADS_ROOT)
+│   │   │   ├── tracker.go           # job_tracker (Postgres hunt store)
 │   │   │   └── profile.go           # user profile (UPLOADS_ROOT)
 │   │   └── sources/                 # Pluggable source connectors
 │   │       ├── freelancer.go        # Freelancer.com REST API
@@ -131,7 +131,7 @@ go_job/
 
 | Store | Location | Purpose |
 |-------|----------|---------|
-| Job tracker | `$UPLOADS_ROOT/go-job/tracker/tracker.db` (default `$HOME/uploads/go-job/tracker/tracker.db`) | SQLite, table `jobs`, persists across restarts |
+| Job tracker and hunt data | PostgreSQL via `DATABASE_URL` (`hunt_jobs`, `hunt_ratings`, accounts, resumes) | The old SQLite `tracker.db` was retired, see `adr/ADR-go-job-002-retire-sqlite-tracker.md` |
 | User profile | `$UPLOADS_ROOT/go-job/profile/profile.json` (default `$HOME/uploads/go-job/profile/profile.json`) | Default platform, limit, location, remote, blacklist |
 | L1 cache | in-memory (`sync.Map`) | Fast, lost on restart |
 | L2 cache | Redis (optional) | Persistent, shared across instances |
@@ -153,11 +153,11 @@ Override the base directory via `UPLOADS_ROOT` env var.
 | `SEARXNG_URL` | `http://127.0.0.1:8888` | SearXNG instance URL |
 | `REDIS_URL` | — | Redis URL for L2 cache (optional) |
 | `CACHE_TTL` | `900` (15m) | Cache TTL in seconds |
-| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for tracker DB + user profile |
+| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for the user profile |
 | `MAX_FETCH_URLS` | `8` | Max parallel URL fetches |
 | `MAX_CONTENT_CHARS` | `6000` | Max chars per fetched page |
 | `FETCH_TIMEOUT` | `10` | HTTP fetch timeout in seconds |
-| `DATABASE_URL` | — | Postgres for oversized payload spillover (optional) |
+| `DATABASE_URL` | — | PostgreSQL for the hunt store, accounts, resumes and oversized-payload spillover; without it the data plane is off |
 | `TELEGRAM_BOT_TOKEN` | — | Telegram bot token for hunt notifications |
 | `HUNT_NOTIFY_CHAT_ID` | — | Notification recipient chat ID |
 | `GITHUB_TOKEN` | — | GitHub token (optional, improves rate limits) |
@@ -171,7 +171,7 @@ Results are cached at two levels:
 
 Cache key format: `sha256(tool_name + "|" + param1 + "|" + param2 + ...)`.
 
-**Not cached:** `resume_analyze`, `cover_letter_generate`, `resume_tailor`, `research` (LLM-generated, context-dependent). Job tracker operations use SQLite directly.
+**Not cached:** `resume_analyze`, `cover_letter_generate`, `resume_tailor`, `research` (LLM-generated, context-dependent). Job tracker operations go straight to PostgreSQL.
 
 ## Rate Limiting & Anti-bot
 

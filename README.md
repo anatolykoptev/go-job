@@ -184,7 +184,7 @@ bind the same MCP port as the container.
 | `PROM_PORT` | `9891` | Prometheus metrics port |
 | `REDIS_URL` | (optional) | Redis for L2 cache |
 | `CACHE_TTL` | `900` | Cache TTL in seconds |
-| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for tracker DB + user profile |
+| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for the user profile |
 | `DATABASE_URL` | (optional) | PostgreSQL for the hunt store, accounts, resumes and oversized-payload spillover; without it the data plane is off |
 | `TELEGRAM_BOT_TOKEN` | (required for notifications) | Telegram bot token |
 | `HUNT_NOTIFY_CHAT_ID` | (required for notifications) | Notification recipient chat ID |

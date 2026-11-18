@@ -55,5 +55,5 @@ before working around one.
 - **One CSS source.** Copy-block and chip CSS lives only in `adminui/partials.go`; money parsing uses
   `parseDollarsToCents` and `centsToDollars`, not inline math.
 - **Release builds carry the version through `git describe`**, never a hand-edited number.
-- **A tracked 53 MB `go_job` binary sits in the repository root**; do not rebuild into the root, use
-  `make build` (output in `bin/`).
+- **Never commit a built binary.** `go_job` at the repository root used to be tracked (53 MB, since
+  removed); build with `make build` (output in `bin/`) and keep both paths ignored.
