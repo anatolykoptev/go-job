@@ -121,8 +121,7 @@ go_job/
 │       ├── notify/
 │       │   └── telegram.go    # Telegram notifications via go-kit ProductSink
 │       └── ...
-└── deploy/
-    └── go_job.service         # systemd unit (MCP :8891, metrics :9891)
+└── Dockerfile                 # production image; the only deployment artifact (no host systemd unit)
 ```
 
 ## Key Implementation Details
@@ -164,10 +163,13 @@ MCP_PORT=8891 PROM_PORT=9891 LLM_API_KEY=... ./bin/go_job
 ## Build & Deploy
 
 ```bash
-make build    # → bin/go_job
-make deploy   # build + copy service + restart systemd unit
-make restart  # restart only
+make build    # → bin/go_job (local development and CI only)
 ```
+
+Production runs only as the `go-job` Docker service (built from this repository's `Dockerfile`) in the
+operator's compose stack, redeployed by dozor on release. There is no host systemd unit and no
+`make deploy`: do not install `bin/go_job` as a host service or recreate a unit, because it would
+bind the same MCP port as the container.
 
 ## Config (env vars)
 
@@ -182,7 +184,7 @@ make restart  # restart only
 | `PROM_PORT` | `9891` | Prometheus metrics port |
 | `REDIS_URL` | (optional) | Redis for L2 cache |
 | `CACHE_TTL` | `900` | Cache TTL in seconds |
-| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for tracker DB + user profile |
+| `UPLOADS_ROOT` | `$HOME/uploads` | Base dir for the user profile |
 | `DATABASE_URL` | (optional) | PostgreSQL for the hunt store, accounts, resumes and oversized-payload spillover; without it the data plane is off |
 | `TELEGRAM_BOT_TOKEN` | (required for notifications) | Telegram bot token |
 | `HUNT_NOTIFY_CHAT_ID` | (required for notifications) | Notification recipient chat ID |

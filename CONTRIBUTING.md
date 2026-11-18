@@ -19,6 +19,9 @@ applying the schema files to a Postgres service. Set `DATABASE_URL` to a throwaw
 the DB round-trip tests live; without it they skip. `GO_TEST_PARALLEL` (default 1) caps test
 parallelism. A pull request that changes only documents skips the heavy job.
 
+Releases are deployed as the Docker image built from `Dockerfile`; there is no host systemd unit, so
+`make build` output is for local runs (`./bin/go_job --stdio`) and CI only.
+
 Dependencies are vendored: after changing `go.mod` run `go mod vendor` and commit `vendor/`.
 
 ## Commits

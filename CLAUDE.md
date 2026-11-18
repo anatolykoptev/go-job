@@ -31,6 +31,13 @@ licence, templates) skips the heavy job through the `docs-scope` job in `preflig
 is canonical across the fleet and compared byte for byte, so do not edit it here. Versions come from
 release-please (Conventional Commits); never tag or edit `CHANGELOG.md` by hand.
 
+## Deployment
+
+Production runs only as the `go-job` Docker service (built from `Dockerfile`) in the operator's compose
+stack, redeployed by dozor on release. There is no host systemd unit and no `make deploy`; never
+install `bin/go_job` as a host service or add a unit back (it would bind the container's MCP port).
+`./bin/go_job --stdio` is for local development only.
+
 ## Invariants that are easy to break
 
 `make preflight` greps for most of these and fails with an explanation; read its `FAIL:` messages
@@ -48,5 +55,5 @@ before working around one.
 - **One CSS source.** Copy-block and chip CSS lives only in `adminui/partials.go`; money parsing uses
   `parseDollarsToCents` and `centsToDollars`, not inline math.
 - **Release builds carry the version through `git describe`**, never a hand-edited number.
-- **A tracked 53 MB `go_job` binary sits in the repository root**; do not rebuild into the root, use
-  `make build` (output in `bin/`).
+- **Never commit a built binary.** `go_job` at the repository root used to be tracked (53 MB, since
+  removed); build with `make build` (output in `bin/`) and keep both paths ignored.
