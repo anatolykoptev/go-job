@@ -1,22 +1,12 @@
 BINARY = bin/go_job
-SERVICE = go-job
 # Test parallelism: -p 1 on the 4-core prod box (contention inflates per-test
 # times ~30x); CI overrides via GO_TEST_PARALLEL=2 on GitHub-hosted runners.
 GO_TEST_PARALLEL ?= 1
 
-.PHONY: build deploy restart clean lint preflight
+.PHONY: build clean lint preflight
 
 build:
 	GOWORK=off go build -o $(BINARY) .
-
-deploy: build
-	cp deploy/go_job.service $(HOME)/.config/systemd/user/$(SERVICE).service
-	systemctl --user daemon-reload
-	systemctl --user restart $(SERVICE)
-	@echo "Deployed and restarted $(SERVICE)"
-
-restart:
-	systemctl --user restart $(SERVICE)
 
 lint:
 	GOWORK=off golangci-lint run ./...
