@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -101,7 +100,7 @@ func SearchRemoteOK(ctx context.Context, query string, limit int) ([]engine.Remo
 		return nil, fmt.Errorf("RemoteOK API returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	body, err := readLimitedBody(resp.Body, 1024*1024)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +219,7 @@ func SearchWeWorkRemotely(ctx context.Context, query string, limit int) ([]engin
 		return nil, fmt.Errorf("WWR RSS returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	body, err := readLimitedBody(resp.Body, 1024*1024)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +467,7 @@ func SearchRemotive(ctx context.Context, query string, limit int) ([]engine.Remo
 		return nil, fmt.Errorf("remotive API returned status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	body, err := readLimitedBody(resp.Body, 2*1024*1024)
 	if err != nil {
 		return nil, err
 	}
