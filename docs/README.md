@@ -124,8 +124,7 @@ go_job/
 │       ├── salary_research.md
 │       ├── company_research.md
 │       └── job_tracker_add.md
-└── deploy/
-    └── go_job.service               # systemd unit (MCP :8891, metrics :9891)
+└── Dockerfile                       # production image; the only deployment artifact (no host systemd unit)
 ```
 
 ## Data Storage

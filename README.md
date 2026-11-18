@@ -121,8 +121,7 @@ go_job/
 │       ├── notify/
 │       │   └── telegram.go    # Telegram notifications via go-kit ProductSink
 │       └── ...
-└── deploy/
-    └── go_job.service         # systemd unit (MCP :8891, metrics :9891)
+└── Dockerfile                 # production image; the only deployment artifact (no host systemd unit)
 ```
 
 ## Key Implementation Details
@@ -164,10 +163,13 @@ MCP_PORT=8891 PROM_PORT=9891 LLM_API_KEY=... ./bin/go_job
 ## Build & Deploy
 
 ```bash
-make build    # → bin/go_job
-make deploy   # build + copy service + restart systemd unit
-make restart  # restart only
+make build    # → bin/go_job (local development and CI only)
 ```
+
+Production runs only as the `go-job` Docker service (built from this repository's `Dockerfile`) in the
+operator's compose stack, redeployed by dozor on release. There is no host systemd unit and no
+`make deploy`: do not install `bin/go_job` as a host service or recreate a unit, because it would
+bind the same MCP port as the container.
 
 ## Config (env vars)
 
