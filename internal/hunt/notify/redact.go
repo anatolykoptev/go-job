@@ -5,8 +5,8 @@
 // message carries it. Two layers cover that, each at the point that actually
 // sees the error:
 //
-//   - the http.Client handed to the bot is wrapped (redact.HTTPClient, see
-//     newTelegramBot) so the error returned by Client.Do is already scrubbed;
+//   - the http.Client handed to the bot comes from go-kit tgsafe.NewHTTPClient
+//     (see newTelegramBot) so the error returned by Client.Do is already scrubbed;
 //   - RedactingSlogHandler scrubs every attribute that reaches the logger,
 //     including slog.Any("error", err), which arrives as KindAny holding an
 //     error rather than as a string.
