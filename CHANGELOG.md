@@ -2,6 +2,13 @@
 
 All notable changes to go_job are documented here.
 
+## [1.23.0](https://github.com/anatolykoptev/go-job/compare/v1.22.9...v1.23.0) (2026-11-21)
+
+
+### Features
+
+* **hunt:** retention prune, job-score FK cascade, no-op security upserts ([#553](https://github.com/anatolykoptev/go-job/issues/553)) ([8d74e25](https://github.com/anatolykoptev/go-job/commit/8d74e25091871f75ad9237577339936b8db50d36))
+
 ## [1.22.9](https://github.com/anatolykoptev/go-job/compare/v1.22.8...v1.22.9) (2026-11-01)
 
 
