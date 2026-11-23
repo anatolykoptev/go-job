@@ -52,13 +52,15 @@ func newAPIError(statusCode int, body string, retryable bool, retryAfter time.Du
 	var parsed struct {
 		Error struct {
 			Type  string `json:"type"`
-			Code  string `json:"code"`
+			Code  any    `json:"code"`
 			Param string `json:"param"`
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(body), &parsed) == nil {
 		e.Type = parsed.Error.Type
-		e.Code = parsed.Error.Code
+		if parsed.Error.Code != nil {
+			e.Code = fmt.Sprint(parsed.Error.Code)
+		}
 		e.Param = parsed.Error.Param
 	}
 	// The proxy answers 502 for an alias it does not define. That is a model
@@ -91,31 +93,17 @@ func asRetryable(err error) bool {
 }
 
 // isModelUnavailable reports whether apiErr represents a model-specific
-// "model not found / not available" failure — the model alias lists in
-// /v1/models but is dead on actual call (provider silently swapped backing
-// model). Such errors are model-specific: the NEXT model in the chain is a
-// different model that may exist. The chain must ADVANCE, not abort.
-//
-// The invariant: model-not-found is signalled by a MODEL MARKER, independent
-// of the 4xx code (400 or 422). Status alone does NOT carry the "model gone"
-// semantic — 422 is the standard REST validation status used by Mistral/Cohere
-// for malformed requests that recur on every model; 422 without a model marker
-// must NOT failover.
-//
-// Recognised signals (both 400 and 422 require a marker):
-//   - error.param == "model" (OpenAI-family "Model X not found", parsed by
-//     newAPIError into APIError.Param).
-//   - Body contains a structured unavailability term ("not available"/
-//     "not found"/"does not exist") AND a structured model-listing marker
-//     ("available_models" or "available:"). The bare word "model" is
-//     intentionally excluded from the model-context disjunct: capability-
-//     mismatch messages such as "response_format json_schema is not available
-//     for this model" contain "model" but param=response_format, not param=model
-//     — and they recur identically on every model (should abort, not failover).
-//
-// A plain 400/422 with no matching marker does NOT advance the chain.
+// "model not found / not available / not supported" failure — the model alias
+// lists in /v1/models but is dead on actual call (provider silently swapped or
+// retired the backing model). Such errors are model-specific: the NEXT model in
+// the chain is a different model that may exist. The chain must ADVANCE, not abort.
 func isModelUnavailable(apiErr *APIError) bool {
+	if strings.EqualFold(apiErr.Type, "ModelError") {
+		return true
+	}
 	if apiErr.StatusCode != http.StatusBadRequest &&
+		apiErr.StatusCode != http.StatusUnauthorized &&
+		apiErr.StatusCode != http.StatusNotFound &&
 		apiErr.StatusCode != http.StatusUnprocessableEntity {
 		return false
 	}
@@ -124,9 +112,13 @@ func isModelUnavailable(apiErr *APIError) bool {
 	}
 	body := strings.ToLower(apiErr.Body)
 	// Precise phrase (opencode zen: "Upstream request failed: Model is
-	// unavailable."). Matched as a phrase, never as the bare word "model", so
-	// "response_format ... is not available for this model" still aborts.
-	if strings.Contains(body, "model is unavailable") || strings.Contains(body, "model unavailable") {
+	// unavailable.") or explicit model-unsupported/not-found message.
+	if strings.Contains(body, "model is unavailable") || strings.Contains(body, "model unavailable") ||
+		(strings.Contains(body, "model ") && (strings.Contains(body, "is not supported") ||
+			strings.Contains(body, "not supported") ||
+			strings.Contains(body, "not available") ||
+			strings.Contains(body, "not found") ||
+			strings.Contains(body, "does not exist"))) {
 		return true
 	}
 	// Body-marker fallback: structured unavailability term + structured
@@ -134,7 +126,8 @@ func isModelUnavailable(apiErr *APIError) bool {
 	// to avoid false-positives on capability-mismatch messages.
 	hasUnavailSignal := strings.Contains(body, "not available") ||
 		strings.Contains(body, "not found") ||
-		strings.Contains(body, "does not exist")
+		strings.Contains(body, "does not exist") ||
+		strings.Contains(body, "not supported")
 	hasModelListing := strings.Contains(body, "available_models") ||
 		strings.Contains(body, "available:")
 	return hasUnavailSignal && hasModelListing
@@ -358,6 +351,11 @@ func ClassifyErrorType(err error) string {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return errTypeUnknown
+	}
+	// model_unavailable: model alias listed in /v1/models but dead on actual call
+	// (provider silently swapped or retired backing model, including HTTP 401 ModelError).
+	if isModelUnavailable(apiErr) {
+		return "model_unavailable"
 	}
 	// auth_expiry: explicit auth rejection (401 always; 403 unless it carries a quota marker)
 	if apiErr.StatusCode == http.StatusUnauthorized {
