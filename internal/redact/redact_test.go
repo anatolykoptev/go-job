@@ -84,6 +84,36 @@ func TestTgsafeHTTPClient_ScrubsQueryKey(t *testing.T) {
 	}
 }
 
+func TestTgsafeHTTPClient_ScrubsInnerRedirectError(t *testing.T) {
+	// A 302 redirect with an unparseable Location containing a token exercises
+	// the inner-error scrubbing branch (c.Err = Error(ue.Err, ...)) where
+	// net/http's url.Parse error surfaces as ue.Err.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "http://bad host/bot"+fakeToken+"/getMe")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	raw := &http.Client{Timeout: 500 * time.Millisecond}
+	// Control: check that the raw unwrapped client error contains fakeToken in the inner error
+	if leaked := realClientErr(t, srv.URL, raw.Do); !strings.Contains(leaked.Error(), fakeToken) {
+		t.Fatalf("control: raw client error did not leak token: %v", leaked)
+	}
+
+	client := tgsafe.NewHTTPClient(raw)
+	err := realClientErr(t, srv.URL, client.Do)
+	if strings.Contains(err.Error(), fakeToken) || strings.Contains(err.Error(), "AAabcdef") {
+		t.Fatalf("token leaked in inner redirect error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bot<redacted>") {
+		t.Fatalf("want bot<redacted> in scrubbed error: %v", err)
+	}
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("error lost its *url.Error type: %T", err)
+	}
+}
+
 func TestError_WrappedAndNonURLErrors(t *testing.T) {
 	leaky := fmt.Errorf("download: %w", errors.New("GET https://api.telegram.org/bot"+fakeToken+"/getFile failed"))
 	got := redact.Error(leaky)
