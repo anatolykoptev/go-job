@@ -225,14 +225,14 @@ Return a JSON object with this exact structure:
     {"name": "...", "description": "...", "url": "...", "tech": ["Go", "Redis"], "highlights": ["..."]}
   ],
   "achievements": [
-    {"text": "Sold 16K tickets with zero marketing budget", "metric": "tickets sold", "value": "16000", "context": "Festival Empire", "metric_numeric": 16000, "metric_unit": "tickets"}
+    {"text": "Cut API p99 latency from 800ms to 120ms", "metric": "p99 latency", "value": "120ms", "context": "Example Corp", "metric_numeric": 120, "metric_unit": "ms"}
   ],
   "certifications": [
     {"name": "...", "issuer": "...", "year": "...", "url": "..."}
   ],
-  "domains": ["Event Production", "Digital Marketing"],
+  "domains": ["Software Engineering", "Developer Tools"],
   "methodologies": [
-    {"name": "Zero-Budget Growth", "description": "Driving massive outcomes without paid advertising through viral mechanics and psychological triggers"}
+    {"name": "Test-Driven Development", "description": "Writing a failing test before the code that makes it pass"}
   ]
 }
 
