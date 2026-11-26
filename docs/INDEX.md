@@ -17,7 +17,6 @@
 | [roadmap](roadmap.md) | Career-assistant roadmap |
 | [runbooks/fit-scoring](runbooks/fit-scoring.md) | Runbook for the fit-score configuration and its failure modes |
 | [runbooks/source-health](runbooks/source-health.md) | Runbook for checking and recovering job source health |
-| [sourse/koptev](sourse/koptev.md) | Resume of the repository owner kept as sample input for the resume tools |
 | [tools/company_research](tools/company_research.md) | Company research (now the research tool with subject=company) |
 | [tools/cover_letter_generate](tools/cover_letter_generate.md) | The cover letter tool: arguments and output |
 | [tools/freelance_search](tools/freelance_search.md) | Freelance search (now folded into job_search by platform) |
