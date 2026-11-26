@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -103,29 +102,18 @@ func SearchHabrJobs(ctx context.Context, query, location string, limit int) ([]e
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
+	headers := map[string]string{
+		"Accept":           "application/json",
+		"X-Requested-With": "XMLHttpRequest",
 	}
-	req.Header.Set("User-Agent", engine.UserAgentBot)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
-	resp, err := engine.RetryHTTP(ctx, engine.DefaultRetryConfig, func() (*http.Response, error) {
-		return engine.Cfg.HTTPClient.Do(req) //nolint:gosec // Habr API URL, intentional outbound request
-	})
+	statusCode, body, err := StealthLadderFetch(ctx, http.MethodGet, u.String(), headers, nil)
 	if err != nil {
 		return nil, fmt.Errorf("habr career API: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("habr career API status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil, err
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("habr career API status %d", statusCode)
 	}
 
 	var apiResp habrVacanciesResponse
