@@ -1,7 +1,7 @@
 # go_job — Career Assistant Roadmap
 
 > AIHawk-level career assistant through a Claude Code / MCP agent + go_job MCP server.
-> Last updated: 2026-07-30
+> Last updated: 2026-07-31
 
 ---
 
@@ -127,7 +127,17 @@ No browser automation. No credentials. Pure API + LLM.
 > the same tracker and the same generated documents.
 >
 > **Status:** architecture settled (ADRs A–J, reviewed 2026-06-27). Implementation
-> not started as of 2026-07-30.
+> started 2026-07-31 with the expand phase — `is_master` / `parent_id` /
+> `account_id` on `resume_persons`, master/variant store API, `panel_accounts`
+> schema wired at boot. `account_id` is nullable; the constrain phase (NOT NULL
+> flip + partial unique index) is the one-way door and has not been taken.
+>
+> **Decision added in the expand phase, ahead of the ADRs:** destructive store
+> methods take the account parameter *now*, while it is still nil-means-global.
+> ADR-C(b) states the target — "an unscoped statement unreachable through the
+> store API" — and taking the parameter early is what makes the constrain phase
+> a compile error instead of a memory test. A `TODO` comment does not survive
+> three months; a signature does.
 
 Single-user is not a missing feature — it is an assumption that is load-bearing in
 several places. Each row below is a place where "the user" is currently implicit.
